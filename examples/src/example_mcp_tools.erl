@@ -18,7 +18,7 @@
     run_with_local_tools/0
 ]).
 
--include_lib("apps/beamai_mcp/include/beamai_mcp.hrl").
+-include_lib("beamai_mcp/include/beamai_mcp.hrl").
 
 %%====================================================================
 %% 示例 1：Agent + 文件系统 MCP 工具

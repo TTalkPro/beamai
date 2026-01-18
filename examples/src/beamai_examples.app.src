@@ -11,12 +11,10 @@
         beamai_memory,
         beamai_tools,
         beamai_agent,
-        beamai_deepagent
-    ]},
-    {optional_applications, [
+        beamai_deepagent,
         beamai_a2a,
         beamai_mcp,
-        cowboy
+        beamai_rag
     ]},
     {env, []},
     {modules, [
