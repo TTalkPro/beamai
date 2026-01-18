@@ -34,7 +34,8 @@
         beamai_deepagent_tool_handlers,
         beamai_deepagent_tools,
         beamai_deepagent_trace,
-        beamai_deepagent_utils
+        beamai_deepagent_utils,
+        beamai_deepagent_tool_provider
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

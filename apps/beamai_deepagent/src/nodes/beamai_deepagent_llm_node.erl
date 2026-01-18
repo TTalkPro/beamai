@@ -65,14 +65,16 @@ create(Config) ->
 %% @doc 构建工具规格列表
 %%
 %% 根据配置和当前状态动态组合可用工具。
-%% 使用 beamai_deepagent_tool_registry 获取内置工具，
+%% 使用 beamai_tool_registry 和 beamai_deepagent_tool_provider 获取内置工具，
 %% 然后添加用户自定义工具。
 -spec build_tool_specs(map(), graph_state:state()) -> [map()].
 build_tool_specs(Config, State) ->
     Depth = state_get(State, depth, 0),
     FullConfig = Config#{depth => Depth},
     %% 获取内置工具
-    BuiltinTools = beamai_deepagent_tool_registry:all_tools(FullConfig),
+    BuiltinTools = beamai_tool_registry:from_config(#{
+        providers => [{beamai_deepagent_tool_provider, FullConfig}]
+    }),
     %% 添加用户自定义工具
     CustomTools = maps:get(tools, Config, []),
     BuiltinTools ++ CustomTools.

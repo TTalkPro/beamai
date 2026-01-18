@@ -33,6 +33,12 @@ setup() ->
 cleanup(_) ->
     ok.
 
+%% @private 获取 DeepAgent 工具（使用 beamai_tool_registry）
+get_deepagent_tools(Config) ->
+    beamai_tool_registry:from_config(#{
+        providers => [{beamai_deepagent_tool_provider, Config}]
+    }).
+
 %%====================================================================
 %% 简单对话测试
 %%====================================================================
@@ -109,7 +115,7 @@ tool_call_test() ->
     }),
 
     %% 这里我们测试工具是否正确注册
-    AllTools = beamai_deepagent_tool_registry:all_tools(Config),
+    AllTools = get_deepagent_tools(Config),
     ToolNames = [maps:get(name, T) || T <- AllTools],
 
     %% 基础工具应该存在

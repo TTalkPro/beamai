@@ -199,10 +199,13 @@ execute_handler(Handler, ToolId, ToolName, Args, State) ->
 
 %% @private 查找工具处理器
 %%
-%% 委托给 beamai_deepagent_tool_registry 查找处理器
+%% 在工具列表中按名称查找处理器函数
 -spec find_tool_handler(binary(), [map()]) -> {ok, function()} | not_found.
 find_tool_handler(ToolName, Tools) ->
-    beamai_deepagent_tool_registry:find_handler(ToolName, Tools).
+    case lists:search(fun(#{name := N}) -> N =:= ToolName end, Tools) of
+        {value, #{handler := Handler}} -> {ok, Handler};
+        false -> not_found
+    end.
 
 %%====================================================================
 %% 私有函数 - 结果构建

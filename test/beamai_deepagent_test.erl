@@ -38,6 +38,12 @@ setup() ->
 cleanup(_) ->
     ok.
 
+%% @private 获取 DeepAgent 工具（使用 beamai_tool_registry）
+get_deepagent_tools(Config) ->
+    beamai_tool_registry:from_config(#{
+        providers => [{beamai_deepagent_tool_provider, Config}]
+    }).
+
 %%====================================================================
 %% 配置创建测试
 %%====================================================================
@@ -86,27 +92,27 @@ config_tests() ->
 %%====================================================================
 
 tools_tests() ->
-    %% 基础工具
-    BaseTools = beamai_deepagent_tool_registry:base_tools(),
+    %% 基础工具（直接使用 Provider API）
+    BaseTools = beamai_deepagent_tool_provider:base_tools(),
     ?assertEqual(2, length(BaseTools)),
     BaseNames = [maps:get(name, T) || T <- BaseTools],
     ?assert(lists:member(<<"checkpoint">>, BaseNames)),
     ?assert(lists:member(<<"get_trace">>, BaseNames)),
 
-    %% 计划工具
-    PlanTools = beamai_deepagent_tool_registry:plan_tools(),
+    %% 计划工具（直接使用 Provider API）
+    PlanTools = beamai_deepagent_tool_provider:plan_tools(),
     ?assertEqual(2, length(PlanTools)),
     PlanNames = [maps:get(name, T) || T <- PlanTools],
     ?assert(lists:member(<<"create_plan">>, PlanNames)),
     ?assert(lists:member(<<"update_plan">>, PlanNames)),
 
-    %% 子任务工具
-    SubtaskTools = beamai_deepagent_tool_registry:subtask_tools(),
+    %% 子任务工具（直接使用 Provider API）
+    SubtaskTools = beamai_deepagent_tool_provider:subtask_tools(),
     ?assertEqual(1, length(SubtaskTools)),
     ?assertEqual(<<"spawn_subtask">>, maps:get(name, hd(SubtaskTools))),
 
-    %% 反思工具
-    ReflectTools = beamai_deepagent_tool_registry:reflect_tools(),
+    %% 反思工具（直接使用 Provider API）
+    ReflectTools = beamai_deepagent_tool_provider:reflect_tools(),
     ?assertEqual(1, length(ReflectTools)),
     ?assertEqual(<<"reflect">>, maps:get(name, hd(ReflectTools))),
 
@@ -117,7 +123,7 @@ tools_tests() ->
         depth => 0,
         max_depth => 3
     },
-    AllTools = beamai_deepagent_tool_registry:all_tools(AllToolsConfig),
+    AllTools = get_deepagent_tools(AllToolsConfig),
     AllNames = [maps:get(name, T) || T <- AllTools],
     ?assert(lists:member(<<"checkpoint">>, AllNames)),
     ?assert(lists:member(<<"create_plan">>, AllNames)),
@@ -131,7 +137,7 @@ tools_tests() ->
         depth => 3,
         max_depth => 3
     },
-    DeepTools = beamai_deepagent_tool_registry:all_tools(DeepConfig),
+    DeepTools = get_deepagent_tools(DeepConfig),
     DeepNames = [maps:get(name, T) || T <- DeepTools],
     ?assertNot(lists:member(<<"spawn_subtask">>, DeepNames)),
     %% 非 depth=0 时无 plan tools
@@ -145,7 +151,7 @@ tools_tests() ->
         depth => 1,
         max_depth => 3
     },
-    MinimalTools = beamai_deepagent_tool_registry:all_tools(MinimalConfig),
+    MinimalTools = get_deepagent_tools(MinimalConfig),
     MinimalNames = [maps:get(name, T) || T <- MinimalTools],
     ?assertEqual(3, length(MinimalTools)), % base(2) + subtask(1)
     ?assertNot(lists:member(<<"create_plan">>, MinimalNames)),
@@ -469,7 +475,7 @@ tool_parameters_test_() ->
      ]}.
 
 test_tool_parameter_structure() ->
-    AllTools = beamai_deepagent_tool_registry:all_tools(#{
+    AllTools = get_deepagent_tools(#{
         planning_enabled => true,
         reflection_enabled => true,
         depth => 0,
