@@ -371,9 +371,13 @@ build_rag_prompt(Question, Context) ->
 -spec call_llm(rag_pipeline(), binary()) -> {ok, binary()} | {error, term()}.
 call_llm(#{llm := Config}, Prompt) ->
     try
-        Provider = maps:get(provider, Config, openai),
-        %% 创建完整的 LLM 配置
-        LLMConfig = llm_client:config(Provider, Config),
+        %% 如果已经是有效配置，直接使用；否则创建
+        LLMConfig = case llm_client:is_valid_config(Config) of
+            true -> Config;
+            false ->
+                Provider = maps:get(provider, Config, openai),
+                llm_client:create(Provider, Config)
+        end,
         Messages = [#{role => user, content => Prompt}],
         case llm_client:chat(LLMConfig, Messages) of
             {ok, Response} -> {ok, extract_llm_content(Response)};

@@ -2,17 +2,17 @@
 
 ## 简介
 
-`interactive_deep_agent.erl` 是一个完整的交互式 Deep Agent 示例，展示了如何创建一个可以持续对话的智能助手。
+`example_agent_interactive.erl` 是一个完整的交互式 Deep Agent 示例，展示了如何创建一个可以持续对话的智能助手。
 
 ## 特性
 
 ### 核心功能
-- ✅ **持续对话** - Agent 保持运行状态，支持多轮对话
-- ✅ **Planning（计划）** - Agent 可以制定并跟踪执行计划
-- ✅ **Reflection（反思）** - Agent 可以反思进展并调整策略
-- ✅ **子任务派生** - 支持将复杂任务分解为子任务
-- ✅ **工具调用** - 内置多个实用工具
-- ✅ **命令系统** - 支持特殊命令查看状态
+- **持续对话** - Agent 保持运行状态，支持多轮对话
+- **Planning（计划）** - Agent 可以制定并跟踪执行计划
+- **Reflection（反思）** - Agent 可以反思进展并调整策略
+- **子任务派生** - 支持将复杂任务分解为子任务
+- **工具调用** - 内置多个实用工具
+- **命令系统** - 支持特殊命令查看状态
 
 ### 内置工具
 1. **search_web** - 搜索网络信息
@@ -27,29 +27,48 @@
 
 ## 使用方法
 
-### 方法 1: 直接运行
+### 前置条件
 
-```erlang
-%% 编译
-rebar3 compile
-
-%% 启动 Erlang shell
-erl -pa _build/default/lib/*/ebin
-
-%% 运行
-interactive_deep_agent:run().
+1. 设置环境变量：
+```bash
+export ZHIPU_API_KEY=your-api-key
 ```
 
-### 方法 2: 使用 rebar3 shell
+2. 先编译主项目：
+```bash
+cd /path/to/beamai
+rebar3 compile
+```
+
+### 方法 1: 使用 Makefile（推荐）
 
 ```bash
-rebar3 shell
+cd examples
+
+# 编译
+make compile
+
+# 启动 shell
+make shell
 ```
 
 然后在 shell 中：
 
 ```erlang
-interactive_deep_agent:run().
+example_agent_interactive:run().
+```
+
+### 方法 2: 手动设置环境变量
+
+```bash
+cd examples
+ERL_LIBS=../_build/default/lib rebar3 shell
+```
+
+然后在 shell 中：
+
+```erlang
+example_agent_interactive:run().
 ```
 
 ## 使用示例
@@ -82,12 +101,12 @@ interactive_deep_agent:run().
 
 [思考中...]
 
-  🧮 [计算] 25 * 4 + 100
+  [计算] 25 * 4 + 100
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 让我来帮你计算：
 
-25 × 4 = 100
+25 * 4 = 100
 100 + 100 = 200
 
 答案是 200
@@ -138,20 +157,44 @@ interactive_deep_agent:run().
 
 ## Agent 配置
 
-### 创建 Agent
+### LLM 配置
+
+使用 `llm_client:create/2` 创建 LLM 配置：
 
 ```erlang
-create_assistant() ->
-    Opts = #{
-        name => <<"智能助手">>,
-        max_depth => 2,                 %% 允许子任务
-        planning_enabled => true,        %% 启用计划
-        reflection_enabled => true,      %% 启用反思
-        tools => Tools,                 %% 工具列表
-        max_iterations => 15,            %% 最大迭代次数
-        system_prompt => Prompt          %% 系统提示词
-    },
-    beamai_deepagent:start_link(AgentId, Opts).
+%% 使用智谱 GLM-4.7（通过 Anthropic 兼容 API）
+LLMConfig = llm_client:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => ApiKey,
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
+    timeout => 120000,
+    max_tokens => 2048
+}).
+
+%% 或使用智谱原生 API
+LLMConfig = llm_client:create(zhipu, #{
+    model => <<"glm-4.6">>,
+    api_key => ApiKey,
+    timeout => 120000
+}).
+```
+
+### 创建 Deep Agent
+
+```erlang
+%% 创建 Agent 配置
+Config = beamai_deepagent:new(#{
+    llm => LLMConfig,
+    max_depth => 2,                 %% 允许子任务嵌套深度
+    planning_enabled => true,        %% 启用计划
+    reflection_enabled => true,      %% 启用反思
+    tools => Tools,                  %% 工具列表
+    max_iterations => 15,            %% 最大迭代次数
+    system_prompt => Prompt          %% 系统提示词
+}).
+
+%% 运行任务
+{ok, Result} = beamai_deepagent:run(Config, <<"你的任务描述">>).
 ```
 
 ### 自定义工具
@@ -170,7 +213,7 @@ create_assistant() ->
         },
         required => [<<"param">>]
     },
-    handler => fun(Args) ->
+    handler => fun(Args, _State) ->
         %% 工具逻辑
         #{result => <<"返回值">>}
     end
@@ -264,7 +307,7 @@ Agent 可以动态更新计划：
         },
         required => [<<"path">>]
     },
-    handler => fun(Args) ->
+    handler => fun(Args, _State) ->
         Path = maps:get(<<"path">>, Args),
         case file:read_file(binary_to_list(Path)) of
             {ok, Content} ->
@@ -280,45 +323,29 @@ Agent 可以动态更新计划：
 
 ```erlang
 %% 使用真实的天气 API
-handler => fun(Args) ->
+handler => fun(Args, _State) ->
     City = maps:get(<<"city">>, Args),
-    case agent_tool_weather:query(City) of
-        {ok, Weather} ->
-            Weather;
+    %% 调用实际 API
+    case httpc:request(get, {WeatherApiUrl, []}, [], []) of
+        {ok, {{_, 200, _}, _, Body}} ->
+            jsx:decode(list_to_binary(Body), [return_maps]);
         {error, Reason} ->
             #{error => Reason}
     end
 end
 ```
 
-### 添加持久化
-
-```erlang
-%% 启动时加载历史
-init([AgentId, Opts]) ->
-    History = load_history(AgentId),
-    State = #state{history = History},
-    {ok, State}.
-
-%% 退出时保存历史
-terminate(_Reason, #state{history = History}) ->
-    save_history(AgentId, History),
-    ok.
-```
-
 ## 注意事项
 
 1. **API Key 配置**
-   - 确保设置了环境变量（如 `ZHIPU_API_KEY`）
-   - 或在配置中直接提供 API key
+   - 确保设置了环境变量 `ZHIPU_API_KEY`
+   - 使用 `example_utils:get_llm_config()` 自动获取配置
 
 2. **超时设置**
-   - GLM-4.6 响应较慢，建议设置 `timeout => 120000` (120秒)
-   - 使用 `connect_timeout` 和 `recv_timeout`（不要使用 `timeout`）
+   - GLM 模型响应可能较慢，建议设置 `timeout => 120000` (120秒)
 
 3. **并发限制**
-   - GLM-4.6 并发限制为 3
-   - 建议使用 `glm_concurrency` 模块限制并发
+   - 智谱 API 有并发限制，避免同时发送过多请求
 
 4. **成本控制**
    - 设置 `max_iterations` 防止无限循环
@@ -326,19 +353,19 @@ terminate(_Reason, #state{history = History}) ->
 
 ## 相关文件
 
-- [工具参考文档](../doc/TOOLS_REFERENCE.md)
-- [Deep Agent 示例](deep_agent_example.erl)
-- [Simple Agent 示例](simple_agent_example.erl)
-- [Agent 工具定义](../apps/beamai_agent/src/factory/beamai_deepagent_tools.erl)
+- [example_agent_interactive.erl](src/example_agent_interactive.erl) - 交互式 Agent 示例
+- [example_agent_deep.erl](src/example_agent_deep.erl) - Deep Agent 示例
+- [example_agent_simple.erl](src/example_agent_simple.erl) - Simple Agent 示例
+- [example_utils.erl](src/example_utils.erl) - 公共工具模块
 
 ## 故障排除
 
 ### Agent 没有响应
 
 检查：
-1. API Key 是否正确
+1. API Key 是否正确设置
 2. 网络连接是否正常
-3. LLM 配置是否正确
+3. LLM 配置是否使用 `llm_client:create/2` 创建
 
 ### 工具调用失败
 
@@ -351,16 +378,18 @@ terminate(_Reason, #state{history = History}) ->
 
 检查：
 1. 是否设置了 `max_iterations`
-2. LLM 是否能够完成任务
+2. LLM 是否能够理解并完成任务
 3. 使用 `trace` 命令查看执行过程
+
+### 编译错误
+
+确保：
+1. 先编译主项目：`cd .. && rebar3 compile`
+2. 使用 `make compile` 编译 examples
+3. 或手动设置 `ERL_LIBS=../_build/default/lib`
 
 ## 反馈和贡献
 
 如有问题或建议，请：
 - 提交 Issue
 - 发起 Pull Request
-- 联系维护者
-
----
-
-**祝你使用愉快！** 🎉

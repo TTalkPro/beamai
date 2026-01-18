@@ -14,7 +14,7 @@ simple_chat() ->
 
     %% 1. 创建配置（使用 Anthropic 兼容 API）
     ApiKey = list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    Config = llm_client:config(anthropic, #{
+    Config = llm_client:create(anthropic, #{
         api_key => ApiKey,
         base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
         model => ?DEFAULT_MODEL,
@@ -40,7 +40,7 @@ chat_with_messages() ->
     io:format("=== 示例 2: 使用自定义消息列表 ===~n~n"),
 
     ApiKey = list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    Config = llm_client:config(anthropic, #{
+    Config = llm_client:create(anthropic, #{
         api_key => ApiKey,
         base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
         model => ?DEFAULT_MODEL,
@@ -70,7 +70,7 @@ chat_with_system_prompt() ->
     io:format("=== 示例 3: 带系统提示词的对话 ===~n~n"),
 
     ApiKey = list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    Config = llm_client:config(anthropic, #{
+    Config = llm_client:create(anthropic, #{
         api_key => ApiKey,
         base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
         model => ?DEFAULT_MODEL,
@@ -101,7 +101,7 @@ multi_turn() ->
     io:format("=== 示例 4: 多轮对话 ===~n~n"),
 
     ApiKey = list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    Config = llm_client:config(anthropic, #{
+    Config = llm_client:create(anthropic, #{
         api_key => ApiKey,
         base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
         model => ?DEFAULT_MODEL,

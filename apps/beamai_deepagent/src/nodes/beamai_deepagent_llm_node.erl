@@ -152,8 +152,13 @@ build_context_with_buffer(Config, Messages, State) ->
 -spec build_llm_config(map()) -> map().
 build_llm_config(Config) ->
     LLMOpts = maps:get(llm, Config, #{}),
-    Provider = maps:get(provider, LLMOpts, openai),
-    llm_client:config(Provider, LLMOpts).
+    %% 如果已经是有效的 llm_client 配置，直接使用
+    case llm_client:is_valid_config(LLMOpts) of
+        true -> LLMOpts;
+        false ->
+            Provider = maps:get(provider, LLMOpts, openai),
+            llm_client:create(Provider, LLMOpts)
+    end.
 
 %% @private 调用 LLM
 -spec call_llm(map(), [map()], [map()]) -> {ok, map()} | {error, term()}.
