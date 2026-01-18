@@ -156,6 +156,32 @@ Tools = beamai_tools:get_tools([file, custom], #{
 }).
 ```
 
+### 示例：DeepAgent Tool Provider
+
+`beamai_deepagent` 模块提供了一个完整的 Provider 实现示例：
+
+```erlang
+%% beamai_deepagent_tool_provider 根据配置动态返回工具
+Config = #{
+    depth => 0,
+    planning_mode => full,
+    reflection_enabled => true
+},
+
+%% 通过 beamai_tool_registry 使用
+Tools = beamai_tool_registry:from_config(#{
+    providers => [{beamai_deepagent_tool_provider, Config}]
+}).
+
+%% 与其他 Provider 组合
+AllTools = beamai_tool_registry:from_config(#{
+    providers => [
+        {beamai_deepagent_tool_provider, Config},
+        {beamai_tool_provider_mcp, #{server => my_server}}
+    ]
+}).
+```
+
 ## 冲突解决策略
 
 工具注册表支持多种冲突解决策略：

@@ -30,12 +30,15 @@
 
 ### 工具模块
 
-- **beamai_deepbeamai_tools** - 工具注册
+- **beamai_deepagent_tool_provider** - 工具提供者（实现 beamai_tool_provider 行为）
 - **beamai_deepagent_fs_tools** - 文件系统工具
 - **beamai_deepagent_fs_handlers** - 文件处理器
 - **beamai_deepagent_fs_backend** - 文件后端
 - **beamai_deepagent_todo_tools** - TODO 管理工具
 - **beamai_deepagent_todo_handlers** - TODO 处理器
+- **beamai_deepagent_human_tools** - Human-in-the-loop 工具
+- **beamai_deepagent_base_tools** - 基础工具（checkpoint, get_trace）
+- **beamai_deepagent_plan_tools** - 计划和子任务工具
 
 ### 辅助模块
 
@@ -181,6 +184,51 @@ Config = #{
 {ok, Result} = beamai_deepagent:run(Agent, <<"分析项目结构并生成报告">>).
 ```
 
+## 工具管理
+
+DeepAgent 使用 `beamai_tool_provider` 机制管理工具，通过 `beamai_deepagent_tool_provider` 模块提供工具。
+
+### 使用 Tool Provider
+
+```erlang
+%% 通过 beamai_tool_registry 获取工具
+Config = #{depth => 0, planning_mode => full},
+Tools = beamai_tool_registry:from_config(#{
+    providers => [{beamai_deepagent_tool_provider, Config}]
+}).
+
+%% 直接访问工具集合
+BaseTools = beamai_deepagent_tool_provider:base_tools().
+PlanTools = beamai_deepagent_tool_provider:plan_tools().
+FsTools = beamai_deepagent_tool_provider:filesystem_tools().
+```
+
+### 工具条件判断
+
+工具的可用性根据配置动态决定：
+
+| 工具集 | 条件 |
+|--------|------|
+| 基础工具 | 始终可用 |
+| 计划工具 | `planning_mode=full` 且 `depth=0` |
+| TodoList 工具 | `planning_mode=simple` |
+| 子任务工具 | `depth < max_depth` |
+| 反思工具 | `reflection_enabled=true` |
+| 文件系统工具 | `filesystem_enabled=true` 或有 `filesystem` 配置 |
+| Human 工具 | `human_in_loop.enabled=true`（默认启用） |
+
+### 与其他 Provider 组合
+
+```erlang
+%% 组合 DeepAgent 工具和 MCP 工具
+Tools = beamai_tool_registry:from_config(#{
+    providers => [
+        {beamai_deepagent_tool_provider, Config},
+        {beamai_tool_provider_mcp, #{server => my_mcp_server}}
+    ]
+}).
+```
+
 ## 工具列表
 
 ### 文件系统工具 (beamai_deepagent_fs_tools)
@@ -198,16 +246,38 @@ Config = #{
 
 | 工具名 | 说明 |
 |--------|------|
-| `add_todo` | 添加待办事项 |
-| `list_todos` | 列出待办事项 |
-| `complete_todo` | 完成待办事项 |
-| `delete_todo` | 删除待办事项 |
+| `write_todos` | 写入待办事项列表 |
+| `read_todos` | 读取待办事项列表 |
+
+### 基础工具 (beamai_deepagent_base_tools)
+
+| 工具名 | 说明 |
+|--------|------|
+| `checkpoint` | 创建执行检查点 |
+| `get_trace` | 获取执行轨迹 |
+
+### 计划工具 (beamai_deepagent_plan_tools)
+
+| 工具名 | 说明 |
+|--------|------|
+| `create_plan` | 创建任务计划 |
+| `update_plan` | 更新任务计划 |
+| `spawn_subtask` | 创建子任务 |
+| `reflect` | 反思当前进度 |
+
+### Human 交互工具 (beamai_deepagent_human_tools)
+
+| 工具名 | 说明 |
+|--------|------|
+| `ask_human` | 向用户提问 |
+| `confirm_action` | 请求用户确认 |
 
 ## 依赖
 
 - beamai_core
 - beamai_llm
 - beamai_memory
+- beamai_tools
 
 ## 许可证
 

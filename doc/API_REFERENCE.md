@@ -276,11 +276,52 @@ Config = #{
     max_depth => integer(),              %% 最大递归深度，默认 3
     max_iterations => integer(),         %% 最大迭代次数，默认 50
     planning_enabled => boolean(),       %% 启用规划，默认 true
+    planning_mode => full | simple,      %% 规划模式，默认 full
     reflection_enabled => boolean(),     %% 启用反思，默认 true
     filesystem_enabled => boolean(),     %% 启用文件系统工具
-    filesystem => filesystem_config()    %% 文件系统配置
+    filesystem => filesystem_config(),   %% 文件系统配置
+    human_in_loop => #{enabled => boolean()}  %% Human-in-loop 配置
 }.
 ```
+
+### 工具提供者
+
+DeepAgent 通过 `beamai_deepagent_tool_provider` 提供工具，实现 `beamai_tool_provider` 行为。
+
+```erlang
+%% 通过 beamai_tool_registry 获取工具
+Config = #{depth => 0, planning_mode => full},
+Tools = beamai_tool_registry:from_config(#{
+    providers => [{beamai_deepagent_tool_provider, Config}]
+}).
+
+%% 直接访问工具集合
+beamai_deepagent_tool_provider:base_tools().       %% 基础工具
+beamai_deepagent_tool_provider:plan_tools().       %% 计划工具
+beamai_deepagent_tool_provider:subtask_tools().    %% 子任务工具
+beamai_deepagent_tool_provider:reflect_tools().    %% 反思工具
+beamai_deepagent_tool_provider:filesystem_tools(). %% 文件系统工具
+beamai_deepagent_tool_provider:todo_tools().       %% TodoList 工具
+beamai_deepagent_tool_provider:human_tools().      %% Human 交互工具
+
+%% Provider 接口
+beamai_deepagent_tool_provider:info().             %% 获取 Provider 信息
+beamai_deepagent_tool_provider:available().        %% 检查是否可用
+beamai_deepagent_tool_provider:list_tools(Opts).   %% 获取工具列表
+beamai_deepagent_tool_provider:find_tool(Name, Opts). %% 查找工具
+```
+
+### 工具条件判断
+
+| 工具集 | 条件 |
+|--------|------|
+| 基础工具 | 始终可用 |
+| 计划工具 | `planning_mode=full` 且 `depth=0` |
+| TodoList 工具 | `planning_mode=simple` |
+| 子任务工具 | `depth < max_depth` |
+| 反思工具 | `reflection_enabled=true` |
+| 文件系统工具 | `filesystem_enabled=true` 或有 `filesystem` 配置 |
+| Human 工具 | `human_in_loop.enabled=true` |
 
 ---
 
