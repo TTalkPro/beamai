@@ -33,12 +33,11 @@ test_filesystem_exploration(_Config) ->
     end,
 
     %% 配置 - 使用 GLM-4.6 + Zhipu Provider
-    LLMConfig = #{
-        provider => zhipu,
+    LLMConfig = llm_client:create(zhipu, #{
         model => <<"glm-4.6">>,
         api_key => ApiKey,
         timeout => 120000
-    },
+    }),
 
     TargetRoot = <<"/home/david/workspace/research/clojure-in-actions">>,
     ct:pal("目标目录: ~s", [TargetRoot]),

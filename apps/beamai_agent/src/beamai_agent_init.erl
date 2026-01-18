@@ -7,6 +7,22 @@
 %%% - 系统提示词构建
 %%% - 格式化输出指令追加
 %%%
+%%% == LLM 配置 ==
+%%%
+%%% LLM 配置必须通过 llm_client:create/2 创建：
+%%% ```
+%%% LLM = llm_client:create(anthropic, #{
+%%%     model => <<"glm-4.7">>,
+%%%     api_key => ApiKey,
+%%%     base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+%%% }),
+%%%
+%%% {ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
+%%%     llm => LLM,
+%%%     tools => Tools
+%%% }).
+%%% ```
+%%%
 %%% == 工具配置 ==
 %%%
 %%% 直接传入工具列表：
@@ -51,15 +67,44 @@
 %% @doc 创建初始状态
 %%
 %% 根据配置选项创建完整的 Agent 状态。
+%% LLM 配置必须通过 llm_client:create/2 创建。
 -spec create_state(binary(), map()) -> {ok, #state{}} | {error, term()}.
 create_state(Id, Opts) ->
-    case beamai_agent_runner:build_graph(Opts) of
-        {ok, Graph} ->
-            State = build_state(Id, Opts, Graph),
-            FinalState = beamai_agent_checkpoint:maybe_restore(Opts, State),
-            {ok, FinalState};
+    %% 验证 LLM 配置
+    case validate_llm_config(Opts) of
+        ok ->
+            case beamai_agent_runner:build_graph(Opts) of
+                {ok, Graph} ->
+                    State = build_state(Id, Opts, Graph),
+                    FinalState = beamai_agent_checkpoint:maybe_restore(Opts, State),
+                    {ok, FinalState};
+                {error, Reason} ->
+                    {error, Reason}
+            end;
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%% @private 验证 LLM 配置
+%%
+%% LLM 配置必须通过 llm_client:create/2 创建，包含 '__llm_client__' => true 标记。
+-spec validate_llm_config(map()) -> ok | {error, term()}.
+validate_llm_config(Opts) ->
+    case maps:get(llm, Opts, undefined) of
+        undefined ->
+            %% 没有 LLM 配置，允许（某些场景可能不需要 LLM）
+            ok;
+        LLMConfig when is_map(LLMConfig) ->
+            case llm_client:is_valid_config(LLMConfig) of
+                true ->
+                    ok;
+                false ->
+                    {error, {invalid_llm_config,
+                             <<"LLM config must be created using llm_client:create/2. "
+                               "Example: LLM = llm_client:create(anthropic, #{model => <<\"glm-4.7\">>, ...})">>}}
+            end;
+        _ ->
+            {error, {invalid_llm_config, <<"llm config must be a map">>}}
     end.
 
 %% @doc 构建系统提示词
@@ -82,23 +127,8 @@ build_prompt(Opts) ->
 build_state(Id, Opts, Graph) ->
     %% 收集工具：直接传入的 + Provider 提供的
     Tools = collect_tools(Opts),
-    %% 提取 LLM 配置
+    %% 提取 LLM 配置（已在 create_state 中验证过）
     LLMConfig = maps:get(llm, Opts, #{}),
-    %% 验证 LLM 配置（添加调试信息）
-    ValidatedLLMConfig = case LLMConfig of
-        #{provider := _} = Config ->
-            %% 配置有效
-            Config;
-        Config when map_size(Config) =:= 0 ->
-            %% 空配置 - 记录警告
-            error_logger:warning_msg("Agent ~s: LLM 配置为空 map，运行时将报错 {badkey, provider}。"
-                                     "请在启动时提供 llm 配置。", [Id]),
-            Config;
-        Config ->
-            %% 配置存在但缺少 provider
-            error_logger:warning_msg("Agent ~s: LLM 配置缺少 provider 字段: ~p", [Id, Config]),
-            Config
-    end,
     %% 获取 Middleware 配置
     Middlewares = maps:get(middlewares, Opts, []),
     MiddlewareChain = case Middlewares of
@@ -112,7 +142,7 @@ build_state(Id, Opts, Graph) ->
         system_prompt = build_prompt(Opts),
         tools = Tools,
         tool_handlers = beamai_nodes:build_tool_handlers(Tools),
-        llm_config = ValidatedLLMConfig,
+        llm_config = LLMConfig,
         graph = Graph,
         max_iterations = maps:get(max_iterations, Opts, 10),
         messages = [],

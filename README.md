@@ -35,6 +35,13 @@ rebar3 shell
 ### 2. Simple Agent
 
 ```erlang
+%% 创建 LLM 配置（必须使用 llm_client:create/2）
+LLM = llm_client:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+}),
+
 %% 定义工具
 SearchTool = #{
     name => <<"search">>,
@@ -65,12 +72,7 @@ Tools = beamai_tool_registry:from_config(#{
 {ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
     system_prompt => <<"你是一个有帮助的助手。"/utf8>>,
     tools => Tools,
-    llm => #{
-        provider => anthropic,
-        model => <<"glm-4.7">>,
-        api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
-        base_url => <<"https://open.bigmodel.cn/api/anthropic">>
-    }
+    llm => LLM
 }).
 
 %% 运行 Agent
@@ -83,6 +85,13 @@ Response = maps:get(final_response, Result).
 ### 3. Pipeline 模式协调器（顺序协调）
 
 ```erlang
+%% 创建 LLM 配置
+LLM = llm_client:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+}),
+
 %% 创建研究团队（研究员 → 写作者 → 审核员）
 {ok, Team} = beamai_agent:start_pipeline(<<"content_team">>, #{
     agents => [
@@ -99,7 +108,7 @@ Response = maps:get(final_response, Result).
             system_prompt => <<"你是审核员，负责质量检查。"/utf8>>
         }
     ],
-    llm => LLMConfig
+    llm => LLM
 }).
 
 %% 运行任务
@@ -122,7 +131,7 @@ Response = maps:get(final_response, Result).
             system_prompt => <<"你是后端开发专家。"/utf8>>
         }
     ],
-    llm => LLMConfig
+    llm => LLM  %% 复用同一 LLM 配置
 }).
 
 %% 运行任务
@@ -140,7 +149,7 @@ Config = beamai_deepagent:new(#{
     reflection_enabled => true,
     system_prompt => <<"你是一个研究专家。"/utf8>>,
     tools => [...],
-    llm => LLMConfig
+    llm => LLM  %% 复用同一 LLM 配置
 }).
 
 %% 运行复杂任务
@@ -299,11 +308,11 @@ ok = beamai_agent:restore_from_checkpoint(Agent, CheckpointId).
 
 ### LLM 配置
 
-推荐使用 `llm_client:config/2` 或 `llm_client:create/2` 创建 LLM 配置，然后在多个 Agent 间复用：
+LLM 配置必须使用 `llm_client:create/2` 创建，可在多个 Agent 间复用：
 
 ```erlang
-%% 推荐方式：使用 llm_client:config/2 创建配置
-LLMConfig = llm_client:config(anthropic, #{
+%% 创建 LLM 配置（必须使用 llm_client:create/2）
+LLM = llm_client:create(anthropic, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
@@ -312,38 +321,29 @@ LLMConfig = llm_client:config(anthropic, #{
 
 %% 配置可在多个 Agent 间复用
 {ok, Agent1} = beamai_agent:start_link(<<"agent1">>, #{
-    llm => LLMConfig,
+    llm => LLM,
     tools => Tools1,
     system_prompt => <<"你是研究助手。"/utf8>>
 }),
 
 {ok, Agent2} = beamai_agent:start_link(<<"agent2">>, #{
-    llm => LLMConfig,
+    llm => LLM,
     tools => Tools2,
     system_prompt => <<"你是写作助手。"/utf8>>
 }).
+
+%% 基于现有配置创建新配置
+HighTempLLM = llm_client:merge_config(LLM, #{temperature => 0.9}).
 ```
 
-也可以直接使用 Map 形式（兼容旧代码）：
+**支持的 Provider：**
 
-```erlang
-%% 方式 1: GLM-4.7 + Anthropic Provider
-LLMConfig = #{
-    provider => anthropic,
-    model => <<"glm-4.7">>,
-    api_key => ApiKey,
-    base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
-    timeout => 60000
-}.
-
-%% 方式 2: GLM-4.6 + Zhipu Provider
-LLMConfig = #{
-    provider => zhipu,
-    model => <<"glm-4.6">>,
-    api_key => ApiKey,
-    timeout => 60000
-}.
-```
+| Provider | 模块 | 说明 |
+|----------|------|------|
+| `anthropic` | llm_provider_anthropic | Anthropic Claude API |
+| `openai` | llm_provider_openai | OpenAI API |
+| `zhipu` | llm_provider_zhipu | 智谱 AI (GLM 系列) |
+| `ollama` | llm_provider_ollama | Ollama 本地模型 |
 
 ### Agent 配置选项
 

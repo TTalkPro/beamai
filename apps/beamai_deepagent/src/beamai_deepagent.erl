@@ -11,11 +11,21 @@
 %%%
 %%% 使用示例：
 %%% <pre>
-%%% Config = #{
-%%%     llm => #{provider => zhipu, model => &lt;&lt;"glm-4"&gt;&gt;},
-%%%     tools => [my_search_tool()],
-%%%     max_depth => 3
-%%% },
+%%% %% 创建 LLM 配置
+%%% LLM = llm_client:create(anthropic, #{
+%%%     model =&gt; &lt;&lt;"glm-4.7"&gt;&gt;,
+%%%     api_key =&gt; ApiKey,
+%%%     base_url =&gt; &lt;&lt;"https://open.bigmodel.cn/api/anthropic"&gt;&gt;
+%%% }),
+%%%
+%%% %% 创建 DeepAgent 配置
+%%% Config = beamai_deepagent:new(#{
+%%%     llm =&gt; LLM,
+%%%     tools =&gt; [my_search_tool()],
+%%%     max_depth =&gt; 3
+%%% }),
+%%%
+%%% %% 运行 Agent
 %%% {ok, Result} = beamai_deepagent:run(Config, &lt;&lt;"研究 Erlang 的历史"&gt;&gt;),
 %%% Response = maps:get(response, Result).
 %%% </pre>
@@ -302,14 +312,16 @@ build_core_graph(Config) ->
 %% @private 创建默认配置
 %%
 %% 默认值：
-%% - LLM: OpenAI GPT-4
+%% - LLM: 必须由用户通过 llm_client:create/2 提供
 %% - 最大深度: 3 层
 %% - 最大迭代: 50 次
 %% - 启用计划和反思功能
+%%
+%% 注意：不提供默认 LLM 配置，用户必须使用 llm_client:create/2 创建配置
 -spec default_config() -> config().
 default_config() ->
     #{
-        llm => #{provider => openai, model => <<"gpt-4">>},
+        %% llm 必须由用户提供，通过 llm_client:create/2 创建
         tools => [],
         max_depth => 3,
         max_iterations => 50,

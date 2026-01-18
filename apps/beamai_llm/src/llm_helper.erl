@@ -9,17 +9,18 @@
 %%%   - 错误传播：API 调用失败时返回错误信息，不进行 mock 回退
 %%%
 %%% 配置要求：
+%%%   - 推荐使用 llm_client:create/2 创建配置
 %%%   - 必须提供有效的 API Key（OpenAI、Anthropic、Zhipu）
 %%%   - 或配置 Ollama 本地服务
 %%%
 %%% 使用示例：
 %%% <pre>
-%%%   调用专家分析（使用 OpenAI）:
-%%%     Config = #{provider =&gt; openai, api_key =&gt; API_KEY}
-%%%   使用 Anthropic:
-%%%     Config = #{provider =&gt; anthropic, api_key =&gt; API_KEY}
+%%%   创建 LLM 配置（推荐）:
+%%%     LLM = llm_client:create(anthropic, #{api_key =&gt; API_KEY, model =&gt; &lt;&lt;"glm-4.7"&gt;&gt;})
+%%%   调用专家分析:
+%%%     Result = llm_helper:call_expert(Expert, Question, LLM)
 %%%   生成综合建议:
-%%%     Result = llm_helper:synthesize(TechAnalysis, BizAnalysis, UxAnalysis, Config)
+%%%     Result = llm_helper:synthesize(TechAnalysis, BizAnalysis, UxAnalysis, LLM)
 %%% </pre>
 %%%
 %%% @end
@@ -123,7 +124,7 @@ build_config(LLMConfig, MaxTokens) ->
     },
     %% 合并用户配置
     MergedConfig = maps:merge(BaseConfig, LLMConfig),
-    llm_client:config(Provider, MergedConfig).
+    llm_client:create(Provider, MergedConfig).
 
 %% @doc 检测 Provider 类型
 %% 根据配置或 API Key 前缀自动判断

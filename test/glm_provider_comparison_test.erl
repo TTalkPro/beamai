@@ -26,7 +26,7 @@ glm47_anthropic_test_() ->
             {"GLM-4.7 via Anthropic Provider", {timeout, 120, [
                 {"简单对话", fun() ->
                     io:format("~n=== 测试 GLM-4.7 + Anthropic Provider ===~n"),
-                    Config = llm_client:config(anthropic, #{
+                    Config = llm_client:create(anthropic, #{
                         api_key => list_to_binary(ApiKey),
                         base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
                         model => <<"glm-4.7">>,
@@ -52,7 +52,7 @@ glm47_anthropic_test_() ->
 
                 {"工具调用", fun() ->
                     io:format("~n=== 测试 GLM-4.7 Anthropic 工具调用 ===~n"),
-                    Config = llm_client:config(anthropic, #{
+                    Config = llm_client:create(anthropic, #{
                         api_key => list_to_binary(ApiKey),
                         base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
                         model => <<"glm-4.7">>,
@@ -101,7 +101,7 @@ glm46_zhipu_test_() ->
             {"GLM-4.6 via Zhipu Provider", {timeout, 120, [
                 {"简单对话", fun() ->
                     io:format("~n=== 测试 GLM-4.6 + Zhipu Provider ===~n"),
-                    Config = llm_client:config(zhipu, #{
+                    Config = llm_client:create(zhipu, #{
                         api_key => list_to_binary(ApiKey),
                         model => <<"glm-4.6">>,
                         max_tokens => 100,
@@ -126,7 +126,7 @@ glm46_zhipu_test_() ->
 
                 {"工具调用", fun() ->
                     io:format("~n=== 测试 GLM-4.6 Zhipu 工具调用 ===~n"),
-                    Config = llm_client:config(zhipu, #{
+                    Config = llm_client:create(zhipu, #{
                         api_key => list_to_binary(ApiKey),
                         model => <<"glm-4.6">>,
                         max_tokens => 200,
@@ -162,7 +162,7 @@ glm46_zhipu_test_() ->
 
                 {"流式输出", fun() ->
                     io:format("~n=== 测试 GLM-4.6 Zhipu 流式输出 ===~n"),
-                    Config = llm_client:config(zhipu, #{
+                    Config = llm_client:create(zhipu, #{
                         api_key => list_to_binary(ApiKey),
                         model => <<"glm-4.6">>,
                         max_tokens => 50,
@@ -204,7 +204,7 @@ comparison_test_() ->
                     Question = <<"什么是 Erlang？请用一句话回答。"/utf8>>,
 
                     %% GLM-4.7 via Anthropic
-                    Config1 = llm_client:config(anthropic, #{
+                    Config1 = llm_client:create(anthropic, #{
                         api_key => list_to_binary(ApiKey),
                         base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
                         model => <<"glm-4.7">>,
@@ -213,7 +213,7 @@ comparison_test_() ->
                     }),
 
                     %% GLM-4.6 via Zhipu
-                    Config2 = llm_client:config(zhipu, #{
+                    Config2 = llm_client:create(zhipu, #{
                         api_key => list_to_binary(ApiKey),
                         model => <<"glm-4.6">>,
                         max_tokens => 100,

@@ -75,11 +75,10 @@ config_tests() ->
 
     %% LLM 配置
     LLMConfig = beamai_deepagent:new(#{
-        llm => #{
-            provider => zhipu,
+        llm => llm_client:create(zhipu, #{
             model => <<"glm-4">>,
             api_key => <<"test-key">>
-        }
+        })
     }),
     LLM = maps:get(llm, LLMConfig),
     ?assertEqual(zhipu, maps:get(provider, LLM)),

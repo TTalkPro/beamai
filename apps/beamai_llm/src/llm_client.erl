@@ -4,6 +4,20 @@
 %%% 提供与多种 LLM Provider 交互的统一接口。
 %%% 根据配置自动路由到对应的 Provider 实现。
 %%%
+%%% 使用方式：
+%%% ```
+%%% %% 创建 LLM 配置
+%%% LLM = llm_client:create(anthropic, #{
+%%%     model => <<"glm-4.7">>,
+%%%     api_key => ApiKey,
+%%%     base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+%%% }),
+%%%
+%%% %% 配置可在多个 Agent 间复用
+%%% {ok, Agent1} = beamai_agent:start_link(<<"a1">>, #{llm => LLM, ...}),
+%%% {ok, Agent2} = beamai_agent:start_link(<<"a2">>, #{llm => LLM, ...}).
+%%% ```
+%%%
 %%% 支持的 Provider：
 %%%   - openai: OpenAI API (GPT-4, GPT-3.5)
 %%%   - anthropic: Anthropic Claude API
@@ -18,9 +32,9 @@
 -include_lib("beamai_core/include/beamai_common.hrl").
 
 %% 配置 API
--export([config/2, config/1]).
--export([create/2]).  %% config/2 的语义化别名
+-export([create/2, create/1]).
 -export([merge_config/2]).
+-export([is_valid_config/1]).
 
 %% 聊天 API
 -export([chat/2, chat/3]).
@@ -51,41 +65,64 @@
 %% 配置管理
 %%====================================================================
 
-%% @doc 创建 Provider 配置
--spec config(provider(), map()) -> config().
-config(Provider, Opts) ->
-    Module = provider_module(Provider),
-    DefaultConfig = Module:default_config(),
-    BaseConfig = #{provider => Provider},
-    maps:merge(maps:merge(DefaultConfig, BaseConfig), Opts).
-
-%% @doc 创建 LLM 配置（config/2 的语义化别名）
+%% @doc 创建 LLM 配置
 %%
-%% 推荐用法：先创建配置，然后在多个 Agent 间复用
+%% 这是创建 LLM 配置的唯一推荐方式。创建的配置可以在多个 Agent 间复用。
+%%
+%% 示例：
 %% ```
-%% LLM = llm_client:create(anthropic, #{model => <<"glm-4.7">>, ...}),
+%% LLM = llm_client:create(anthropic, #{
+%%     model => <<"glm-4.7">>,
+%%     api_key => ApiKey,
+%%     base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+%% }),
+%%
+%% %% 配置复用
 %% {ok, Agent1} = beamai_agent:start_link(<<"a1">>, #{llm => LLM, ...}),
 %% {ok, Agent2} = beamai_agent:start_link(<<"a2">>, #{llm => LLM, ...}).
 %% ```
 -spec create(provider(), map()) -> config().
 create(Provider, Opts) ->
-    config(Provider, Opts).
+    Module = provider_module(Provider),
+    DefaultConfig = Module:default_config(),
+    BaseConfig = #{
+        provider => Provider,
+        '__llm_client__' => true  %% 标记为 llm_client:create 创建的配置
+    },
+    maps:merge(maps:merge(DefaultConfig, BaseConfig), Opts).
 
-%% @doc 从环境变量创建配置
--spec config(map()) -> {ok, config()} | {error, term()}.
-config(Opts) ->
+%% @doc 从选项自动检测 Provider 并创建配置
+%%
+%% 根据 api_key 前缀自动检测 Provider 类型：
+%% - sk-ant-* -> anthropic
+%% - sk-* -> openai
+%% - 其他 -> ollama
+-spec create(map()) -> {ok, config()} | {error, term()}.
+create(Opts) ->
     Provider = detect_provider(Opts),
-    Config = config(Provider, Opts),
+    Config = create(Provider, Opts),
     Module = provider_module(Provider),
     case Module:validate_config(Config) of
         ok -> {ok, Config};
         Error -> Error
     end.
 
-%% @doc 合并配置
+%% @doc 合并配置，基于现有配置创建新配置
+%%
+%% 示例：
+%% ```
+%% HighTempConfig = llm_client:merge_config(LLM, #{temperature => 0.9}).
+%% ```
 -spec merge_config(config(), map()) -> config().
 merge_config(Config, Opts) ->
     maps:merge(Config, Opts).
+
+%% @doc 验证是否为 llm_client:create 创建的有效配置
+%%
+%% beamai_agent:start_link 会调用此函数验证 LLM 配置。
+-spec is_valid_config(term()) -> boolean().
+is_valid_config(#{provider := _, '__llm_client__' := true}) -> true;
+is_valid_config(_) -> false.
 
 %% @doc 检测 Provider 类型
 detect_provider(#{provider := P}) -> P;
@@ -192,6 +229,7 @@ provider_module(openai) -> llm_provider_openai;
 provider_module(anthropic) -> llm_provider_anthropic;
 provider_module(ollama) -> llm_provider_ollama;
 provider_module(zhipu) -> llm_provider_zhipu;
+provider_module(mock) -> llm_provider_mock;
 provider_module({custom, Module}) -> Module.
 
 %% @doc 构建请求

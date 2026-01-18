@@ -331,44 +331,44 @@ beamai_deepagent_tool_provider:find_tool(Name, Opts). %% 查找工具
 
 ### LLM 配置管理
 
-推荐使用 `llm_client:config/2` 或 `llm_client:create/2` 创建 LLM 配置，实现配置与 Agent 分离：
+LLM 配置必须使用 `llm_client:create/2` 创建，实现配置与 Agent 分离：
 
 ```erlang
-%% 创建 LLM 配置（推荐方式）
-LLMConfig = llm_client:config(anthropic, #{
+%% 创建 LLM 配置（必须使用 llm_client:create/2）
+LLM = llm_client:create(anthropic, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
     temperature => 0.7
 }).
 
-%% 或使用语义化别名
-LLMConfig = llm_client:create(anthropic, #{
-    model => <<"glm-4.7">>,
-    api_key => ApiKey
-}).
-
 %% 配置复用：多个 Agent 共享同一配置
-{ok, Agent1} = beamai_agent:start_link(<<"agent1">>, #{llm => LLMConfig, ...}),
-{ok, Agent2} = beamai_agent:start_link(<<"agent2">>, #{llm => LLMConfig, ...}).
+{ok, Agent1} = beamai_agent:start_link(<<"agent1">>, #{llm => LLM, ...}),
+{ok, Agent2} = beamai_agent:start_link(<<"agent2">>, #{llm => LLM, ...}).
 
 %% 配置合并：基于现有配置创建新配置
-HighTempConfig = llm_client:merge_config(LLMConfig, #{temperature => 0.9}).
+HighTempLLM = llm_client:merge_config(LLM, #{temperature => 0.9}).
+
+%% 验证配置有效性
+true = llm_client:is_valid_config(LLM).
 ```
 
 **优势：**
 - 配置复用：多个 Agent 共享同一 LLM 配置
 - 集中管理：API Key、模型参数统一配置
+- 类型安全：Agent 启动时验证配置有效性
 - 易于测试：可独立验证 LLM 配置
 
 ### 配置和聊天
 
 ```erlang
 %% 创建配置
--spec config(provider(), map()) -> llm_config().
--spec create(provider(), map()) -> llm_config().  %% config/2 的别名
-llm_client:config(Provider, Opts).
+-spec create(provider(), map()) -> llm_config().
 llm_client:create(Provider, Opts).
+
+%% 验证配置
+-spec is_valid_config(term()) -> boolean().
+llm_client:is_valid_config(Config).
 
 %% 聊天
 -spec chat(llm_config(), [message()]) -> {ok, response()} | {error, term()}.
@@ -404,19 +404,22 @@ llm_client:provider_info(Provider).
 | `zhipu` | llm_provider_zhipu | 聊天、流式、工具调用、异步 |
 | `ollama` | llm_provider_ollama | 聊天、流式 |
 
-### LLM 配置
+### LLM 配置参数
+
+`llm_client:create/2` 支持以下参数：
 
 ```erlang
-LLMConfig = #{
-    provider => atom(),                  %% openai | anthropic | zhipu | ollama
-    model => binary(),                   %% 模型名称
-    api_key => binary(),                 %% API Key
+LLM = llm_client:create(Provider, #{
+    model => binary(),                   %% 模型名称（必需）
+    api_key => binary(),                 %% API Key（必需，ollama 除外）
     base_url => binary(),                %% 可选：自定义 URL
-    timeout => integer(),                %% 可选：超时时间
+    timeout => integer(),                %% 可选：超时时间（毫秒）
     max_tokens => integer(),             %% 可选：最大 token
-    temperature => float()               %% 可选：温度参数
-}.
+    temperature => float()               %% 可选：温度参数 (0.0 - 2.0)
+}).
 ```
+
+**Provider 类型：** `openai | anthropic | zhipu | ollama`
 
 ---
 

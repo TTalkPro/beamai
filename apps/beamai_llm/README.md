@@ -48,17 +48,21 @@ llm_client:chat_with_tools(Messages, Tools, Config) -> {ok, Response} | {error, 
 llm_client:chat_stream(Messages, Config, Callback) -> {ok, Response} | {error, Reason}.
 ```
 
-### 配置结构
+### 创建配置
+
+LLM 配置必须使用 `llm_client:create/2` 创建：
 
 ```erlang
-Config = #{
-    provider => openai | anthropic | ollama | zhipu,
-    model => <<"gpt-4">> | <<"claude-3-opus">> | <<"llama2">> | <<"glm-4">>,
-    api_key => <<"sk-xxx">>,          %% API 密钥
-    base_url => <<"https://...">>,    %% 可选，自定义 API 地址
-    temperature => 0.7,               %% 可选，温度参数
-    max_tokens => 4096                %% 可选，最大 token 数
-}.
+%% 创建 LLM 配置
+LLM = llm_client:create(Provider, #{
+    model => <<"gpt-4">>,                 %% 模型名称（必需）
+    api_key => <<"sk-xxx">>,              %% API 密钥（必需，ollama 除外）
+    base_url => <<"https://...">>,        %% 可选，自定义 API 地址
+    temperature => 0.7,                   %% 可选，温度参数
+    max_tokens => 4096                    %% 可选，最大 token 数
+}).
+
+%% Provider 类型：openai | anthropic | ollama | zhipu
 ```
 
 ## 使用示例
@@ -66,12 +70,11 @@ Config = #{
 ### 基本聊天
 
 ```erlang
-%% 配置 OpenAI
-Config = #{
-    provider => openai,
+%% 创建 OpenAI 配置
+LLM = llm_client:create(openai, #{
     model => <<"gpt-4">>,
-    api_key => os:getenv("OPENAI_API_KEY")
-},
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
 
 %% 发送消息
 Messages = [
@@ -79,7 +82,7 @@ Messages = [
     #{role => user, content => <<"Hello!">>}
 ],
 
-{ok, Response} = llm_client:chat(Messages, Config),
+{ok, Response} = llm_client:chat(LLM, Messages),
 Content = maps:get(content, Response).
 ```
 
@@ -87,18 +90,17 @@ Content = maps:get(content, Response).
 
 ```erlang
 %% 智谱 AI 提供 Anthropic 兼容接口
-Config = #{
-    provider => anthropic,
-    model => <<"glm-4">>,
-    api_key => os:getenv("ZHIPU_API_KEY"),
-    base_url => <<"https://open.bigmodel.cn/api/anthropic/v1">>
-},
+LLM = llm_client:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+}),
 
 Messages = [
     #{role => user, content => <<"你好！">>}
 ],
 
-{ok, Response} = llm_client:chat(Messages, Config).
+{ok, Response} = llm_client:chat(LLM, Messages).
 ```
 
 ### 工具调用

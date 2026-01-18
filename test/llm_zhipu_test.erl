@@ -57,14 +57,14 @@ config_validation_test_() ->
 llm_client_integration_test_() ->
     {"LLM Client 集成测试", [
         {"通过 llm_client 创建配置", fun() ->
-            Config = llm_client:config(zhipu, #{api_key => <<"test-key">>}),
+            Config = llm_client:create(zhipu, #{api_key => <<"test-key">>}),
             ?assertEqual(zhipu, maps:get(provider, Config)),
             ?assertEqual(<<"test-key">>, maps:get(api_key, Config)),
             ?assertEqual(<<"glm-4.7">>, maps:get(model, Config))
         end},
 
         {"自定义模型配置", fun() ->
-            Config = llm_client:config(zhipu, #{
+            Config = llm_client:create(zhipu, #{
                 api_key => <<"test-key">>,
                 model => <<"glm-4-plus">>,
                 temperature => 0.5,
@@ -130,7 +130,7 @@ real_chat_test_() ->
         ApiKey ->
             {"真实 API 测试", {timeout, 60, [
                 {"简单对话", fun() ->
-                    Config = llm_client:config(zhipu, #{
+                    Config = llm_client:create(zhipu, #{
                         api_key => list_to_binary(ApiKey),
                         model => <<"glm-4.6">>  %% 使用 GLM-4.6 模型
                     }),
@@ -152,7 +152,7 @@ real_stream_test_() ->
         ApiKey ->
             {"流式 API 测试", {timeout, 60, [
                 {"流式对话", fun() ->
-                    Config = llm_client:config(zhipu, #{
+                    Config = llm_client:create(zhipu, #{
                         api_key => list_to_binary(ApiKey),
                         model => <<"glm-4.6">>
                     }),
@@ -176,7 +176,7 @@ real_tools_test_() ->
         ApiKey ->
             {"工具调用测试", {timeout, 60, [
                 {"带工具的对话", fun() ->
-                    Config = llm_client:config(zhipu, #{
+                    Config = llm_client:create(zhipu, #{
                         api_key => list_to_binary(ApiKey),
                         model => <<"glm-4.6">>
                     }),

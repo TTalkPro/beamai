@@ -349,12 +349,11 @@ test_cyclic_dependency() ->
 
 %% @doc Mock LLM 配置
 mock_llm_config() ->
-    #{
-        provider => mock,
+    llm_client:create(mock, #{
         model => <<"mock-model">>,
         api_key => <<"mock-key">>,
         timeout => 5000
-    }.
+    }).
 
 %% @doc 设置 Mock 响应（在真实测试中需要实现 Mock 机制）
 set_mock_response(_Response) ->

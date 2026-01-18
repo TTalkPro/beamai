@@ -68,16 +68,19 @@ beamai_agent:get_messages(Pid) -> {ok, Messages}.
 ### 配置结构
 
 ```erlang
+%% 首先创建 LLM 配置（必须使用 llm_client:create/2）
+LLM = llm_client:create(openai, #{
+    model => <<"gpt-4">>,
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
+
+%% Agent 配置
 Config = #{
     %% 必需
     system_prompt => <<"You are a helpful assistant.">>,
 
-    %% LLM 配置
-    llm => #{
-        provider => openai,
-        model => <<"gpt-4">>,
-        api_key => <<"sk-xxx">>
-    },
+    %% LLM 配置（必须使用 llm_client:create/2 创建）
+    llm => LLM,
 
     %% 工具列表（可选，推荐使用 beamai_tool_registry 构建）
     tools => beamai_tool_registry:from_config(#{
@@ -197,14 +200,16 @@ ok                              %% 继续执行
 ### 基本使用
 
 ```erlang
+%% 创建 LLM 配置
+LLM = llm_client:create(openai, #{
+    model => <<"gpt-4">>,
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
+
 %% 配置
 Config = #{
     system_prompt => <<"You are a helpful assistant.">>,
-    llm => #{
-        provider => openai,
-        model => <<"gpt-4">>,
-        api_key => os:getenv("OPENAI_API_KEY")
-    }
+    llm => LLM
 },
 
 %% 启动 Agent
@@ -221,7 +226,12 @@ beamai_agent:stop(Agent).
 ### 使用工具
 
 ```erlang
-%% 定义计算器工具
+%% 创建 LLM 配置
+LLM = llm_client:create(openai, #{
+    model => <<"gpt-4">>,
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
+
 %% 定义计算器工具
 CalculatorTool = #{
     name => <<"calculator">>,
@@ -249,7 +259,7 @@ Tools = beamai_tool_registry:from_config(#{
 
 Config = #{
     system_prompt => <<"You are an assistant that can do math.">>,
-    llm => #{...},
+    llm => LLM,
     tools => Tools
 },
 
@@ -260,6 +270,12 @@ Config = #{
 ### 使用检查点
 
 ```erlang
+%% 创建 LLM 配置
+LLM = llm_client:create(openai, #{
+    model => <<"gpt-4">>,
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
+
 %% 创建存储
 {ok, _} = beamai_store_ets:start_link(my_store, #{}),
 {ok, Memory} = beamai_memory:new(#{context_store => {beamai_store_ets, my_store}}),
@@ -267,7 +283,7 @@ Config = #{
 %% 启动带存储的 Agent
 Config = #{
     system_prompt => <<"You are a helpful assistant.">>,
-    llm => #{...},
+    llm => LLM,
     storage => Memory
 },
 
@@ -292,14 +308,16 @@ ok = beamai_agent:restore_from_checkpoint(Agent, CpId),
 ### 使用智谱 AI
 
 ```erlang
+%% 创建智谱 AI 配置（使用 Anthropic 兼容接口）
+LLM = llm_client:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+}),
+
 Config = #{
     system_prompt => <<"你是一个乐于助人的 AI 助手。">>,
-    llm => #{
-        provider => anthropic,
-        model => <<"glm-4">>,
-        api_key => os:getenv("ZHIPU_API_KEY"),
-        base_url => <<"https://open.bigmodel.cn/api/anthropic/v1">>
-    }
+    llm => LLM
 },
 
 {ok, Agent} = beamai_agent:start_link(<<"zhipu-agent">>, Config),

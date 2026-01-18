@@ -4,13 +4,15 @@
 %%% 提供 Examples 共用的 LLM 配置和辅助函数。
 %%% 默认使用智谱 GLM-4.7 模型（通过 Anthropic 兼容 API）。
 %%%
+%%% 所有配置均通过 llm_client:create/2 创建。
+%%%
 %%% 使用方法:
 %%% ```erlang
 %%% %% 设置环境变量
 %%% export ZHIPU_API_KEY=your-api-key
 %%%
 %%% %% 获取配置
-%%% {ok, LLMConfig} = example_utils:get_llm_config().
+%%% {ok, LLM} = example_utils:get_llm_config().
 %%% ```
 %%%
 %%% @end
@@ -46,6 +48,7 @@
 
 %% @doc 从环境变量获取 LLM 配置
 %%
+%% 使用 llm_client:create/2 创建配置。
 %% 优先级：ZHIPU_API_KEY > ANTHROPIC_API_KEY > OPENAI_API_KEY
 %%
 %% 返回值:
@@ -61,68 +64,71 @@ get_llm_config() ->
                         false ->
                             {error, no_api_key};
                         Key ->
-                            {ok, #{
-                                provider => openai,
+                            {ok, llm_client:create(openai, #{
                                 api_key => list_to_binary(Key)
-                            }}
+                            })}
                     end;
                 Key ->
-                    {ok, #{
-                        provider => anthropic,
+                    {ok, llm_client:create(anthropic, #{
                         api_key => list_to_binary(Key)
-                    }}
+                    })}
             end;
         Key ->
-            {ok, #{
-                provider => anthropic,
+            {ok, llm_client:create(anthropic, #{
                 api_key => list_to_binary(Key),
                 base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
                 model => ?DEFAULT_MODEL,
                 max_tokens => ?DEFAULT_MAX_TOKENS,
                 timeout => ?DEFAULT_TIMEOUT
-            }}
+            })}
     end.
 
 %% @doc 从 Config 获取或合并 LLM 配置
 %%
-%% 如果 Config 中有 api_key，直接使用；否则尝试从环境变量读取。
+%% 如果 Config 是已有效的 llm_client 配置，直接使用。
+%% 否则尝试从环境变量读取并使用 llm_client:create/2 创建。
 %% 支持 zhipu provider 自动转换为 anthropic 兼容 API。
 -spec get_llm_config(map()) -> {ok, map()} | {error, no_api_key}.
-get_llm_config(#{api_key := _} = Config) ->
-    {ok, Config};
-get_llm_config(#{provider := Provider} = Config) ->
-    EnvVar = provider_env_var(Provider),
-    case os:getenv(EnvVar) of
-        false -> {error, no_api_key};
-        Key ->
-            BaseConfig = Config#{api_key => list_to_binary(Key)},
-            FinalConfig = case Provider of
-                zhipu ->
-                    BaseConfig#{
-                        provider => anthropic,
-                        base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
-                        model => maps:get(model, BaseConfig, ?DEFAULT_MODEL),
-                        max_tokens => maps:get(max_tokens, BaseConfig, ?DEFAULT_MAX_TOKENS)
-                    };
-                _ ->
-                    BaseConfig
-            end,
-            {ok, FinalConfig}
-    end;
-get_llm_config(_Config) ->
-    get_llm_config().
+get_llm_config(Config) ->
+    case llm_client:is_valid_config(Config) of
+        true ->
+            {ok, Config};
+        false ->
+            case maps:get(provider, Config, undefined) of
+                undefined ->
+                    get_llm_config();
+                Provider ->
+                    EnvVar = provider_env_var(Provider),
+                    case os:getenv(EnvVar) of
+                        false -> {error, no_api_key};
+                        Key ->
+                            ApiKey = list_to_binary(Key),
+                            FinalConfig = case Provider of
+                                zhipu ->
+                                    llm_client:create(anthropic, #{
+                                        api_key => ApiKey,
+                                        base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
+                                        model => maps:get(model, Config, ?DEFAULT_MODEL),
+                                        max_tokens => maps:get(max_tokens, Config, ?DEFAULT_MAX_TOKENS)
+                                    });
+                                _ ->
+                                    llm_client:create(Provider, Config#{api_key => ApiKey})
+                            end,
+                            {ok, FinalConfig}
+                    end
+            end
+    end.
 
 %% @doc 使用指定的 API Key 获取智谱配置
 -spec get_llm_config(binary(), map()) -> map().
 get_llm_config(ApiKey, Opts) when is_binary(ApiKey) ->
-    #{
-        provider => anthropic,
+    llm_client:create(anthropic, #{
         api_key => ApiKey,
         base_url => ?ZHIPU_ANTHROPIC_BASE_URL,
         model => maps:get(model, Opts, ?DEFAULT_MODEL),
         max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS),
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT)
-    }.
+    }).
 
 %% @doc 直接获取智谱 LLM 配置（用于简化调用）
 %%

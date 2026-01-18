@@ -67,13 +67,16 @@ beamai_deepagent:stop(Pid) -> ok.
 ### 配置结构
 
 ```erlang
-Config = #{
-    %% LLM 配置
-    llm => #{
-        provider => openai,
-        model => <<"gpt-4">>,
-        api_key => <<"sk-xxx">>
-    },
+%% 首先创建 LLM 配置（必须使用 llm_client:create/2）
+LLM = llm_client:create(openai, #{
+    model => <<"gpt-4">>,
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
+
+%% DeepAgent 配置
+Config = beamai_deepagent:new(#{
+    %% LLM 配置（必须使用 llm_client:create/2 创建）
+    llm => LLM,
 
     %% 工具配置（可选）
     tools => [
@@ -92,7 +95,7 @@ Config = #{
 
     %% 启用反思（可选）
     enable_reflection => true
-}.
+}).
 ```
 
 ## 使用示例
@@ -100,52 +103,51 @@ Config = #{
 ### 基本使用
 
 ```erlang
-Config = #{
-    llm => #{
-        provider => openai,
-        model => <<"gpt-4">>,
-        api_key => os:getenv("OPENAI_API_KEY")
-    }
-},
+%% 创建 LLM 配置
+LLM = llm_client:create(openai, #{
+    model => <<"gpt-4">>,
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
 
-{ok, Agent} = beamai_deepagent:start_link(Config),
+%% 创建 DeepAgent 配置
+Config = beamai_deepagent:new(#{llm => LLM}),
 
 %% 执行复杂任务
 Task = <<"分析当前目录下的 Erlang 代码，找出所有导出的函数，并生成文档。">>,
-{ok, Result} = beamai_deepagent:run(Agent, Task),
-
-beamai_deepagent:stop(Agent).
+{ok, Result} = beamai_deepagent:run(Config, Task).
 ```
 
 ### 使用文件系统工具
 
 ```erlang
-Config = #{
-    llm => #{...},
+%% 创建 LLM 配置
+LLM = llm_client:create(openai, #{
+    model => <<"gpt-4">>,
+    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
+}),
+
+Config = beamai_deepagent:new(#{
+    llm => LLM,
     tools => [beamai_deepagent_fs_tools],
     workspace => <<"/tmp/my_workspace">>
-},
-
-{ok, Agent} = beamai_deepagent:start_link(Config),
+}),
 
 %% Agent 可以读写文件
 Task = <<"创建一个名为 hello.txt 的文件，内容是 'Hello, World!'">>,
-{ok, Result} = beamai_deepagent:run(Agent, Task).
+{ok, Result} = beamai_deepagent:run(Config, Task).
 ```
 
 ### 使用 TODO 管理
 
 ```erlang
-Config = #{
-    llm => #{...},
+Config = beamai_deepagent:new(#{
+    llm => LLM,  %% 复用之前创建的 LLM 配置
     tools => [beamai_deepagent_todo_tools]
-},
-
-{ok, Agent} = beamai_deepagent:start_link(Config),
+}),
 
 %% Agent 可以管理任务列表
 Task = <<"创建一个项目计划，包含以下任务：1. 设计架构 2. 实现核心功能 3. 编写测试">>,
-{ok, Result} = beamai_deepagent:run(Agent, Task).
+{ok, Result} = beamai_deepagent:run(Config, Task).
 ```
 
 ### 流式执行
@@ -170,18 +172,19 @@ beamai_deepagent:run_stream(Agent, Task, Callback).
 ### 使用智谱 AI
 
 ```erlang
-Config = #{
-    llm => #{
-        provider => anthropic,
-        model => <<"glm-4">>,
-        api_key => os:getenv("ZHIPU_API_KEY"),
-        base_url => <<"https://open.bigmodel.cn/api/anthropic/v1">>
-    },
-    tools => [beamai_deepagent_fs_tools]
-},
+%% 创建智谱 AI 配置（使用 Anthropic 兼容接口）
+LLM = llm_client:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+}),
 
-{ok, Agent} = beamai_deepagent:start_link(Config),
-{ok, Result} = beamai_deepagent:run(Agent, <<"分析项目结构并生成报告">>).
+Config = beamai_deepagent:new(#{
+    llm => LLM,
+    tools => [beamai_deepagent_fs_tools]
+}),
+
+{ok, Result} = beamai_deepagent:run(Config, <<"分析项目结构并生成报告">>).
 ```
 
 ## 工具管理

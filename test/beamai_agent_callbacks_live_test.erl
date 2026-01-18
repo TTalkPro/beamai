@@ -23,14 +23,13 @@ glm_config() ->
             io:format("警告: 未设置 ZHIPU_API_KEY 环境变量~n"),
             error(missing_api_key);
         _ ->
-            #{
-                provider => anthropic,
+            llm_client:create(anthropic, #{
                 model => <<"glm-4.7">>,
                 api_key => ApiKey,
                 base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
                 timeout => 60000,
                 max_tokens => 2048
-            }
+            })
     end.
 
 %%====================================================================

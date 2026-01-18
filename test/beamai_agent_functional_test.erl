@@ -34,7 +34,7 @@ create_state_test_() ->
            fun() ->
                Config = #{
                    system_prompt => <<"You are helpful">>,
-                   llm => #{provider => mock}
+                   llm => llm_client:create(mock, #{})
                },
                {ok, State} = beamai_agent:create_state(Config),
                ?assert(is_binary(element(2, State))),  %% id field
@@ -45,7 +45,7 @@ create_state_test_() ->
            fun() ->
                Config = #{
                    system_prompt => <<"Test agent">>,
-                   llm => #{provider => mock}
+                   llm => llm_client:create(mock, #{})
                },
                {ok, State} = beamai_agent:create_state(<<"my-agent-id">>, Config),
                ?assertEqual(<<"my-agent-id">>, element(2, State))
@@ -55,7 +55,7 @@ create_state_test_() ->
            fun() ->
                Config = #{
                    system_prompt => <<"Test">>,
-                   llm => #{provider => mock},
+                   llm => llm_client:create(mock, #{}),
                    enable_storage => true  %% 用户尝试启用
                },
                {ok, State} = beamai_agent:create_state(Config),
@@ -80,7 +80,7 @@ export_import_test_() ->
            fun() ->
                Config = #{
                    system_prompt => <<"Test prompt">>,
-                   llm => #{provider => mock, model => <<"test">>},
+                   llm => llm_client:create(mock, #{model => <<"test">>}),
                    max_iterations => 5
                },
                {ok, State} = beamai_agent:create_state(<<"export-test">>, Config),
@@ -99,7 +99,7 @@ export_import_test_() ->
                %% 创建原始状态
                Config = #{
                    system_prompt => <<"Original prompt">>,
-                   llm => #{provider => mock}
+                   llm => llm_client:create(mock, #{})
                },
                {ok, OrigState} = beamai_agent:create_state(<<"import-test">>, Config),
 
@@ -137,7 +137,7 @@ export_import_test_() ->
                %% import_state 需要配置
                Config = #{
                    system_prompt => <<"Test">>,
-                   llm => #{provider => mock}
+                   llm => llm_client:create(mock, #{})
                },
                {ok, State} = beamai_agent:import_state(ExportedData, Config),
 
@@ -162,7 +162,7 @@ export_import_test_() ->
                %% 使用配置创建状态
                {ok, State} = beamai_agent:import_state(ExportedData, #{
                    system_prompt => <<"New prompt">>,
-                   llm => #{provider => mock}
+                   llm => llm_client:create(mock, #{})
                }),
 
                ?assertEqual(<<"New prompt">>, element(4, State))
@@ -172,7 +172,7 @@ export_import_test_() ->
            fun() ->
                Config = #{
                    system_prompt => <<"Roundtrip test">>,
-                   llm => #{provider => mock, model => <<"gpt-4">>},
+                   llm => llm_client:create(mock, #{model => <<"gpt-4">>}),
                    max_iterations => 7,
                    tools => [
                        #{name => <<"test_tool">>, description => <<"A test tool">>}
@@ -209,7 +209,7 @@ concurrency_test_() ->
            fun() ->
                Config = #{
                    system_prompt => <<"Concurrent test">>,
-                   llm => #{provider => mock}
+                   llm => llm_client:create(mock, #{})
                },
 
                %% 并发创建 10 个状态
@@ -246,7 +246,7 @@ immutability_test_() ->
            fun() ->
                Config = #{
                    system_prompt => <<"Immutable test">>,
-                   llm => #{provider => mock}
+                   llm => llm_client:create(mock, #{})
                },
                {ok, State} = beamai_agent:create_state(Config),
 
