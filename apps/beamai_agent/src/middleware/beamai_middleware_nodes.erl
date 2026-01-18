@@ -307,7 +307,7 @@ execute_llm_call(State, LLMConfig, MwChain, #{tools_key := ToolsKey,
 
     %% 触发开始回调并调用 LLM
     invoke_callback(on_llm_start, [AllMsgs], State),
-    LLMOpts = beamai_utils:build_llm_opts(Tools, LLMConfig, State),
+    LLMOpts = beamai_agent_utils:build_llm_opts(Tools, LLMConfig, State),
 
     case llm_client:chat(LLMConfig, AllMsgs, LLMOpts) of
         {ok, Response} ->
@@ -330,11 +330,11 @@ process_llm_response(Response, Messages, State, MsgsKey) ->
     FinishReason = maps:get(finish_reason, Response, <<"stop">>),
 
     %% 步骤 2：触发回调
-    beamai_utils:invoke_text_callback(Content, State),
-    beamai_utils:invoke_action_callback(ToolCalls, Content, FinishReason, State),
+    beamai_agent_utils:invoke_text_callback(Content, State),
+    beamai_agent_utils:invoke_action_callback(ToolCalls, Content, FinishReason, State),
 
     %% 步骤 3：构建 assistant 消息并更新状态
-    AssistantMsg = beamai_utils:build_assistant_message(Content, ToolCalls),
+    AssistantMsg = beamai_agent_utils:build_assistant_message(Content, ToolCalls),
     NewMsgs = Messages ++ [AssistantMsg],
 
     BaseUpdates = [
@@ -346,7 +346,7 @@ process_llm_response(Response, Messages, State, MsgsKey) ->
     ],
 
     %% 步骤 4：同步 full_messages
-    AllUpdates = beamai_utils:append_to_full_messages(BaseUpdates, AssistantMsg, State),
+    AllUpdates = beamai_agent_utils:append_to_full_messages(BaseUpdates, AssistantMsg, State),
     ?SET_STATE_MANY(State, AllUpdates).
 
 %%====================================================================
@@ -364,7 +364,7 @@ execute_tools(State, ToolHandlers, MwChain) ->
 
     %% 执行所有工具并更新状态
     {Results, CtxUpdates} = execute_tool_calls(ToolCalls, ToolHandlers, Context, State0),
-    ToolMessages = beamai_utils:build_tool_messages(ToolCalls, Results),
+    ToolMessages = beamai_agent_utils:build_tool_messages(ToolCalls, Results),
 
     BaseUpdates = [
         {messages, Messages ++ ToolMessages},
@@ -372,7 +372,7 @@ execute_tools(State, ToolHandlers, MwChain) ->
         {tool_calls, []},
         {context, maps:merge(Context, CtxUpdates)}
     ],
-    AllUpdates = beamai_utils:append_list_to_full_messages(BaseUpdates, ToolMessages, State0),
+    AllUpdates = beamai_agent_utils:append_list_to_full_messages(BaseUpdates, ToolMessages, State0),
     State1 = ?SET_STATE_MANY(State0, AllUpdates),
 
     handle_after_tools_result(run_after_tools(State1, MwChain), State1).
@@ -382,7 +382,7 @@ execute_tools(State, ToolHandlers, MwChain) ->
 execute_tool_calls(ToolCalls, Handlers, Context, State) ->
     lists:foldl(fun(TC, {Results, CtxAcc}) ->
         %% 内联执行单个工具（减少函数调用层级）
-        {Name, Args} = beamai_utils:extract_tool_info(TC),
+        {Name, Args} = beamai_agent_utils:extract_tool_info(TC),
         invoke_callback(on_tool_start, [Name, Args], State),
 
         {Result, NewCtx} = case maps:get(Name, Handlers, undefined) of

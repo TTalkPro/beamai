@@ -11,8 +11,8 @@
   - 完整的回调系统
 
 - **🔄 协调器模式**: 统一的多 Agent 协调
-  - **Multi 模式**: 顺序协调（研究员 → 写作者 → 审核员）
-  - **Supervisor 模式**: 并行协调（多个专家同时工作）
+  - **Pipeline 模式**: 顺序协调（研究员 → 写作者 → 审核员）
+  - **Orchestrator 模式**: 编排协调（委托、路由、并行调用多个 workers）
 
 - **🧠 Deep Agent**: 递归规划 Agent
   - 支持任务规划（Planning）
@@ -80,25 +80,22 @@ Tools = beamai_tool_registry:from_config(#{
 Response = maps:get(final_response, Result).
 ```
 
-### 3. Multi 模式协调器（顺序协调）
+### 3. Pipeline 模式协调器（顺序协调）
 
 ```erlang
 %% 创建研究团队（研究员 → 写作者 → 审核员）
-{ok, Team} = beamai_agent:start_multi(<<"content_team">>, #{
+{ok, Team} = beamai_agent:start_pipeline(<<"content_team">>, #{
     agents => [
         #{
             name => <<"researcher">>,
-            role => <<"研究员"/utf8>>,
             system_prompt => <<"你是研究员，负责收集资料。"/utf8>>
         },
         #{
             name => <<"writer">>,
-            role => <<"写作者"/utf8>>,
             system_prompt => <<"你是写作者，负责撰写文章。"/utf8>>
         },
         #{
             name => <<"reviewer">>,
-            role => <<"审核员"/utf8>>,
             system_prompt => <<"你是审核员，负责质量检查。"/utf8>>
         }
     ],
@@ -110,20 +107,18 @@ Response = maps:get(final_response, Result).
     <<"研究并撰写一篇关于 Erlang 并发模型的 100 字介绍。"/utf8>>).
 ```
 
-### 4. Supervisor 模式协调器（并行协调）
+### 4. Orchestrator 模式协调器（编排协调）
 
 ```erlang
-%% 创建开发团队（前端 + 后端并行工作）
-{ok, Team} = beamai_agent:start_supervisor(<<"dev_team">>, #{
+%% 创建开发团队（编排器可以委托、路由、并行调用多个 workers）
+{ok, Team} = beamai_agent:start_orchestrator(<<"dev_team">>, #{
     agents => [
         #{
             name => <<"frontend">>,
-            role => <<"前端专家"/utf8>>,
             system_prompt => <<"你是前端开发专家。"/utf8>>
         },
         #{
             name => <<"backend">>,
-            role => <<"后端专家"/utf8>>,
             system_prompt => <<"你是后端开发专家。"/utf8>>
         }
     ],
@@ -138,8 +133,8 @@ Response = maps:get(final_response, Result).
 ### 5. Deep Agent（规划 + 反思）
 
 ```erlang
-%% 创建带规划的深度 Agent
-{ok, Agent} = beamai_deepagent:start_link(<<"deep_agent">>, #{
+%% 创建 Deep Agent 配置
+Config = beamai_deepagent:new(#{
     max_depth => 3,
     planning_enabled => true,
     reflection_enabled => true,
@@ -149,14 +144,14 @@ Response = maps:get(final_response, Result).
 }).
 
 %% 运行复杂任务
-{ok, Result} = beamai_deepagent:run(Agent,
+{ok, Result} = beamai_deepagent:run(Config,
     <<"分析这个代码库的架构并给出优化建议。"/utf8>>).
 
 %% 查看执行计划
-{ok, Plan} = beamai_deepagent:get_plan(Agent).
+Plan = beamai_deepagent:get_plan(Result).
 
 %% 查看执行轨迹
-{ok, Trace} = beamai_deepagent:get_execution_trace(Agent).
+Trace = beamai_deepagent:get_trace(Result).
 ```
 
 ## 架构

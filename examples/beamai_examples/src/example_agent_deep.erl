@@ -101,7 +101,7 @@ create_research_agent() ->
     end.
 
 %% @doc 创建研究型 Deep Agent（使用指定的 LLM 配置）
-create_research_agent(_LLMConfig) ->
+create_research_agent(LLMConfig) ->
     AgentId = <<"research_deep_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
 
     Tools = [
@@ -179,7 +179,8 @@ create_research_agent(_LLMConfig) ->
         planning_enabled => true,
         reflection_enabled => true,
         tools => Tools,
-        max_iterations => 15
+        max_iterations => 15,
+        llm => LLMConfig
     },
 
     beamai_deepagent:start_link(AgentId, Opts).
@@ -192,7 +193,7 @@ create_code_analyzer_agent() ->
     end.
 
 %% @doc 创建代码分析 Deep Agent（使用指定的 LLM 配置）
-create_code_analyzer_agent(_LLMConfig) ->
+create_code_analyzer_agent(LLMConfig) ->
     AgentId = <<"code_analyzer_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
 
     Tools = [
@@ -291,7 +292,8 @@ create_code_analyzer_agent(_LLMConfig) ->
         planning_enabled => true,
         reflection_enabled => true,
         tools => Tools,
-        max_iterations => 20
+        max_iterations => 20,
+        llm => LLMConfig
     },
 
     beamai_deepagent:start_link(AgentId, Opts).

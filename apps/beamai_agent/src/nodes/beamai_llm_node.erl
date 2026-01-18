@@ -88,7 +88,7 @@ create(LLMConfig, Opts) ->
 %% @returns LLM 调用选项映射
 -spec build_llm_opts([map()], map(), map()) -> map().
 build_llm_opts(Tools, LLMConfig, State) ->
-    beamai_utils:build_llm_opts(Tools, LLMConfig, State).
+    beamai_agent_utils:build_llm_opts(Tools, LLMConfig, State).
 
 %% @doc 处理 LLM 响应
 %%
@@ -108,10 +108,10 @@ process_llm_response(Response, Messages, State, MsgsKey) ->
     FinishReason = maps:get(finish_reason, Response, <<"stop">>),
 
     %% 步骤 2：触发文本回调（如果有内容）
-    beamai_utils:invoke_text_callback(Content, State),
+    beamai_agent_utils:invoke_text_callback(Content, State),
 
     %% 步骤 3：触发动作/完成回调
-    beamai_utils:invoke_action_callback(ToolCalls, Content, FinishReason, State),
+    beamai_agent_utils:invoke_action_callback(ToolCalls, Content, FinishReason, State),
 
     %% 步骤 4：构建 assistant 消息
     AssistantMsg = build_assistant_message(Content, ToolCalls),
@@ -127,7 +127,7 @@ process_llm_response(Response, Messages, State, MsgsKey) ->
     ],
 
     %% 步骤 6：同步 full_messages（如果存在）
-    AllUpdates = beamai_utils:append_to_full_messages(BaseUpdates, AssistantMsg, State),
+    AllUpdates = beamai_agent_utils:append_to_full_messages(BaseUpdates, AssistantMsg, State),
     NewState = ?SET_STATE_MANY(State, AllUpdates),
 
     {ok, NewState}.
@@ -141,7 +141,7 @@ process_llm_response(Response, Messages, State, MsgsKey) ->
 %% @returns assistant 消息映射
 -spec build_assistant_message(binary() | null, [map()]) -> map().
 build_assistant_message(Content, ToolCalls) ->
-    beamai_utils:build_assistant_message(Content, ToolCalls).
+    beamai_agent_utils:build_assistant_message(Content, ToolCalls).
 
 %%====================================================================
 %% 私有函数

@@ -218,7 +218,7 @@ find_failed_tools(ToolCalls, Results, State, MwState) ->
     lists:filtermap(fun({TC, Result}) ->
         case Result of
             {error, Error} ->
-                ToolName = beamai_utils:extract_tool_name(TC),
+                ToolName = beamai_agent_utils:extract_tool_name(TC),
                 RetryCount = maps:get(ToolName, Tracker, 0),
 
                 CanRetry = RetryCount < MaxRetries andalso
@@ -257,7 +257,7 @@ handle_failed_tools(FailedTools, OriginalToolCalls, ToolResults, State, MwState)
 
     %% 步骤 2：更新重试追踪器
     NewTracker = lists:foldl(fun({TC, _Error, Count}, Acc) ->
-        ToolName = beamai_utils:extract_tool_name(TC),
+        ToolName = beamai_agent_utils:extract_tool_name(TC),
         Acc#{ToolName => Count}
     end, Tracker, FailedTools),
 
@@ -266,7 +266,7 @@ handle_failed_tools(FailedTools, OriginalToolCalls, ToolResults, State, MwState)
 
     %% 步骤 4：调用重试回调并记录日志
     lists:foreach(fun({TC, Error, Count}) ->
-        ToolName = beamai_utils:extract_tool_name(TC),
+        ToolName = beamai_agent_utils:extract_tool_name(TC),
         maybe_call_on_retry(OnRetry, ToolName, Error, Count, Delay),
         case Debug of
             true ->
@@ -299,10 +299,10 @@ handle_failed_tools(FailedTools, OriginalToolCalls, ToolResults, State, MwState)
 %% 过滤掉失败的结果，保留成功的。
 -spec build_success_results([map()], [term()], [{map(), term(), pos_integer()}]) -> [term()].
 build_success_results(ToolCalls, Results, FailedTools) ->
-    FailedIds = [beamai_utils:extract_tool_id(TC) || {TC, _, _} <- FailedTools],
+    FailedIds = [beamai_agent_utils:extract_tool_id(TC) || {TC, _, _} <- FailedTools],
     Pairs = lists:zip(ToolCalls, Results),
     [{TC, R} || {TC, R} <- Pairs,
-                not lists:member(beamai_utils:extract_tool_id(TC), FailedIds),
+                not lists:member(beamai_agent_utils:extract_tool_id(TC), FailedIds),
                 not is_error_result(R)].
 
 %% @private 检查是否为错误结果

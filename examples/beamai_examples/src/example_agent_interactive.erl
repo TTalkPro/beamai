@@ -202,19 +202,21 @@ create_assistant(ExtraOpts) ->
         >>
     },
 
-    %% 合并配置
-    Opts = maps:merge(BaseOpts, ExtraOpts),
-
-    %% 保存 LLM 配置到 process dictionary，供后续使用
-    %% 使用智谱 Anthropic 兼容 API
-    put(llm_config, #{
+    %% LLM 配置（使用智谱 Anthropic 兼容 API）
+    LLMOpts = #{
         provider => anthropic,
         api_key => ApiKey,
         base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
         model => <<"glm-4.7">>,
         max_tokens => 2048,
         timeout => 120000
-    }),
+    },
+
+    %% 合并配置，包含 LLM 配置
+    Opts = maps:merge(BaseOpts#{llm => LLMOpts}, ExtraOpts),
+
+    %% 保存 LLM 配置到 process dictionary，供后续使用
+    put(llm_config, LLMOpts),
 
     beamai_deepagent:start_link(AgentId, Opts).
 

@@ -44,7 +44,7 @@ create(ToolHandlers) ->
         {Results, CtxUpdates} = execute_tool_calls(ToolCalls, ToolHandlers, Context, State),
 
         %% 步骤 3：构建工具结果消息
-        ToolMessages = beamai_utils:build_tool_messages(ToolCalls, Results),
+        ToolMessages = beamai_agent_utils:build_tool_messages(ToolCalls, Results),
 
         %% 步骤 4：更新状态（批量更新）
         NewMsgs = Messages ++ ToolMessages,
@@ -58,7 +58,7 @@ create(ToolHandlers) ->
         ],
 
         %% 步骤 5：同步 full_messages（如果存在）
-        AllUpdates = beamai_utils:append_list_to_full_messages(
+        AllUpdates = beamai_agent_utils:append_list_to_full_messages(
             BaseUpdates, ToolMessages, State),
         NewState = ?SET_STATE_MANY(State, AllUpdates),
 
@@ -122,7 +122,7 @@ execute_tool_calls(ToolCalls, Handlers, Context, State) ->
     {{ok, binary()} | {error, term()}, map()}.
 execute_single_tool(TC, Handlers, Context, State) ->
     %% 使用公共工具提取函数
-    {Name, Args} = beamai_utils:extract_tool_info(TC),
+    {Name, Args} = beamai_agent_utils:extract_tool_info(TC),
 
     %% 触发 on_tool_start 回调
     ?INVOKE_CALLBACK_FROM_STATE(on_tool_start, [Name, Args], State),

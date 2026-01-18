@@ -265,14 +265,14 @@ format_approval_request(ToolCalls, State) ->
 -spec extract_tool_names([map()]) -> [binary()].
 extract_tool_names(ToolCalls) ->
     %% 使用公共工具函数
-    [beamai_utils:extract_tool_name(TC) || TC <- ToolCalls].
+    [beamai_agent_utils:extract_tool_name(TC) || TC <- ToolCalls].
 
 %% @private 格式化工具调用摘要
 -spec format_tool_summary([map()]) -> binary().
 format_tool_summary(ToolCalls) ->
     Summaries = lists:map(fun(TC) ->
-        Name = beamai_utils:extract_tool_name(TC),
-        Args = beamai_utils:extract_tool_args(TC),
+        Name = beamai_agent_utils:extract_tool_name(TC),
+        Args = beamai_agent_utils:extract_tool_args(TC),
         ArgsPreview = case jsx:encode(Args) of
             Encoded when byte_size(Encoded) > 100 ->
                 <<(binary:part(Encoded, 0, 100))/binary, "...">>;

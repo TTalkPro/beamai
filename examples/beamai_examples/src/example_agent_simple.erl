@@ -108,7 +108,7 @@ create_calculator_agent() ->
 
 %% @doc 创建计算器 Agent（使用指定的 LLM 配置）
 -spec create_calculator_agent(map()) -> {ok, pid()} | {error, term()}.
-create_calculator_agent(_LLMConfig) ->
+create_calculator_agent(LLMConfig) ->
     AgentId = <<"calc_agent_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
 
     Tools = [
@@ -188,7 +188,8 @@ create_calculator_agent(_LLMConfig) ->
     Opts = #{
         name => <<"计算器助手"/utf8>>,
         system_prompt => <<"你是一个有用的计算器助手。使用提供的数学工具来执行计算。"/utf8>>,
-        tools => Tools
+        tools => Tools,
+        llm => LLMConfig
     },
 
     beamai_agent:start_link(AgentId, Opts).
@@ -203,7 +204,7 @@ create_weather_agent() ->
 
 %% @doc 创建天气 Agent（使用指定的 LLM 配置，模拟数据）
 -spec create_weather_agent(map()) -> {ok, pid()} | {error, term()}.
-create_weather_agent(_LLMConfig) ->
+create_weather_agent(LLMConfig) ->
     AgentId = <<"weather_agent_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
 
     %% 模拟天气数据
@@ -277,7 +278,8 @@ create_weather_agent(_LLMConfig) ->
     Opts = #{
         name => <<"天气助手"/utf8>>,
         system_prompt => <<"你是一个有用的天气助手。使用天气工具来提供当前天气和预报信息。"/utf8>>,
-        tools => Tools
+        tools => Tools,
+        llm => LLMConfig
     },
 
     beamai_agent:start_link(AgentId, Opts).

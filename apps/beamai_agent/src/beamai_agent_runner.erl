@@ -261,7 +261,15 @@ handle_graph_result(#{status := max_iterations, final_state := FinalState}, Stat
     {ok, Result#{warning => max_iterations_reached}, NewState};
 handle_graph_result(#{status := error, error := Reason, final_state := FinalState}, State) ->
     NewState = extract_and_update_state(FinalState, State),
-    {error, Reason, NewState}.
+    {error, Reason, NewState};
+handle_graph_result(#{status := error, final_state := FinalState}, State) ->
+    %% Error without explicit reason
+    NewState = extract_and_update_state(FinalState, State),
+    {error, unknown_error, NewState};
+handle_graph_result(UnexpectedResult, State) ->
+    %% Fallback for unexpected graph results
+    logger:warning("Unexpected graph result: ~p", [UnexpectedResult]),
+    {error, {unexpected_graph_result, UnexpectedResult}, State}.
 
 %% @private 从图状态提取数据并更新 Agent 状态
 -spec extract_and_update_state(map(), #state{}) -> #state{}.

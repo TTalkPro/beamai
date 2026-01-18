@@ -254,7 +254,16 @@ find_last_result(Graph) ->
 
     case ValidResults of
         [] ->
-            {error, no_result_found};
+            %% 没有成功的结果，查找是否有错误信息
+            ErrorResults = [{Id, R} || {Id, {error, _} = R} <- Results],
+            case ErrorResults of
+                [{_NodeId, {error, Reason}} | _] ->
+                    %% 返回第一个错误
+                    {error, Reason};
+                [] ->
+                    %% 检查是否有带 error 字段的状态
+                    find_error_in_states(Results)
+            end;
         _ ->
             case lists:keyfind(summarize, 1, ValidResults) of
                 {summarize, {ok, State}} ->
@@ -265,6 +274,21 @@ find_last_result(Graph) ->
                     {ok, MergedState}
             end
     end.
+
+%% @doc 从状态中查找错误信息
+-spec find_error_in_states([{atom(), term()}]) -> {error, term()}.
+find_error_in_states([]) ->
+    {error, no_result_found};
+find_error_in_states([{_Id, {ok, State}} | Rest]) ->
+    %% 检查状态中是否有 error 字段
+    case graph_state:get(State, error) of
+        undefined ->
+            find_error_in_states(Rest);
+        ErrorReason ->
+            {error, ErrorReason}
+    end;
+find_error_in_states([_ | Rest]) ->
+    find_error_in_states(Rest).
 
 %% @doc 合并所有状态
 -spec merge_all_states([graph_state:state()]) -> graph_state:state().
