@@ -1,0 +1,52 @@
+{application, beamai_core, [
+    {description, "Agent Framework Core - Behaviours and Pure Functions"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        jsx,
+        uuid,
+        hackney
+    ]},
+    {env, []},
+    {modules, [
+        %% Behaviours
+        beamai_behaviour,
+        %% Data Types
+        beamai_message,
+        beamai_result,
+        beamai_tool,
+        beamai_types,
+        %% Protocol (JSON-RPC, SSE)
+        beamai_jsonrpc,
+        beamai_sse,
+        %% Utils
+        beamai_utils,
+        beamai_http,
+        %% Graph Core
+        graph,
+        graph_builder,
+        graph_dsl,
+        graph_edge,
+        graph_node,
+        graph_runner,
+        graph_send,
+        graph_state,
+        %% Pregel
+        pregel,
+        pregel_barrier,
+        pregel_combiner,
+        pregel_graph,
+        pregel_master,
+        pregel_partition,
+        pregel_utils,
+        pregel_vertex,
+        pregel_worker,
+        graph_compute,
+        %% Graph Patterns
+        graph_parallel_experts
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

@@ -1,0 +1,50 @@
+{application, beamai_examples, [
+    {description, "BeamAI Framework Examples - 示例代码集合"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        jsx,
+        beamai_core,
+        beamai_llm,
+        beamai_memory,
+        beamai_tools,
+        beamai_agent,
+        beamai_deepagent
+    ]},
+    {optional_applications, [
+        beamai_a2a,
+        beamai_mcp,
+        cowboy
+    ]},
+    {env, []},
+    {modules, [
+        %% 工具模块
+        example_utils,
+
+        %% Agent 示例
+        example_agent_simple,
+        example_agent_deep,
+        example_agent_graph,
+        example_agent_interactive,
+
+        %% LLM 示例
+        example_llm_chat,
+        example_llm_anthropic,
+        example_output_parser,
+
+        %% 图计算示例
+        example_checkpoint,
+        example_pregel,
+        example_graph_parallel,
+
+        %% 集成示例
+        example_mcp_tools,
+        example_mcp_proxy,
+        example_a2a_server,
+        example_a2a_handler
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

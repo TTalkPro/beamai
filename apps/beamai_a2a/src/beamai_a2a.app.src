@@ -1,0 +1,55 @@
+{application, beamai_a2a, [
+    {description, "A2A (Agent-to-Agent) Protocol Implementation"},
+    {vsn, "0.1.0"},
+    {registered, [beamai_a2a_sup, beamai_a2a_task_sup, beamai_a2a_card_cache, beamai_a2a_push, beamai_a2a_auth, beamai_a2a_rate_limit]},
+    {applications, [
+        kernel,
+        stdlib,
+        jsx,
+        hackney,
+        crypto,
+        beamai_core,
+        beamai_agent
+    ]},
+    %% Cowboy 是可选依赖，仅在使用 beamai_a2a_cowboy_handler 时需要
+    {optional_applications, [cowboy]},
+    {env, []},
+    {mod, {beamai_a2a_app, []}},
+    {modules, [
+        %% 应用和监督者
+        beamai_a2a_app,
+        beamai_a2a_sup,
+        beamai_a2a_task_sup,
+
+        %% 类型和工具
+        beamai_a2a_types,
+        beamai_a2a_jsonrpc,
+        beamai_a2a_convert,      %% JSON 转换工具
+
+        %% 核心服务器
+        beamai_a2a_server,
+        beamai_a2a_handler,      %% 方法处理器
+        beamai_a2a_middleware,   %% 认证限流中间件
+
+        %% HTTP 层（框架无关）
+        beamai_a2a_http_handler,     %% HTTP 请求处理器
+        beamai_a2a_cowboy_handler,   %% Cowboy 适配器（可选）
+
+        %% 任务管理
+        beamai_a2a_task,
+
+        %% Card 相关
+        beamai_a2a_card,
+        beamai_a2a_card_cache,
+
+        %% 客户端和推送
+        beamai_a2a_client,
+        beamai_a2a_push,
+
+        %% 安全模块
+        beamai_a2a_auth,
+        beamai_a2a_rate_limit
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

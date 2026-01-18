@@ -1,0 +1,36 @@
+{application, beamai_llm, [
+    {description, "Agent Framework LLM Layer - Multi-Provider Support"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        jsx,
+        hackney,
+        beamai_core
+    ]},
+    {env, [
+        {default_provider, openai},
+        {default_model, "gpt-4"},
+        {default_timeout, 60000}
+    ]},
+    {modules, [
+        %% Client
+        llm_client,
+        llm_http_client,
+        llm_helper,
+        %% Behaviour
+        llm_provider_behaviour,
+        %% Providers
+        llm_provider_openai,
+        llm_provider_anthropic,
+        llm_provider_ollama,
+        llm_provider_zhipu,
+        %% Adapters
+        llm_message_adapter,
+        llm_tool_adapter,
+        llm_response_adapter
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

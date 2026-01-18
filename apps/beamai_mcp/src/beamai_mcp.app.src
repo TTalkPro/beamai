@@ -1,0 +1,48 @@
+{application, beamai_mcp, [
+    {description, "MCP (Model Context Protocol) Client and Server"},
+    {vsn, "0.1.0"},
+    {registered, [
+        beamai_mcp_sup,
+        beamai_mcp_client_sup,
+        beamai_mcp_server_sup
+    ]},
+    {mod, {beamai_mcp_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        jsx,
+        hackney,
+        beamai_core,
+        beamai_tools
+    ]},
+    %% Cowboy 是可选依赖，仅在使用 beamai_mcp_cowboy_handler 时需要
+    {optional_applications, [cowboy]},
+    {env, [
+        {default_timeout, 30000},
+        {tool_call_timeout, 60000},
+        {init_timeout, 10000}
+    ]},
+    {modules, [
+        %% Application
+        beamai_mcp_app,
+        beamai_mcp_sup,
+        %% Types
+        beamai_mcp_types,
+        beamai_mcp_jsonrpc,
+        %% Transport (Client)
+        beamai_mcp_transport,
+        beamai_mcp_transport_stdio,
+        beamai_mcp_transport_sse,
+        beamai_mcp_transport_http,
+        %% Client
+        beamai_mcp_client,
+        beamai_mcp_client_sup,
+        %% Server
+        beamai_mcp_server,
+        beamai_mcp_server_sup,
+        beamai_mcp_handler,
+        beamai_mcp_cowboy_handler
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

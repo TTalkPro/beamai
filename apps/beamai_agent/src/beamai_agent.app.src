@@ -1,0 +1,27 @@
+{application, beamai_agent, [
+    {description, "Simple ReAct Agent Implementation"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        jsx,
+        beamai_core,
+        beamai_llm,
+        beamai_memory,
+        beamai_tools
+    ]},
+    {env, []},
+    {modules, [
+        beamai_agent,
+        beamai_agent_init,
+        beamai_agent_runner,
+        beamai_agent_callbacks,
+        beamai_agent_checkpoint,
+        beamai_coordinator,
+        beamai_coordinator_common,
+        beamai_nodes
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

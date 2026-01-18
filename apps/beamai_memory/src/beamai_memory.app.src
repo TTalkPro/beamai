@@ -1,0 +1,16 @@
+{application, beamai_memory,
+ [{description, "Agent Memory System - Short-term and Long-term Memory Management"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {beamai_memory_app, []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  %% agent_llm: beamai_buffer_summarizer 的 LLM 摘要功能需要
+  {optional_applications, [beamai_llm]},
+  {env,[]},
+  {modules, []},
+  {licenses, ["Apache-2.0"]},
+  {links, []}
+ ]}.
