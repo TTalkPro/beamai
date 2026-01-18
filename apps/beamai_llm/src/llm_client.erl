@@ -19,6 +19,7 @@
 
 %% 配置 API
 -export([config/2, config/1]).
+-export([create/2]).  %% config/2 的语义化别名
 -export([merge_config/2]).
 
 %% 聊天 API
@@ -57,6 +58,18 @@ config(Provider, Opts) ->
     DefaultConfig = Module:default_config(),
     BaseConfig = #{provider => Provider},
     maps:merge(maps:merge(DefaultConfig, BaseConfig), Opts).
+
+%% @doc 创建 LLM 配置（config/2 的语义化别名）
+%%
+%% 推荐用法：先创建配置，然后在多个 Agent 间复用
+%% ```
+%% LLM = llm_client:create(anthropic, #{model => <<"glm-4.7">>, ...}),
+%% {ok, Agent1} = beamai_agent:start_link(<<"a1">>, #{llm => LLM, ...}),
+%% {ok, Agent2} = beamai_agent:start_link(<<"a2">>, #{llm => LLM, ...}).
+%% ```
+-spec create(provider(), map()) -> config().
+create(Provider, Opts) ->
+    config(Provider, Opts).
 
 %% @doc 从环境变量创建配置
 -spec config(map()) -> {ok, config()} | {error, term()}.

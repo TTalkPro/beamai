@@ -329,12 +329,46 @@ beamai_deepagent_tool_provider:find_tool(Name, Opts). %% 查找工具
 
 多 Provider 支持的 LLM 客户端。
 
+### LLM 配置管理
+
+推荐使用 `llm_client:config/2` 或 `llm_client:create/2` 创建 LLM 配置，实现配置与 Agent 分离：
+
+```erlang
+%% 创建 LLM 配置（推荐方式）
+LLMConfig = llm_client:config(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
+    temperature => 0.7
+}).
+
+%% 或使用语义化别名
+LLMConfig = llm_client:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => ApiKey
+}).
+
+%% 配置复用：多个 Agent 共享同一配置
+{ok, Agent1} = beamai_agent:start_link(<<"agent1">>, #{llm => LLMConfig, ...}),
+{ok, Agent2} = beamai_agent:start_link(<<"agent2">>, #{llm => LLMConfig, ...}).
+
+%% 配置合并：基于现有配置创建新配置
+HighTempConfig = llm_client:merge_config(LLMConfig, #{temperature => 0.9}).
+```
+
+**优势：**
+- 配置复用：多个 Agent 共享同一 LLM 配置
+- 集中管理：API Key、模型参数统一配置
+- 易于测试：可独立验证 LLM 配置
+
 ### 配置和聊天
 
 ```erlang
 %% 创建配置
 -spec config(provider(), map()) -> llm_config().
+-spec create(provider(), map()) -> llm_config().  %% config/2 的别名
 llm_client:config(Provider, Opts).
+llm_client:create(Provider, Opts).
 
 %% 聊天
 -spec chat(llm_config(), [message()]) -> {ok, response()} | {error, term()}.

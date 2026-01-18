@@ -299,6 +299,33 @@ ok = beamai_agent:restore_from_checkpoint(Agent, CheckpointId).
 
 ### LLM 配置
 
+推荐使用 `llm_client:config/2` 或 `llm_client:create/2` 创建 LLM 配置，然后在多个 Agent 间复用：
+
+```erlang
+%% 推荐方式：使用 llm_client:config/2 创建配置
+LLMConfig = llm_client:config(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
+    temperature => 0.7
+}),
+
+%% 配置可在多个 Agent 间复用
+{ok, Agent1} = beamai_agent:start_link(<<"agent1">>, #{
+    llm => LLMConfig,
+    tools => Tools1,
+    system_prompt => <<"你是研究助手。"/utf8>>
+}),
+
+{ok, Agent2} = beamai_agent:start_link(<<"agent2">>, #{
+    llm => LLMConfig,
+    tools => Tools2,
+    system_prompt => <<"你是写作助手。"/utf8>>
+}).
+```
+
+也可以直接使用 Map 形式（兼容旧代码）：
+
 ```erlang
 %% 方式 1: GLM-4.7 + Anthropic Provider
 LLMConfig = #{
