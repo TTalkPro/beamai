@@ -762,7 +762,6 @@ beamai_rag:query(State, Question).
 
 - [README.md](../README.md) - 项目概述
 - [ARCHITECTURE.md](ARCHITECTURE.md) - 架构设计
-- [QUICK_START.md](QUICK_START.md) - 快速开始指南
 - 各模块 README：
   - [beamai_core](../apps/beamai_core/README.md)
   - [beamai_llm](../apps/beamai_llm/README.md)

@@ -207,7 +207,6 @@ Tools = beamai_tool_registry:from_config(#{tools => [CalcTool]}),
 
 - **[README.md](../README.md)** - 项目主页
 - **[DEPENDENCIES.md](../DEPENDENCIES.md)** - 依赖关系
-- **[doc/QUICK_START.md](../doc/QUICK_START.md)** - 快速开始
 - **[doc/ARCHITECTURE.md](../doc/ARCHITECTURE.md)** - 架构设计
 
 ## 💡 提示
