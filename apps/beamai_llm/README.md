@@ -109,10 +109,10 @@ Tools = [
     #{
         name => <<"calculator">>,
         description => <<"Perform mathematical calculations">>,
-        input_schema => #{
+        parameters => #{
             type => object,
             properties => #{
-                expression => #{type => string, description => <<"Math expression">>}
+                <<\"expression\">> => #{type => string, description => <<"Math expression">>}
             },
             required => [<<"expression">>]
         }

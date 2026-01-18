@@ -115,31 +115,36 @@ erl -pa apps/beamai_llm/ebin -pa apps/beamai_core/ebin \
 
 ```erlang
 %% 创建带工具的 Agent
+%% 定义计算器工具
+CalcTool = #{
+    name => <<"calculator">>,
+    description => <<"执行数学计算"/utf8>>,
+    parameters => #{
+        type => object,
+        properties => #{
+            <<"expression">> => #{
+                type => string,
+                description => <<"数学表达式，如 2+3*4">>
+            }
+        },
+        required => [<<"expression">>]
+    },
+    handler => fun(#{<<"expression">> := Expr}) ->
+        {ok, calculate(Expr)}
+    end
+},
+
+%% 使用 Registry 构建工具列表
+Tools = beamai_tool_registry:from_config(#{tools => [CalcTool]}),
+
 {ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
     system_prompt => <<"你是一个有帮助的助手。"/utf8>>,
-    tools => [
-        #{
-            name => <<"calculator">>,
-            description => <<"执行数学计算"/utf8>>,
-            input_schema => #{
-                type => object,
-                properties => #{
-                    <<"expression">> => #{
-                        type => string,
-                        description => <<"数学表达式，如 2+3*4">>
-                    }
-                },
-                required => [<<"expression">>]
-            },
-            handler => fun(#{<<"expression">> := Expr}) ->
-                {ok, calculate(Expr)}
-            end
-        }
-    ],
+    tools => Tools,
     llm => #{
-        provider => zhipu,
-        model => <<"glm-4-flash">>,
-        api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
+        provider => anthropic,
+        model => <<"glm-4.7">>,
+        api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+        base_url => <<"https://open.bigmodel.cn/api/anthropic">>
     }
 }).
 

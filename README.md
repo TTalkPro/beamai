@@ -35,29 +35,36 @@ rebar3 shell
 ### 2. Simple Agent
 
 ```erlang
+%% 定义工具
+SearchTool = #{
+    name => <<"search">>,
+    description => <<"搜索信息"/utf8>>,
+    parameters => #{
+        type => object,
+        properties => #{
+            <<"query">> => #{
+                type => string,
+                description => <<"搜索关键词"/utf8>>
+            }
+        },
+        required => [<<"query">>]
+    },
+    handler => fun(#{<<"query">> := Query}) ->
+        %% 你的搜索逻辑
+        {ok, <<"搜索结果: ", Query/binary>>}
+    end
+},
+
+%% 使用 Registry 构建工具列表（推荐）
+Tools = beamai_tool_registry:from_config(#{
+    tools => [SearchTool],
+    providers => [beamai_tool_provider_builtin]  %% 可添加内置工具
+}),
+
 %% 创建 Agent
 {ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
     system_prompt => <<"你是一个有帮助的助手。"/utf8>>,
-    tools => [
-        #{
-            name => <<"search">>,
-            description => <<"搜索信息"/utf8>>,
-            input_schema => #{
-                type => object,
-                properties => #{
-                    <<"query">> => #{
-                        type => string,
-                        description => <<"搜索关键词"/utf8>>
-                    }
-                },
-                required => [<<"query">>]
-            },
-            handler => fun(#{<<"query">> := Query}) ->
-                %% 你的搜索逻辑
-                {ok, <<"搜索结果: ", Query/binary>>}
-            end
-        }
-    ],
+    tools => Tools,
     llm => #{
         provider => anthropic,
         model => <<"glm-4.7">>,
@@ -348,9 +355,10 @@ Opts = #{
 ### 自定义工具
 
 ```erlang
+%% 工具定义（使用 parameters 字段）
 #{name => <<"my_tool">>,
   description => <<"工具描述"/utf8>>,
-  input_schema => #{
+  parameters => #{
       type => object,
       properties => #{
           <<"param1">> => #{type => string},
@@ -362,6 +370,15 @@ Opts = #{
       %% 工具逻辑
       {ok, Result}
   end}
+
+%% 使用 Registry 注册多个工具
+Tools = beamai_tool_registry:from_config(#{
+    tools => [MyTool1, MyTool2],
+    providers => [
+        beamai_tool_provider_builtin,     %% 内置工具
+        {beamai_tool_provider_mcp, #{}}   %% MCP 工具
+    ]
+}).
 ```
 
 ### Output Parser

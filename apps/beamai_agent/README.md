@@ -79,15 +79,11 @@ Config = #{
         api_key => <<"sk-xxx">>
     },
 
-    %% 工具列表（可选）
-    tools => [
-        #{
-            name => <<"calculator">>,
-            description => <<"Perform calculations">>,
-            input_schema => #{...},
-            handler => fun(Args) -> {ok, Result} end
-        }
-    ],
+    %% 工具列表（可选，推荐使用 beamai_tool_registry 构建）
+    tools => beamai_tool_registry:from_config(#{
+        tools => [MyCustomTool],
+        providers => [beamai_tool_provider_builtin]
+    }),
 
     %% 检查点存储（可选）
     storage => Memory,  %% beamai_memory 实例
@@ -226,13 +222,14 @@ beamai_agent:stop(Agent).
 
 ```erlang
 %% 定义计算器工具
+%% 定义计算器工具
 CalculatorTool = #{
     name => <<"calculator">>,
     description => <<"Perform mathematical calculations">>,
-    input_schema => #{
+    parameters => #{
         type => object,
         properties => #{
-            expression => #{type => string}
+            <<"expression">> => #{type => string}
         },
         required => [<<"expression">>]
     },
@@ -245,10 +242,15 @@ CalculatorTool = #{
     end
 },
 
+%% 使用 Registry 构建工具列表
+Tools = beamai_tool_registry:from_config(#{
+    tools => [CalculatorTool]
+}),
+
 Config = #{
     system_prompt => <<"You are an assistant that can do math.">>,
     llm => #{...},
-    tools => [CalculatorTool]
+    tools => Tools
 },
 
 {ok, Agent} = beamai_agent:start_link(<<"calc-agent">>, Config),
