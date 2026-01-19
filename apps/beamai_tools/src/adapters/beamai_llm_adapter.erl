@@ -55,15 +55,19 @@ chat(Config, Request) ->
 %% @doc 发送聊天请求到 LLM（带选项）
 %%
 %% @param Config LLM 配置
-%% @param Request 请求参数
+%% @param Request 请求参数，格式为 #{messages => [...], tools => [...], ...}
 %% @param Opts 选项，可包含 llm_module 指定自定义模块
 %% @returns {ok, Response} | {error, Reason}
 -spec chat(Config :: map(), Request :: map(), Opts :: map()) ->
     {ok, Response :: map()} | {error, term()}.
 chat(Config, Request, Opts) ->
     Module = get_module(Opts),
+    %% 提取 messages 和其他选项
+    %% llm_client:chat/3 期望 (Config, Messages, Opts)，其中 Messages 是列表
+    Messages = maps:get(messages, Request, []),
+    RequestOpts = maps:without([messages], Request),
     try
-        Module:chat(Config, Request)
+        Module:chat(Config, Messages, RequestOpts)
     catch
         error:undef ->
             {error, {llm_module_not_found, Module}};
