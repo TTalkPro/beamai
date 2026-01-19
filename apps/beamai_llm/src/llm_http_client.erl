@@ -61,10 +61,11 @@ request(Url, Headers, Body, Opts) ->
 request(Url, Headers, Body, Opts, ResponseParser) ->
     HttpOpts = #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
-        connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
-        headers => Headers
+        connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT)
     },
-    case beamai_http:post_json(Url, Body, HttpOpts) of
+    %% 使用 beamai_http:request 直接传入 headers，避免 post_json 重复添加 Content-Type
+    JsonBody = jsx:encode(Body),
+    case beamai_http:request(post, Url, Headers, JsonBody, HttpOpts) of
         {ok, Response} when is_map(Response) ->
             ResponseParser(Response);
         {ok, Response} when is_binary(Response) ->
