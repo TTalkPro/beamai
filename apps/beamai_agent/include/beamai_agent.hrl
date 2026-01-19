@@ -69,7 +69,9 @@
     storage         :: beamai_memory:memory() | undefined, %% 存储后端 (beamai_memory 实例)
     auto_checkpoint :: boolean(),           %% 是否自动保存检查点
     %% 运行时元数据
-    run_id          :: binary() | undefined %% 当前运行 ID
+    run_id          :: binary() | undefined, %% 当前运行 ID
+    %% 进程级元数据（不参与对话，用于存储进程相关的元数据如 coordinator workers 信息）
+    meta            :: map()                 %% 进程级元数据
 }).
 
 -endif. %% AGENT_SIMPLE_HRL

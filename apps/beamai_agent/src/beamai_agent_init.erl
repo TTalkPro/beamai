@@ -156,7 +156,8 @@ build_state(Id, Opts, Graph) ->
         middleware_chain = MiddlewareChain,
         storage = beamai_agent_checkpoint:init_storage(Id, Opts),
         auto_checkpoint = maps:get(auto_checkpoint, Opts, false),
-        run_id = undefined
+        run_id = undefined,
+        meta = maps:get(meta, Opts, #{})  %% 进程级元数据
     }.
 
 %% @private 默认系统提示词
