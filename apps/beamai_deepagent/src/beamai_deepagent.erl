@@ -171,15 +171,27 @@ run(Config, Message) ->
 %% - restore_latest: 恢复最新检查点
 %%
 %% 执行流程：
-%% 1. 初始化存储（如果启用）
-%% 2. 构建核心执行图
-%% 3. 创建初始状态（包含用户消息）
-%% 4. 恢复检查点（如果配置）
-%% 5. 启动图执行引擎
-%% 6. 自动保存 checkpoint（如果启用）
-%% 7. 处理执行结果
+%% 1. 验证 LLM 配置
+%% 2. 初始化存储（如果启用）
+%% 3. 构建核心执行图
+%% 4. 创建初始状态（包含用户消息）
+%% 5. 恢复检查点（如果配置）
+%% 6. 启动图执行引擎
+%% 7. 自动保存 checkpoint（如果启用）
+%% 8. 处理执行结果
 -spec run(config(), binary(), map()) -> {ok, run_result()} | {error, term()}.
 run(Config, Message, Opts) ->
+    %% 1. 验证 LLM 配置
+    case validate_llm_config(Config) of
+        ok ->
+            run_internal(Config, Message, Opts);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private 运行 Agent 内部实现
+-spec run_internal(config(), binary(), map()) -> {ok, run_result()} | {error, term()}.
+run_internal(Config, Message, Opts) ->
     %% 1. 初始化存储（如果启用）
     Storage = beamai_deepagent_checkpoint:init_storage(<<"beamai_deepagent_temp">>, Config),
 
@@ -684,7 +696,7 @@ maybe_add_auto_checkpoint(State, Config) ->
 %% @private 执行图并支持自动检查点
 -spec execute_graph_with_checkpoint(graph:graph(), graph_state:state(), map(), config()) ->
     {ok, run_result()} | {error, term()}.
-execute_graph_with_checkpoint(Graph, InitialState, RunOpts, Config) ->
+execute_graph_with_checkpoint(Graph, InitialState, RunOpts, _Config) ->
     case execute_graph(Graph, InitialState, RunOpts) of
         {ok, Result} ->
             %% 自动保存 checkpoint（如果启用）
@@ -693,4 +705,33 @@ execute_graph_with_checkpoint(Graph, InitialState, RunOpts, Config) ->
             {ok, Result};
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%%====================================================================
+%% 私有函数 - LLM 配置验证
+%%====================================================================
+
+%% @private 验证 LLM 配置
+%%
+%% LLM 配置必须通过 llm_client:create/2 创建，包含 '__llm_client__' => true 标记。
+%% 这与 beamai_agent 的配置方式保持一致。
+-spec validate_llm_config(config()) -> ok | {error, term()}.
+validate_llm_config(Config) ->
+    case maps:get(llm, Config, undefined) of
+        undefined ->
+            {error, {missing_llm_config,
+                     <<"LLM config is required. "
+                       "Create it using llm_client:create/2. "
+                       "Example: LLM = llm_client:create(anthropic, #{model => <<\"glm-4.7\">>, ...})">>}};
+        LLMConfig when is_map(LLMConfig) ->
+            case llm_client:is_valid_config(LLMConfig) of
+                true ->
+                    ok;
+                false ->
+                    {error, {invalid_llm_config,
+                             <<"LLM config must be created using llm_client:create/2. "
+                               "Example: LLM = llm_client:create(anthropic, #{model => <<\"glm-4.7\">>, ...})">>}}
+            end;
+        _ ->
+            {error, {invalid_llm_config, <<"llm config must be a map">>}}
     end.

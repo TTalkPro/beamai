@@ -148,17 +148,13 @@ build_context_with_buffer(Config, Messages, State) ->
             end
     end.
 
-%% @private 构建 LLM 配置
+%% @private 获取 LLM 配置
+%%
+%% LLM 配置必须通过 llm_client:create/2 创建，在 beamai_deepagent:run/3 中已验证。
+%% 这与 beamai_agent 的配置方式保持一致。
 -spec build_llm_config(map()) -> map().
 build_llm_config(Config) ->
-    LLMOpts = maps:get(llm, Config, #{}),
-    %% 如果已经是有效的 llm_client 配置，直接使用
-    case llm_client:is_valid_config(LLMOpts) of
-        true -> LLMOpts;
-        false ->
-            Provider = maps:get(provider, LLMOpts, openai),
-            llm_client:create(Provider, LLMOpts)
-    end.
+    maps:get(llm, Config, #{}).
 
 %% @private 调用 LLM
 -spec call_llm(map(), [map()], [map()]) -> {ok, map()} | {error, term()}.
