@@ -32,57 +32,6 @@
 
 -include_lib("beamai_core/include/beamai_common.hrl").
 
-%% ETS 表名（存储协调器元数据）
--define(COORDINATOR_TABLE, beamai_coordinator_registry).
-
-%%====================================================================
-%% 内部函数
-%%====================================================================
-
-%% @private 确保 ETS 表存在
-ensure_table() ->
-    case ets:whereis(?COORDINATOR_TABLE) of
-        undefined ->
-            ets:new(?COORDINATOR_TABLE, [
-                named_table,
-                public,
-                set,
-                {keypos, 1},
-                {read_concurrency, true}
-            ]);
-        _Tid ->
-            ok
-    end.
-
-%% @private 注册协调器元数据到 ETS
-register_coordinator(Id, CoordinatorPid, Type, Agents, Workers, LLMConfig) ->
-    ensure_table(),
-    Metadata = #{
-        id => Id,
-        coordinator_pid => CoordinatorPid,
-        type => Type,
-        agents => Agents,
-        workers => Workers,
-        llm_config => LLMConfig,
-        created_at => erlang:system_time(millisecond)
-    },
-    ets:insert(?COORDINATOR_TABLE, {Id, Metadata}),
-    ok.
-
-%% @private 获取协调器元数据
-get_coordinator_metadata(Id) ->
-    ensure_table(),
-    case ets:lookup(?COORDINATOR_TABLE, Id) of
-        [{Id, Metadata}] -> {ok, Metadata};
-        [] -> {error, not_found}
-    end.
-
-%% @private 删除协调器元数据
-unregister_coordinator(Id) ->
-    ensure_table(),
-    ets:delete(?COORDINATOR_TABLE, Id),
-    ok.
-
 %%====================================================================
 %% API
 %%====================================================================
@@ -139,7 +88,14 @@ start_pipeline(Id, Opts) ->
 
     case beamai_agent:start_link(Id, AgentOpts) of
         {ok, Pid} ->
-            register_coordinator(Id, Pid, pipeline, Agents, Pids, LLMConfig),
+            %% 将协调器元数据存储到 agent 的 meta 字段中
+            beamai_agent:set_meta(Pid, #{
+                coordinator_type => pipeline,
+                agents => Agents,
+                workers => Pids,
+                llm_config => LLMConfig,
+                created_at => erlang:system_time(millisecond)
+            }),
             {ok, Pid};
         Error ->
             Error
@@ -184,7 +140,14 @@ start_orchestrator(Id, Opts) ->
 
     case beamai_agent:start_link(Id, AgentOpts) of
         {ok, Pid} ->
-            register_coordinator(Id, Pid, orchestrator, Agents, Pids, LLMConfig),
+            %% 将协调器元数据存储到 agent 的 meta 字段中
+            beamai_agent:set_meta(Pid, #{
+                coordinator_type => orchestrator,
+                agents => Agents,
+                workers => Pids,
+                llm_config => LLMConfig,
+                created_at => erlang:system_time(millisecond)
+            }),
             {ok, Pid};
         Error ->
             Error
@@ -198,12 +161,11 @@ start_orchestrator(Id, Opts) ->
 %%
 %% 导出协调器及其所有 workers 的状态，用于持久化或迁移。
 %%
-%% @param Id 协调器 ID
+%% @param CoordinatorPid 协调器进程 PID
 %% @returns {ok, ExportedData} 或 {error, Reason}
 %%
 %% 导出数据格式：
 %% #{
-%%   coordinator_id => Id,
 %%   type => pipeline | orchestrator,
 %%   agents => [...],              %% Agent 定义
 %%   llm_config => #{...},         %% LLM 配置
@@ -212,11 +174,17 @@ start_orchestrator(Id, Opts) ->
 %%     WorkerName => #{...}
 %%   }
 %% }
--spec export_coordinator(binary()) -> {ok, map()} | {error, term()}.
-export_coordinator(Id) ->
-    case get_coordinator_metadata(Id) of
-        {ok, #{coordinator_pid := CoordinatorPid, type := Type,
-               agents := Agents, workers := Workers, llm_config := LLMConfig}} ->
+-spec export_coordinator(pid()) -> {ok, map()} | {error, term()}.
+export_coordinator(CoordinatorPid) ->
+    Meta = beamai_agent:get_meta(CoordinatorPid),
+    case maps:get(coordinator_type, Meta, undefined) of
+        undefined ->
+            {error, not_a_coordinator};
+        Type ->
+            Agents = maps:get(agents, Meta, []),
+            Workers = maps:get(workers, Meta, #{}),
+            LLMConfig = maps:get(llm_config, Meta, #{}),
+
             %% 导出协调器状态
             CoordinatorState = beamai_agent:export_state(CoordinatorPid),
 
@@ -226,7 +194,6 @@ export_coordinator(Id) ->
             end, Workers),
 
             ExportData = #{
-                coordinator_id => Id,
                 type => Type,
                 agents => Agents,
                 llm_config => LLMConfig,
@@ -234,9 +201,7 @@ export_coordinator(Id) ->
                 workers_states => WorkersStates,
                 exported_at => erlang:system_time(millisecond)
             },
-            {ok, ExportData};
-        {error, Reason} ->
-            {error, Reason}
+            {ok, ExportData}
     end.
 
 %% @doc 导入协调器状态
@@ -268,19 +233,15 @@ import_coordinator(Id, ExportedData) ->
             beamai_agent:import_state(Pid, CoordinatorState),
 
             %% 恢复所有 workers 状态
-            case get_coordinator_metadata(Id) of
-                {ok, #{workers := Workers}} ->
-                    maps:foreach(fun(Name, WorkerState) ->
-                        case maps:find(Name, Workers) of
-                            {ok, WorkerPid} ->
-                                beamai_agent:import_state(WorkerPid, WorkerState);
-                            error ->
-                                ok  %% Worker 不存在，跳过
-                        end
-                    end, WorkersStates);
-                _ ->
-                    ok
-            end,
+            Workers = beamai_agent:get_meta(Pid, workers, #{}),
+            maps:foreach(fun(Name, WorkerState) ->
+                case maps:find(Name, Workers) of
+                    {ok, WorkerPid} ->
+                        beamai_agent:import_state(WorkerPid, WorkerState);
+                    error ->
+                        ok  %% Worker 不存在，跳过
+                end
+            end, WorkersStates),
             {ok, Pid};
         Error ->
             Error
@@ -288,24 +249,25 @@ import_coordinator(Id, ExportedData) ->
 
 %% @doc 获取协调器的所有 workers
 %%
-%% @param Id 协调器 ID
+%% @param CoordinatorPid 协调器进程 PID
 %% @returns {ok, Workers} 或 {error, Reason}
 %%   Workers 是 #{WorkerName => WorkerPid} 的映射
--spec get_workers(binary()) -> {ok, map()} | {error, term()}.
-get_workers(Id) ->
-    case get_coordinator_metadata(Id) of
-        {ok, #{workers := Workers}} -> {ok, Workers};
-        {error, Reason} -> {error, Reason}
+-spec get_workers(pid()) -> {ok, map()} | {error, term()}.
+get_workers(CoordinatorPid) ->
+    Meta = beamai_agent:get_meta(CoordinatorPid),
+    case maps:get(coordinator_type, Meta, undefined) of
+        undefined -> {error, not_a_coordinator};
+        _ -> {ok, maps:get(workers, Meta, #{})}
     end.
 
 %% @doc 获取协调器的指定 worker
 %%
-%% @param Id 协调器 ID
+%% @param CoordinatorPid 协调器进程 PID
 %% @param WorkerName Worker 名称
 %% @returns {ok, WorkerPid} 或 {error, Reason}
--spec get_worker(binary(), binary()) -> {ok, pid()} | {error, term()}.
-get_worker(Id, WorkerName) ->
-    case get_workers(Id) of
+-spec get_worker(pid(), binary()) -> {ok, pid()} | {error, term()}.
+get_worker(CoordinatorPid, WorkerName) ->
+    case get_workers(CoordinatorPid) of
         {ok, Workers} ->
             case maps:find(WorkerName, Workers) of
                 {ok, WorkerPid} -> {ok, WorkerPid};
@@ -317,12 +279,16 @@ get_worker(Id, WorkerName) ->
 
 %% @doc 停止协调器及其所有 workers
 %%
-%% @param Id 协调器 ID
+%% @param CoordinatorPid 协调器进程 PID
 %% @returns ok 或 {error, Reason}
--spec stop(binary()) -> ok | {error, term()}.
-stop(Id) ->
-    case get_coordinator_metadata(Id) of
-        {ok, #{coordinator_pid := CoordinatorPid, workers := Workers}} ->
+-spec stop(pid()) -> ok | {error, term()}.
+stop(CoordinatorPid) ->
+    Meta = beamai_agent:get_meta(CoordinatorPid),
+    case maps:get(coordinator_type, Meta, undefined) of
+        undefined ->
+            {error, not_a_coordinator};
+        _ ->
+            Workers = maps:get(workers, Meta, #{}),
             %% 停止所有 workers
             maps:foreach(fun(_Name, WorkerPid) ->
                 catch beamai_agent:stop(WorkerPid)
@@ -330,12 +296,7 @@ stop(Id) ->
 
             %% 停止协调器
             catch beamai_agent:stop(CoordinatorPid),
-
-            %% 从 ETS 删除元数据
-            unregister_coordinator(Id),
-            ok;
-        {error, Reason} ->
-            {error, Reason}
+            ok
     end.
 
 %%====================================================================
@@ -346,13 +307,13 @@ stop(Id) ->
 %%
 %% 直接调用某个 worker 执行任务。
 %%
-%% @param CoordinatorId 协调器 ID
+%% @param CoordinatorPid 协调器进程 PID
 %% @param WorkerName Worker 名称
 %% @param Task 任务描述
 %% @returns {ok, Result} 或 {error, Reason}
--spec delegate(binary(), binary(), binary()) -> {ok, binary()} | {error, term()}.
-delegate(CoordinatorId, WorkerName, Task) ->
-    case get_worker(CoordinatorId, WorkerName) of
+-spec delegate(pid(), binary(), binary()) -> {ok, binary()} | {error, term()}.
+delegate(CoordinatorPid, WorkerName, Task) ->
+    case get_worker(CoordinatorPid, WorkerName) of
         {ok, WorkerPid} ->
             case beamai_agent:run(WorkerPid, Task, #{timeout => 120000}) of
                 {ok, Result} ->
@@ -368,14 +329,14 @@ delegate(CoordinatorId, WorkerName, Task) ->
 %%
 %% 同时调用多个 workers 执行相同任务。
 %%
-%% @param CoordinatorId 协调器 ID
+%% @param CoordinatorPid 协调器进程 PID
 %% @param WorkerNames Worker 名称列表
 %% @param Task 任务描述
 %% @returns {ok, Results} 或 {error, Reason}
 %%   Results 是 #{WorkerName => Result} 的映射
--spec delegate_parallel(binary(), [binary()], binary()) -> {ok, map()} | {error, term()}.
-delegate_parallel(CoordinatorId, WorkerNames, Task) ->
-    case get_workers(CoordinatorId) of
+-spec delegate_parallel(pid(), [binary()], binary()) -> {ok, map()} | {error, term()}.
+delegate_parallel(CoordinatorPid, WorkerNames, Task) ->
+    case get_workers(CoordinatorPid) of
         {ok, AllWorkers} ->
             Results = lists:foldl(fun(Name, Acc) ->
                 case maps:find(Name, AllWorkers) of
