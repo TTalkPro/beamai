@@ -1,7 +1,8 @@
 {application, beamai_core, [
     {description, "Agent Framework Core - Behaviours and Pure Functions"},
     {vsn, "0.1.0"},
-    {registered, []},
+    {registered, [beamai_core_sup, beamai_http_pool]},
+    {mod, {beamai_core_app, []}},
     {applications, [
         kernel,
         stdlib,
@@ -16,6 +17,9 @@
         %% {http_backend, beamai_http_hackney}
     ]},
     {modules, [
+        %% Application
+        beamai_core_app,
+        beamai_core_sup,
         %% Behaviours
         beamai_behaviour,
         beamai_llm_behaviour,

@@ -201,15 +201,14 @@ terminate(_Reason, State) ->
 %%====================================================================
 
 %% @private 确保连接池已启动
+%% 连接池应该由 beamai_core_sup 启动
+%% 如果未启动，返回错误而不是尝试懒启动
 ensure_started() ->
     case whereis(?MODULE) of
         undefined ->
-            %% 尝试启动
-            case start_link() of
-                {ok, _Pid} -> ok;
-                {error, {already_started, _Pid}} -> ok;
-                {error, Reason} -> throw({pool_start_failed, Reason})
-            end;
+            throw({error, {pool_not_started,
+                "beamai_http_pool should be started by beamai_core_sup. "
+                "Make sure beamai_core application is started."}});
         _Pid ->
             ok
     end.
