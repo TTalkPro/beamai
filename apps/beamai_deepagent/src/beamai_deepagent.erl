@@ -80,6 +80,8 @@
     system_prompt => binary(),
     %% Buffer 配置（滑动窗口、摘要压缩）
     buffer => buffer_config(),
+    %% Middleware 配置
+    middlewares => [middleware_spec()],
     %% Checkpoint/存储相关
     enable_storage => boolean(),
     storage => {module(), pid()} | undefined,
@@ -88,6 +90,8 @@
     restore_latest => boolean(),
     restore_checkpoint => binary()
 }.
+
+-type middleware_spec() :: module() | {module(), map()} | {module(), map(), integer()}.
 
 -type buffer_config() :: #{
     window_size => pos_integer(),    %% 滑动窗口大小（默认 20）
@@ -328,6 +332,7 @@ build_core_graph(Config) ->
 %% - 最大深度: 3 层
 %% - 最大迭代: 50 次
 %% - 启用计划和反思功能
+%% - Middlewares: 空列表（不使用 middleware）
 %%
 %% 注意：不提供默认 LLM 配置，用户必须使用 llm_client:create/2 创建配置
 -spec default_config() -> config().
@@ -340,7 +345,9 @@ default_config() ->
         planning_enabled => true,
         reflection_enabled => true,
         depth => 0,
-        system_prompt => default_system_prompt()
+        system_prompt => default_system_prompt(),
+        %% Middleware 配置（默认不使用）
+        middlewares => []
     }.
 
 %% @private 构建运行选项
@@ -361,12 +368,40 @@ build_run_options(Config, Opts) ->
 
 %% @private 创建所有图节点
 %%
-%% 使用 beamai_deepagent_nodes 模块创建各个节点函数
+%% 根据 middlewares 配置选择使用普通节点或 middleware 节点。
+%% 如果配置了 middlewares，则使用 beamai_deepagent_middleware_nodes 模块。
 -spec create_graph_nodes(config()) -> map().
 create_graph_nodes(Config) ->
+    Middlewares = maps:get(middlewares, Config, []),
+    case Middlewares of
+        [] ->
+            %% 无 Middleware，使用普通节点
+            create_plain_nodes(Config);
+        _ ->
+            %% 有 Middleware，使用 Middleware 节点
+            create_middleware_nodes(Config, Middlewares)
+    end.
+
+%% @private 创建普通节点（无 Middleware）
+-spec create_plain_nodes(config()) -> map().
+create_plain_nodes(Config) ->
     #{
         llm_node => beamai_deepagent_nodes:make_llm_node(Config),
         tool_node => beamai_deepagent_nodes:make_tool_node(Config),
+        reflect_node => beamai_deepagent_nodes:make_reflect_node(Config),
+        aggregate_node => beamai_deepagent_nodes:make_aggregate_node(),
+        task_executor => beamai_deepagent_nodes:make_task_executor(Config)
+    }.
+
+%% @private 创建 Middleware 节点
+%%
+%% LLM 和工具节点使用 Middleware 增强版本，
+%% 其他节点（反思、聚合、任务执行）保持不变。
+-spec create_middleware_nodes(config(), [middleware_spec()]) -> map().
+create_middleware_nodes(Config, Middlewares) ->
+    #{
+        llm_node => beamai_deepagent_middleware_nodes:make_llm_node(Config, Middlewares),
+        tool_node => beamai_deepagent_middleware_nodes:make_tool_node(Config, Middlewares),
         reflect_node => beamai_deepagent_nodes:make_reflect_node(Config),
         aggregate_node => beamai_deepagent_nodes:make_aggregate_node(),
         task_executor => beamai_deepagent_nodes:make_task_executor(Config)
