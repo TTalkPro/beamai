@@ -23,6 +23,7 @@
 %%%   - anthropic: Anthropic Claude API
 %%%   - ollama: Ollama 本地模型
 %%%   - zhipu: 智谱 AI (GLM-4 系列)
+%%%   - bailian: 阿里云百炼 (通义千问系列)
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -51,7 +52,7 @@
 -export_type([provider/0, config/0]).
 
 %% 类型定义
--type provider() :: openai | anthropic | ollama | zhipu | {custom, module()}.
+-type provider() :: openai | anthropic | ollama | zhipu | bailian | {custom, module()}.
 -type config() :: llm_provider_behaviour:config().
 -type message() :: llm_provider_behaviour:message().
 -type tool() :: llm_provider_behaviour:tool().
@@ -207,7 +208,7 @@ with_tools(Config, Messages, Tools, Opts) ->
 %% @doc 列出所有支持的 Provider
 -spec list_providers() -> [provider()].
 list_providers() ->
-    [openai, anthropic, ollama, zhipu].
+    [openai, anthropic, ollama, zhipu, bailian].
 
 %% @doc 获取 Provider 信息
 -spec provider_info(provider()) -> map().
@@ -229,6 +230,7 @@ provider_module(openai) -> llm_provider_openai;
 provider_module(anthropic) -> llm_provider_anthropic;
 provider_module(ollama) -> llm_provider_ollama;
 provider_module(zhipu) -> llm_provider_zhipu;
+provider_module(bailian) -> llm_provider_bailian;
 provider_module(mock) -> llm_provider_mock;
 provider_module({custom, Module}) -> Module.
 
