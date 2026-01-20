@@ -8,6 +8,7 @@
 |--------|------|----------|------|
 | OpenAI | `llm_provider_openai` | OpenAI | GPT-4, GPT-3.5-turbo 等 |
 | Anthropic | `llm_provider_anthropic` | Anthropic | Claude 3, Claude 2 等 |
+| DeepSeek | `llm_provider_deepseek` | OpenAI 兼容 | deepseek-chat, deepseek-reasoner |
 | Ollama | `llm_provider_ollama` | OpenAI 兼容 | 本地模型部署 |
 | 智谱 AI | `llm_provider_zhipu` | OpenAI 兼容 | GLM-4.7 等国产模型 |
 | 阿里云百炼 | `llm_provider_bailian` | DashScope 原生 | 通义千问系列 (qwen-plus, qwen-max 等) |
@@ -25,6 +26,7 @@
 - **llm_provider_behaviour** - 提供商行为定义
 - **llm_provider_openai** - OpenAI 实现
 - **llm_provider_anthropic** - Anthropic 实现
+- **llm_provider_deepseek** - DeepSeek 实现 (OpenAI 兼容 API)
 - **llm_provider_ollama** - Ollama 实现
 - **llm_provider_zhipu** - 智谱 AI 实现
 - **llm_provider_bailian** - 阿里云百炼实现 (DashScope 原生 API)
@@ -67,7 +69,7 @@ LLM = llm_client:create(Provider, #{
     max_tokens => 4096                    %% 可选，最大 token 数
 }).
 
-%% Provider 类型：openai | anthropic | ollama | zhipu | bailian
+%% Provider 类型：openai | anthropic | deepseek | ollama | zhipu | bailian
 ```
 
 ## 使用示例
@@ -90,6 +92,37 @@ Messages = [
 {ok, Response} = llm_client:chat(LLM, Messages),
 Content = maps:get(content, Response).
 ```
+
+### 使用 DeepSeek
+
+DeepSeek API 与 OpenAI API 兼容，支持 `deepseek-chat` 和 `deepseek-reasoner` 模型。
+
+```erlang
+%% 创建 DeepSeek 配置
+LLM = llm_client:create(deepseek, #{
+    model => <<"deepseek-chat">>,
+    api_key => list_to_binary(os:getenv("DEEPSEEK_API_KEY"))
+}),
+
+%% 发送消息
+Messages = [
+    #{role => user, content => <<"你好！"/utf8>>}
+],
+
+{ok, Response} = llm_client:chat(LLM, Messages).
+```
+
+**支持的模型：**
+
+| 模型 | 说明 | 推荐场景 |
+|------|------|----------|
+| `deepseek-chat` | 通用对话模型（默认） | 日常对话、代码生成 |
+| `deepseek-reasoner` | 推理增强模型 | 复杂推理、数学问题 |
+
+**特性：**
+- 完整支持工具调用（Function Calling）
+- 支持流式输出
+- OpenAI 兼容 API，响应格式与 OpenAI 一致
 
 ### 使用阿里云百炼 (DashScope 原生 API)
 
@@ -230,11 +263,55 @@ llm_client:stream_chat(LLM, Messages, Callback).
 |--------|------|
 | `OPENAI_API_KEY` | OpenAI API 密钥 |
 | `ANTHROPIC_API_KEY` | Anthropic API 密钥 |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 |
 | `ZHIPU_API_KEY` | 智谱 AI API 密钥 |
 | `BAILIAN_API_KEY` | 阿里云百炼 API 密钥 (DashScope) |
 | `OLLAMA_BASE_URL` | Ollama 服务地址（默认 http://localhost:11434） |
 
 ## Provider 技术细节
+
+### DeepSeek (OpenAI 兼容 API)
+
+DeepSeek API 完全兼容 OpenAI API 格式，使用相同的请求/响应结构。
+
+**API 端点：**
+- 默认地址：`https://api.deepseek.com`
+- 聊天接口：`/chat/completions`
+
+**请求格式：**
+```json
+{
+  "model": "deepseek-chat",
+  "messages": [...],
+  "max_tokens": 4096,
+  "temperature": 1.0,
+  "tools": [...],
+  "stream": false
+}
+```
+
+**响应格式：**
+```json
+{
+  "id": "xxx",
+  "object": "chat.completion",
+  "model": "deepseek-chat",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "...",
+      "tool_calls": [...]
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 20,
+    "total_tokens": 30
+  }
+}
+```
 
 ### 阿里云百炼 (DashScope 原生 API)
 

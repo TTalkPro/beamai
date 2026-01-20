@@ -177,7 +177,7 @@ apps/
 │   └── Persistence      # agent_storage_ets, agent_storage_sup
 │
 ├── beamai_llm/       # LLM 客户端
-│   └── Providers    # OpenAI, Anthropic, Zhipu, Ollama
+│   └── Providers    # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
 ├── beamai_rag/       # RAG 功能
 │   ├── Embeddings   # 向量嵌入
@@ -366,6 +366,7 @@ HighTempLLM = llm_client:merge_config(LLM, #{temperature => 0.9}).
 |----------|------|----------|------|
 | `anthropic` | llm_provider_anthropic | Anthropic | Anthropic Claude API |
 | `openai` | llm_provider_openai | OpenAI | OpenAI API |
+| `deepseek` | llm_provider_deepseek | OpenAI 兼容 | DeepSeek API (deepseek-chat, deepseek-reasoner) |
 | `zhipu` | llm_provider_zhipu | OpenAI 兼容 | 智谱 AI (GLM 系列) |
 | `bailian` | llm_provider_bailian | DashScope 原生 | 阿里云百炼 (通义千问系列) |
 | `ollama` | llm_provider_ollama | OpenAI 兼容 | Ollama 本地模型 |
@@ -495,7 +496,7 @@ Schema = #{
 | 模块 | 说明 | 文档 |
 |------|------|------|
 | **beamai_core** | 核心框架：Graph 引擎、Pregel 分布式计算、行为定义 | [README](apps/beamai_core/README.md) |
-| **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、Zhipu、Ollama | [README](apps/beamai_llm/README.md) |
+| **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
 | **beamai_agent** | Simple Agent：ReAct 模式、回调系统、Checkpoint | [README](apps/beamai_agent/README.md) |
 | **beamai_deepagent** | Deep Agent：任务规划、并行执行、自我反思 | [README](apps/beamai_deepagent/README.md) |
 | **beamai_memory** | 记忆管理：Checkpoint、Store、时间旅行 | [README](apps/beamai_memory/README.md) |
