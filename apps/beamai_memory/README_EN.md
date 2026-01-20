@@ -7,6 +7,8 @@
 
 # Agent Memory
 
+English | [中文](README.md)
+
 A unified memory management system that provides a unified interface for short-term memory (Checkpointer) and long-term memory (Store).
 
 ## Architecture Overview

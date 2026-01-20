@@ -1,5 +1,7 @@
 # Agent Deep
 
+[English](README_EN.md) | 中文
+
 深度 Agent 实现，支持复杂任务规划、并行执行和反思机制。
 
 ## 特性

@@ -1,5 +1,7 @@
 # beamai_agent
 
+[English](README_EN.md) | 中文
+
 简单的 ReAct Agent 实现，支持工具调用、Middleware、检查点和多轮对话。
 
 ## 特性

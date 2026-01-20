@@ -1,5 +1,7 @@
 # Agent A2A
 
+English | [中文](README.md)
+
 Agent-to-Agent (A2A) protocol implementation, supporting standardized communication between Agents.
 
 ## Features

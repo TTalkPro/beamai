@@ -1,5 +1,7 @@
 # Agent Core
 
+English | [中文](README.md)
+
 The core module of Agent Framework, providing Agent behavior definitions, data types, graph computation, and general utilities.
 
 ## Module Overview

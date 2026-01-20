@@ -1,5 +1,7 @@
 # beamai_tools - Common Tool Library and Middleware System
 
+English | [中文](README.md)
+
 Unified definition, registration, and management module for Agent tools, along with the Agent execution middleware system.
 
 ## Core Features

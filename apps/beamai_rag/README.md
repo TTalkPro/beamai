@@ -1,5 +1,7 @@
 # Agent RAG
 
+[English](README_EN.md) | 中文
+
 检索增强生成（Retrieval-Augmented Generation）模块，提供向量存储和文档检索功能。
 
 ## 特性

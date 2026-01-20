@@ -1,5 +1,7 @@
 # Agent RAG
 
+English | [中文](README.md)
+
 Retrieval-Augmented Generation module, providing vector storage and document retrieval functionality.
 
 ## Features

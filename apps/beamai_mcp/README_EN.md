@@ -1,5 +1,7 @@
 # Agent MCP
 
+English | [中文](README.md)
+
 Model Context Protocol (MCP) implementation, supporting both MCP servers and clients.
 
 ## Features

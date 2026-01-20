@@ -1,5 +1,7 @@
 # Agent Core
 
+[English](README_EN.md) | 中文
+
 Agent Framework 的核心模块，提供 Agent 行为定义、数据类型、图计算和通用工具。
 
 ## 模块概览

@@ -1,5 +1,7 @@
 # API 参考文档
 
+[English](API_REFERENCE_EN.md) | 中文
+
 本文档提供 BeamAI Framework 各模块的主要 API 参考。
 
 ## 目录

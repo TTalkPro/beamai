@@ -1,5 +1,7 @@
 # API Reference
 
+English | [中文](API_REFERENCE.md)
+
 This document provides the main API reference for each module of the BeamAI Framework.
 
 ## Table of Contents

@@ -1,5 +1,7 @@
 # BeamAI Examples
 
+[English](README_EN.md) | 中文
+
 本目录包含使用 BeamAI Framework 的示例代码。
 
 ## 📁 示例列表

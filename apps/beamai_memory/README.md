@@ -6,6 +6,8 @@
 
 # Agent Memory
 
+[English](README_EN.md) | 中文
+
 统一记忆管理系统，提供短期记忆（Checkpointer）和长期记忆（Store）的统一接口。
 
 ## 架构概览

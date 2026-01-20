@@ -1,5 +1,7 @@
 # BeamAI Framework Dependencies
 
+[English](DEPENDENCIES_EN.md) | 中文
+
 本文档描述 BeamAI Framework 的依赖关系，包括外部依赖和内部模块间的依赖。
 
 ## 外部依赖

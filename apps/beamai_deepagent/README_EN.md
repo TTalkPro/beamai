@@ -1,5 +1,7 @@
 # Agent Deep
 
+English | [中文](README.md)
+
 Deep Agent implementation supporting complex task planning, parallel execution, and reflection mechanisms.
 
 ## Features

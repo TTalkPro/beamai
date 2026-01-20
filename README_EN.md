@@ -1,5 +1,7 @@
 # Erlang Agent Framework
 
+English | [中文](README.md)
+
 A high-performance AI Agent application framework based on Erlang/OTP.
 
 ## Features
@@ -233,7 +235,7 @@ apps/
 └─────────────────────────────────┘
 ```
 
-See [DEPENDENCIES.md](doc/DEPENDENCIES.md) for details
+See [DEPENDENCIES_EN.md](doc/DEPENDENCIES_EN.md) for details
 
 ## Core Concepts
 
@@ -326,7 +328,7 @@ ok = beamai_agent:set_callbacks(Agent, #{
 beamai_agent:emit_custom_event(Agent, my_event, #{value => 42}).
 ```
 
-See [doc/CALLBACKS.md](doc/CALLBACKS.md) for details
+See [doc/CALLBACKS_EN.md](doc/CALLBACKS_EN.md) for details
 
 ## Configuration
 
@@ -485,25 +487,25 @@ Schema = #{
 
 ### Core Documentation
 
-- **[doc/API_REFERENCE.md](doc/API_REFERENCE.md)** - API Reference
-- **[doc/MIDDLEWARE.md](doc/MIDDLEWARE.md)** - Middleware System Documentation
-- **[doc/CALLBACKS.md](doc/CALLBACKS.md)** - Callback System Documentation
-- **[doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)** - Architecture Design
-- **[DEPENDENCIES.md](doc/DEPENDENCIES.md)** - Dependency Relationship Details
+- **[doc/API_REFERENCE_EN.md](doc/API_REFERENCE_EN.md)** - API Reference
+- **[doc/MIDDLEWARE_EN.md](doc/MIDDLEWARE_EN.md)** - Middleware System Documentation
+- **[doc/CALLBACKS_EN.md](doc/CALLBACKS_EN.md)** - Callback System Documentation
+- **[doc/ARCHITECTURE_EN.md](doc/ARCHITECTURE_EN.md)** - Architecture Design
+- **[DEPENDENCIES_EN.md](doc/DEPENDENCIES_EN.md)** - Dependency Relationship Details
 
 ### Module Documentation
 
 | Module | Description | Documentation |
 |--------|-------------|---------------|
-| **beamai_core** | Core framework: Graph engine, Pregel distributed computing, behavior definitions | [README](apps/beamai_core/README.md) |
-| **beamai_llm** | LLM client: supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama | [README](apps/beamai_llm/README.md) |
-| **beamai_agent** | Simple Agent: ReAct pattern, callback system, Checkpoint | [README](apps/beamai_agent/README.md) |
-| **beamai_deepagent** | Deep Agent: task planning, parallel execution, self-reflection | [README](apps/beamai_deepagent/README.md) |
-| **beamai_memory** | Memory management: Checkpoint, Store, time travel | [README](apps/beamai_memory/README.md) |
-| **beamai_tools** | Tool library + Middleware: Provider mechanism, tool registration, Middleware system | [README](apps/beamai_tools/README.md) |
-| **beamai_a2a** | A2A protocol: inter-Agent communication, server/client | [README](apps/beamai_a2a/README.md) |
-| **beamai_mcp** | MCP protocol: Model Context Protocol implementation | [README](apps/beamai_mcp/README.md) |
-| **beamai_rag** | RAG functionality: vector embeddings, similarity search | [README](apps/beamai_rag/README.md) |
+| **beamai_core** | Core framework: Graph engine, Pregel distributed computing, behavior definitions | [README](apps/beamai_core/README_EN.md) |
+| **beamai_llm** | LLM client: supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama | [README](apps/beamai_llm/README_EN.md) |
+| **beamai_agent** | Simple Agent: ReAct pattern, callback system, Checkpoint | [README](apps/beamai_agent/README_EN.md) |
+| **beamai_deepagent** | Deep Agent: task planning, parallel execution, self-reflection | [README](apps/beamai_deepagent/README_EN.md) |
+| **beamai_memory** | Memory management: Checkpoint, Store, time travel | [README](apps/beamai_memory/README_EN.md) |
+| **beamai_tools** | Tool library + Middleware: Provider mechanism, tool registration, Middleware system | [README](apps/beamai_tools/README_EN.md) |
+| **beamai_a2a** | A2A protocol: inter-Agent communication, server/client | [README](apps/beamai_a2a/README_EN.md) |
+| **beamai_mcp** | MCP protocol: Model Context Protocol implementation | [README](apps/beamai_mcp/README_EN.md) |
+| **beamai_rag** | RAG functionality: vector embeddings, similarity search | [README](apps/beamai_rag/README_EN.md) |
 
 ### Design and Implementation Documentation
 

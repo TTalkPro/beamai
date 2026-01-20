@@ -1,5 +1,7 @@
 # Callback System Documentation
 
+English | [中文](CALLBACKS.md)
+
 BeamAI Framework provides an event-driven callback system similar to LangChain, used to listen and respond to various events during Agent execution.
 
 ## Table of Contents

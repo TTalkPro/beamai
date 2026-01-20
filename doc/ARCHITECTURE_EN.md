@@ -1,5 +1,7 @@
 # BeamAI Framework Architecture Design
 
+English | [中文](ARCHITECTURE.md)
+
 This document describes in detail the overall architecture, core design philosophy, and module responsibilities of the BeamAI Framework.
 
 ## Table of Contents

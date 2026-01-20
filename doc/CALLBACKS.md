@@ -1,5 +1,7 @@
 # Callback 系统文档
 
+[English](CALLBACKS_EN.md) | 中文
+
 BeamAI Framework 提供了类似 LangChain 的事件驱动回调系统，用于监听和响应 Agent 执行过程中的各种事件。
 
 ## 目录

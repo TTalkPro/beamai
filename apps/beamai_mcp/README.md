@@ -1,5 +1,7 @@
 # Agent MCP
 
+[English](README_EN.md) | 中文
+
 Model Context Protocol（MCP）实现，支持 MCP 服务器和客户端。
 
 ## 特性

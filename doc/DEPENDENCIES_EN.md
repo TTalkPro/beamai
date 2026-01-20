@@ -1,5 +1,7 @@
 # BeamAI Framework Dependencies
 
+English | [中文](DEPENDENCIES.md)
+
 This document describes the dependencies of the BeamAI Framework, including external dependencies and dependencies between internal modules.
 
 ## External Dependencies

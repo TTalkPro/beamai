@@ -1,5 +1,7 @@
 # BeamAI Examples
 
+English | [中文](README.md)
+
 This directory contains example code for using the BeamAI Framework.
 
 ## Example List

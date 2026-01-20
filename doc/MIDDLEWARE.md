@@ -1,5 +1,7 @@
 # Middleware 系统文档
 
+[English](MIDDLEWARE_EN.md) | 中文
+
 beamai_agent 的 Middleware 系统提供了一种灵活的方式来拦截、修改和控制 Agent 执行的各个阶段。
 
 ## 目录

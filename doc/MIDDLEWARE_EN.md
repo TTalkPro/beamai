@@ -1,5 +1,7 @@
 # Middleware System Documentation
 
+English | [中文](MIDDLEWARE.md)
+
 The Middleware system in beamai_agent provides a flexible way to intercept, modify, and control various stages of Agent execution.
 
 ## Table of Contents

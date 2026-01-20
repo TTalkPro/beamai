@@ -1,5 +1,7 @@
 # beamai_agent
 
+English | [中文](README.md)
+
 A simple ReAct Agent implementation with support for tool calling, Middleware, checkpoints, and multi-turn conversations.
 
 ## Features

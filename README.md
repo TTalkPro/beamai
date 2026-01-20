@@ -1,5 +1,7 @@
 # Erlang Agent Framework
 
+[English](README_EN.md) | 中文
+
 基于 Erlang/OTP 的高性能 AI Agent 应用框架。
 
 ## 特性

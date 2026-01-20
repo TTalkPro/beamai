@@ -1,5 +1,7 @@
 # BeamAI Framework 架构设计
 
+[English](ARCHITECTURE_EN.md) | 中文
+
 本文档详细描述 BeamAI Framework 的整体架构、核心设计理念和各模块的职责。
 
 ## 目录

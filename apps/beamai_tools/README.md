@@ -1,5 +1,7 @@
 # beamai_tools - 公共工具库和中间件系统
 
+[English](README_EN.md) | 中文
+
 Agent 工具的统一定义、注册和管理模块，以及 Agent 执行的中间件系统。
 
 ## 核心功能
