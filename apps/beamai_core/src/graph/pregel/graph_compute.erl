@@ -235,6 +235,10 @@ finish_node_execution(Ctx, VertexValue, Node, State, Edges) ->
 %%====================================================================
 
 %% @doc 聚合多个状态消息
+%%
+%% 注意：在正常情况下，Pregel 的 state_reducer 已经将多个状态合并为一个。
+%% 此函数仍然处理多状态情况，以保持向后兼容性。
+%% 使用 graph_state_reducer 进行字段级合并（append/merge 策略）。
 -spec aggregate_state_messages([term()]) -> {ok, graph_state:state()} | {error, no_state_messages}.
 aggregate_state_messages(Messages) ->
     States = [S || {state, S} <- Messages],
@@ -244,22 +248,10 @@ aggregate_state_messages(Messages) ->
         [SingleState] ->
             {ok, SingleState};
         MultipleStates ->
-            MergedState = merge_states(MultipleStates),
+            %% 使用字段级 Reducer 合并（与 pregel state_reducer 一致）
+            MergedState = graph_state_reducer:merge_states(MultipleStates),
             {ok, MergedState}
     end.
-
-%% @doc 合并多个状态
--spec merge_states([graph_state:state()]) -> graph_state:state().
-merge_states([First | Rest]) ->
-    lists:foldl(fun merge_two_states/2, First, Rest).
-
-%% @doc 合并两个状态
--spec merge_two_states(graph_state:state(), graph_state:state()) -> graph_state:state().
-merge_two_states(State1, State2) ->
-    Data1 = graph_state:to_map(State1),
-    Data2 = graph_state:to_map(State2),
-    MergedData = maps:merge(Data1, Data2),
-    graph_state:new(MergedData).
 
 %% @doc 根据边定义发送状态到下一个节点
 -spec send_to_next_nodes(pregel:context(), [graph_edge:edge()], graph_state:state()) -> pregel:context().
@@ -341,10 +333,8 @@ find_error_in_states([_ | Rest]) ->
     find_error_in_states(Rest).
 
 %% @doc 合并所有状态
+%%
+%% 使用 graph_state_reducer 进行字段级合并。
 -spec merge_all_states([graph_state:state()]) -> graph_state:state().
-merge_all_states([]) ->
-    graph_state:new();
-merge_all_states([Single]) ->
-    Single;
 merge_all_states(States) ->
-    lists:foldl(fun merge_two_states/2, graph_state:new(), States).
+    graph_state_reducer:merge_states(States).

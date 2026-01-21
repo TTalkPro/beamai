@@ -77,7 +77,10 @@
     %% Checkpoint 相关选项
     on_checkpoint => checkpoint_callback(),  %% 每个超步完成后的回调
     restore_from => restore_options(),       %% 从 checkpoint 恢复
-    run_id => binary()                       %% 外部传入的执行 ID
+    run_id => binary(),                      %% 外部传入的执行 ID
+    %% State Reducer 选项（二选一）
+    field_reducers => graph_state_reducer:field_reducers(),  %% 字段级 Reducer 配置（推荐）
+    state_reducer => pregel_master:state_reducer()           %% 完整的 state_reducer 函数
 }.
 
 -export_type([checkpoint_data/0, checkpoint_callback/0, checkpoint_callback_result/0, restore_options/0]).
@@ -154,9 +157,11 @@ run_simple(Graph, InitialState, Options) ->
 
     %% 准备执行选项
     MaxIterations = maps:get(max_iterations, Config, 100),
+    StateReducer = get_state_reducer(Options),
     PregelOpts = #{
         max_supersteps => maps:get(max_supersteps, Options, MaxIterations),
-        num_workers => maps:get(workers, Options, 1)
+        num_workers => maps:get(workers, Options, 1),
+        state_reducer => StateReducer
     },
 
     %% 使用全局计算函数执行
@@ -185,9 +190,11 @@ run_with_checkpoint(Graph, InitialState, Options) ->
 
     %% 准备执行选项
     MaxIterations = maps:get(max_iterations, Config, 100),
+    StateReducer = get_state_reducer(OptionsWithRunId),
     PregelOpts0 = #{
         max_supersteps => maps:get(max_supersteps, OptionsWithRunId, MaxIterations),
-        num_workers => maps:get(workers, OptionsWithRunId, 1)
+        num_workers => maps:get(workers, OptionsWithRunId, 1),
+        state_reducer => StateReducer
     },
     %% 如果有恢复选项，添加到 PregelOpts
     PregelOpts = case PregelRestoreOpts of
@@ -718,3 +725,23 @@ generate_run_id() ->
     <<A:32, B:16, C:16, D:16, E:48>> = crypto:strong_rand_bytes(16),
     iolist_to_binary(io_lib:format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b",
                                    [A, B, C, D, E])).
+
+%% @private 获取 state_reducer
+%%
+%% 优先级：
+%% 1. state_reducer: 直接使用传入的完整 reducer 函数
+%% 2. field_reducers: 使用字段配置构建 reducer
+%% 3. 默认: 使用 graph_state_reducer:reducer()（所有字段 last_write_win）
+-spec get_state_reducer(run_options()) -> pregel_master:state_reducer().
+get_state_reducer(Options) ->
+    case maps:get(state_reducer, Options, undefined) of
+        undefined ->
+            case maps:get(field_reducers, Options, undefined) of
+                undefined ->
+                    graph_state_reducer:reducer();
+                FieldReducers ->
+                    graph_state_reducer:reducer(FieldReducers)
+            end;
+        StateReducer ->
+            StateReducer
+    end.

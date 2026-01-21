@@ -132,11 +132,31 @@ rebuild_graph(#state{config = #agent_config{tools = Tools, system_prompt = Promp
 
 %% @private 构建图执行选项
 %%
-%% 提取 checkpoint 相关选项。run_id 由图执行层（pregel）自动生成。
+%% 提取 checkpoint 相关选项，并设置 Agent 特定的字段 Reducer。
+%% run_id 由图执行层（pregel）自动生成。
 -spec build_run_options(map()) -> map().
 build_run_options(Opts) ->
     %% 提取 checkpoint 相关选项，run_id 由图层自动管理
-    maps:with([on_checkpoint, restore_from], Opts).
+    BaseOpts = maps:with([on_checkpoint, restore_from], Opts),
+    %% 添加 Agent 特定的字段 Reducer
+    BaseOpts#{field_reducers => agent_field_reducers()}.
+
+%% @private Agent 特定的字段 Reducer 配置
+%%
+%% 定义 Agent 状态字段的合并策略：
+%% - messages: append（追加，保留对话历史）
+%% - full_messages: append（追加，完整历史）
+%% - scratchpad: append（追加，中间步骤）
+%% - context: merge（合并，用户上下文）
+%% - 其他字段: last_write_win（默认）
+-spec agent_field_reducers() -> graph_state_reducer:field_reducers().
+agent_field_reducers() ->
+    #{
+        <<"messages">> => fun graph_state_reducer:append_reducer/2,
+        <<"full_messages">> => fun graph_state_reducer:append_reducer/2,
+        <<"scratchpad">> => fun graph_state_reducer:append_reducer/2,
+        <<"context">> => fun graph_state_reducer:merge_reducer/2
+    }.
 
 %%====================================================================
 %% 内部函数 - 图构建
