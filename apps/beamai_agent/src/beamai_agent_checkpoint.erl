@@ -55,18 +55,29 @@ init_storage(_AgentId, Opts) ->
 %% - full_messages: 完整对话历史（用于审计、调试、回溯）
 %% - scratchpad: 中间步骤
 %% - context: 用户自定义上下文数据
+%% - 执行上下文信息（run_id, checkpoint_type, iteration, superstep, 顶点状态等）
 -spec save(map(), #state{}) -> {ok, binary()} | {error, term()}.
 save(_Meta, #state{storage = undefined}) ->
     {error, storage_not_enabled};
-save(Meta, #state{storage = Memory, id = AgentId, messages = Msgs,
+save(Meta, #state{storage = Memory, id = AgentId, run_id = RunId, messages = Msgs,
                   full_messages = FullMsgs, scratchpad = Pad, context = Ctx}) ->
-    Config = #{thread_id => AgentId},
+    Config = #{
+        thread_id => AgentId,
+        run_id => RunId
+    },
     State = #{
         messages => Msgs,
         full_messages => FullMsgs,
         scratchpad => Pad,
         context => Ctx,
-        metadata => Meta
+        metadata => Meta,
+        %% 执行上下文信息
+        run_id => RunId,
+        checkpoint_type => maps:get(checkpoint_type, Meta, undefined),
+        iteration => maps:get(iteration, Meta, 0),
+        superstep => maps:get(superstep, Meta, 0),
+        active_vertices => maps:get(active_vertices, Meta, []),
+        completed_vertices => maps:get(completed_vertices, Meta, [])
     },
     case beamai_memory:save_checkpoint(Memory, Config, State) of
         ok ->
@@ -151,22 +162,33 @@ maybe_restore(Opts, #state{storage = Memory, id = AgentId} = State) ->
 
 %% @doc 自动保存检查点（如果启用）
 %%
-%% 保存内容包括：messages、full_messages、scratchpad 和 result。
+%% 保存内容包括：messages、full_messages、scratchpad、result 和执行上下文。
 -spec maybe_auto_save(map(), #state{}) -> #state{}.
 maybe_auto_save(_Result, #state{auto_checkpoint = false} = State) ->
     State;
 maybe_auto_save(_Result, #state{storage = undefined} = State) ->
     State;
-maybe_auto_save(Result, #state{storage = Memory, id = AgentId, messages = Msgs,
-                               full_messages = FullMsgs, scratchpad = Pad, context = Ctx} = State) ->
-    Config = #{thread_id => AgentId},
+maybe_auto_save(Result, #state{storage = Memory, id = AgentId, run_id = RunId,
+                               messages = Msgs, full_messages = FullMsgs,
+                               scratchpad = Pad, context = Ctx} = State) ->
+    Config = #{
+        thread_id => AgentId,
+        run_id => RunId
+    },
     StateData = #{
         messages => Msgs,
         full_messages => FullMsgs,
         scratchpad => Pad,
         context => Ctx,
         result => Result,
-        metadata => #{auto => true, timestamp => beamai_memory_utils:current_timestamp()}
+        metadata => #{auto => true, timestamp => beamai_memory_utils:current_timestamp()},
+        %% 执行上下文信息
+        run_id => RunId,
+        checkpoint_type => final,
+        iteration => maps:get(iterations, Result, 0),
+        superstep => 0,
+        active_vertices => [],
+        completed_vertices => []
     },
     case beamai_memory:save_checkpoint(Memory, Config, StateData) of
         ok ->

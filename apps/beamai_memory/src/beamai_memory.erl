@@ -198,12 +198,19 @@ save_checkpoint(#{context_store := Store}, Config, State, MetadataMap) ->
         version = 0
     },
 
+    %% 构建执行上下文
+    ExecutionContext = build_execution_context(Config, State),
+
+    %% 构建 parents 信息
+    Parents = build_parents_info(State),
+
     %% 构建元数据
     Metadata = #checkpoint_metadata{
-        source = maps:get(source, MetadataMap, undefined),
-        step = maps:get(step, MetadataMap, 0),
-        parents = maps:get(parents, MetadataMap, #{}),
+        source = determine_source(State, MetadataMap),
+        step = maps:get(superstep, State, maps:get(step, MetadataMap, 0)),
+        parents = Parents,
         writes = maps:get(writes, MetadataMap, []),
+        execution_context = ExecutionContext,
         metadata = maps:get(metadata, MetadataMap, #{})
     },
 
@@ -828,6 +835,7 @@ checkpoint_to_map(Checkpoint, Metadata, ParentConfig) ->
             step => Metadata#checkpoint_metadata.step,
             parents => Metadata#checkpoint_metadata.parents,
             writes => Metadata#checkpoint_metadata.writes,
+            execution_context => Metadata#checkpoint_metadata.execution_context,
             metadata => Metadata#checkpoint_metadata.metadata
         },
         parent_config => ParentConfig
@@ -864,6 +872,7 @@ map_to_checkpoint_tuple(Map) when is_map(Map) ->
                 step = get_flex(step, MetaMap, 0),
                 parents = get_flex(parents, MetaMap, #{}),
                 writes = get_flex(writes, MetaMap, []),
+                execution_context = get_flex(execution_context, MetaMap, #{}),
                 metadata = get_flex(metadata, MetaMap, #{})
             },
             {ok, {Checkpoint, Metadata, ParentConfig}}
@@ -921,3 +930,36 @@ get_flex(Key, Map, Default) when is_atom(Key), is_map(Map) ->
         undefined -> maps:get(atom_to_binary(Key), Map, Default);
         Value -> Value
     end.
+
+%%====================================================================
+%% 内部函数 - 执行上下文
+%%====================================================================
+
+%% @private 构建执行上下文
+-spec build_execution_context(config(), map()) -> map().
+build_execution_context(Config, State) ->
+    #{
+        run_id => maps:get(run_id, State, maps:get(run_id, Config, undefined)),
+        thread_id => get_thread_id(Config),
+        agent_id => maps:get(agent_id, Config, undefined),
+        checkpoint_type => maps:get(checkpoint_type, State, undefined),
+        iteration => maps:get(iteration, State, 0),
+        superstep => maps:get(superstep, State, 0),
+        timestamp => erlang:system_time(millisecond)
+    }.
+
+%% @private 确定 source 类型
+-spec determine_source(map(), map()) -> atom() | undefined.
+determine_source(State, MetadataMap) ->
+    case maps:get(checkpoint_type, State, undefined) of
+        undefined -> maps:get(source, MetadataMap, maps:get(source, State, undefined));
+        Type -> Type
+    end.
+
+%% @private 构建 parents 信息
+-spec build_parents_info(map()) -> map().
+build_parents_info(State) ->
+    #{
+        active_vertices => maps:get(active_vertices, State, []),
+        completed_vertices => maps:get(completed_vertices, State, [])
+    }.

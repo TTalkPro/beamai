@@ -55,7 +55,7 @@ build_graph(Opts) ->
 %% @returns {ok, Result, NewState} | {error, Reason, NewState}
 -spec execute(binary(), map(), #state{}) ->
     {ok, map(), #state{}} | {error, term(), #state{}}.
-execute(Msg, _Opts, #state{graph = Graph, system_prompt = Prompt,
+execute(Msg, Opts, #state{graph = Graph, system_prompt = Prompt,
                            tools = Tools, max_iterations = MaxIter,
                            messages = HistoryMsgs,
                            full_messages = HistoryFullMsgs,
@@ -95,8 +95,11 @@ execute(Msg, _Opts, #state{graph = Graph, system_prompt = Prompt,
         callback_meta => CallbackMeta
     }),
 
+    %% Build run options with run_id
+    RunOptions = build_run_options(Opts, RunId),
+
     %% Execute graph (Pregel engine)
-    handle_graph_result(graph:run(Graph, InitState), State).
+    handle_graph_result(graph:run(Graph, InitState, RunOptions), State).
 
 %% @doc Rebuild graph from current state
 %%
@@ -121,6 +124,23 @@ rebuild_graph(#state{tools = Tools, system_prompt = Prompt,
             {ok, State#state{graph = NewGraph}};
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%%====================================================================
+%% Internal Functions - Run Options
+%%====================================================================
+
+%% @private Build run options for graph execution
+%%
+%% Includes run_id and any checkpoint-related options from Opts.
+-spec build_run_options(map(), binary() | undefined) -> map().
+build_run_options(Opts, RunId) ->
+    %% Extract checkpoint-related options
+    BaseOpts = maps:with([on_checkpoint, restore_from], Opts),
+    %% Add run_id if present
+    case RunId of
+        undefined -> BaseOpts;
+        _ -> BaseOpts#{run_id => RunId}
     end.
 
 %%====================================================================

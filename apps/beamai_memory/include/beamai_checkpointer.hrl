@@ -53,17 +53,34 @@
 
 %% 检查点元数据
 -record(checkpoint_metadata, {
-    %% 来源 - input | loop | update
-    source :: input | loop | update | undefined,
+    %% 来源 - 与 pregel checkpoint 类型对应
+    %% initial | step | error | interrupt | final | undefined
+    source :: initial | step | error | interrupt | final | input | loop | update | undefined,
 
-    %% 当前步骤编号
+    %% 当前步骤编号（对应 pregel superstep）
     step = 0 :: non_neg_integer(),
 
-    %% 父节点（来源节点）
+    %% 父节点信息 - 记录产生此 checkpoint 的图节点状态
+    %% #{
+    %%   active_vertices => [atom()],
+    %%   completed_vertices => [atom()]
+    %% }
     parents = #{} :: map(),
 
     %% 写入此检查点的任务
     writes = [] :: list(),
+
+    %% 执行上下文 - 区分不同的图执行
+    %% #{
+    %%   run_id => binary(),              %% 图执行唯一标识
+    %%   thread_id => binary(),           %% 线程 ID
+    %%   agent_id => binary(),            %% Agent ID
+    %%   checkpoint_type => atom(),       %% checkpoint 类型
+    %%   iteration => non_neg_integer(),  %% graph 层迭代次数
+    %%   superstep => non_neg_integer(),  %% pregel 超步
+    %%   timestamp => integer()           %% 时间戳
+    %% }
+    execution_context = #{} :: map(),
 
     %% 用户自定义元数据
     metadata = #{} :: map()

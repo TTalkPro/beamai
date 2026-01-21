@@ -76,7 +76,8 @@
     timeout => pos_integer(),        %% 超时时间 (毫秒)
     %% Checkpoint 相关选项
     on_checkpoint => checkpoint_callback(),  %% 每个超步完成后的回调
-    restore_from => restore_options()        %% 从 checkpoint 恢复
+    restore_from => restore_options(),       %% 从 checkpoint 恢复
+    run_id => binary()                       %% 外部传入的执行 ID
 }.
 
 -export_type([checkpoint_data/0, checkpoint_callback/0, checkpoint_callback_result/0, restore_options/0]).
@@ -248,15 +249,27 @@ default_checkpoint_callback(_Info, _CheckpointData) ->
 -spec run_checkpoint_loop(pid(), checkpoint_callback(), non_neg_integer(), run_options()) ->
     run_result().
 run_checkpoint_loop(Master, CheckpointCallback, Iteration, Options) ->
+    RunId = maps:get(run_id, Options, generate_run_id()),
     case pregel:step(Master) of
         {continue, Info} ->
             %% 1. 总是先获取 checkpoint（超步已完成或初始化完成）
             PregelCheckpoint = pregel:get_checkpoint_data(Master),
             Type = maps:get(type, Info),
+            Superstep = maps:get(superstep, Info, 0),
+
+            %% 提取顶点信息
+            Vertices = maps:get(vertices, PregelCheckpoint, #{}),
+            {ActiveVertices, CompletedVertices} = classify_vertices(Vertices),
+
             CheckpointData = #{
                 type => Type,
                 pregel_checkpoint => PregelCheckpoint,
-                iteration => Iteration
+                iteration => Iteration,
+                %% 新增字段
+                run_id => RunId,
+                active_vertices => ActiveVertices,
+                completed_vertices => CompletedVertices,
+                superstep => Superstep
             },
 
             %% 2. 调用 checkpoint 回调
@@ -309,16 +322,28 @@ handle_checkpoint_continue(error, continue, Master, Callback, _Data, _Info, Iter
 handle_checkpoint_continue(error, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
     build_stopped_result(Data, Reason, Iteration);
 handle_checkpoint_continue(error, {retry, VertexIds}, Master, Callback, _Data, _Info, Iteration, Options) ->
+    RunId = maps:get(run_id, Options, generate_run_id()),
     %% 重试指定顶点
     case pregel:retry(Master, VertexIds) of
         {continue, NewInfo} ->
             %% 重试后继续，获取新的 checkpoint
             NewPregelCheckpoint = pregel:get_checkpoint_data(Master),
             NewType = maps:get(type, NewInfo),
+            NewSuperstep = maps:get(superstep, NewInfo, 0),
+
+            %% 提取顶点信息
+            NewVertices = maps:get(vertices, NewPregelCheckpoint, #{}),
+            {NewActiveVertices, NewCompletedVertices} = classify_vertices(NewVertices),
+
             NewCheckpointData = #{
                 type => NewType,
                 pregel_checkpoint => NewPregelCheckpoint,
-                iteration => Iteration
+                iteration => Iteration,
+                %% 新增字段
+                run_id => RunId,
+                active_vertices => NewActiveVertices,
+                completed_vertices => NewCompletedVertices,
+                superstep => NewSuperstep
             },
             %% 递归调用处理新的状态（不增加 iteration）
             NewCallbackResult = Callback(NewInfo, NewCheckpointData),
@@ -348,12 +373,25 @@ handle_checkpoint_continue(final, _, _Master, _Callback, Data, _Info, Iteration,
 -spec handle_checkpoint_done(pid(), pregel:done_reason(), pregel:superstep_info(),
                              non_neg_integer(), checkpoint_callback(), run_options()) -> run_result().
 handle_checkpoint_done(Master, Reason, Info, Iteration, CheckpointCallback, Options) ->
+    RunId = maps:get(run_id, Options, generate_run_id()),
+    Superstep = maps:get(superstep, Info, 0),
+
     %% 1. 获取最终的 checkpoint 数据
     PregelCheckpoint = pregel:get_checkpoint_data(Master),
+
+    %% 提取顶点信息
+    Vertices = maps:get(vertices, PregelCheckpoint, #{}),
+    {ActiveVertices, CompletedVertices} = classify_vertices(Vertices),
+
     CheckpointData = #{
         type => final,
         pregel_checkpoint => PregelCheckpoint,
-        iteration => Iteration
+        iteration => Iteration,
+        %% 新增字段
+        run_id => RunId,
+        active_vertices => ActiveVertices,
+        completed_vertices => CompletedVertices,
+        superstep => Superstep
     },
 
     %% 2. 调用 checkpoint 回调，让上层有机会保存最终状态
@@ -637,3 +675,30 @@ maybe_add_trace(Result, Trace, true) ->
     Result#{trace => lists:reverse(Trace)};
 maybe_add_trace(Result, _Trace, false) ->
     Result.
+
+%%====================================================================
+%% 内部: 顶点分类和 ID 生成
+%%====================================================================
+
+%% @private 分类顶点状态
+%% 返回 {ActiveVertices, CompletedVertices}
+-spec classify_vertices(#{atom() => pregel_vertex:vertex()}) ->
+    {[atom()], [atom()]}.
+classify_vertices(Vertices) ->
+    maps:fold(
+        fun(Id, Vertex, {Active, Completed}) ->
+            case pregel_vertex:is_active(Vertex) of
+                true -> {[Id | Active], Completed};
+                false -> {Active, [Id | Completed]}
+            end
+        end,
+        {[], []},
+        Vertices
+    ).
+
+%% @private 生成执行 ID
+-spec generate_run_id() -> binary().
+generate_run_id() ->
+    <<A:32, B:16, C:16, D:16, E:48>> = crypto:strong_rand_bytes(16),
+    iolist_to_binary(io_lib:format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b",
+                                   [A, B, C, D, E])).
