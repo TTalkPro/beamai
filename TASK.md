@@ -136,76 +136,7 @@
 
 ### 4.6 移除 pending_messages，实现 BSP 集中路由 ✅
 
-**完成日期**: 2026-01-21
-
-**目的**: 根据 `info/pregel_message_reliability_analysis.md` 的分析，移除不合理的 `pending_messages` 机制，改用 BSP 模型的集中路由方式
-
-#### 修改内容
-
-**pregel_worker.erl**:
-- [x] 移除 `route_messages/2` 函数（不再实时发送消息）
-- [x] 移除 `group_by_target_worker/2` 函数
-- [x] 移除 `send_to_worker/5` 函数
-- [x] 修改 `notify_master_done/5`，上报 outbox 给 Master
-
-**pregel_barrier.erl**:
-- [x] 扩展 `superstep_results()` 类型，增加 `outbox` 字段
-- [x] 修改 `merge_worker_result/2`，汇总所有 Worker 的 outbox
-
-**pregel_master.erl**:
-- [x] 移除 `pending_messages` 字段
-- [x] 移除 `handle_route_messages/3` 函数
-- [x] 移除 `collect_pending_messages_list/1` 函数
-- [x] 新增 `route_all_messages/3` 函数（集中路由）
-- [x] 新增 `group_messages_by_worker/2` 函数
-- [x] 修改 `complete_superstep/1`，从汇总结果获取 outbox 并路由
-
-#### 新架构
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    BSP 消息路由架构                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  超步执行阶段:                                                   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  Worker 执行顶点计算                                     │   │
-│  │  • 计算结果保存在 superstep_state                        │   │
-│  │  • 发出的消息保存在 Worker 的 outbox                     │   │
-│  │  • 不实时发送消息（BSP 模型）                            │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  超步完成阶段:                                                   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  Worker 上报 Master                                      │   │
-│  │  • 汇总结果（active_count, failed_vertices 等）          │   │
-│  │  • outbox 内容（待路由的消息）                           │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  消息路由阶段:                                                   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  Master 统一路由                                         │   │
-│  │  • 收集所有 Worker 的 outbox                            │   │
-│  │  • 按目标 Worker 分组                                    │   │
-│  │  • 可靠投递到各 Worker 的 inbox                         │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-#### 新增测试
-
-**pregel_message_routing_tests.erl** - 8 tests:
-- [x] Master 路由消息测试
-- [x] 多 Worker 消息路由测试
-- [x] 链式消息传递测试
-- [x] Worker outbox 上报测试
-- [x] 无 pending_messages 依赖测试
-- [x] 消息在超步结束时投递测试
-- [x] 空 outbox 测试
-- [x] 所有顶点发送消息测试
+详见 `TASK_DONE.md`
 
 ---
 
@@ -266,8 +197,9 @@
 | `pregel_barrier_tests.erl` | 9 tests |
 | `pregel_master_callback_tests.erl` | 11 tests |
 | `pregel_message_routing_tests.erl` | 8 tests |
+| `pregel_checkpoint_restore_tests.erl` | 13 tests |
 | `graph_compute_tests.erl` | 4 tests |
-| **总计** | **45 tests** |
+| **总计** | **58 tests** |
 
 ---
 
@@ -278,6 +210,127 @@
 - `info/pregel_worker_error_handling_design.md` - Worker 错误处理设计
 - `info/pregel_message_reliability_analysis.md` - 消息可靠性分析
 - `info/pregel_outbox_vs_pending_writes.md` - Outbox 与 pending_writes 对比
+
+---
+
+## P1: Checkpoint 恢复功能 ✅
+
+**优先级**: P1 (高)
+
+**前置条件**: P0 回调机制已完成 ✅
+
+**目标**: 支持从 checkpoint 恢复执行，实现完整的保存-恢复流程
+
+### 设计概述
+
+```
+保存 checkpoint（已实现）:
+┌─────────────────────────────────────────────────────────────┐
+│  on_superstep_complete 回调                                  │
+│         │                                                    │
+│         ▼                                                    │
+│  get_checkpoint_data() ──► checkpoint_data()                │
+│                              │                               │
+│                              ├── superstep: 2                │
+│                              ├── vertices: #{v1 => ...}      │
+│                              └── pending_messages: [...]     │
+└─────────────────────────────────────────────────────────────┘
+
+恢复 checkpoint（已实现）:
+┌─────────────────────────────────────────────────────────────┐
+│  pregel_master:run(Graph, ComputeFn, Opts)                   │
+│                                      │                       │
+│                                      ▼                       │
+│  Opts = #{                                                   │
+│      restore_from => #{              %% 恢复选项             │
+│          superstep => 2,             %% 从超步 2 开始        │
+│          vertices => #{...},         %% 恢复的顶点状态       │
+│          messages => [...]           %% 待投递的消息         │
+│      }                                                       │
+│  }                                                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 类型设计
+
+```erlang
+%% 恢复选项
+-type restore_opts() :: #{
+    superstep := non_neg_integer(),        %% 起始超步
+    vertices := #{vertex_id() => vertex()}, %% 顶点状态
+    messages => [{vertex_id(), term()}]     %% 待投递消息（可选）
+}.
+
+%% 扩展 opts()
+-type opts() :: #{
+    combiner => pregel_combiner:spec(),
+    max_supersteps => pos_integer(),
+    num_workers => pos_integer(),
+    on_superstep => fun((non_neg_integer(), graph()) -> ok),
+    on_superstep_complete => superstep_complete_callback(),
+    restore_from => restore_opts()  %% 从 checkpoint 恢复
+}.
+```
+
+---
+
+### 5.1 扩展 opts() 类型支持恢复选项 ✅
+
+**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
+
+- [x] 定义 `restore_opts()` 类型
+- [x] 修改 `opts()` 类型，添加 `restore_from` 选项
+- [x] 导出类型
+
+---
+
+### 5.2 修改 pregel_master init 支持初始状态 ✅
+
+**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
+
+- [x] 修改 `init/1`，解析 `restore_from` 选项
+- [x] 从 `restore_from.superstep` 初始化超步号
+- [x] 添加 `get_restore_superstep/1` 辅助函数
+
+---
+
+### 5.3 修改 start_workers 支持顶点状态恢复 ✅
+
+**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
+
+- [x] 修改 `start_workers/1`，支持传入恢复的顶点状态
+- [x] 修改 `start_worker_processes/6`，合并恢复的顶点
+- [x] 添加 `get_restore_vertices/1` 和 `merge_restored_vertices/2` 辅助函数
+
+---
+
+### 5.4 实现初始消息注入 ✅
+
+**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
+
+- [x] 修改 `handle_call(start_execution)`，在启动超步前注入消息
+- [x] 添加 `inject_restore_messages/1` 函数
+- [x] 使用现有的 `route_all_messages/3` 将消息路由到 Workers
+
+---
+
+### 5.5 添加测试 ✅
+
+**文件**: `apps/beamai_core/test/pregel_checkpoint_restore_tests.erl`
+
+- [x] 测试从指定超步恢复（restore_from_superstep_2_test）
+- [x] 测试顶点状态恢复（restored_vertex_values_test, final_graph_has_restored_vertices_test）
+- [x] 测试消息注入（injected_messages_received_test）
+- [x] 测试完整的保存-恢复流程（save_and_restore_consistency_test）
+- [x] 测试边界情况（empty_messages_restore_test, partial_vertices_restore_test 等）
+
+**测试统计**: 13 tests
+
+---
+
+### 5.6 更新文档
+
+- [ ] 更新 `info/pregel_callback_checkpoint_analysis.md` 添加恢复流程说明
 
 ---
 

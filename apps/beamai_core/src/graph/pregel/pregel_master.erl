@@ -19,7 +19,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 %% 类型导出
--export_type([opts/0, result/0]).
+-export_type([opts/0, result/0, restore_opts/0]).
 -export_type([superstep_complete_info/0, superstep_complete_result/0, checkpoint_data/0]).
 
 %%====================================================================
@@ -60,13 +60,24 @@
 %% 超步完成回调函数类型
 -type superstep_complete_callback() :: fun((superstep_complete_info()) -> superstep_complete_result()).
 
+%% Checkpoint 恢复选项
+%% superstep: 起始超步号
+%% vertices: 恢复的顶点状态（覆盖原图中对应顶点）
+%% messages: 待投递消息列表（可选，在第一个超步前注入）
+-type restore_opts() :: #{
+    superstep := non_neg_integer(),
+    vertices := #{vertex_id() => vertex()},
+    messages => [{vertex_id(), term()}]
+}.
+
 %% Pregel 执行选项
 -type opts() :: #{
     combiner => pregel_combiner:spec(),
     max_supersteps => pos_integer(),
     num_workers => pos_integer(),
     on_superstep => fun((non_neg_integer(), graph()) -> ok),
-    on_superstep_complete => superstep_complete_callback()
+    on_superstep_complete => superstep_complete_callback(),
+    restore_from => restore_opts()  %% 从 checkpoint 恢复
 }.
 
 %% Pregel 执行结果
@@ -92,7 +103,8 @@
     barrier          :: pregel_barrier:t(),         %% 同步屏障
     caller           :: gen_server:from() | undefined,  %% 调用者
     on_superstep     :: fun((non_neg_integer(), graph()) -> ok) | undefined,
-    on_superstep_complete :: superstep_complete_callback() | undefined  %% 超步完成回调
+    on_superstep_complete :: superstep_complete_callback() | undefined,  %% 超步完成回调
+    restore_from     :: restore_opts() | undefined  %% 恢复选项（启动后消费）
 }).
 
 %%====================================================================
@@ -134,6 +146,10 @@ stop(Pid) ->
 %%====================================================================
 
 init({Graph, ComputeFn, Opts}) ->
+    %% 解析恢复选项
+    RestoreOpts = maps:get(restore_from, Opts, undefined),
+    InitialSuperstep = get_restore_superstep(RestoreOpts),
+
     State = #state{
         graph = Graph,
         compute_fn = ComputeFn,
@@ -141,28 +157,33 @@ init({Graph, ComputeFn, Opts}) ->
         max_supersteps = maps:get(max_supersteps, Opts, 100),
         num_workers = maps:get(num_workers, Opts, erlang:system_info(schedulers)),
         workers = #{},
-        superstep = 0,
+        superstep = InitialSuperstep,
         barrier = pregel_barrier:new(0),
         caller = undefined,
         on_superstep = maps:get(on_superstep, Opts, undefined),
-        on_superstep_complete = maps:get(on_superstep_complete, Opts, undefined)
+        on_superstep_complete = maps:get(on_superstep_complete, Opts, undefined),
+        restore_from = RestoreOpts
     },
     {ok, State}.
 
 handle_call(start_execution, From, State) ->
     StateWithCaller = State#state{caller = From},
-    %% 启动 Workers
+    %% 启动 Workers（传入恢复的顶点状态）
     StateWithWorkers = start_workers(StateWithCaller),
+    %% 注入恢复的消息（如果有）
+    inject_restore_messages(StateWithWorkers),
+    %% 清除 restore_from（已消费）
+    StateReady = StateWithWorkers#state{restore_from = undefined},
     %% 调用 initial 回调
-    case call_superstep_complete(initial, empty_superstep_results(), StateWithWorkers) of
+    case call_superstep_complete(initial, empty_superstep_results(), StateReady) of
         continue ->
             %% 继续执行第一个超步
-            broadcast_start_superstep(StateWithWorkers),
-            {noreply, StateWithWorkers};
+            broadcast_start_superstep(StateReady),
+            {noreply, StateReady};
         {stop, Reason} ->
             %% 回调要求停止，返回结果
-            finish_execution({stopped, Reason}, StateWithWorkers),
-            {noreply, StateWithWorkers}
+            finish_execution({stopped, Reason}, StateReady),
+            {noreply, StateReady}
     end;
 
 handle_call(get_graph, _From, #state{graph = Graph} = State) ->
@@ -195,19 +216,24 @@ terminate(_Reason, #state{workers = Workers}) ->
 %%====================================================================
 
 %% @private 启动所有 Worker 进程
+%% 如果有恢复选项，使用恢复的顶点状态覆盖原图顶点
 -spec start_workers(#state{}) -> #state{}.
 start_workers(#state{
     graph = Graph,
     compute_fn = ComputeFn,
     combiner = Combiner,
-    num_workers = NumWorkers
+    num_workers = NumWorkers,
+    restore_from = RestoreOpts
 } = State) ->
     %% 分区图
     Partitions = pregel_partition:partition_graph(Graph, NumWorkers),
     NumVertices = pregel_graph:size(Graph),
 
-    %% 启动 Worker
-    Workers = start_worker_processes(Partitions, ComputeFn, Combiner, NumWorkers, NumVertices),
+    %% 获取恢复的顶点状态
+    RestoredVertices = get_restore_vertices(RestoreOpts),
+
+    %% 启动 Worker（传入恢复的顶点状态）
+    Workers = start_worker_processes(Partitions, ComputeFn, Combiner, NumWorkers, NumVertices, RestoredVertices),
 
     %% 广播 Worker PID 映射
     broadcast_worker_pids(Workers),
@@ -218,16 +244,21 @@ start_workers(#state{
     }.
 
 %% @private 启动各 Worker 进程
+%% RestoredVertices: 恢复的顶点状态映射，用于覆盖分区中对应的顶点
 -spec start_worker_processes(#{non_neg_integer() => graph()},
                               compute_fn(),
                               pregel_combiner:spec() | undefined,
                               pos_integer(),
-                              non_neg_integer()) ->
+                              non_neg_integer(),
+                              #{vertex_id() => vertex()}) ->
     #{non_neg_integer() => pid()}.
-start_worker_processes(Partitions, ComputeFn, Combiner, NumWorkers, NumVertices) ->
+start_worker_processes(Partitions, ComputeFn, Combiner, NumWorkers, NumVertices, RestoredVertices) ->
     maps:fold(
         fun(WorkerId, WorkerGraph, Acc) ->
-            Vertices = vertices_to_map(pregel_graph:vertices(WorkerGraph)),
+            %% 获取分区顶点
+            PartitionVertices = vertices_to_map(pregel_graph:vertices(WorkerGraph)),
+            %% 合并恢复的顶点（恢复的顶点覆盖原顶点）
+            Vertices = merge_restored_vertices(PartitionVertices, RestoredVertices),
             Opts = #{
                 worker_id => WorkerId,
                 master => self(),
@@ -519,3 +550,56 @@ empty_superstep_results() ->
         interrupted_count => 0,
         interrupted_vertices => []
     }.
+
+%%====================================================================
+%% Checkpoint 恢复辅助函数
+%%====================================================================
+
+%% @private 获取恢复选项中的超步号
+%% 如果没有恢复选项，返回 0（从头开始）
+-spec get_restore_superstep(restore_opts() | undefined) -> non_neg_integer().
+get_restore_superstep(undefined) -> 0;
+get_restore_superstep(#{superstep := Superstep}) -> Superstep;
+get_restore_superstep(_) -> 0.
+
+%% @private 获取恢复选项中的顶点状态
+%% 如果没有恢复选项，返回空映射
+-spec get_restore_vertices(restore_opts() | undefined) -> #{vertex_id() => vertex()}.
+get_restore_vertices(undefined) -> #{};
+get_restore_vertices(#{vertices := Vertices}) -> Vertices;
+get_restore_vertices(_) -> #{}.
+
+%% @private 获取恢复选项中的消息列表
+%% 如果没有恢复选项或没有消息字段，返回空列表
+-spec get_restore_messages(restore_opts() | undefined) -> [{vertex_id(), term()}].
+get_restore_messages(undefined) -> [];
+get_restore_messages(#{messages := Messages}) -> Messages;
+get_restore_messages(_) -> [].
+
+%% @private 注入恢复的消息到 Workers
+%% 使用现有的 route_all_messages 函数进行路由
+-spec inject_restore_messages(#state{}) -> ok.
+inject_restore_messages(#state{
+    restore_from = RestoreOpts,
+    workers = Workers,
+    num_workers = NumWorkers
+}) ->
+    Messages = get_restore_messages(RestoreOpts),
+    route_all_messages(Messages, Workers, NumWorkers).
+
+%% @private 合并恢复的顶点到分区顶点
+%% 恢复的顶点覆盖分区中对应 ID 的顶点
+-spec merge_restored_vertices(#{vertex_id() => vertex()},
+                               #{vertex_id() => vertex()}) ->
+    #{vertex_id() => vertex()}.
+merge_restored_vertices(PartitionVertices, RestoredVertices) ->
+    maps:fold(
+        fun(Id, RestoredVertex, Acc) ->
+            case maps:is_key(Id, Acc) of
+                true -> Acc#{Id => RestoredVertex};
+                false -> Acc  %% 忽略不在分区中的顶点
+            end
+        end,
+        PartitionVertices,
+        RestoredVertices
+    ).
