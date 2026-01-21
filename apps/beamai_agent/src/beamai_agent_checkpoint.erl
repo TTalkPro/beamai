@@ -238,13 +238,17 @@ restore_checkpoint_state(Memory, AgentId, CpId, State) ->
 
 %% @private 应用检查点数据到状态
 %%
-%% 恢复 messages、full_messages、scratchpad 和 context 到状态。
-%% 注意：context 使用合并策略，保留当前状态中存在但检查点中不存在的键。
+%% 恢复 messages、full_messages、scratchpad、context 和 run_id 到状态。
+%%
+%% 注意：
+%% - context 使用合并策略，保留当前状态中存在但检查点中不存在的键
+%% - run_id 恢复确保 interrupt 前后的执行使用相同的 run_id
 -spec apply_checkpoint_data(map(), #state{}) -> #state{}.
 apply_checkpoint_data(Data, #state{context = CurrentCtx} = State) ->
     Messages = maps:get(messages, Data, []),
     FullMessages = maps:get(full_messages, Data, []),
     Scratchpad = maps:get(scratchpad, Data, []),
+    RunId = maps:get(run_id, Data, undefined),
     %% Context 恢复：检查点数据覆盖当前值，但保留检查点中没有的当前键
     SavedCtx = maps:get(context, Data, #{}),
     NewCtx = maps:merge(CurrentCtx, SavedCtx),
@@ -252,7 +256,8 @@ apply_checkpoint_data(Data, #state{context = CurrentCtx} = State) ->
         messages = Messages,
         full_messages = FullMessages,
         scratchpad = Scratchpad,
-        context = NewCtx
+        context = NewCtx,
+        run_id = RunId
     }.
 
 %% @private 将检查点元组转换为 map
