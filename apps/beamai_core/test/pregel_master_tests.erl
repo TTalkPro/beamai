@@ -83,9 +83,13 @@ step_api_basic_test() ->
 
     {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{num_workers => 1}),
     try
-        %% 第一步
-        StepResult = pregel_master:step(Master),
-        ?assertMatch({done, completed, _}, StepResult),
+        %% 第一步返回 initial checkpoint（不执行超步）
+        Step1 = pregel_master:step(Master),
+        ?assertMatch({continue, #{type := initial}}, Step1),
+
+        %% 第二步执行超步 0，应该完成
+        Step2 = pregel_master:step(Master),
+        ?assertMatch({done, completed, _}, Step2),
 
         %% 获取结果
         Result = pregel_master:get_result(Master),
@@ -118,13 +122,17 @@ step_api_multi_step_test() ->
 
     {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{num_workers => 1}),
     try
-        %% 第一步应该继续
+        %% 第一步返回 initial checkpoint（不执行超步）
         Step1 = pregel_master:step(Master),
-        ?assertMatch({continue, _}, Step1),
+        ?assertMatch({continue, #{type := initial}}, Step1),
 
-        %% 第二步应该完成
+        %% 第二步执行超步 0，v1 发送消息给 v2，应该继续
         Step2 = pregel_master:step(Master),
-        ?assertMatch({done, completed, _}, Step2)
+        ?assertMatch({continue, #{type := step}}, Step2),
+
+        %% 第三步执行超步 1，v2 处理消息并停止，应该完成
+        Step3 = pregel_master:step(Master),
+        ?assertMatch({done, completed, _}, Step3)
     after
         pregel_master:stop(Master)
     end.

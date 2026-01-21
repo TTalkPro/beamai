@@ -23,7 +23,7 @@
 
 %% 类型导出
 -export_type([opts/0, result/0, restore_opts/0, checkpoint_data/0]).
--export_type([step_result/0, superstep_info/0]).
+-export_type([step_result/0, superstep_info/0, checkpoint_type/0]).
 -export_type([state_reducer/0, reducer_context/0]).
 
 %%====================================================================
@@ -44,8 +44,17 @@
     vertex_inbox := #{vertex_id() => [term()]}
 }.
 
+%% Checkpoint 类型
+%% - initial: 超步 0 执行前的初始状态
+%% - step: 正常超步完成
+%% - error: 超步完成但有失败的顶点
+%% - interrupt: 超步完成但有中断的顶点（human-in-the-loop）
+%% - final: 执行结束（completed 或 max_supersteps）
+-type checkpoint_type() :: initial | step | error | interrupt | final.
+
 %% 超步信息（step 返回给调用者）
 -type superstep_info() :: #{
+    type := checkpoint_type(),           %% checkpoint 类型
     superstep := non_neg_integer(),
     active_count := non_neg_integer(),
     message_count := non_neg_integer(),
@@ -119,6 +128,7 @@
     last_results     :: pregel_barrier:superstep_results() | undefined,
     %% 状态标志
     initialized      :: boolean(),                  %% 是否已初始化 workers
+    initial_returned :: boolean(),                  %% 是否已返回 initial checkpoint
     halted           :: boolean()                   %% 是否已终止
 }).
 
@@ -179,30 +189,32 @@ init({Graph, ComputeFn, Opts}) ->
         state_reducer = maps:get(state_reducer, Opts, undefined),
         last_results = undefined,
         initialized = false,
+        initial_returned = false,
         halted = false
     },
     {ok, State}.
 
 handle_call(step, _From, #state{halted = true} = State) ->
     %% 已终止，返回最后的信息
-    Info = build_superstep_info(State#state.last_results),
+    Info = build_superstep_info(final, State#state.last_results),
     {reply, {done, get_done_reason(State), Info}, State};
 
-handle_call(step, From, #state{initialized = false} = State) ->
-    %% 首次 step：初始化 workers
+handle_call(step, _From, #state{initialized = false} = State) ->
+    %% 首次 step：初始化 workers，返回 initial checkpoint
+    %% 不启动超步，让调用者有机会保存初始状态
     StateWithWorkers = start_workers(State),
     inject_restore_messages(StateWithWorkers),
     StateReady = StateWithWorkers#state{
         restore_from = undefined,
         initialized = true,
-        step_caller = From
+        initial_returned = true
     },
-    %% 启动第一个超步
-    broadcast_start_superstep(StateReady),
-    {noreply, StateReady};
+    %% 构建 initial 类型的 info
+    Info = build_superstep_info(initial, undefined),
+    {reply, {continue, Info}, StateReady};
 
 handle_call(step, From, #state{initialized = true} = State) ->
-    %% 后续 step：启动下一个超步
+    %% 后续 step：启动超步执行
     NewState = State#state{
         step_caller = From,
         barrier = pregel_barrier:new(maps:size(State#state.workers))
@@ -212,7 +224,7 @@ handle_call(step, From, #state{initialized = true} = State) ->
 
 handle_call({retry, _VertexIds}, _From, #state{halted = true} = State) ->
     %% 已终止，不能重试
-    Info = build_superstep_info(State#state.last_results),
+    Info = build_superstep_info(final, State#state.last_results),
     {reply, {done, get_done_reason(State), Info}, State};
 
 handle_call({retry, _VertexIds}, _From, #state{last_results = undefined} = State) ->
@@ -230,8 +242,11 @@ handle_call(get_checkpoint_data, _From, #state{
     last_results = Results
 } = State) ->
     Vertices = collect_vertices_from_workers(Workers),
-    Outbox = maps:get(outbox, Results, []),
-    Inbox = maps:get(inbox, Results, #{}),
+    %% 处理 last_results 为 undefined 的情况（initial checkpoint）
+    {Outbox, Inbox} = case Results of
+        undefined -> {[], #{}};
+        _ -> {maps:get(outbox, Results, []), maps:get(inbox, Results, #{})}
+    end,
     Data = #{
         superstep => Superstep,
         vertices => Vertices,
@@ -454,8 +469,12 @@ complete_superstep(#state{
     MaxReached = Superstep >= MaxSupersteps - 1,
     IsDone = Halted orelse MaxReached,
 
-    %% 7. 构建返回信息
-    Info = build_superstep_info(UpdatedResults),
+    %% 7. 确定 checkpoint 类型并构建返回信息
+    Type = case IsDone of
+        true -> final;
+        false -> determine_checkpoint_type(UpdatedResults)
+    end,
+    Info = build_superstep_info(Type, UpdatedResults),
 
     %% 8. 更新状态
     NewState = State#state{
@@ -522,8 +541,9 @@ execute_retry(VertexIds, #state{
         message_count => maps:get(message_count, MergedResults, 0) + length(ReducedRetryOutbox)
     },
 
-    %% 8. 构建返回信息
-    Info = build_superstep_info(UpdatedResults),
+    %% 8. 确定 checkpoint 类型并构建返回信息
+    Type = determine_checkpoint_type(UpdatedResults),
+    Info = build_superstep_info(Type, UpdatedResults),
 
     %% 9. 更新状态
     NewState = State#state{
@@ -606,10 +626,11 @@ group_messages_by_worker(Messages, NumWorkers) ->
 %% 辅助函数
 %%====================================================================
 
-%% @private 构建超步信息
--spec build_superstep_info(pregel_barrier:superstep_results() | undefined) -> superstep_info().
-build_superstep_info(undefined) ->
+%% @private 构建超步信息（带类型）
+-spec build_superstep_info(checkpoint_type(), pregel_barrier:superstep_results() | undefined) -> superstep_info().
+build_superstep_info(Type, undefined) ->
     #{
+        type => Type,
         superstep => 0,
         active_count => 0,
         message_count => 0,
@@ -618,8 +639,9 @@ build_superstep_info(undefined) ->
         interrupted_count => 0,
         interrupted_vertices => []
     };
-build_superstep_info(Results) ->
+build_superstep_info(Type, Results) ->
     #{
+        type => Type,
         superstep => maps:get(superstep, Results, 0),
         active_count => maps:get(active_count, Results, 0),
         message_count => maps:get(message_count, Results, 0),
@@ -628,6 +650,18 @@ build_superstep_info(Results) ->
         interrupted_count => maps:get(interrupted_count, Results, 0),
         interrupted_vertices => maps:get(interrupted_vertices, Results, [])
     }.
+
+%% @private 根据结果判断 checkpoint 类型
+%% 优先级：interrupt > error > step
+-spec determine_checkpoint_type(pregel_barrier:superstep_results()) -> checkpoint_type().
+determine_checkpoint_type(Results) ->
+    InterruptedCount = maps:get(interrupted_count, Results, 0),
+    FailedCount = maps:get(failed_count, Results, 0),
+    if
+        InterruptedCount > 0 -> interrupt;
+        FailedCount > 0 -> error;
+        true -> step
+    end.
 
 %% @private 获取终止原因
 -spec get_done_reason(#state{}) -> done_reason().

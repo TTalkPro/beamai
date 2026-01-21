@@ -194,3 +194,159 @@ restore_from_checkpoint_test() ->
     %% 恢复后应该完成或返回错误（取决于图执行逻辑）
     Status2 = maps:get(status, Result2),
     ?assert(Status2 =:= completed orelse Status2 =:= error).
+
+%%====================================================================
+%% Checkpoint 类型测试
+%%====================================================================
+
+%% 测试：checkpoint 数据包含 type 字段
+checkpoint_contains_type_test() ->
+    Graph = make_multi_step_graph(),
+    InitialState = graph:state(#{count => 0}),
+
+    Self = self(),
+    Callback = fun(Info, CheckpointData) ->
+        Self ! {checkpoint, Info, CheckpointData},
+        continue
+    end,
+
+    Options = #{on_checkpoint => Callback},
+    _Result = graph:run(Graph, InitialState, Options),
+
+    %% 获取第一个 checkpoint，验证 type 字段
+    receive
+        {checkpoint, Info, Data} ->
+            %% Info 和 Data 都应该包含 type
+            ?assert(maps:is_key(type, Info)),
+            ?assert(maps:is_key(type, Data)),
+            %% 第一个 checkpoint 应该是 initial 类型
+            ?assertEqual(initial, maps:get(type, Info))
+    after 1000 ->
+        ?assert(false)
+    end.
+
+%% 测试：initial 类型不允许 retry
+initial_type_retry_not_allowed_test() ->
+    Graph = make_multi_step_graph(),
+    InitialState = graph:state(#{count => 0}),
+
+    %% 在 initial checkpoint 时尝试 retry
+    Callback = fun(Info, _CheckpointData) ->
+        case maps:get(type, Info) of
+            initial ->
+                %% 尝试在 initial 时 retry（应该导致错误）
+                {retry, [some_vertex]};
+            _ ->
+                continue
+        end
+    end,
+
+    Options = #{on_checkpoint => Callback},
+    Result = graph:run(Graph, InitialState, Options),
+
+    %% 应该返回错误
+    ?assertEqual(error, maps:get(status, Result)),
+    ?assertMatch({invalid_operation, {retry_not_allowed, initial}}, maps:get(error, Result)).
+
+%% 测试：step 类型不允许 retry
+step_type_retry_not_allowed_test() ->
+    Graph = make_multi_step_graph(),
+    InitialState = graph:state(#{count => 0}),
+
+    %% 在第一个 step checkpoint 时尝试 retry
+    Callback = fun(Info, _CheckpointData) ->
+        case maps:get(type, Info) of
+            initial ->
+                continue;
+            step ->
+                %% 尝试在 step 时 retry（应该导致错误）
+                {retry, [some_vertex]};
+            _ ->
+                continue
+        end
+    end,
+
+    Options = #{on_checkpoint => Callback},
+    Result = graph:run(Graph, InitialState, Options),
+
+    %% 应该返回错误
+    ?assertEqual(error, maps:get(status, Result)),
+    ?assertMatch({invalid_operation, {retry_not_allowed, step}}, maps:get(error, Result)).
+
+%%====================================================================
+%% resume_data 测试
+%%====================================================================
+
+%% 测试：执行完成时（done）也调用 checkpoint 回调
+final_checkpoint_callback_called_test() ->
+    Graph = make_multi_step_graph(),
+    InitialState = graph:state(#{count => 0}),
+
+    Self = self(),
+    Callback = fun(Info, CheckpointData) ->
+        Self ! {checkpoint, maps:get(type, Info), CheckpointData},
+        continue
+    end,
+
+    Options = #{on_checkpoint => Callback},
+    Result = graph:run(Graph, InitialState, Options),
+
+    %% 收集所有 checkpoint 类型
+    Types = collect_checkpoint_types([]),
+
+    %% 验证包含 final 类型（不管执行是否成功，final 回调都应该被调用）
+    ?assert(lists:member(final, Types)),
+
+    %% 验证 done_reason 是 completed（pregel 层面完成）
+    ?assertEqual(completed, maps:get(done_reason, Result)),
+
+    %% 验证结果中包含最终 checkpoint
+    ?assert(maps:is_key(checkpoint, Result)).
+
+collect_checkpoint_types(Acc) ->
+    receive
+        {checkpoint, Type, _Data} ->
+            collect_checkpoint_types([Type | Acc])
+    after 100 ->
+        lists:reverse(Acc)
+    end.
+
+%% 测试：resume_data 被转换为消息注入
+resume_data_injection_test() ->
+    Graph = make_multi_step_graph(),
+    InitialState = graph:state(#{count => 0}),
+
+    %% 第一次执行，保存 checkpoint 后停止
+    Self = self(),
+    Callback = fun(_Info, CheckpointData) ->
+        Self ! {save_checkpoint, CheckpointData},
+        {stop, waiting_for_input}
+    end,
+
+    Options1 = #{on_checkpoint => Callback},
+    Result1 = graph:run(Graph, InitialState, Options1),
+
+    ?assertEqual(stopped, maps:get(status, Result1)),
+
+    %% 获取保存的 checkpoint
+    CheckpointData = receive
+        {save_checkpoint, Data} -> Data
+    after 1000 ->
+        error(no_checkpoint_saved)
+    end,
+
+    %% 准备恢复选项，包含 resume_data
+    #{pregel_checkpoint := PregelCheckpoint, iteration := Iteration} = CheckpointData,
+    RestoreOpts = #{
+        pregel_checkpoint => PregelCheckpoint,
+        iteration => Iteration,
+        resume_data => #{process => {user_input, "hello"}}
+    },
+
+    %% 恢复执行
+    Options2 = #{restore_from => RestoreOpts},
+    Result2 = graph:run(Graph, InitialState, Options2),
+
+    %% 验证执行完成（resume_data 作为消息被注入，但这里只验证能正常恢复）
+    Status2 = maps:get(status, Result2),
+    ?assert(Status2 =:= completed orelse Status2 =:= error).

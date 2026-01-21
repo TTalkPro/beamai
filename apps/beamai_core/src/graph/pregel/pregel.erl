@@ -59,7 +59,7 @@
 
 %% 类型导出
 -export_type([graph/0, vertex/0, compute_fn/0, context/0, opts/0, result/0]).
--export_type([step_result/0, superstep_info/0, checkpoint_data/0]).
+-export_type([step_result/0, superstep_info/0, checkpoint_data/0, checkpoint_type/0]).
 
 %%====================================================================
 %% 类型定义
@@ -82,6 +82,7 @@
 -type step_result() :: pregel_master:step_result().
 -type superstep_info() :: pregel_master:superstep_info().
 -type checkpoint_data() :: pregel_master:checkpoint_data().
+-type checkpoint_type() :: pregel_master:checkpoint_type().
 
 %%====================================================================
 %% 图构建 API

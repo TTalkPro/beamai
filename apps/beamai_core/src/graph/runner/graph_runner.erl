@@ -32,22 +32,41 @@
 %% Checkpoint 数据类型（包含 pregel 层状态）
 %% 注意：graph 层状态存储在各顶点的 value.result 中，
 %% 多扇出场景下状态分散在多个顶点，只有 __end__ 才有合并后的最终状态
+%%
+%% Checkpoint 类型说明：
+%% - initial: 超步 0 执行前的初始状态
+%% - step: 正常超步完成
+%% - error: 超步完成但有失败的顶点
+%% - interrupt: 超步完成但有中断的顶点（human-in-the-loop）
+%% - final: 执行结束
 -type checkpoint_data() :: #{
+    type := pregel:checkpoint_type(),              %% checkpoint 类型
     pregel_checkpoint := pregel:checkpoint_data(), %% pregel 层 checkpoint（含所有顶点状态）
     iteration := non_neg_integer()                 %% 当前迭代次数
 }.
 
+%% Checkpoint 回调结果类型
+%% - continue: 继续执行下一超步
+%% - {stop, Reason}: 停止执行，保存 checkpoint 以便恢复
+%% - {retry, VertexIds}: 重试指定顶点（仅 error 类型有效，同步操作）
+-type checkpoint_callback_result() ::
+    continue |
+    {stop, term()} |
+    {retry, [pregel:vertex_id()]}.
+
 %% Checkpoint 回调函数类型
 %% 输入：superstep_info 和 checkpoint_data
-%% 返回：continue 继续执行，{stop, Reason} 停止执行
+%% 返回：checkpoint_callback_result()
 -type checkpoint_callback() :: fun((pregel:superstep_info(), checkpoint_data()) ->
-    continue | {stop, term()}).
+    checkpoint_callback_result()).
 
 %% Checkpoint 恢复选项
 %% 注意：graph 层状态从 pregel_checkpoint.vertices 中恢复
+%% resume_data 用于 human-in-loop 场景，将用户输入注入到对应顶点
 -type restore_options() :: #{
     pregel_checkpoint := pregel:checkpoint_data(),  %% pregel checkpoint 数据（含顶点状态）
-    iteration => non_neg_integer()                  %% 迭代次数（可选）
+    iteration => non_neg_integer(),                 %% 迭代次数（可选）
+    resume_data => #{pregel:vertex_id() => term()}  %% 恢复时注入的用户数据（可选）
 }.
 
 -type run_options() :: #{
@@ -60,7 +79,7 @@
     restore_from => restore_options()        %% 从 checkpoint 恢复
 }.
 
--export_type([checkpoint_data/0, checkpoint_callback/0, restore_options/0]).
+-export_type([checkpoint_data/0, checkpoint_callback/0, checkpoint_callback_result/0, restore_options/0]).
 
 -type execution_context() :: #{
     graph := graph(),
@@ -185,6 +204,7 @@ run_with_checkpoint(Graph, InitialState, Options) ->
 %% @private 准备恢复选项
 %% 返回：{InitialState, PregelRestoreOpts, StartIteration}
 %% 注意：恢复时使用原始 InitialState，实际状态从 pregel vertices 恢复
+%% resume_data 会被转换为消息注入到对应顶点
 -spec prepare_restore_options(restore_options() | undefined, state(), pregel:graph()) ->
     {state(), pregel:restore_opts() | undefined, non_neg_integer()}.
 prepare_restore_options(undefined, InitialState, _PregelGraph) ->
@@ -193,14 +213,27 @@ prepare_restore_options(RestoreOpts, InitialState, _PregelGraph) ->
     %% 从恢复选项中提取数据
     PregelCheckpoint = maps:get(pregel_checkpoint, RestoreOpts),
     Iteration = maps:get(iteration, RestoreOpts, 0),
+    ResumeData = maps:get(resume_data, RestoreOpts, #{}),
 
     %% 构建 pregel restore_opts
     %% 状态从 vertices 中恢复，不需要单独的 graph_state
-    #{superstep := Superstep, vertices := Vertices, pending_messages := Messages} = PregelCheckpoint,
+    #{superstep := Superstep, vertices := Vertices, pending_messages := PendingMessages} = PregelCheckpoint,
+
+    %% 将 resume_data 转换为消息并合并到 pending_messages
+    %% resume_data: #{vertex_id() => term()} -> [{vertex_id(), {resume, term()}}]
+    ResumeMessages = maps:fold(
+        fun(VertexId, Data, Acc) ->
+            [{VertexId, {resume, Data}} | Acc]
+        end,
+        [],
+        ResumeData
+    ),
+    AllMessages = ResumeMessages ++ PendingMessages,
+
     PregelRestoreOpts = #{
         superstep => Superstep,
         vertices => Vertices,
-        messages => Messages
+        messages => AllMessages
     },
 
     {InitialState, PregelRestoreOpts, Iteration}.
@@ -217,41 +250,155 @@ default_checkpoint_callback(_Info, _CheckpointData) ->
 run_checkpoint_loop(Master, CheckpointCallback, Iteration, Options) ->
     case pregel:step(Master) of
         {continue, Info} ->
-            %% 获取 pregel checkpoint 数据（包含所有顶点状态）
+            %% 1. 总是先获取 checkpoint（超步已完成或初始化完成）
             PregelCheckpoint = pregel:get_checkpoint_data(Master),
-
-            %% 构建 checkpoint 数据
+            Type = maps:get(type, Info),
             CheckpointData = #{
+                type => Type,
                 pregel_checkpoint => PregelCheckpoint,
                 iteration => Iteration
             },
 
-            %% 调用 checkpoint 回调
-            case CheckpointCallback(Info, CheckpointData) of
-                continue ->
-                    %% 继续执行
-                    run_checkpoint_loop(Master, CheckpointCallback, Iteration + 1, Options);
-                {stop, Reason} ->
-                    %% 用户请求停止，从顶点中提取当前状态
-                    CurrentState = extract_current_state_from_checkpoint(PregelCheckpoint),
-                    #{
-                        status => stopped,
-                        final_state => CurrentState,
-                        iterations => Iteration,
-                        error => {user_stopped, Reason},
-                        checkpoint => PregelCheckpoint  %% 保存 checkpoint 以便恢复
-                    }
-            end;
-        {done, Reason, _Info} ->
-            %% 执行完成，获取最终结果
-            Result = pregel:get_result(Master),
-            PregelResult = graph_compute:from_pregel_result(Result),
-            FinalResult = handle_pregel_result(PregelResult, graph_state:new(), Options),
-            FinalResult#{
-                iterations => Iteration,
-                done_reason => Reason
-            }
+            %% 2. 调用 checkpoint 回调
+            CallbackResult = CheckpointCallback(Info, CheckpointData),
+
+            %% 3. 根据类型和回调结果决定下一步
+            handle_checkpoint_continue(
+                Type, CallbackResult, Master, CheckpointCallback,
+                CheckpointData, Info, Iteration, Options);
+
+        {done, Reason, Info} ->
+            handle_checkpoint_done(Master, Reason, Info, Iteration, CheckpointCallback, Options)
     end.
+
+%% @private 处理 continue 分支的不同 checkpoint 类型
+-spec handle_checkpoint_continue(
+    pregel:checkpoint_type(),
+    checkpoint_callback_result(),
+    pid(),
+    checkpoint_callback(),
+    checkpoint_data(),
+    pregel:superstep_info(),
+    non_neg_integer(),
+    run_options()
+) -> run_result().
+
+%% initial 类型：只允许 continue 或 stop
+handle_checkpoint_continue(initial, continue, Master, Callback, _Data, _Info, Iteration, Options) ->
+    %% initial 不增加 iteration，因为还没执行真正的超步
+    run_checkpoint_loop(Master, Callback, Iteration, Options);
+handle_checkpoint_continue(initial, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    build_stopped_result(Data, Reason, Iteration);
+handle_checkpoint_continue(initial, {retry, _}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    %% initial 类型不支持 retry
+    build_error_result_from_checkpoint(Data, {invalid_operation, {retry_not_allowed, initial}}, Iteration);
+
+%% step 类型：只允许 continue 或 stop
+handle_checkpoint_continue(step, continue, Master, Callback, _Data, _Info, Iteration, Options) ->
+    run_checkpoint_loop(Master, Callback, Iteration + 1, Options);
+handle_checkpoint_continue(step, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    build_stopped_result(Data, Reason, Iteration);
+handle_checkpoint_continue(step, {retry, _}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    %% step 类型不支持 retry（没有失败的顶点）
+    build_error_result_from_checkpoint(Data, {invalid_operation, {retry_not_allowed, step}}, Iteration);
+
+%% error 类型：支持 continue、stop、retry
+handle_checkpoint_continue(error, continue, Master, Callback, _Data, _Info, Iteration, Options) ->
+    %% 忽略错误，继续执行
+    run_checkpoint_loop(Master, Callback, Iteration + 1, Options);
+handle_checkpoint_continue(error, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    build_stopped_result(Data, Reason, Iteration);
+handle_checkpoint_continue(error, {retry, VertexIds}, Master, Callback, _Data, _Info, Iteration, Options) ->
+    %% 重试指定顶点
+    case pregel:retry(Master, VertexIds) of
+        {continue, NewInfo} ->
+            %% 重试后继续，获取新的 checkpoint
+            NewPregelCheckpoint = pregel:get_checkpoint_data(Master),
+            NewType = maps:get(type, NewInfo),
+            NewCheckpointData = #{
+                type => NewType,
+                pregel_checkpoint => NewPregelCheckpoint,
+                iteration => Iteration
+            },
+            %% 递归调用处理新的状态（不增加 iteration）
+            NewCallbackResult = Callback(NewInfo, NewCheckpointData),
+            handle_checkpoint_continue(
+                NewType, NewCallbackResult, Master, Callback,
+                NewCheckpointData, NewInfo, Iteration, Options);
+        {done, Reason, Info} ->
+            handle_checkpoint_done(Master, Reason, Info, Iteration, Callback, Options)
+    end;
+
+%% interrupt 类型：只允许 continue 或 stop（异步恢复通过 restore_from + resume_data）
+handle_checkpoint_continue(interrupt, continue, Master, Callback, _Data, _Info, Iteration, Options) ->
+    %% 忽略中断，继续执行（不推荐，通常应该 stop）
+    run_checkpoint_loop(Master, Callback, Iteration + 1, Options);
+handle_checkpoint_continue(interrupt, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    build_stopped_result(Data, Reason, Iteration);
+handle_checkpoint_continue(interrupt, {retry, _}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    %% interrupt 类型不支持 retry（中断不是错误）
+    build_error_result_from_checkpoint(Data, {invalid_operation, {retry_not_allowed, interrupt}}, Iteration);
+
+%% final 类型：不应该出现在 continue 分支，但为完整性处理
+handle_checkpoint_continue(final, _, _Master, _Callback, Data, _Info, Iteration, _Options) ->
+    build_error_result_from_checkpoint(Data, {invalid_state, final_in_continue}, Iteration).
+
+%% @private 处理 done 分支
+%% 注意：done 时也需要调用 checkpoint 回调，让上层有机会保存最终状态
+-spec handle_checkpoint_done(pid(), pregel:done_reason(), pregel:superstep_info(),
+                             non_neg_integer(), checkpoint_callback(), run_options()) -> run_result().
+handle_checkpoint_done(Master, Reason, Info, Iteration, CheckpointCallback, Options) ->
+    %% 1. 获取最终的 checkpoint 数据
+    PregelCheckpoint = pregel:get_checkpoint_data(Master),
+    CheckpointData = #{
+        type => final,
+        pregel_checkpoint => PregelCheckpoint,
+        iteration => Iteration
+    },
+
+    %% 2. 调用 checkpoint 回调，让上层有机会保存最终状态
+    %% final 类型时，回调返回值被忽略（已经完成，无法继续或重试）
+    _ = CheckpointCallback(Info#{type => final}, CheckpointData),
+
+    %% 3. 获取执行结果
+    Result = pregel:get_result(Master),
+    PregelResult = graph_compute:from_pregel_result(Result),
+    FinalResult = handle_pregel_result(PregelResult, graph_state:new(), Options),
+    FinalResult#{
+        iterations => Iteration,
+        done_reason => Reason,
+        checkpoint => PregelCheckpoint  %% 返回最终 checkpoint 以便查看
+    }.
+
+%% @private 构建 stopped 结果
+-spec build_stopped_result(checkpoint_data(), term(), non_neg_integer()) -> run_result().
+build_stopped_result(CheckpointData, Reason, Iteration) ->
+    PregelCheckpoint = maps:get(pregel_checkpoint, CheckpointData),
+    Type = maps:get(type, CheckpointData),
+    CurrentState = extract_current_state_from_checkpoint(PregelCheckpoint),
+    #{
+        status => stopped,
+        final_state => CurrentState,
+        iterations => Iteration,
+        error => {user_stopped, Reason},
+        checkpoint => PregelCheckpoint,
+        checkpoint_type => Type
+    }.
+
+%% @private 从 checkpoint 构建错误结果
+-spec build_error_result_from_checkpoint(checkpoint_data(), term(), non_neg_integer()) -> run_result().
+build_error_result_from_checkpoint(CheckpointData, Reason, Iteration) ->
+    PregelCheckpoint = maps:get(pregel_checkpoint, CheckpointData),
+    Type = maps:get(type, CheckpointData),
+    CurrentState = extract_current_state_from_checkpoint(PregelCheckpoint),
+    #{
+        status => error,
+        final_state => CurrentState,
+        iterations => Iteration,
+        error => Reason,
+        checkpoint => PregelCheckpoint,
+        checkpoint_type => Type
+    }.
 
 %% @private 从 checkpoint 数据中提取当前状态
 %% 优先从 __end__ 顶点提取，否则合并所有有结果的顶点状态
