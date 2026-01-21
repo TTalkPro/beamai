@@ -136,7 +136,8 @@ build_state(Id, Opts, Graph) ->
         _ -> beamai_middleware_runner:init(Middlewares)
     end,
 
-    #state{
+    %% 构建配置记录（不可变）
+    Config = #agent_config{
         id = Id,
         name = maps:get(name, Opts, Id),
         system_prompt = build_prompt(Opts),
@@ -145,19 +146,23 @@ build_state(Id, Opts, Graph) ->
         llm_config = LLMConfig,
         graph = Graph,
         max_iterations = maps:get(max_iterations, Opts, 10),
-        messages = [],
-        full_messages = [],
-        scratchpad = [],
-        context = maps:get(context, Opts, #{}),  %% 用户自定义上下文
-        pending_action = undefined,
         response_format = maps:get(response_format, Opts, undefined),
         callbacks = beamai_agent_callbacks:init(Opts),
         middlewares = Middlewares,
         middleware_chain = MiddlewareChain,
         storage = beamai_agent_checkpoint:init_storage(Id, Opts),
-        auto_checkpoint = maps:get(auto_checkpoint, Opts, false),
-        run_id = undefined,
-        meta = maps:get(meta, Opts, #{})  %% 进程级元数据
+        meta = maps:get(meta, Opts, #{})
+    },
+
+    %% 构建运行时状态
+    #state{
+        config = Config,
+        messages = [],
+        full_messages = [],
+        scratchpad = [],
+        context = maps:get(context, Opts, #{}),
+        pending_action = undefined,
+        run_id = undefined
     }.
 
 %% @private 默认系统提示词

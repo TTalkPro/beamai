@@ -57,9 +57,10 @@ init_storage(_AgentId, Opts) ->
 %% - context: 用户自定义上下文数据
 %% - 执行上下文信息（run_id, checkpoint_type, iteration, superstep, 顶点状态等）
 -spec save(map(), #state{}) -> {ok, binary()} | {error, term()}.
-save(_Meta, #state{storage = undefined}) ->
+save(_Meta, #state{config = #agent_config{storage = undefined}}) ->
     {error, storage_not_enabled};
-save(Meta, #state{storage = Memory, id = AgentId, run_id = RunId, messages = Msgs,
+save(Meta, #state{config = #agent_config{storage = Memory, id = AgentId},
+                  run_id = RunId, messages = Msgs,
                   full_messages = FullMsgs, scratchpad = Pad, context = Ctx}) ->
     Config = #{
         thread_id => AgentId,
@@ -99,25 +100,25 @@ save(Meta, #state{storage = Memory, id = AgentId, run_id = RunId, messages = Msg
 %%
 %% 从存储加载指定检查点。
 -spec load(binary(), #state{}) -> {ok, map()} | {error, term()}.
-load(_CpId, #state{storage = undefined}) ->
+load(_CpId, #state{config = #agent_config{storage = undefined}}) ->
     {error, storage_not_enabled};
-load(CpId, #state{storage = Memory, id = AgentId}) ->
+load(CpId, #state{config = #agent_config{storage = Memory, id = AgentId}}) ->
     Config = #{thread_id => AgentId, checkpoint_id => CpId},
     beamai_memory:load_checkpoint(Memory, Config).
 
 %% @doc 加载最新检查点
 -spec load_latest(#state{}) -> {ok, map()} | {error, term()}.
-load_latest(#state{storage = undefined}) ->
+load_latest(#state{config = #agent_config{storage = undefined}}) ->
     {error, storage_not_enabled};
-load_latest(#state{storage = Memory, id = AgentId}) ->
+load_latest(#state{config = #agent_config{storage = Memory, id = AgentId}}) ->
     Config = #{thread_id => AgentId},
     beamai_memory:load_latest_checkpoint(Memory, Config).
 
 %% @doc 列出检查点
 -spec list(map(), #state{}) -> {ok, [map()]} | {error, term()}.
-list(_Opts, #state{storage = undefined}) ->
+list(_Opts, #state{config = #agent_config{storage = undefined}}) ->
     {error, storage_not_enabled};
-list(_Opts, #state{storage = Memory, id = AgentId}) ->
+list(_Opts, #state{config = #agent_config{storage = Memory, id = AgentId}}) ->
     Config = #{thread_id => AgentId},
     case beamai_memory:list_checkpoints(Memory, Config) of
         {ok, Checkpoints} ->
@@ -133,9 +134,9 @@ list(_Opts, #state{storage = Memory, id = AgentId}) ->
 %% 加载检查点并应用到当前状态。
 %% 恢复内容包括：messages、full_messages、scratchpad 和 context。
 -spec restore(binary(), #state{}) -> {ok, #state{}} | {error, term()}.
-restore(_CpId, #state{storage = undefined} = State) ->
+restore(_CpId, #state{config = #agent_config{storage = undefined}} = State) ->
     {error, storage_not_enabled, State};
-restore(CpId, #state{storage = Memory, id = AgentId} = State) ->
+restore(CpId, #state{config = #agent_config{storage = Memory, id = AgentId}} = State) ->
     Config = #{thread_id => AgentId, checkpoint_id => CpId},
     case beamai_memory:load_checkpoint(Memory, Config) of
         {ok, Data} ->
@@ -150,9 +151,9 @@ restore(CpId, #state{storage = Memory, id = AgentId} = State) ->
 %% 1. restore_checkpoint => CpId - 恢复指定检查点
 %% 2. restore_latest => true - 恢复最新检查点
 -spec maybe_restore(map(), #state{}) -> #state{}.
-maybe_restore(_Opts, #state{storage = undefined} = State) ->
+maybe_restore(_Opts, #state{config = #agent_config{storage = undefined}} = State) ->
     State;
-maybe_restore(Opts, #state{storage = Memory, id = AgentId} = State) ->
+maybe_restore(Opts, #state{config = #agent_config{storage = Memory, id = AgentId}} = State) ->
     case maps:get(restore_checkpoint, Opts, undefined) of
         undefined ->
             maybe_restore_latest(Opts, Memory, AgentId, State);
@@ -160,16 +161,15 @@ maybe_restore(Opts, #state{storage = Memory, id = AgentId} = State) ->
             restore_checkpoint_state(Memory, AgentId, CpId, State)
     end.
 
-%% @doc 自动保存检查点（如果启用）
+%% @doc 自动保存检查点（如果配置了 storage）
 %%
 %% 保存内容包括：messages、full_messages、scratchpad、result 和执行上下文。
+%% 如果配置了 storage，自动保存检查点。
 -spec maybe_auto_save(map(), #state{}) -> #state{}.
-maybe_auto_save(_Result, #state{auto_checkpoint = false} = State) ->
+maybe_auto_save(_Result, #state{config = #agent_config{storage = undefined}} = State) ->
     State;
-maybe_auto_save(_Result, #state{storage = undefined} = State) ->
-    State;
-maybe_auto_save(Result, #state{storage = Memory, id = AgentId, run_id = RunId,
-                               messages = Msgs, full_messages = FullMsgs,
+maybe_auto_save(Result, #state{config = #agent_config{storage = Memory, id = AgentId},
+                               run_id = RunId, messages = Msgs, full_messages = FullMsgs,
                                scratchpad = Pad, context = Ctx} = State) ->
     Config = #{
         thread_id => AgentId,

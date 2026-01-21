@@ -395,18 +395,23 @@ init({Id, Opts}) ->
 handle_call({run, Msg, Opts}, _From, State) ->
     handle_run(Msg, Opts, State);
 
-handle_call({tool, add, Tool}, _From, #state{tools = Tools, tool_handlers = Handlers} = State) ->
+handle_call({tool, add, Tool}, _From,
+            #state{config = #agent_config{tools = Tools, tool_handlers = Handlers} = Config} = State) ->
     NewTools = [Tool | Tools],
     NewHandlers = maps:merge(Handlers, beamai_nodes:build_tool_handlers([Tool])),
-    handle_rebuild(State#state{tools = NewTools, tool_handlers = NewHandlers}, State);
+    NewConfig = Config#agent_config{tools = NewTools, tool_handlers = NewHandlers},
+    handle_rebuild(State#state{config = NewConfig}, State);
 
-handle_call({tool, remove, Name}, _From, #state{tools = Tools, tool_handlers = Handlers} = State) ->
+handle_call({tool, remove, Name}, _From,
+            #state{config = #agent_config{tools = Tools, tool_handlers = Handlers} = Config} = State) ->
     NewTools = lists:filter(fun(#{name := ToolName}) -> ToolName =/= Name end, Tools),
     NewHandlers = maps:remove(Name, Handlers),
-    handle_rebuild(State#state{tools = NewTools, tool_handlers = NewHandlers}, State);
+    NewConfig = Config#agent_config{tools = NewTools, tool_handlers = NewHandlers},
+    handle_rebuild(State#state{config = NewConfig}, State);
 
-handle_call({config, set_prompt, Prompt}, _From, State) ->
-    handle_rebuild(State#state{system_prompt = Prompt}, State);
+handle_call({config, set_prompt, Prompt}, _From, #state{config = Config} = State) ->
+    NewConfig = Config#agent_config{system_prompt = Prompt},
+    handle_rebuild(State#state{config = NewConfig}, State);
 
 handle_call({state, get_scratchpad}, _From, #state{scratchpad = Pad} = State) ->
     {reply, lists:reverse(Pad), State};
@@ -455,14 +460,16 @@ handle_call({context, update, Updates}, _From, #state{context = Context} = State
 handle_call({context, put, Key, Value}, _From, #state{context = Context} = State) ->
     {reply, ok, State#state{context = maps:put(Key, Value, Context)}};
 
-handle_call({meta, get}, _From, #state{meta = Meta} = State) ->
+handle_call({meta, get}, _From, #state{config = #agent_config{meta = Meta}} = State) ->
     {reply, Meta, State};
 
-handle_call({meta, set, NewMeta}, _From, State) ->
-    {reply, ok, State#state{meta = NewMeta}};
+handle_call({meta, set, NewMeta}, _From, #state{config = Config} = State) ->
+    NewConfig = Config#agent_config{meta = NewMeta},
+    {reply, ok, State#state{config = NewConfig}};
 
-handle_call({meta, put, Key, Value}, _From, #state{meta = Meta} = State) ->
-    {reply, ok, State#state{meta = maps:put(Key, Value, Meta)}};
+handle_call({meta, put, Key, Value}, _From, #state{config = #agent_config{meta = Meta} = Config} = State) ->
+    NewConfig = Config#agent_config{meta = maps:put(Key, Value, Meta)},
+    {reply, ok, State#state{config = NewConfig}};
 
 handle_call({checkpoint, save, Meta}, _From, State) ->
     {reply, beamai_agent_checkpoint:save(Meta, State), State};
@@ -498,20 +505,23 @@ handle_call({interrupt, resume, _}, _From, State) ->
 handle_call({interrupt, abort}, _From, State) ->
     {reply, ok, State#state{pending_action = undefined}};
 
-handle_call({callback, get}, _From, #state{callbacks = Callbacks} = State) ->
+handle_call({callback, get}, _From, #state{config = #agent_config{callbacks = Callbacks}} = State) ->
     {reply, beamai_agent_callbacks:to_map(Callbacks), State};
 
-handle_call({callback, set, CallbackOpts}, _From, #state{callbacks = Callbacks} = State) ->
+handle_call({callback, set, CallbackOpts}, _From,
+            #state{config = #agent_config{callbacks = Callbacks} = Config} = State) ->
     NewCallbacks = beamai_agent_callbacks:update(Callbacks, CallbackOpts),
-    {reply, ok, State#state{callbacks = NewCallbacks}};
+    NewConfig = Config#agent_config{callbacks = NewCallbacks},
+    {reply, ok, State#state{config = NewConfig}};
 
-handle_call({middleware, get}, _From, #state{middlewares = Middlewares} = State) ->
+handle_call({middleware, get}, _From, #state{config = #agent_config{middlewares = Middlewares}} = State) ->
     {reply, Middlewares, State};
 
-handle_call({middleware, add, Spec}, _From, #state{middlewares = Middlewares} = State) ->
+handle_call({middleware, add, Spec}, _From, #state{config = #agent_config{middlewares = Middlewares}} = State) ->
     handle_update_middlewares(Middlewares ++ [Spec], State);
 
-handle_call({middleware, remove, Module}, _From, #state{middlewares = Middlewares} = State) ->
+handle_call({middleware, remove, Module}, _From,
+            #state{config = #agent_config{middlewares = Middlewares}} = State) ->
     NewMiddlewares = lists:filter(fun(Spec) ->
         extract_middleware_module(Spec) =/= Module
     end, Middlewares),
@@ -524,10 +534,10 @@ handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 %% @doc Handle asynchronous messages
-handle_cast({emit_custom_event, EventName, Data, Metadata}, State) ->
+handle_cast({emit_custom_event, EventName, Data, Metadata},
+            #state{config = #agent_config{callbacks = Callbacks}} = State) ->
     FullMetadata = maps:merge(beamai_agent_callbacks:build_metadata(State), Metadata),
-    beamai_agent_callbacks:invoke(on_custom_event, [EventName, Data, FullMetadata],
-                                   State#state.callbacks),
+    beamai_agent_callbacks:invoke(on_custom_event, [EventName, Data, FullMetadata], Callbacks),
     {noreply, State};
 
 handle_cast(_Msg, State) ->
@@ -548,22 +558,22 @@ terminate(_Reason, _State) ->
 %% @private Handle run request
 -spec handle_run(binary(), map(), #state{}) ->
     {reply, {ok, map()} | {error, term()}, #state{}}.
-handle_run(Msg, Opts, State) ->
+handle_run(Msg, Opts, #state{config = #agent_config{callbacks = Callbacks}} = State) ->
     RunId = beamai_agent_callbacks:generate_run_id(),
     State1 = State#state{run_id = RunId},
     Metadata = beamai_agent_callbacks:build_metadata(State1),
 
-    beamai_agent_callbacks:invoke(on_chain_start, [Msg, Metadata], State1#state.callbacks),
+    beamai_agent_callbacks:invoke(on_chain_start, [Msg, Metadata], Callbacks),
 
     case beamai_agent_runner:execute(Msg, Opts, State1) of
         {ok, Result, NewState} ->
             beamai_agent_callbacks:invoke(on_chain_end, [Result, Metadata],
-                                          NewState#state.callbacks),
+                                          NewState#state.config#agent_config.callbacks),
             FinalState = beamai_agent_checkpoint:maybe_auto_save(Result, NewState),
             {reply, {ok, Result}, FinalState#state{run_id = undefined}};
         {error, Reason, NewState} ->
             beamai_agent_callbacks:invoke(on_chain_error, [Reason, Metadata],
-                                          NewState#state.callbacks),
+                                          NewState#state.config#agent_config.callbacks),
             {reply, {error, Reason}, NewState#state{run_id = undefined}}
     end.
 
@@ -578,9 +588,10 @@ handle_rebuild(NewState, OldState) ->
 %% @private Handle middleware update
 -spec handle_update_middlewares([term()], #state{}) ->
     {reply, ok | {error, term()}, #state{}}.
-handle_update_middlewares(NewMiddlewares, #state{tools = Tools, system_prompt = Prompt,
-                                                  llm_config = LLMConfig, max_iterations = MaxIter,
-                                                  response_format = RF} = State) ->
+handle_update_middlewares(NewMiddlewares,
+                          #state{config = #agent_config{tools = Tools, system_prompt = Prompt,
+                                                         llm_config = LLMConfig, max_iterations = MaxIter,
+                                                         response_format = RF} = Config} = State) ->
     NewChain = case NewMiddlewares of
         [] -> undefined;
         _ -> beamai_middleware_runner:init(NewMiddlewares)
@@ -597,12 +608,12 @@ handle_update_middlewares(NewMiddlewares, #state{tools = Tools, system_prompt = 
 
     case beamai_agent_runner:build_graph(Opts) of
         {ok, NewGraph} ->
-            NewState = State#state{
+            NewConfig = Config#agent_config{
                 middlewares = NewMiddlewares,
                 middleware_chain = NewChain,
                 graph = NewGraph
             },
-            {reply, ok, NewState};
+            {reply, ok, State#state{config = NewConfig}};
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end.

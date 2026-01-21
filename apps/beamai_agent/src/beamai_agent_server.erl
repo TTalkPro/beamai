@@ -335,10 +335,10 @@ handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 %% @doc Handle asynchronous messages
-handle_cast({emit_custom_event, EventName, Data, Metadata}, State) ->
+handle_cast({emit_custom_event, EventName, Data, Metadata},
+            #state{config = #agent_config{callbacks = Callbacks}} = State) ->
     FullMetadata = maps:merge(beamai_agent_callbacks:build_metadata(State), Metadata),
-    beamai_agent_callbacks:invoke(on_custom_event, [EventName, Data, FullMetadata],
-                                   State#state.callbacks),
+    beamai_agent_callbacks:invoke(on_custom_event, [EventName, Data, FullMetadata], Callbacks),
     {noreply, State};
 
 handle_cast(_Msg, State) ->
@@ -359,19 +359,19 @@ terminate(_Reason, _State) ->
 %% @private Dispatch tool operations
 -spec dispatch_tool(atom(), term(), #state{}) ->
     {reply, ok | {error, term()}, #state{}}.
-dispatch_tool(add, Tool, #state{tools = Tools, tool_handlers = Handlers} = State) ->
+dispatch_tool(add, Tool, #state{config = #agent_config{tools = Tools, tool_handlers = Handlers} = Config} = State) ->
     NewTools = [Tool | Tools],
     NewHandlers = maps:merge(Handlers, beamai_nodes:build_tool_handlers([Tool])),
-    case beamai_agent_runner:rebuild_graph(State#state{tools = NewTools,
-                                                        tool_handlers = NewHandlers}) of
+    NewConfig = Config#agent_config{tools = NewTools, tool_handlers = NewHandlers},
+    case beamai_agent_runner:rebuild_graph(State#state{config = NewConfig}) of
         {ok, NewState} -> {reply, ok, NewState};
         {error, Reason} -> {reply, {error, Reason}, State}
     end;
-dispatch_tool(remove, Name, #state{tools = Tools, tool_handlers = Handlers} = State) ->
+dispatch_tool(remove, Name, #state{config = #agent_config{tools = Tools, tool_handlers = Handlers} = Config} = State) ->
     NewTools = lists:filter(fun(#{name := ToolName}) -> ToolName =/= Name end, Tools),
     NewHandlers = maps:remove(Name, Handlers),
-    case beamai_agent_runner:rebuild_graph(State#state{tools = NewTools,
-                                                        tool_handlers = NewHandlers}) of
+    NewConfig = Config#agent_config{tools = NewTools, tool_handlers = NewHandlers},
+    case beamai_agent_runner:rebuild_graph(State#state{config = NewConfig}) of
         {ok, NewState} -> {reply, ok, NewState};
         {error, Reason} -> {reply, {error, Reason}, State}
     end.
@@ -379,8 +379,9 @@ dispatch_tool(remove, Name, #state{tools = Tools, tool_handlers = Handlers} = St
 %% @private Dispatch config operations
 -spec dispatch_config(atom(), term(), #state{}) ->
     {reply, ok | {error, term()}, #state{}}.
-dispatch_config(set_prompt, Prompt, State) ->
-    case beamai_agent_runner:rebuild_graph(State#state{system_prompt = Prompt}) of
+dispatch_config(set_prompt, Prompt, #state{config = Config} = State) ->
+    NewConfig = Config#agent_config{system_prompt = Prompt},
+    case beamai_agent_runner:rebuild_graph(State#state{config = NewConfig}) of
         {ok, NewState} -> {reply, ok, NewState};
         {error, Reason} -> {reply, {error, Reason}, State}
     end.
@@ -467,21 +468,22 @@ dispatch_interrupt(abort, _, State) ->
 %% @private Dispatch callback operations
 -spec dispatch_callback(atom(), term(), #state{}) ->
     {reply, term(), #state{}}.
-dispatch_callback(get, _, #state{callbacks = Callbacks} = State) ->
+dispatch_callback(get, _, #state{config = #agent_config{callbacks = Callbacks}} = State) ->
     {reply, beamai_agent_callbacks:to_map(Callbacks), State};
-dispatch_callback(set, CallbackOpts, #state{callbacks = Callbacks} = State) ->
+dispatch_callback(set, CallbackOpts, #state{config = #agent_config{callbacks = Callbacks} = Config} = State) ->
     NewCallbacks = beamai_agent_callbacks:update(Callbacks, CallbackOpts),
-    {reply, ok, State#state{callbacks = NewCallbacks}}.
+    NewConfig = Config#agent_config{callbacks = NewCallbacks},
+    {reply, ok, State#state{config = NewConfig}}.
 
 %% @private Dispatch middleware operations
 -spec dispatch_middleware(atom(), term(), #state{}) ->
     {reply, term(), #state{}}.
-dispatch_middleware(get, _, #state{middlewares = Middlewares} = State) ->
+dispatch_middleware(get, _, #state{config = #agent_config{middlewares = Middlewares}} = State) ->
     {reply, Middlewares, State};
-dispatch_middleware(add, MiddlewareSpec, #state{middlewares = Middlewares} = State) ->
+dispatch_middleware(add, MiddlewareSpec, #state{config = #agent_config{middlewares = Middlewares}} = State) ->
     NewMiddlewares = Middlewares ++ [MiddlewareSpec],
     handle_update_middlewares(NewMiddlewares, State);
-dispatch_middleware(remove, Module, #state{middlewares = Middlewares} = State) ->
+dispatch_middleware(remove, Module, #state{config = #agent_config{middlewares = Middlewares}} = State) ->
     NewMiddlewares = lists:filter(fun(Spec) ->
         extract_middleware_module(Spec) =/= Module
     end, Middlewares),
@@ -496,23 +498,23 @@ dispatch_middleware(set, NewMiddlewares, State) ->
 %% @private Handle run request
 -spec handle_run(binary(), map(), #state{}) ->
     {reply, {ok, map()} | {error, term()}, #state{}}.
-handle_run(Msg, Opts, State) ->
+handle_run(Msg, Opts, #state{config = #agent_config{callbacks = Callbacks}} = State) ->
     RunId = beamai_agent_callbacks:generate_run_id(),
     State1 = State#state{run_id = RunId},
     Metadata = beamai_agent_callbacks:build_metadata(State1),
 
     %% Invoke chain_start callback
-    beamai_agent_callbacks:invoke(on_chain_start, [Msg, Metadata], State1#state.callbacks),
+    beamai_agent_callbacks:invoke(on_chain_start, [Msg, Metadata], Callbacks),
 
     case beamai_agent_runner:execute(Msg, Opts, State1) of
         {ok, Result, NewState} ->
             beamai_agent_callbacks:invoke(on_chain_end, [Result, Metadata],
-                                          NewState#state.callbacks),
+                                          NewState#state.config#agent_config.callbacks),
             FinalState = beamai_agent_checkpoint:maybe_auto_save(Result, NewState),
             {reply, {ok, Result}, FinalState#state{run_id = undefined}};
         {error, Reason, NewState} ->
             beamai_agent_callbacks:invoke(on_chain_error, [Reason, Metadata],
-                                          NewState#state.callbacks),
+                                          NewState#state.config#agent_config.callbacks),
             {reply, {error, Reason}, NewState#state{run_id = undefined}}
     end.
 
@@ -531,9 +533,10 @@ handle_resume(_, _, State) ->
 %% @private Update middlewares and rebuild graph
 -spec handle_update_middlewares([term()], #state{}) ->
     {reply, ok | {error, term()}, #state{}}.
-handle_update_middlewares(NewMiddlewares, #state{tools = Tools, system_prompt = Prompt,
-                                                  llm_config = LLMConfig, max_iterations = MaxIter,
-                                                  response_format = RF} = State) ->
+handle_update_middlewares(NewMiddlewares,
+                          #state{config = #agent_config{tools = Tools, system_prompt = Prompt,
+                                                         llm_config = LLMConfig, max_iterations = MaxIter,
+                                                         response_format = RF} = Config} = State) ->
     %% Initialize new middleware chain
     NewChain = case NewMiddlewares of
         [] -> undefined;
@@ -552,12 +555,12 @@ handle_update_middlewares(NewMiddlewares, #state{tools = Tools, system_prompt = 
 
     case beamai_agent_runner:build_graph(Opts) of
         {ok, NewGraph} ->
-            NewState = State#state{
+            NewConfig = Config#agent_config{
                 middlewares = NewMiddlewares,
                 middleware_chain = NewChain,
                 graph = NewGraph
             },
-            {reply, ok, NewState};
+            {reply, ok, State#state{config = NewConfig}};
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end.

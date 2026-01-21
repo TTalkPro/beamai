@@ -53,7 +53,7 @@ create_state(Config) ->
 %% @doc Create agent state (specified ID)
 %%
 %% Creates state with specified ID for pure function mode.
-%% Storage and auto_checkpoint are disabled in pure function mode.
+%% Storage is disabled in pure function mode (no auto checkpoint).
 %%
 %% @param Id Agent ID
 %% @param Config Agent configuration map
@@ -62,8 +62,7 @@ create_state(Config) ->
 create_state(Id, Config) ->
     %% Force disable storage (pure function mode)
     PureConfig = Config#{
-        enable_storage => false,
-        auto_checkpoint => false
+        enable_storage => false
     },
     beamai_agent_init:create_state(Id, PureConfig).
 
@@ -107,23 +106,22 @@ run_once(Config, Message) ->
 %% @returns {ok, Result, NewState} | {error, Reason, NewState}
 -spec run_with_state(#state{}, binary(), map()) ->
     {ok, map(), #state{}} | {error, term(), #state{}}.
-run_with_state(State, Message, Opts) ->
+run_with_state(#state{config = #agent_config{callbacks = Callbacks}} = State, Message, Opts) ->
     RunId = beamai_agent_callbacks:generate_run_id(),
     State1 = State#state{run_id = RunId},
     Metadata = beamai_agent_callbacks:build_metadata(State1),
 
     %% Invoke chain_start callback
-    beamai_agent_callbacks:invoke(on_chain_start, [Message, Metadata],
-                                   State1#state.callbacks),
+    beamai_agent_callbacks:invoke(on_chain_start, [Message, Metadata], Callbacks),
 
     case beamai_agent_runner:execute(Message, Opts, State1) of
         {ok, Result, NewState} ->
             beamai_agent_callbacks:invoke(on_chain_end, [Result, Metadata],
-                                          NewState#state.callbacks),
+                                          NewState#state.config#agent_config.callbacks),
             {ok, Result, NewState#state{run_id = undefined}};
         {error, Reason, NewState} ->
             beamai_agent_callbacks:invoke(on_chain_error, [Reason, Metadata],
-                                          NewState#state.callbacks),
+                                          NewState#state.config#agent_config.callbacks),
             {error, Reason, NewState#state{run_id = undefined}}
     end.
 
@@ -173,8 +171,7 @@ import_state(ExportedData, Config) when is_map(ExportedData), is_map(Config) ->
 
     %% Force disable storage (pure function mode)
     PureConfig = Config#{
-        enable_storage => false,
-        auto_checkpoint => false
+        enable_storage => false
     },
 
     %% Create new state

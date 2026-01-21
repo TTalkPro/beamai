@@ -127,7 +127,7 @@ to_map(#callbacks{} = C) ->
 %%
 %% 从状态记录构建元数据 map。
 -spec build_metadata(#state{}) -> map().
-build_metadata(#state{id = Id, name = Name, run_id = RunId}) ->
+build_metadata(#state{config = #agent_config{id = Id, name = Name}, run_id = RunId}) ->
     #{
         agent_id => Id,
         agent_name => Name,

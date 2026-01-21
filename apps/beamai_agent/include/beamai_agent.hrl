@@ -36,42 +36,34 @@
     on_custom_event     :: function() | undefined   %% fun(EventName, Data, Metadata) -> ok
 }).
 
-%% 内部状态
+%% Agent 配置（创建时设置，运行期间不变）
+-record(agent_config, {
+    id              :: binary(),                       %% Agent ID
+    name            :: binary(),                       %% Agent 名称
+    system_prompt   :: binary(),                       %% 系统提示词
+    tools           :: [map()],                        %% 工具定义列表
+    tool_handlers   :: #{binary() => function()},     %% 工具处理器映射
+    llm_config      :: map(),                          %% LLM 配置
+    graph           :: map() | undefined,              %% 编译后的图
+    max_iterations  :: pos_integer(),                  %% 最大迭代次数
+    response_format :: map() | undefined,              %% 输出格式约束
+    callbacks       :: #callbacks{},                   %% 回调处理器集合
+    middlewares     :: [term()],                       %% Middleware 配置列表
+    middleware_chain :: list() | undefined,            %% 已初始化的 Middleware 链
+    storage         :: beamai_memory:memory() | undefined, %% 存储后端
+    meta            :: map()                           %% 进程级元数据
+}).
+
+%% Agent 运行时状态
 -record(state, {
-    id              :: binary(),            %% Agent ID
-    name            :: binary(),            %% Agent 名称
-    system_prompt   :: binary(),            %% 系统提示词
-    tools           :: [map()],             %% 工具定义列表
-    tool_handlers   :: #{binary() => function()}, %% 工具处理器映射
-    llm_config      :: map(),               %% LLM 配置
-    graph           :: map() | undefined,   %% 编译后的图
-    max_iterations  :: pos_integer(),       %% 最大迭代次数
-    %% 对话历史
-    messages        :: [map()],             %% 对话消息列表（可能已压缩，用于 LLM 调用）
-    full_messages   :: [map()],             %% 完整对话历史（用于审计、调试、回溯）
-    %% Scratchpad
-    scratchpad      :: [map()],             %% 中间步骤记录
-    %% 用户自定义上下文
-    %% 用于存储用户自定义数据，会被自动持久化到 checkpoint
-    %% Tool 和 Middleware 可以通过 graph:get(State, context, #{}) 读取
-    %% 通过返回 {ok, Result, #{context => NewContext}} 或 {update, #{context => NewContext}} 修改
-    context         :: map(),               %% 用户自定义上下文数据
-    %% 人机协作（由 middleware_human_approval 处理）
-    pending_action   :: map() | undefined,  %% 等待确认的动作
-    %% 结构化输出
-    response_format  :: map() | undefined,  %% 输出格式约束
-    %% 回调处理器
-    callbacks       :: #callbacks{},        %% 回调处理器集合
-    %% Middleware 系统
-    middlewares     :: [term()],            %% Middleware 配置列表
-    middleware_chain :: list() | undefined, %% 已初始化的 Middleware 链
-    %% Checkpoint/Storage
-    storage         :: beamai_memory:memory() | undefined, %% 存储后端 (beamai_memory 实例)
-    auto_checkpoint :: boolean(),           %% 是否自动保存检查点
-    %% 运行时元数据
-    run_id          :: binary() | undefined, %% 当前运行 ID
-    %% 进程级元数据（不参与对话，用于存储进程相关的元数据如 coordinator workers 信息）
-    meta            :: map()                 %% 进程级元数据
+    config          :: #agent_config{},        %% 配置（不可变）
+    %% 以下字段映射到 graph_state
+    messages        :: [map()],                %% 对话消息（可能已压缩）
+    full_messages   :: [map()],                %% 完整对话历史
+    scratchpad      :: [map()],                %% 中间步骤记录
+    context         :: map(),                  %% 用户自定义上下文
+    pending_action  :: map() | undefined,      %% 等待确认的动作
+    run_id          :: binary() | undefined    %% 当前运行 ID
 }).
 
 -endif. %% AGENT_SIMPLE_HRL

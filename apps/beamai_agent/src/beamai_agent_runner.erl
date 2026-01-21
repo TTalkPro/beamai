@@ -55,13 +55,14 @@ build_graph(Opts) ->
 %% @returns {ok, Result, NewState} | {error, Reason, NewState}
 -spec execute(binary(), map(), #state{}) ->
     {ok, map(), #state{}} | {error, term(), #state{}}.
-execute(Msg, Opts, #state{graph = Graph, system_prompt = Prompt,
-                           tools = Tools, max_iterations = MaxIter,
+execute(Msg, Opts, #state{config = #agent_config{graph = Graph, system_prompt = Prompt,
+                                                  tools = Tools, max_iterations = MaxIter,
+                                                  callbacks = Callbacks,
+                                                  id = AgentId, name = AgentName},
                            messages = HistoryMsgs,
                            full_messages = HistoryFullMsgs,
                            context = Context,
-                           callbacks = Callbacks, run_id = RunId,
-                           id = AgentId, name = AgentName} = State) ->
+                           run_id = RunId} = State) ->
     %% 构建回调元数据
     CallbackMeta = #{
         agent_id => AgentId,
@@ -108,9 +109,9 @@ execute(Msg, Opts, #state{graph = Graph, system_prompt = Prompt,
 %% @param State 当前 Agent 状态
 %% @returns {ok, NewState} | {error, Reason}
 -spec rebuild_graph(#state{}) -> {ok, #state{}} | {error, term()}.
-rebuild_graph(#state{tools = Tools, system_prompt = Prompt,
-                     llm_config = LLMConfig, max_iterations = MaxIter,
-                     middlewares = Middlewares, response_format = RF} = State) ->
+rebuild_graph(#state{config = #agent_config{tools = Tools, system_prompt = Prompt,
+                                             llm_config = LLMConfig, max_iterations = MaxIter,
+                                             middlewares = Middlewares, response_format = RF} = Config} = State) ->
     Opts = #{
         tools => Tools,
         system_prompt => Prompt,
@@ -121,7 +122,8 @@ rebuild_graph(#state{tools = Tools, system_prompt = Prompt,
     },
     case build_graph(Opts) of
         {ok, NewGraph} ->
-            {ok, State#state{graph = NewGraph}};
+            NewConfig = Config#agent_config{graph = NewGraph},
+            {ok, State#state{config = NewConfig}};
         {error, Reason} ->
             {error, Reason}
     end.
