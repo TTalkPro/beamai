@@ -83,8 +83,9 @@ checkpoint_callback_called_test() ->
     ?assert(length(Calls) >= 1),
 
     %% 验证 checkpoint 数据结构
+    %% 注意：graph_state 已移除，状态存储在 pregel_checkpoint.vertices 中
     [{_Info, FirstCheckpoint} | _] = Calls,
-    ?assert(maps:is_key(graph_state, FirstCheckpoint)),
+    ?assertNot(maps:is_key(graph_state, FirstCheckpoint)),  %% 不应包含 graph_state
     ?assert(maps:is_key(pregel_checkpoint, FirstCheckpoint)),
     ?assert(maps:is_key(iteration, FirstCheckpoint)).
 

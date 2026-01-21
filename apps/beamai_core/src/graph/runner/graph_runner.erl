@@ -29,11 +29,12 @@
 -type node_id() :: graph_node:node_id().
 -type state() :: graph_state:state().
 
-%% Checkpoint 数据类型（包含 graph 层和 pregel 层状态）
+%% Checkpoint 数据类型（包含 pregel 层状态）
+%% 注意：graph 层状态存储在各顶点的 value.result 中，
+%% 多扇出场景下状态分散在多个顶点，只有 __end__ 才有合并后的最终状态
 -type checkpoint_data() :: #{
-    graph_state := state(),                      %% graph 层状态
-    pregel_checkpoint := pregel:checkpoint_data(), %% pregel 层 checkpoint
-    iteration := non_neg_integer()               %% 当前迭代次数
+    pregel_checkpoint := pregel:checkpoint_data(), %% pregel 层 checkpoint（含所有顶点状态）
+    iteration := non_neg_integer()                 %% 当前迭代次数
 }.
 
 %% Checkpoint 回调函数类型
@@ -43,9 +44,9 @@
     continue | {stop, term()}).
 
 %% Checkpoint 恢复选项
+%% 注意：graph 层状态从 pregel_checkpoint.vertices 中恢复
 -type restore_options() :: #{
-    pregel_checkpoint := pregel:checkpoint_data(),  %% pregel checkpoint 数据
-    graph_state => state(),                         %% graph 层状态（可选）
+    pregel_checkpoint := pregel:checkpoint_data(),  %% pregel checkpoint 数据（含顶点状态）
     iteration => non_neg_integer()                  %% 迭代次数（可选）
 }.
 
@@ -176,12 +177,14 @@ run_with_checkpoint(Graph, InitialState, Options) ->
     {ok, Master} = pregel:start(PregelGraphWithState, ComputeFn, PregelOpts),
     try
         CheckpointCallback = maps:get(on_checkpoint, Options, fun default_checkpoint_callback/2),
-        run_checkpoint_loop(Master, CheckpointCallback, ActualInitialState, StartIteration, Options)
+        run_checkpoint_loop(Master, CheckpointCallback, StartIteration, Options)
     after
         pregel:stop(Master)
     end.
 
 %% @private 准备恢复选项
+%% 返回：{InitialState, PregelRestoreOpts, StartIteration}
+%% 注意：恢复时使用原始 InitialState，实际状态从 pregel vertices 恢复
 -spec prepare_restore_options(restore_options() | undefined, state(), pregel:graph()) ->
     {state(), pregel:restore_opts() | undefined, non_neg_integer()}.
 prepare_restore_options(undefined, InitialState, _PregelGraph) ->
@@ -189,10 +192,10 @@ prepare_restore_options(undefined, InitialState, _PregelGraph) ->
 prepare_restore_options(RestoreOpts, InitialState, _PregelGraph) ->
     %% 从恢复选项中提取数据
     PregelCheckpoint = maps:get(pregel_checkpoint, RestoreOpts),
-    GraphState = maps:get(graph_state, RestoreOpts, InitialState),
     Iteration = maps:get(iteration, RestoreOpts, 0),
 
     %% 构建 pregel restore_opts
+    %% 状态从 vertices 中恢复，不需要单独的 graph_state
     #{superstep := Superstep, vertices := Vertices, pending_messages := Messages} = PregelCheckpoint,
     PregelRestoreOpts = #{
         superstep => Superstep,
@@ -200,7 +203,7 @@ prepare_restore_options(RestoreOpts, InitialState, _PregelGraph) ->
         messages => Messages
     },
 
-    {GraphState, PregelRestoreOpts, Iteration}.
+    {InitialState, PregelRestoreOpts, Iteration}.
 
 %% @private 默认 checkpoint 回调（不做任何事）
 -spec default_checkpoint_callback(pregel:superstep_info(), checkpoint_data()) -> continue.
@@ -208,17 +211,17 @@ default_checkpoint_callback(_Info, _CheckpointData) ->
     continue.
 
 %% @private Checkpoint 执行循环
--spec run_checkpoint_loop(pid(), checkpoint_callback(), state(), non_neg_integer(), run_options()) ->
+%% 注意：状态存储在 pregel 顶点中，不在参数中传递
+-spec run_checkpoint_loop(pid(), checkpoint_callback(), non_neg_integer(), run_options()) ->
     run_result().
-run_checkpoint_loop(Master, CheckpointCallback, CurrentState, Iteration, Options) ->
+run_checkpoint_loop(Master, CheckpointCallback, Iteration, Options) ->
     case pregel:step(Master) of
         {continue, Info} ->
-            %% 获取 pregel checkpoint 数据
+            %% 获取 pregel checkpoint 数据（包含所有顶点状态）
             PregelCheckpoint = pregel:get_checkpoint_data(Master),
 
-            %% 构建完整的 checkpoint 数据
+            %% 构建 checkpoint 数据
             CheckpointData = #{
-                graph_state => CurrentState,
                 pregel_checkpoint => PregelCheckpoint,
                 iteration => Iteration
             },
@@ -227,25 +230,64 @@ run_checkpoint_loop(Master, CheckpointCallback, CurrentState, Iteration, Options
             case CheckpointCallback(Info, CheckpointData) of
                 continue ->
                     %% 继续执行
-                    run_checkpoint_loop(Master, CheckpointCallback, CurrentState, Iteration + 1, Options);
+                    run_checkpoint_loop(Master, CheckpointCallback, Iteration + 1, Options);
                 {stop, Reason} ->
-                    %% 用户请求停止
+                    %% 用户请求停止，从顶点中提取当前状态
+                    CurrentState = extract_current_state_from_checkpoint(PregelCheckpoint),
                     #{
                         status => stopped,
                         final_state => CurrentState,
                         iterations => Iteration,
-                        error => {user_stopped, Reason}
+                        error => {user_stopped, Reason},
+                        checkpoint => PregelCheckpoint  %% 保存 checkpoint 以便恢复
                     }
             end;
         {done, Reason, _Info} ->
             %% 执行完成，获取最终结果
             Result = pregel:get_result(Master),
             PregelResult = graph_compute:from_pregel_result(Result),
-            FinalResult = handle_pregel_result(PregelResult, CurrentState, Options),
+            FinalResult = handle_pregel_result(PregelResult, graph_state:new(), Options),
             FinalResult#{
                 iterations => Iteration,
                 done_reason => Reason
             }
+    end.
+
+%% @private 从 checkpoint 数据中提取当前状态
+%% 优先从 __end__ 顶点提取，否则合并所有有结果的顶点状态
+-spec extract_current_state_from_checkpoint(pregel:checkpoint_data()) -> state().
+extract_current_state_from_checkpoint(#{vertices := Vertices}) ->
+    %% 优先检查 __end__ 顶点
+    case maps:get('__end__', Vertices, undefined) of
+        undefined ->
+            extract_state_from_vertices(Vertices);
+        EndVertex ->
+            case maps:get(result, pregel_vertex:value(EndVertex), undefined) of
+                {ok, State} -> State;
+                _ -> extract_state_from_vertices(Vertices)
+            end
+    end.
+
+%% @private 从多个顶点中提取并合并状态
+-spec extract_state_from_vertices(#{term() => pregel_vertex:vertex()}) -> state().
+extract_state_from_vertices(Vertices) ->
+    %% 收集所有有结果的顶点状态（排除 __start__）
+    States = maps:fold(
+        fun('__start__', _V, Acc) -> Acc;
+           (_Id, V, Acc) ->
+                case maps:get(result, pregel_vertex:value(V), undefined) of
+                    {ok, State} -> [State | Acc];
+                    _ -> Acc
+                end
+        end,
+        [],
+        Vertices
+    ),
+    %% 合并所有状态
+    case States of
+        [] -> graph_state:new();
+        [Single] -> Single;
+        Multiple -> lists:foldl(fun graph_state:merge/2, graph_state:new(), Multiple)
     end.
 
 %% @private 处理 Pregel 引擎执行结果
