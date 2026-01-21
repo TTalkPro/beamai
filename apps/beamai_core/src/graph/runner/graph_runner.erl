@@ -686,11 +686,14 @@ maybe_add_trace(Result, _Trace, false) ->
 
 %% @private 分类顶点状态
 %% 返回 {ActiveVertices, CompletedVertices}
+%% 排除虚拟节点 __start__ 和 __end__
 -spec classify_vertices(#{atom() => pregel_vertex:vertex()}) ->
     {[atom()], [atom()]}.
 classify_vertices(Vertices) ->
     maps:fold(
-        fun(Id, Vertex, {Active, Completed}) ->
+        fun('__start__', _Vertex, Acc) -> Acc;
+           ('__end__', _Vertex, Acc) -> Acc;
+           (Id, Vertex, {Active, Completed}) ->
             case pregel_vertex:is_active(Vertex) of
                 true -> {[Id | Active], Completed};
                 false -> {Active, [Id | Completed]}
