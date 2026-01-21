@@ -303,9 +303,13 @@ process_compute_result(Id, #{status := {error, Reason}},
                        {VAcc, OAcc, FailedAcc, InterruptedAcc}) ->
     %% 失败：记录失败信息，不更新顶点，不收集消息
     {VAcc, OAcc, [{Id, Reason} | FailedAcc], InterruptedAcc};
+process_compute_result(Id, #{status := {interrupt, Reason}, vertex := NewVertex},
+                       {VAcc, OAcc, FailedAcc, InterruptedAcc}) ->
+    %% 中断：更新顶点状态（保存业务信息如 tool_calls），但不收集消息
+    {VAcc#{Id => NewVertex}, OAcc, FailedAcc, [{Id, Reason} | InterruptedAcc]};
 process_compute_result(Id, #{status := {interrupt, Reason}},
                        {VAcc, OAcc, FailedAcc, InterruptedAcc}) ->
-    %% 中断：记录中断信息，不更新顶点，不收集消息
+    %% 中断（无顶点更新）：只记录中断信息
     {VAcc, OAcc, FailedAcc, [{Id, Reason} | InterruptedAcc]}.
 
 %% @private 如果有消息则激活顶点
