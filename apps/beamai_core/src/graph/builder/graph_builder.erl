@@ -169,20 +169,18 @@ build_graph(#{nodes := Nodes, edges := Edges, entry := Entry, config := Config})
     }}.
 
 %% @doc 构建 Pregel 图
-%% 将 graph_node 和 edges 嵌入到 vertex value 中
+%%
+%% 全局状态模式：顶点只包含 id 和拓扑边，不含 value
+%% 节点配置通过 config 传递给 graph_compute
 -spec build_pregel_graph(#{node_id() => graph_node:graph_node()},
                          #{node_id() => [graph_edge:edge()]}) -> pregel:graph().
-build_pregel_graph(Nodes, EdgeMap) ->
+build_pregel_graph(Nodes, _EdgeMap) ->
     EmptyGraph = pregel:new_graph(),
     maps:fold(
-        fun(NodeId, Node, AccGraph) ->
-            NodeEdges = maps:get(NodeId, EdgeMap, []),
-            VertexValue = #{
-                node => Node,
-                edges => NodeEdges,
-                result => undefined
-            },
-            pregel:add_vertex(AccGraph, NodeId, VertexValue)
+        fun(NodeId, _Node, AccGraph) ->
+            %% 创建纯拓扑顶点，无 value
+            %% 实际路由由 graph_compute 通过 config 中的 graph_edge 完成
+            pregel:add_vertex(AccGraph, NodeId, [])
         end,
         EmptyGraph,
         Nodes

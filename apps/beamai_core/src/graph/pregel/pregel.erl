@@ -1,28 +1,41 @@
 %%%-------------------------------------------------------------------
-%%% @doc Pregel 主入口 API 模块
+%%% @doc Pregel 主入口 API 模块（全局状态模式）
 %%%
 %%% 提供统一的 API 接口:
 %%% - 图构建: new_graph, add_vertex, add_edge, from_edges
-%%% - Pregel 执行: run
-%%% - 计算上下文: get_*, set_*, send_*, vote_to_halt
-%%% - 结果查询: get_result_*, vertex_values, vertex_value
+%%% - Pregel 执行: run, start, step, get_result, stop
+%%% - 结果查询: get_result_graph, get_result_status, get_result_global_state
+%%%
+%%% 全局状态模式说明：
+%%% - Master 持有 global_state，Worker 是纯计算单元
+%%% - 计算函数返回 #{delta => Map, outbox => List, status => ok}
+%%% - delta 是增量更新，通过 field_reducers 合并到 global_state
+%%% - 顶点只是拓扑结构（id + edges），不含 value
 %%%
 %%% 使用示例:
 %%% <pre>
-%%% %% 构建图
+%%% %% 构建图（顶点只包含拓扑结构）
 %%% G0 = pregel:new_graph(),
-%%% G1 = pregel:add_vertex(G0, a, 1.0),
-%%% G2 = pregel:add_vertex(G1, b, 2.0),
+%%% G1 = pregel:add_vertex(G0, a, []),
+%%% G2 = pregel:add_vertex(G1, b, []),
 %%% G3 = pregel:add_edge(G2, a, b),
 %%%
-%%% %% 定义计算函数
+%%% %% 定义计算函数（返回 delta + outbox）
 %%% ComputeFn = fun(Ctx) ->
-%%%     Value = pregel:get_vertex_value(Ctx),
-%%%     pregel:send_to_all_neighbors(Ctx, Value)
+%%%     #{vertex_id := Id, global_state := State, vertex := Vertex} = Ctx,
+%%%     Value = graph_state:get(State, Id, 0),
+%%%     Neighbors = pregel_vertex:neighbors(Vertex),
+%%%     Outbox = [{N, Value} || N <- Neighbors],
+%%%     Delta = #{Id => Value + 1},
+%%%     #{delta => Delta, outbox => Outbox, status => ok}
 %%% end,
 %%%
-%%% %% 执行
-%%% Result = pregel:run(G3, ComputeFn, #{max_supersteps => 10}).
+%%% %% 执行（指定初始全局状态）
+%%% Result = pregel:run(G3, ComputeFn, #{
+%%%     max_supersteps => 10,
+%%%     global_state => #{a => 1, b => 2}
+%%% }),
+%%% FinalState = pregel:get_result_global_state(Result).
 %%% </pre>
 %%%
 %%% 设计模式: 门面模式（Facade）
@@ -32,7 +45,7 @@
 
 %% 图构建
 -export([new_graph/0, new_graph/1]).
--export([add_vertex/2, add_vertex/3, add_vertex/4]).
+-export([add_vertex/2, add_vertex/3]).
 -export([add_edge/3, add_edge/4]).
 -export([from_edges/1, from_edges/2]).
 
@@ -51,7 +64,7 @@
 -export([send_message/3, send_to_all_neighbors/2, send_to_edges/2]).
 
 %% 结果查询
--export([get_result_graph/1, get_result_status/1]).
+-export([get_result_graph/1, get_result_status/1, get_result_global_state/1]).
 -export([vertex_values/1, vertex_value/2]).
 
 %% 图操作委托
@@ -103,15 +116,11 @@ new_graph(Config) ->
 add_vertex(Graph, Id) ->
     pregel_graph:add_vertex(Graph, Id).
 
-%% @doc 添加顶点（带值）
--spec add_vertex(graph(), vertex_id(), term()) -> graph().
-add_vertex(Graph, Id, Value) ->
-    pregel_graph:add_vertex(Graph, Id, Value).
-
-%% @doc 添加顶点（带值和边）
--spec add_vertex(graph(), vertex_id(), term(), [edge()]) -> graph().
-add_vertex(Graph, Id, Value, Edges) ->
-    pregel_graph:add_vertex(Graph, Id, Value, Edges).
+%% @doc 添加顶点（带边）
+%% 全局状态模式：顶点不再包含 value，第三个参数为 edges
+-spec add_vertex(graph(), vertex_id(), [edge()]) -> graph().
+add_vertex(Graph, Id, Edges) ->
+    pregel_graph:add_vertex(Graph, Id, Edges).
 
 %% @doc 添加边（权重默认为1）
 -spec add_edge(graph(), vertex_id(), vertex_id()) -> graph().
@@ -216,10 +225,11 @@ get_vertex(#{vertex := Vertex}) -> Vertex.
 get_vertex_id(#{vertex := Vertex}) ->
     pregel_vertex:id(Vertex).
 
-%% @doc 获取当前顶点值
+%% @doc 获取当前顶点值 (已废弃 - 全局状态模式下使用 global_state)
+%% 保留此函数用于向后兼容，但返回 undefined
 -spec get_vertex_value(context()) -> term().
-get_vertex_value(#{vertex := Vertex}) ->
-    pregel_vertex:value(Vertex).
+get_vertex_value(_Ctx) ->
+    undefined.
 
 %% @doc 获取收到的消息列表
 -spec get_messages(context()) -> [term()].
@@ -247,10 +257,11 @@ get_num_vertices(#{num_vertices := N}) -> N.
 %% 计算上下文 - 修改 API
 %%====================================================================
 
-%% @doc 设置顶点值
+%% @doc 设置顶点值 (已废弃 - 全局状态模式下使用 delta)
+%% 保留此函数用于向后兼容，但不做任何操作
 -spec set_value(context(), term()) -> context().
-set_value(#{vertex := Vertex} = Ctx, Value) ->
-    Ctx#{vertex => pregel_vertex:set_value(Vertex, Value)}.
+set_value(Ctx, _Value) ->
+    Ctx.
 
 %% @doc 投票停止（标记顶点为非活跃）
 -spec vote_to_halt(context()) -> context().
@@ -295,25 +306,27 @@ get_result_graph(#{graph := Graph}) -> Graph.
 -spec get_result_status(result()) -> completed | max_supersteps.
 get_result_status(#{status := Status}) -> Status.
 
-%% @doc 获取所有顶点值映射
--spec vertex_values(result() | graph()) -> #{vertex_id() => term()}.
-vertex_values(#{graph := Graph}) ->
-    vertex_values(Graph);
-vertex_values(Graph) ->
-    maps:from_list([
-        {pregel_vertex:id(V), pregel_vertex:value(V)}
-        || V <- pregel_graph:vertices(Graph)
-    ]).
+%% @doc 获取结果中的全局状态
+-spec get_result_global_state(result()) -> map().
+get_result_global_state(#{global_state := GlobalState}) -> GlobalState.
 
-%% @doc 获取指定顶点的值
+%% @doc 获取所有顶点值映射 (已废弃 - 全局状态模式下使用 global_state)
+%% 保留此函数用于向后兼容，但返回空 map
+-spec vertex_values(result() | graph()) -> #{vertex_id() => term()}.
+vertex_values(#{global_state := GlobalState}) ->
+    GlobalState;
+vertex_values(#{graph := _Graph}) ->
+    #{};
+vertex_values(_Graph) ->
+    #{}.
+
+%% @doc 获取指定顶点的值 (已废弃 - 全局状态模式下使用 global_state)
+%% 保留此函数用于向后兼容，但返回 undefined
 -spec vertex_value(result() | graph(), vertex_id()) -> term() | undefined.
-vertex_value(#{graph := Graph}, VertexId) ->
-    vertex_value(Graph, VertexId);
-vertex_value(Graph, VertexId) ->
-    case pregel_graph:get(Graph, VertexId) of
-        undefined -> undefined;
-        Vertex -> pregel_vertex:value(Vertex)
-    end.
+vertex_value(#{global_state := GlobalState}, Key) ->
+    maps:get(Key, GlobalState, undefined);
+vertex_value(_, _) ->
+    undefined.
 
 %%====================================================================
 %% 图操作委托 API

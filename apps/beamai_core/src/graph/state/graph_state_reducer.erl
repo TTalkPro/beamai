@@ -1,26 +1,25 @@
 %%%-------------------------------------------------------------------
 %%% @doc Graph State Reducer 模块
 %%%
-%%% 提供字段级 Reducer 功能，用于合并多个 graph_state。
-%%% 在 Pregel BSP 模型中，当多个状态消息发送到同一顶点时，
-%%% 使用此 Reducer 进行智能合并。
-%%%
-%%% 这是一个通用的框架模块，不包含业务特定的字段配置。
-%%% 业务层（如 beamai_agent）应该定义自己的 field_reducers。
+%%% 提供字段级 Reducer 功能，用于合并 delta 到 global_state。
+%%% 在全局状态模式下，计算函数返回 delta，Master 使用此模块
+%%% 的 field_reducers 按字段合并 delta 到 global_state。
 %%%
 %%% 内置 Reducer 策略：
 %%% - append_reducer: 列表追加
 %%% - merge_reducer: Map 深度合并
 %%% - last_write_win_reducer: 后值覆盖（默认）
+%%% - increment_reducer: 数值增量
 %%%
 %%% 使用方式：
 %%% %% 业务层定义字段 Reducer
 %%% FieldReducers = #{
-%%%     <<"messages">> => fun graph_state_reducer:append_reducer/2,
-%%%     <<"context">> => fun graph_state_reducer:merge_reducer/2
+%%%     messages => fun graph_state_reducer:append_reducer/2,
+%%%     context => fun graph_state_reducer:merge_reducer/2,
+%%%     counter => fun graph_state_reducer:increment_reducer/2
 %%% },
 %%% PregelOpts = #{
-%%%     state_reducer => graph_state_reducer:reducer(FieldReducers)
+%%%     field_reducers => FieldReducers
 %%% }
 %%%
 %%% @end
@@ -29,8 +28,8 @@
 
 %% API 导出
 -export([
-    reducer/0,
-    reducer/1,
+    apply_delta/3,
+    apply_deltas/3,
     merge_states/1,
     merge_states/2
 ]).
@@ -39,44 +38,69 @@
 -export([
     append_reducer/2,
     merge_reducer/2,
-    last_write_win_reducer/2
+    last_write_win_reducer/2,
+    increment_reducer/2
 ]).
 
 %% 类型定义
 -type field_reducer() :: fun((OldValue :: term(), NewValue :: term()) -> term()).
--type field_reducers() :: #{binary() => field_reducer()}.
+-type field_reducers() :: #{atom() | binary() => field_reducer()}.
+-type delta() :: #{atom() | binary() => term()}.
 
--export_type([field_reducer/0, field_reducers/0]).
+-export_type([field_reducer/0, field_reducers/0, delta/0]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
-%% @doc 返回默认的 Pregel state_reducer 函数
+%% @doc 将单个 delta 应用到 global_state
 %%
-%% 使用空的 field_reducers，所有字段使用 last_write_win 策略。
-%% 业务层应该使用 reducer/1 传入自定义的字段 Reducer。
--spec reducer() -> pregel_master:state_reducer().
-reducer() ->
-    reducer(#{}).
+%% 遍历 delta 的每个字段，使用对应的 field_reducer 合并到 state。
+%% 未配置 reducer 的字段使用 last_write_win_reducer。
+%%
+%% @param State 当前全局状态
+%% @param Delta 要应用的增量 #{field => value}
+%% @param FieldReducers 字段 Reducer 配置
+%% @returns 更新后的全局状态
+-spec apply_delta(graph_state:state(), delta(), field_reducers()) -> graph_state:state().
+apply_delta(State, Delta, FieldReducers) when map_size(Delta) == 0 ->
+    State;
+apply_delta(State, Delta, FieldReducers) ->
+    maps:fold(
+        fun(Field, NewValue, AccState) ->
+            OldValue = graph_state:get(AccState, Field),
+            Reducer = get_field_reducer(Field, FieldReducers),
+            MergedValue = apply_reducer(Reducer, OldValue, NewValue),
+            graph_state:set(AccState, Field, MergedValue)
+        end,
+        State,
+        Delta
+    ).
 
-%% @doc 返回自定义字段 Reducer 的 Pregel state_reducer 函数
--spec reducer(field_reducers()) -> pregel_master:state_reducer().
-reducer(FieldReducers) ->
-    fun(#{messages := Messages}) ->
-        %% 提取所有 {state, State} 消息
-        States = extract_states(Messages),
-        case States of
-            [] -> [];
-            [Single] -> [{state, Single}];
-            Multiple ->
-                %% 按字段应用 Reducer
-                Merged = merge_states(Multiple, FieldReducers),
-                [{state, Merged}]
-        end
-    end.
+%% @doc 将多个 delta 批量应用到 global_state
+%%
+%% 按顺序将每个 delta 应用到 state。
+%%
+%% @param State 当前全局状态
+%% @param Deltas delta 列表
+%% @param FieldReducers 字段 Reducer 配置
+%% @returns 更新后的全局状态
+-spec apply_deltas(graph_state:state(), [delta()], field_reducers()) -> graph_state:state().
+apply_deltas(State, [], _FieldReducers) ->
+    State;
+apply_deltas(State, Deltas, FieldReducers) ->
+    lists:foldl(
+        fun(Delta, AccState) ->
+            apply_delta(AccState, Delta, FieldReducers)
+        end,
+        State,
+        Deltas
+    ).
 
 %% @doc 合并多个状态（使用默认 Reducer，即 last_write_win）
+%%
+%% 保留此函数以支持向后兼容，但在全局状态模式下建议使用
+%% apply_deltas/3 来处理增量更新。
 -spec merge_states([graph_state:state()]) -> graph_state:state().
 merge_states(States) ->
     merge_states(States, #{}).
@@ -124,14 +148,21 @@ merge_reducer(_Old, New) -> New.  %% 类型不匹配时使用新值
 -spec last_write_win_reducer(term(), term()) -> term().
 last_write_win_reducer(_Old, New) -> New.
 
+%% @doc Increment Reducer - 数值增量
+%%
+%% 用于 counter, iteration 等数值字段
+%% NewValue 是增量值，不是绝对值
+-spec increment_reducer(term(), term()) -> number().
+increment_reducer(undefined, New) when is_number(New) -> New;
+increment_reducer(Old, undefined) when is_number(Old) -> Old;
+increment_reducer(Old, New) when is_number(Old), is_number(New) -> Old + New;
+increment_reducer(_Old, New) when is_number(New) -> New;
+increment_reducer(Old, _New) when is_number(Old) -> Old;
+increment_reducer(_Old, _New) -> 0.  %% 两者都不是数字时返回 0
+
 %%====================================================================
 %% 内部函数
 %%====================================================================
-
-%% @private 从消息列表中提取状态
--spec extract_states([term()]) -> [graph_state:state()].
-extract_states(Messages) ->
-    [S || {state, S} <- Messages].
 
 %% @private 合并两个状态
 -spec merge_two_states(graph_state:state(), graph_state:state(), field_reducers()) ->
@@ -156,12 +187,30 @@ merge_two_states(State1, State2, FieldReducers) ->
     ).
 
 %% @private 获取字段对应的 Reducer
--spec get_field_reducer(graph_state:key(), field_reducers()) -> field_reducer().
+-spec get_field_reducer(atom() | binary(), field_reducers()) -> field_reducer().
 get_field_reducer(Key, FieldReducers) when is_atom(Key) ->
-    BinaryKey = atom_to_binary(Key, utf8),
-    get_field_reducer(BinaryKey, FieldReducers);
+    %% 优先尝试 atom key，然后尝试 binary key
+    case maps:get(Key, FieldReducers, undefined) of
+        undefined ->
+            BinaryKey = atom_to_binary(Key, utf8),
+            maps:get(BinaryKey, FieldReducers, fun last_write_win_reducer/2);
+        Reducer ->
+            Reducer
+    end;
 get_field_reducer(Key, FieldReducers) when is_binary(Key) ->
-    maps:get(Key, FieldReducers, fun last_write_win_reducer/2).
+    %% 优先尝试 binary key，然后尝试 atom key
+    case maps:get(Key, FieldReducers, undefined) of
+        undefined ->
+            try
+                AtomKey = binary_to_existing_atom(Key, utf8),
+                maps:get(AtomKey, FieldReducers, fun last_write_win_reducer/2)
+            catch
+                error:badarg ->
+                    fun last_write_win_reducer/2
+            end;
+        Reducer ->
+            Reducer
+    end.
 
 %% @private 应用 Reducer
 -spec apply_reducer(field_reducer(), term(), term()) -> term().

@@ -1,29 +1,40 @@
-# Graph 的 Pregel 计算函数
+# Graph 的 Pregel 计算函数（全局状态模式）
 
 ## 概述
 
 计算函数是 Pregel 执行的核心，定义了每个顶点在每个超级步中如何计算。
 
+**全局状态模式：**
+- Master 持有 `global_state`，Worker 是纯计算单元
+- 计算函数返回 `#{delta => Map, outbox => List, status => ok}`
+- delta 是增量更新，通过 `field_reducers` 合并到 `global_state`
+- 顶点只是拓扑结构（id + edges），不含 value
+
 ## 计算函数定义
 
-代码位置：`graph_compute.erl:52-67`
+代码位置：`graph_compute.erl`
 
 ```erlang
--spec compute_fn() -> pregel:compute_fn().
-compute_fn() ->
+-spec compute_fn(nodes_config()) -> pregel:compute_fn().
+compute_fn(NodesConfig) ->
     fun(Ctx) ->
-        VertexId = pregel:get_vertex_id(Ctx),
-        VertexValue = pregel:get_vertex_value(Ctx),
-        Messages = pregel:get_messages(Ctx),
-        Superstep = pregel:get_superstep(Ctx),
+        #{vertex_id := VertexId,
+          messages := Messages,
+          superstep := Superstep,
+          global_state := GlobalState} = Ctx,
+
+        %% 从配置中获取节点定义
+        NodeConfig = maps:get(VertexId, NodesConfig, #{}),
+        Node = maps:get(node, NodeConfig, undefined),
+        Edges = maps:get(edges, NodeConfig, []),
 
         case VertexId of
             '__start__' ->
-                handle_start_node(Ctx, VertexValue, Superstep);
+                handle_start_node(VertexId, Node, Edges, GlobalState, Superstep);
             '__end__' ->
-                handle_end_node(Ctx, Messages);
+                handle_end_node(VertexId, GlobalState, Messages);
             _ ->
-                handle_regular_node(Ctx, VertexValue, Messages)
+                handle_regular_node(VertexId, Node, Edges, GlobalState, Messages)
         end
     end.
 ```
@@ -37,10 +48,11 @@ compute_fn() ->
 │                                                                 │
 │  输入: Context (Ctx)                                            │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ vertex: 当前顶点                                         │   │
+│  │ vertex_id: 当前顶点ID                                    │   │
+│  │ vertex: 当前顶点（纯拓扑结构）                           │   │
 │  │ messages: 收到的消息列表                                  │   │
 │  │ superstep: 当前超步编号                                   │   │
-│  │ outbox: 待发送消息（初始为空）                            │   │
+│  │ global_state: 全局状态（由 Master 传入）                  │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                              │                                  │
 │                              ▼                                  │
@@ -56,11 +68,11 @@ compute_fn() ->
 │  │ start_node  │     │ end_node    │     │ regular_node│       │
 │  └─────────────┘     └─────────────┘     └─────────────┘       │
 │                                                                 │
-│  输出: 更新后的 Context                                         │
+│  输出: #{delta => Map, outbox => List, status => Status}       │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ vertex: 可能更新了 value.result                          │   │
-│  │ outbox: 可能添加了发送给其他顶点的消息                     │   │
-│  │ halted: 可能设置为 true                                  │   │
+│  │ delta: 状态增量更新 #{field => value}                    │   │
+│  │ outbox: 发送给其他顶点的消息 [{Target, Value}]           │   │
+│  │ status: ok | {error, Reason}                            │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -70,74 +82,61 @@ compute_fn() ->
 
 ### 1. `__start__` 节点处理
 
-代码位置：`graph_compute.erl:123-138`
-
 ```erlang
-handle_start_node(Ctx, VertexValue, 0) ->
-    case maps:get(activated, VertexValue, false) of
-        true  -> execute_start_node(Ctx, VertexValue);  %% 执行并发送状态
-        false -> pregel:vote_to_halt(Ctx)               %% 未激活，停止
+handle_start_node(VertexId, Node, Edges, GlobalState, 0) ->
+    case graph_state:get(GlobalState, activated, false) of
+        true  -> execute_start_node(VertexId, Node, Edges, GlobalState);
+        false -> #{delta => #{}, outbox => [], status => ok}
     end;
-handle_start_node(Ctx, _VertexValue, _Superstep) ->
-    pregel:vote_to_halt(Ctx).  %% 非超步0，停止
+handle_start_node(_VertexId, _Node, _Edges, _GlobalState, _Superstep) ->
+    #{delta => #{}, outbox => [], status => ok}.
 
-execute_start_node(Ctx, VertexValue) ->
-    Node = maps:get(node, VertexValue),
-    State = maps:get(initial_state, VertexValue),
-    Edges = maps:get(edges, VertexValue, []),
-    finish_node_execution(Ctx, VertexValue, Node, State, Edges).
+execute_start_node(VertexId, Node, Edges, GlobalState) ->
+    finish_node_execution(VertexId, Node, Edges, GlobalState).
 ```
 
 **执行条件：**
 - 超步 = 0
-- `activated = true`
+- `activated = true`（从 global_state 获取）
 
 **行为：**
-- 从 `initial_state` 获取初始状态
+- 从 global_state 获取初始状态
 - 执行节点逻辑
-- 发送状态到下一节点
+- 返回 delta 更新和发送消息
 
 ### 2. `__end__` 节点处理
 
-代码位置：`graph_compute.erl:141-153`
-
 ```erlang
-handle_end_node(Ctx, []) ->
-    pregel:vote_to_halt(Ctx);  %% 无消息，停止
-handle_end_node(Ctx, Messages) ->
+handle_end_node(VertexId, GlobalState, []) ->
+    #{delta => #{}, outbox => [], status => ok};
+handle_end_node(VertexId, GlobalState, Messages) ->
     case aggregate_state_messages(Messages) of
         {ok, State} ->
-            VertexValue = pregel:get_vertex_value(Ctx),
-            %% 保存最终状态到 result
-            NewValue = VertexValue#{result => {ok, State}},
-            Ctx1 = pregel:set_value(Ctx, NewValue),
-            pregel:vote_to_halt(Ctx1);
+            %% 保存最终状态到 global_state
+            Delta = #{result => {ok, State}},
+            #{delta => Delta, outbox => [], status => ok};
         {error, _} ->
-            pregel:vote_to_halt(Ctx)
+            #{delta => #{}, outbox => [], status => ok}
     end.
 ```
 
 **行为：**
 - 收集所有前驱节点发来的状态
 - 合并状态（如果有多个）
-- 保存到 `result` 字段
-- 投票停止
+- 返回 delta 更新（result 字段）
 
 ### 3. 普通节点处理
 
-代码位置：`graph_compute.erl:156-167`
-
 ```erlang
-handle_regular_node(Ctx, _VertexValue, []) ->
-    pregel:vote_to_halt(Ctx);  %% 无消息，停止
-handle_regular_node(Ctx, VertexValue, Messages) ->
+handle_regular_node(_VertexId, _Node, _Edges, _GlobalState, []) ->
+    #{delta => #{}, outbox => [], status => ok};
+handle_regular_node(VertexId, Node, Edges, GlobalState, Messages) ->
     case aggregate_state_messages(Messages) of
         {ok, State} ->
-            Node = maps:get(node, VertexValue),
-            Edges = maps:get(edges, VertexValue, []),
-            finish_node_execution(Ctx, VertexValue, Node, State, Edges);
+            NewGlobalState = graph_state:merge(GlobalState, State),
+            finish_node_execution(VertexId, Node, Edges, NewGlobalState);
         {error, no_state_messages} ->
-            pregel:vote_to_halt(Ctx)
+            #{delta => #{}, outbox => [], status => ok}
     end.
 ```
 
@@ -147,77 +146,70 @@ handle_regular_node(Ctx, VertexValue, Messages) ->
 **行为：**
 - 从消息中提取状态
 - 执行节点逻辑
-- 发送结果到下一节点
+- 返回 delta 和发送消息
 
 ## 节点执行核心逻辑
 
-代码位置：`graph_compute.erl:172-181`
-
 ```erlang
-finish_node_execution(Ctx, VertexValue, Node, State, Edges) ->
-    case graph_node:execute(Node, State) of
+finish_node_execution(VertexId, Node, Edges, GlobalState) ->
+    case graph_node:execute(Node, GlobalState) of
         {ok, NewState} ->
-            %% 成功：发送状态到下一节点
-            Ctx1 = send_to_next_nodes(Ctx, Edges, NewState),
-            NewValue = VertexValue#{result => {ok, NewState}},
-            pregel:vote_to_halt(pregel:set_value(Ctx1, NewValue));
+            %% 成功：构建 delta 和 outbox
+            Delta = graph_state:diff(GlobalState, NewState),
+            Outbox = [{Target, {state, NewState}} || #{target := Target} <- Edges],
+            #{delta => Delta, outbox => Outbox, status => ok};
         {error, Reason} ->
-            %% 失败：保存错误，不发送消息
-            NewValue = VertexValue#{result => {error, Reason}},
-            pregel:vote_to_halt(pregel:set_value(Ctx, NewValue))
+            %% 失败：返回错误
+            Delta = #{VertexId => {error, Reason}},
+            #{delta => Delta, outbox => [], status => {error, Reason}}
     end.
 ```
 
 **执行步骤：**
-1. 调用 `graph_node:execute(Node, State)` 执行节点逻辑
-2. 成功时：发送新状态到下一节点，保存结果
-3. 失败时：保存错误，不发送消息
-4. 调用 `vote_to_halt()` 投票停止
+1. 调用 `graph_node:execute(Node, GlobalState)` 执行节点逻辑
+2. 成功时：计算状态差异 delta，发送新状态到下一节点
+3. 失败时：返回错误 delta，不发送消息
 
 ## 执行流程示例
 
 ```
 超级步 0:
-┌─────────────┐
-│ __start__   │
-│ activated=T │
-└──────┬──────┘
-       │ 1. execute_start_node()
-       │ 2. graph_node:execute(Node, InitialState)
-       │ 3. send_to_next_nodes() → {state, S0}
-       │ 4. vote_to_halt()
-       ▼
+┌─────────────────┐
+│ __start__       │
+│ activated=true  │
+└────────┬────────┘
+         │ 1. handle_start_node()
+         │ 2. graph_node:execute(Node, GlobalState)
+         │ 3. 返回 #{delta => D0, outbox => [{llm_call, S0}]}
+         ▼
 
 超级步 1:
-┌─────────────┐
-│  llm_call   │ ← 收到 {state, S0}
-└──────┬──────┘
-       │ 1. aggregate_state_messages()
-       │ 2. graph_node:execute(Node, S0)
-       │ 3. send_to_next_nodes() → {state, S1}
-       │ 4. vote_to_halt()
-       ▼
+┌─────────────────┐
+│  llm_call       │ ← 收到 {state, S0}
+└────────┬────────┘
+         │ 1. aggregate_state_messages()
+         │ 2. graph_node:execute(Node, S0)
+         │ 3. 返回 #{delta => D1, outbox => [{tools, S1}]}
+         ▼
 
 超级步 2:
 ┌─────────────────┐
 │ execute_tools   │ ← 收到 {state, S1}
-└──────┬──────────┘
-       │ 1. aggregate_state_messages()
-       │ 2. graph_node:execute(Node, S1)
-       │ 3. send_to_next_nodes() → {state, S2}
-       │ 4. vote_to_halt()
-       ▼
+└────────┬────────┘
+         │ 1. aggregate_state_messages()
+         │ 2. graph_node:execute(Node, S1)
+         │ 3. 返回 #{delta => D2, outbox => [{__end__, S2}]}
+         ▼
 
 超级步 3:
-┌─────────────┐
-│  __end__    │ ← 收到 {state, S2}
-└──────┬──────┘
-       │ 1. aggregate_state_messages()
-       │ 2. result = {ok, S2}
-       │ 3. vote_to_halt()
-       ▼
+┌─────────────────┐
+│  __end__        │ ← 收到 {state, S2}
+└────────┬────────┘
+         │ 1. aggregate_state_messages()
+         │ 2. 返回 #{delta => #{result => S2}, outbox => []}
+         ▼
 
-执行完成，从 __end__.result 提取最终状态
+执行完成，从 global_state.result 提取最终状态
 ```
 
 ## 计算函数特点
@@ -225,19 +217,31 @@ finish_node_execution(Ctx, VertexValue, Node, State, Edges) ->
 | 特点 | 说明 |
 |------|------|
 | **无状态** | 计算函数本身不持有状态 |
-| **依赖 vertex.value** | 所有信息从顶点值中获取 |
+| **依赖 global_state** | 所有状态信息从全局状态获取 |
 | **统一入口** | 所有顶点使用同一个计算函数 |
 | **分发模式** | 根据 VertexId 分发到不同处理逻辑 |
+| **返回 delta** | 返回增量更新而非完整状态 |
 
-## vertex_value 结构
+## Context 结构
 
 ```erlang
--type vertex_value() :: #{
-    node := graph_node:graph_node(),     %% 节点定义（包含执行函数）
-    edges := [graph_edge:edge()],        %% 出边定义
-    result := undefined | {ok, state()} | {error, term()},  %% 执行结果
-    initial_state => graph_state:state(),%% 仅 __start__ 有
-    activated => boolean()               %% 仅 __start__ 有
+-type context() :: #{
+    vertex_id := vertex_id(),           %% 当前顶点 ID
+    vertex := pregel_vertex:vertex(),   %% 当前顶点（纯拓扑结构）
+    messages := [term()],               %% 收到的消息列表
+    superstep := non_neg_integer(),     %% 当前超步编号
+    global_state := graph_state:state(),%% 全局状态（只读）
+    num_vertices := non_neg_integer()   %% 顶点总数
+}.
+```
+
+## 计算结果结构
+
+```erlang
+-type compute_result() :: #{
+    delta := #{atom() => term()},       %% 状态增量更新
+    outbox := [{vertex_id(), term()}],  %% 发送消息列表
+    status := ok | {error, term()}      %% 执行状态
 }.
 ```
 
@@ -245,20 +249,52 @@ finish_node_execution(Ctx, VertexValue, Node, State, Edges) ->
 
 | 操作 | 函数 | 说明 |
 |------|------|------|
-| **获取顶点信息** | `pregel:get_vertex_id/1` | 获取顶点 ID |
-| **获取顶点值** | `pregel:get_vertex_value/1` | 获取 vertex.value |
-| **获取消息** | `pregel:get_messages/1` | 获取收到的消息列表 |
-| **设置顶点值** | `pregel:set_value/2` | 更新 vertex.value |
-| **发送消息** | `pregel:send_message/3` | 发送消息给其他顶点 |
-| **投票停止** | `pregel:vote_to_halt/1` | 标记顶点为停止状态 |
+| **获取顶点ID** | `maps:get(vertex_id, Ctx)` | 从 Context 获取 |
+| **获取全局状态** | `maps:get(global_state, Ctx)` | 从 Context 获取 |
+| **获取消息** | `maps:get(messages, Ctx)` | 从 Context 获取 |
+| **读取状态字段** | `graph_state:get(State, Key)` | 从全局状态读取 |
+| **返回 delta** | `#{delta => Map, ...}` | 返回增量更新 |
+| **返回消息** | `#{outbox => [{Target, Value}], ...}` | 返回待发消息 |
+
+## Delta 与 Field Reducers
+
+### Delta 格式
+
+```erlang
+%% 简单的 key-value 增量更新
+Delta = #{
+    messages => [NewMessage],    %% 追加到 messages 列表
+    context => #{key => value},  %% 合并到 context map
+    result => FinalResult        %% 覆盖 result 字段
+}.
+```
+
+### Field Reducers 配置
+
+```erlang
+%% 定义每个字段的合并策略
+FieldReducers = #{
+    <<"messages">> => fun graph_state_reducer:append_reducer/2,
+    <<"context">> => fun graph_state_reducer:merge_reducer/2
+    %% 默认使用 last_write_win
+}.
+```
+
+### 可用的 Reducer
+
+| Reducer | 行为 |
+|---------|------|
+| `last_write_win` | 新值覆盖旧值（默认） |
+| `append_reducer` | 追加到列表 |
+| `merge_reducer` | 合并 map |
 
 ## 总结
 
 | 组件 | 说明 |
 |------|------|
-| **计算函数** | `graph_compute:compute_fn/0` |
-| **类型** | `fun((context()) -> context())` |
-| **特点** | 无状态，依赖 vertex.value 中的信息 |
+| **计算函数** | `graph_compute:compute_fn/1` |
+| **类型** | `fun((context()) -> compute_result())` |
+| **特点** | 无状态，从 global_state 读取，返回 delta |
 | **分发逻辑** | 根据 VertexId 分发到不同处理函数 |
-| **核心操作** | 执行节点、发送消息、保存结果、vote_to_halt |
+| **核心操作** | 执行节点、计算 delta、构建 outbox |
 | **节点类型** | `__start__`、`__end__`、普通节点 |

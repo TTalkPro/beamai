@@ -3,15 +3,16 @@
 %%%
 %%% 使用 Pregel 分布式图计算引擎执行图。
 %%%
+%%% 全局状态模式：
+%%% - Master 持有 global_state，Worker 只负责计算
+%%% - 节点返回 delta（增量更新）而不是完整状态
+%%% - 使用 field_reducers 按字段合并 delta
+%%% - 支持延迟提交：出错时暂存 delta，不 apply
+%%%
 %%% 主要功能:
 %%% - run/2,3: 批量执行，使用 Pregel BSP 模型
 %%% - stream/2,3: 流式执行，逐步返回状态
 %%% - step/2: 单步执行，用于调试和流式迭代
-%%%
-%%% Pregel 引擎特点:
-%%% - 利用 Pregel BSP 模型执行
-%%% - 可支持并行 Worker
-%%% - 与 pregel 模块完全整合
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -30,8 +31,7 @@
 -type state() :: graph_state:state().
 
 %% Checkpoint 数据类型（包含 pregel 层状态）
-%% 注意：graph 层状态存储在各顶点的 value.result 中，
-%% 多扇出场景下状态分散在多个顶点，只有 __end__ 才有合并后的最终状态
+%% 全局状态模式：状态在 global_state 中，不在顶点 value 中
 %%
 %% Checkpoint 类型说明：
 %% - initial: 超步 0 执行前的初始状态
@@ -41,7 +41,8 @@
 %% - final: 执行结束
 -type checkpoint_data() :: #{
     type := pregel:checkpoint_type(),              %% checkpoint 类型
-    pregel_checkpoint := pregel:checkpoint_data(), %% pregel 层 checkpoint（含所有顶点状态）
+    pregel_checkpoint := pregel:checkpoint_data(), %% pregel 层 checkpoint
+    global_state := state(),                       %% 当前全局状态
     iteration := non_neg_integer()                 %% 当前迭代次数
 }.
 
@@ -61,10 +62,10 @@
     checkpoint_callback_result()).
 
 %% Checkpoint 恢复选项
-%% 注意：graph 层状态从 pregel_checkpoint.vertices 中恢复
-%% resume_data 用于 human-in-loop 场景，将用户输入注入到对应顶点
+%% 全局状态模式：状态从 global_state 恢复
 -type restore_options() :: #{
-    pregel_checkpoint := pregel:checkpoint_data(),  %% pregel checkpoint 数据（含顶点状态）
+    pregel_checkpoint := pregel:checkpoint_data(),  %% pregel checkpoint 数据
+    global_state => state(),                        %% 恢复时的全局状态
     iteration => non_neg_integer(),                 %% 迭代次数（可选）
     resume_data => #{pregel:vertex_id() => term()}  %% 恢复时注入的用户数据（可选）
 }.
@@ -78,9 +79,10 @@
     on_checkpoint => checkpoint_callback(),  %% 每个超步完成后的回调
     restore_from => restore_options(),       %% 从 checkpoint 恢复
     run_id => binary(),                      %% 外部传入的执行 ID
-    %% State Reducer 选项（二选一）
-    field_reducers => graph_state_reducer:field_reducers(),  %% 字段级 Reducer 配置（推荐）
-    state_reducer => pregel_master:state_reducer()           %% 完整的 state_reducer 函数
+    %% 全局状态选项
+    global_state => state(),                 %% 初始全局状态
+    field_reducers => pregel_master:field_reducers(),  %% 字段级 Reducer 配置
+    config => map()                          %% 传递给计算函数的配置
 }.
 
 -export_type([checkpoint_data/0, checkpoint_callback/0, checkpoint_callback_result/0, restore_options/0]).
@@ -126,20 +128,30 @@ run(Graph, InitialState) ->
 %%
 %% 使用 Pregel 引擎执行图，返回执行结果。
 %%
+%% 全局状态模式：
+%% - global_state: 初始全局状态（如果未提供，使用 InitialState）
+%% - field_reducers: 字段级 Reducer 配置
+%%
 %% 执行模式:
 %% - 简单模式: 不提供 checkpoint 选项时，直接使用 pregel:run
 %% - Checkpoint 模式: 提供 on_checkpoint 或 restore_from 时，使用步进式 API
-%%
-%% Checkpoint 选项:
-%% - on_checkpoint: 每个超步完成后调用的回调函数，用于保存 checkpoint
-%% - restore_from: 从 checkpoint 恢复执行
 -spec run(graph(), state(), run_options()) -> run_result().
 run(Graph, InitialState, Options) ->
-    case needs_checkpoint_mode(Options) of
+    %% 如果未提供 global_state，使用 InitialState
+    OptionsWithState = ensure_global_state(Options, InitialState),
+    case needs_checkpoint_mode(OptionsWithState) of
         true ->
-            run_with_checkpoint(Graph, InitialState, Options);
+            run_with_checkpoint(Graph, InitialState, OptionsWithState);
         false ->
-            run_simple(Graph, InitialState, Options)
+            run_simple(Graph, InitialState, OptionsWithState)
+    end.
+
+%% @private 确保 Options 中有 global_state
+-spec ensure_global_state(run_options(), state()) -> run_options().
+ensure_global_state(Options, InitialState) ->
+    case maps:is_key(global_state, Options) of
+        true -> Options;
+        false -> Options#{global_state => InitialState}
     end.
 
 %% @private 检查是否需要 checkpoint 模式
@@ -150,23 +162,28 @@ needs_checkpoint_mode(Options) ->
 %% @private 简单执行模式（无 checkpoint）
 -spec run_simple(graph(), state(), run_options()) -> run_result().
 run_simple(Graph, InitialState, Options) ->
-    #{pregel_graph := PregelGraph, config := Config} = Graph,
-
-    %% 注入初始状态到 __start__ 顶点
-    PregelGraphWithState = graph_compute:inject_initial_state(PregelGraph, InitialState),
+    #{pregel_graph := PregelGraph, config := Config, nodes := Nodes, edges := EdgeMap} = Graph,
 
     %% 准备执行选项
     MaxIterations = maps:get(max_iterations, Config, 100),
-    StateReducer = get_state_reducer(Options),
+    GlobalState = maps:get(global_state, Options, InitialState),
+    FieldReducers = maps:get(field_reducers, Options, #{}),
+    UserConfig = maps:get(config, Options, #{}),
+
+    %% 构建 compute config，包含节点配置
+    ComputeConfig = build_compute_config(Nodes, EdgeMap, UserConfig),
+
     PregelOpts = #{
         max_supersteps => maps:get(max_supersteps, Options, MaxIterations),
         num_workers => maps:get(workers, Options, 1),
-        state_reducer => StateReducer
+        global_state => GlobalState,
+        field_reducers => FieldReducers,
+        config => ComputeConfig
     },
 
     %% 使用全局计算函数执行
     ComputeFn = graph_compute:compute_fn(),
-    Result = pregel:run(PregelGraphWithState, ComputeFn, PregelOpts),
+    Result = pregel:run(PregelGraph, ComputeFn, PregelOpts),
 
     %% 提取结果
     PregelResult = graph_compute:from_pregel_result(Result),
@@ -175,26 +192,30 @@ run_simple(Graph, InitialState, Options) ->
 %% @private Checkpoint 执行模式（使用步进式 API）
 -spec run_with_checkpoint(graph(), state(), run_options()) -> run_result().
 run_with_checkpoint(Graph, InitialState, Options) ->
-    #{pregel_graph := PregelGraph, config := Config} = Graph,
+    #{pregel_graph := PregelGraph, config := Config, nodes := Nodes, edges := EdgeMap} = Graph,
 
     %% 确保 run_id 存在（整个执行过程中保持不变）
     OptionsWithRunId = ensure_run_id(Options),
 
     %% 检查是否从 checkpoint 恢复
     RestoreOpts = maps:get(restore_from, OptionsWithRunId, undefined),
-    {ActualInitialState, PregelRestoreOpts, StartIteration} =
-        prepare_restore_options(RestoreOpts, InitialState, PregelGraph),
-
-    %% 注入初始状态到 __start__ 顶点
-    PregelGraphWithState = graph_compute:inject_initial_state(PregelGraph, ActualInitialState),
+    {ActualGlobalState, PregelRestoreOpts, StartIteration} =
+        prepare_restore_options(RestoreOpts, maps:get(global_state, OptionsWithRunId, InitialState)),
 
     %% 准备执行选项
     MaxIterations = maps:get(max_iterations, Config, 100),
-    StateReducer = get_state_reducer(OptionsWithRunId),
+    FieldReducers = maps:get(field_reducers, OptionsWithRunId, #{}),
+    UserConfig = maps:get(config, OptionsWithRunId, #{}),
+
+    %% 构建 compute config，包含节点配置
+    ComputeConfig = build_compute_config(Nodes, EdgeMap, UserConfig),
+
     PregelOpts0 = #{
         max_supersteps => maps:get(max_supersteps, OptionsWithRunId, MaxIterations),
         num_workers => maps:get(workers, OptionsWithRunId, 1),
-        state_reducer => StateReducer
+        global_state => ActualGlobalState,
+        field_reducers => FieldReducers,
+        config => ComputeConfig
     },
     %% 如果有恢复选项，添加到 PregelOpts
     PregelOpts = case PregelRestoreOpts of
@@ -204,7 +225,7 @@ run_with_checkpoint(Graph, InitialState, Options) ->
 
     %% 使用步进式 API 执行
     ComputeFn = graph_compute:compute_fn(),
-    {ok, Master} = pregel:start(PregelGraphWithState, ComputeFn, PregelOpts),
+    {ok, Master} = pregel:start(PregelGraph, ComputeFn, PregelOpts),
     try
         CheckpointCallback = maps:get(on_checkpoint, OptionsWithRunId, fun default_checkpoint_callback/2),
         run_checkpoint_loop(Master, CheckpointCallback, StartIteration, OptionsWithRunId)
@@ -213,25 +234,24 @@ run_with_checkpoint(Graph, InitialState, Options) ->
     end.
 
 %% @private 准备恢复选项
-%% 返回：{InitialState, PregelRestoreOpts, StartIteration}
-%% 注意：恢复时使用原始 InitialState，实际状态从 pregel vertices 恢复
-%% resume_data 会被转换为消息注入到对应顶点
--spec prepare_restore_options(restore_options() | undefined, state(), pregel:graph()) ->
+%% 返回：{GlobalState, PregelRestoreOpts, StartIteration}
+-spec prepare_restore_options(restore_options() | undefined, state()) ->
     {state(), pregel:restore_opts() | undefined, non_neg_integer()}.
-prepare_restore_options(undefined, InitialState, _PregelGraph) ->
-    {InitialState, undefined, 0};
-prepare_restore_options(RestoreOpts, InitialState, _PregelGraph) ->
+prepare_restore_options(undefined, GlobalState) ->
+    {GlobalState, undefined, 0};
+prepare_restore_options(RestoreOpts, _DefaultGlobalState) ->
     %% 从恢复选项中提取数据
     PregelCheckpoint = maps:get(pregel_checkpoint, RestoreOpts),
+    %% 恢复全局状态
+    GlobalState = maps:get(global_state, RestoreOpts,
+                          maps:get(global_state, PregelCheckpoint, graph_state:new())),
     Iteration = maps:get(iteration, RestoreOpts, 0),
     ResumeData = maps:get(resume_data, RestoreOpts, #{}),
 
     %% 构建 pregel restore_opts
-    %% 状态从 vertices 中恢复，不需要单独的 graph_state
     #{superstep := Superstep, vertices := Vertices, pending_messages := PendingMessages} = PregelCheckpoint,
 
     %% 将 resume_data 转换为消息并合并到 pending_messages
-    %% resume_data: #{vertex_id() => term()} -> [{vertex_id(), {resume, term()}}]
     ResumeMessages = maps:fold(
         fun(VertexId, Data, Acc) ->
             [{VertexId, {resume, Data}} | Acc]
@@ -244,10 +264,11 @@ prepare_restore_options(RestoreOpts, InitialState, _PregelGraph) ->
     PregelRestoreOpts = #{
         superstep => Superstep,
         vertices => Vertices,
-        messages => AllMessages
+        messages => AllMessages,
+        global_state => GlobalState
     },
 
-    {InitialState, PregelRestoreOpts, Iteration}.
+    {GlobalState, PregelRestoreOpts, Iteration}.
 
 %% @private 默认 checkpoint 回调（不做任何事）
 -spec default_checkpoint_callback(pregel:superstep_info(), checkpoint_data()) -> continue.
@@ -255,16 +276,15 @@ default_checkpoint_callback(_Info, _CheckpointData) ->
     continue.
 
 %% @private Checkpoint 执行循环
-%% 注意：状态存储在 pregel 顶点中，不在参数中传递
-%% run_id 在 run_with_checkpoint 中已确保存在，整个执行过程保持不变
 -spec run_checkpoint_loop(pid(), checkpoint_callback(), non_neg_integer(), run_options()) ->
     run_result().
 run_checkpoint_loop(Master, CheckpointCallback, Iteration, Options) ->
     RunId = maps:get(run_id, Options),
     case pregel:step(Master) of
         {continue, Info} ->
-            %% 1. 总是先获取 checkpoint（超步已完成或初始化完成）
+            %% 1. 获取 checkpoint 和当前全局状态
             PregelCheckpoint = pregel:get_checkpoint_data(Master),
+            CurrentGlobalState = pregel:get_global_state(Master),
             Type = maps:get(type, Info),
             Superstep = maps:get(superstep, Info, 0),
 
@@ -275,8 +295,9 @@ run_checkpoint_loop(Master, CheckpointCallback, Iteration, Options) ->
             CheckpointData = #{
                 type => Type,
                 pregel_checkpoint => PregelCheckpoint,
+                global_state => CurrentGlobalState,
                 iteration => Iteration,
-                %% 新增字段
+                %% 额外字段
                 run_id => RunId,
                 active_vertices => ActiveVertices,
                 completed_vertices => CompletedVertices,
@@ -309,12 +330,10 @@ run_checkpoint_loop(Master, CheckpointCallback, Iteration, Options) ->
 
 %% initial 类型：只允许 continue 或 stop
 handle_checkpoint_continue(initial, continue, Master, Callback, _Data, _Info, Iteration, Options) ->
-    %% initial 不增加 iteration，因为还没执行真正的超步
     run_checkpoint_loop(Master, Callback, Iteration, Options);
 handle_checkpoint_continue(initial, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
     build_stopped_result(Data, Reason, Iteration);
 handle_checkpoint_continue(initial, {retry, _}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
-    %% initial 类型不支持 retry
     build_error_result_from_checkpoint(Data, {invalid_operation, {retry_not_allowed, initial}}, Iteration);
 
 %% step 类型：只允许 continue 或 stop
@@ -323,40 +342,35 @@ handle_checkpoint_continue(step, continue, Master, Callback, _Data, _Info, Itera
 handle_checkpoint_continue(step, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
     build_stopped_result(Data, Reason, Iteration);
 handle_checkpoint_continue(step, {retry, _}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
-    %% step 类型不支持 retry（没有失败的顶点）
     build_error_result_from_checkpoint(Data, {invalid_operation, {retry_not_allowed, step}}, Iteration);
 
 %% error 类型：支持 continue、stop、retry
 handle_checkpoint_continue(error, continue, Master, Callback, _Data, _Info, Iteration, Options) ->
-    %% 忽略错误，继续执行
     run_checkpoint_loop(Master, Callback, Iteration + 1, Options);
 handle_checkpoint_continue(error, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
     build_stopped_result(Data, Reason, Iteration);
 handle_checkpoint_continue(error, {retry, VertexIds}, Master, Callback, _Data, _Info, Iteration, Options) ->
     RunId = maps:get(run_id, Options),
-    %% 重试指定顶点
     case pregel:retry(Master, VertexIds) of
         {continue, NewInfo} ->
-            %% 重试后继续，获取新的 checkpoint
             NewPregelCheckpoint = pregel:get_checkpoint_data(Master),
+            NewGlobalState = pregel:get_global_state(Master),
             NewType = maps:get(type, NewInfo),
             NewSuperstep = maps:get(superstep, NewInfo, 0),
 
-            %% 提取顶点信息
             NewVertices = maps:get(vertices, NewPregelCheckpoint, #{}),
             {NewActiveVertices, NewCompletedVertices} = classify_vertices(NewVertices),
 
             NewCheckpointData = #{
                 type => NewType,
                 pregel_checkpoint => NewPregelCheckpoint,
+                global_state => NewGlobalState,
                 iteration => Iteration,
-                %% 新增字段
                 run_id => RunId,
                 active_vertices => NewActiveVertices,
                 completed_vertices => NewCompletedVertices,
                 superstep => NewSuperstep
             },
-            %% 递归调用处理新的状态（不增加 iteration）
             NewCallbackResult = Callback(NewInfo, NewCheckpointData),
             handle_checkpoint_continue(
                 NewType, NewCallbackResult, Master, Callback,
@@ -365,69 +379,62 @@ handle_checkpoint_continue(error, {retry, VertexIds}, Master, Callback, _Data, _
             handle_checkpoint_done(Master, Reason, Info, Iteration, Callback, Options)
     end;
 
-%% interrupt 类型：只允许 continue 或 stop（异步恢复通过 restore_from + resume_data）
+%% interrupt 类型：只允许 continue 或 stop
 handle_checkpoint_continue(interrupt, continue, Master, Callback, _Data, _Info, Iteration, Options) ->
-    %% 忽略中断，继续执行（不推荐，通常应该 stop）
     run_checkpoint_loop(Master, Callback, Iteration + 1, Options);
 handle_checkpoint_continue(interrupt, {stop, Reason}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
     build_stopped_result(Data, Reason, Iteration);
 handle_checkpoint_continue(interrupt, {retry, _}, _Master, _Callback, Data, _Info, Iteration, _Options) ->
-    %% interrupt 类型不支持 retry（中断不是错误）
     build_error_result_from_checkpoint(Data, {invalid_operation, {retry_not_allowed, interrupt}}, Iteration);
 
-%% final 类型：不应该出现在 continue 分支，但为完整性处理
+%% final 类型：不应该出现在 continue 分支
 handle_checkpoint_continue(final, _, _Master, _Callback, Data, _Info, Iteration, _Options) ->
     build_error_result_from_checkpoint(Data, {invalid_state, final_in_continue}, Iteration).
 
 %% @private 处理 done 分支
-%% 注意：done 时也需要调用 checkpoint 回调，让上层有机会保存最终状态
 -spec handle_checkpoint_done(pid(), pregel:done_reason(), pregel:superstep_info(),
                              non_neg_integer(), checkpoint_callback(), run_options()) -> run_result().
 handle_checkpoint_done(Master, Reason, Info, Iteration, CheckpointCallback, Options) ->
     RunId = maps:get(run_id, Options),
     Superstep = maps:get(superstep, Info, 0),
 
-    %% 1. 获取最终的 checkpoint 数据
     PregelCheckpoint = pregel:get_checkpoint_data(Master),
+    FinalGlobalState = pregel:get_global_state(Master),
 
-    %% 提取顶点信息
     Vertices = maps:get(vertices, PregelCheckpoint, #{}),
     {ActiveVertices, CompletedVertices} = classify_vertices(Vertices),
 
     CheckpointData = #{
         type => final,
         pregel_checkpoint => PregelCheckpoint,
+        global_state => FinalGlobalState,
         iteration => Iteration,
-        %% 新增字段
         run_id => RunId,
         active_vertices => ActiveVertices,
         completed_vertices => CompletedVertices,
         superstep => Superstep
     },
 
-    %% 2. 调用 checkpoint 回调，让上层有机会保存最终状态
-    %% final 类型时，回调返回值被忽略（已经完成，无法继续或重试）
     _ = CheckpointCallback(Info#{type => final}, CheckpointData),
 
-    %% 3. 获取执行结果
     Result = pregel:get_result(Master),
     PregelResult = graph_compute:from_pregel_result(Result),
-    FinalResult = handle_pregel_result(PregelResult, graph_state:new(), Options),
+    FinalResult = handle_pregel_result(PregelResult, FinalGlobalState, Options),
     FinalResult#{
         iterations => Iteration,
         done_reason => Reason,
-        checkpoint => PregelCheckpoint  %% 返回最终 checkpoint 以便查看
+        checkpoint => PregelCheckpoint
     }.
 
 %% @private 构建 stopped 结果
 -spec build_stopped_result(checkpoint_data(), term(), non_neg_integer()) -> run_result().
 build_stopped_result(CheckpointData, Reason, Iteration) ->
     PregelCheckpoint = maps:get(pregel_checkpoint, CheckpointData),
+    GlobalState = maps:get(global_state, CheckpointData),
     Type = maps:get(type, CheckpointData),
-    CurrentState = extract_current_state_from_checkpoint(PregelCheckpoint),
     #{
         status => stopped,
-        final_state => CurrentState,
+        final_state => GlobalState,
         iterations => Iteration,
         error => {user_stopped, Reason},
         checkpoint => PregelCheckpoint,
@@ -438,60 +445,22 @@ build_stopped_result(CheckpointData, Reason, Iteration) ->
 -spec build_error_result_from_checkpoint(checkpoint_data(), term(), non_neg_integer()) -> run_result().
 build_error_result_from_checkpoint(CheckpointData, Reason, Iteration) ->
     PregelCheckpoint = maps:get(pregel_checkpoint, CheckpointData),
+    GlobalState = maps:get(global_state, CheckpointData),
     Type = maps:get(type, CheckpointData),
-    CurrentState = extract_current_state_from_checkpoint(PregelCheckpoint),
     #{
         status => error,
-        final_state => CurrentState,
+        final_state => GlobalState,
         iterations => Iteration,
         error => Reason,
         checkpoint => PregelCheckpoint,
         checkpoint_type => Type
     }.
 
-%% @private 从 checkpoint 数据中提取当前状态
-%% 优先从 __end__ 顶点提取，否则合并所有有结果的顶点状态
--spec extract_current_state_from_checkpoint(pregel:checkpoint_data()) -> state().
-extract_current_state_from_checkpoint(#{vertices := Vertices}) ->
-    %% 优先检查 __end__ 顶点
-    case maps:get('__end__', Vertices, undefined) of
-        undefined ->
-            extract_state_from_vertices(Vertices);
-        EndVertex ->
-            case maps:get(result, pregel_vertex:value(EndVertex), undefined) of
-                {ok, State} -> State;
-                _ -> extract_state_from_vertices(Vertices)
-            end
-    end.
-
-%% @private 从多个顶点中提取并合并状态
--spec extract_state_from_vertices(#{term() => pregel_vertex:vertex()}) -> state().
-extract_state_from_vertices(Vertices) ->
-    %% 收集所有有结果的顶点状态（排除 __start__）
-    States = maps:fold(
-        fun('__start__', _V, Acc) -> Acc;
-           (_Id, V, Acc) ->
-                case maps:get(result, pregel_vertex:value(V), undefined) of
-                    {ok, State} -> [State | Acc];
-                    _ -> Acc
-                end
-        end,
-        [],
-        Vertices
-    ),
-    %% 合并所有状态
-    case States of
-        [] -> graph_state:new();
-        [Single] -> Single;
-        Multiple -> lists:foldl(fun graph_state:merge/2, graph_state:new(), Multiple)
-    end.
-
 %% @private 处理 Pregel 引擎执行结果
 -spec handle_pregel_result({ok, state()} | {error, term()}, state(), run_options()) -> run_result().
 handle_pregel_result({ok, FinalState}, _InitialState, _Options) ->
     #{status => completed, final_state => FinalState, iterations => 0};
 handle_pregel_result({error, {partial_result, PartialState, max_iterations_exceeded}}, _InitialState, Options) ->
-    %% 达到最大迭代但有部分结果 - 返回部分状态
     MaxIter = maps:get(max_iterations, Options, 100),
     #{status => max_iterations, final_state => PartialState, iterations => MaxIter};
 handle_pregel_result({error, {partial_result, PartialState, Reason}}, _InitialState, _Options) ->
@@ -539,6 +508,31 @@ stream_next(Graph, Context) ->
         {done, Result} ->
             {done, Result}
     end.
+
+%%====================================================================
+%% 内部: 配置构建
+%%====================================================================
+
+%% @private 构建 compute config
+%%
+%% 将 graph_builder 的 nodes 和 edges 转换为 graph_compute 期望的格式:
+%% #{nodes => #{node_id => #{node => graph_node(), edges => [graph_edge()]}}}
+-spec build_compute_config(#{atom() => graph_node:graph_node()},
+                           #{atom() => [graph_edge:edge()]},
+                           map()) -> map().
+build_compute_config(Nodes, EdgeMap, UserConfig) ->
+    NodesConfig = maps:fold(
+        fun(NodeId, Node, Acc) ->
+            NodeEdges = maps:get(NodeId, EdgeMap, []),
+            Acc#{NodeId => #{
+                node => Node,
+                edges => NodeEdges
+            }}
+        end,
+        #{},
+        Nodes
+    ),
+    UserConfig#{nodes => NodesConfig}.
 
 %%====================================================================
 %% 内部: 上下文管理
@@ -607,12 +601,10 @@ find_next_node(#{edges := EdgeMap}, NodeId, State) ->
         {ok, Edges} ->
             resolve_edges(Edges, State);
         error ->
-            %% 无出边则隐式终止
             {ok, '__end__'}
     end.
 
 %% @doc 解析边，确定下一节点
-%% 如果所有边都失败，返回 '__end__'
 -spec resolve_edges([graph_edge:edge()], state()) -> {ok, node_id()}.
 resolve_edges([], _State) ->
     {ok, '__end__'};
@@ -621,10 +613,8 @@ resolve_edges([Edge | Rest], State) ->
         {ok, NextNode} when is_atom(NextNode) ->
             {ok, NextNode};
         {ok, NextNodes} when is_list(NextNodes) ->
-            %% 并行执行时取第一个 (简化处理)
             {ok, hd(NextNodes)};
         {error, _} ->
-            %% 尝试下一条边
             resolve_edges(Rest, State)
     end.
 
@@ -696,8 +686,6 @@ maybe_add_trace(Result, _Trace, false) ->
 %%====================================================================
 
 %% @private 分类顶点状态
-%% 返回 {ActiveVertices, CompletedVertices}
-%% 排除虚拟节点 __start__ 和 __end__
 -spec classify_vertices(#{atom() => pregel_vertex:vertex()}) ->
     {[atom()], [atom()]}.
 classify_vertices(Vertices) ->
@@ -715,7 +703,6 @@ classify_vertices(Vertices) ->
     ).
 
 %% @private 确保 Options 中存在 run_id
-%% 如果已存在则保持不变，否则生成新的
 -spec ensure_run_id(run_options()) -> run_options().
 ensure_run_id(Options) ->
     case maps:is_key(run_id, Options) of
@@ -729,23 +716,3 @@ generate_run_id() ->
     <<A:32, B:16, C:16, D:16, E:48>> = crypto:strong_rand_bytes(16),
     iolist_to_binary(io_lib:format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b",
                                    [A, B, C, D, E])).
-
-%% @private 获取 state_reducer
-%%
-%% 优先级：
-%% 1. state_reducer: 直接使用传入的完整 reducer 函数
-%% 2. field_reducers: 使用字段配置构建 reducer
-%% 3. 默认: 使用 graph_state_reducer:reducer()（所有字段 last_write_win）
--spec get_state_reducer(run_options()) -> pregel_master:state_reducer().
-get_state_reducer(Options) ->
-    case maps:get(state_reducer, Options, undefined) of
-        undefined ->
-            case maps:get(field_reducers, Options, undefined) of
-                undefined ->
-                    graph_state_reducer:reducer();
-                FieldReducers ->
-                    graph_state_reducer:reducer(FieldReducers)
-            end;
-        StateReducer ->
-            StateReducer
-    end.

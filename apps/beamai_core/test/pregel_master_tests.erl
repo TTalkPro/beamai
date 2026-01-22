@@ -1,9 +1,10 @@
 %%%-------------------------------------------------------------------
-%%% @doc pregel_master 步进式 API 和 state reducer 单元测试
+%%% @doc pregel_master 步进式 API 和全局状态模式单元测试
 %%%
 %%% 测试:
 %%% - 步进式执行 API (start/step/get_result/stop)
-%%% - State reducer 功能
+%%% - 全局状态和 field_reducers 功能
+%%% - Delta 增量更新合并
 %%% - Checkpoint 数据获取
 %%%
 %%% @end
@@ -19,8 +20,7 @@
 %% v1 -> v2 -> v3
 make_chain_graph() ->
     Edges = [{v1, v2}, {v2, v3}],
-    InitialValues = #{v1 => 1, v2 => 2, v3 => 3},
-    pregel_graph:from_edges(Edges, InitialValues).
+    pregel_graph:from_edges(Edges).
 
 %% 创建扇形图（一个中心顶点，多个源顶点）
 %% v1 -> v_center
@@ -28,38 +28,35 @@ make_chain_graph() ->
 %% v3 -> v_center
 make_fan_graph() ->
     Edges = [{v1, v_center}, {v2, v_center}, {v3, v_center}],
-    InitialValues = #{v1 => 10, v2 => 20, v3 => 30, v_center => 0},
-    pregel_graph:from_edges(Edges, InitialValues).
+    pregel_graph:from_edges(Edges).
 
 %% 创建简单计算函数（所有顶点立即停止）
+%% 全局状态模式：返回 delta 而非 vertex
 make_halt_compute_fn() ->
     fun(Ctx) ->
-        Vertex = maps:get(vertex, Ctx),
-        HaltedVertex = pregel_vertex:halt(Vertex),
-        #{vertex => HaltedVertex, outbox => [], status => ok}
+        #{delta => #{}, outbox => [], status => ok}
     end.
 
-%% 创建发送同一目标多条消息的计算函数
-make_send_multi_to_target_compute_fn() ->
+%% 创建发送消息并更新状态的计算函数
+%% 全局状态模式：通过 delta 更新状态
+make_send_compute_fn() ->
     fun(Ctx) ->
-        Vertex = maps:get(vertex, Ctx),
-        Id = pregel_vertex:id(Vertex),
-        Superstep = maps:get(superstep, Ctx),
-        Messages = maps:get(messages, Ctx, []),
+        #{vertex_id := Id, global_state := State, superstep := Superstep} = Ctx,
         case Superstep of
             0 ->
                 case Id of
                     v1 ->
-                        %% v1 向 v2 发送 3 条消息
-                        Outbox = [{v2, msg1}, {v2, msg2}, {v2, msg3}],
-                        #{vertex => pregel_vertex:halt(Vertex), outbox => Outbox, status => ok};
+                        %% v1 向 v2 发送激活消息，更新全局状态
+                        Outbox = [{v2, activate}],
+                        Delta = #{v1_done => true},
+                        #{delta => Delta, outbox => Outbox, status => ok};
                     _ ->
-                        #{vertex => Vertex, outbox => [], status => ok}
+                        #{delta => #{}, outbox => [], status => ok}
                 end;
             _ ->
-                %% 后续超步：保存收到的消息并停止
-                NewVertex = pregel_vertex:set_value(Vertex, Messages),
-                #{vertex => pregel_vertex:halt(NewVertex), outbox => [], status => ok}
+                %% 后续超步：标记完成
+                Delta = #{atom_to_binary(Id, utf8) => done},
+                #{delta => Delta, outbox => [], status => ok}
         end
     end.
 
@@ -80,8 +77,12 @@ run_until_done(Master) ->
 step_api_basic_test() ->
     Graph = make_chain_graph(),
     ComputeFn = make_halt_compute_fn(),
+    InitialState = #{test => initial},
 
-    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{num_workers => 1}),
+    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
+        num_workers => 1,
+        global_state => InitialState
+    }),
     try
         %% 第一步返回 initial checkpoint（不执行超步）
         Step1 = pregel_master:step(Master),
@@ -93,7 +94,9 @@ step_api_basic_test() ->
 
         %% 获取结果
         Result = pregel_master:get_result(Master),
-        ?assertEqual(completed, maps:get(status, Result))
+        ?assertEqual(completed, maps:get(status, Result)),
+        %% 验证全局状态存在
+        ?assert(maps:is_key(global_state, Result))
     after
         pregel_master:stop(Master)
     end.
@@ -101,26 +104,13 @@ step_api_basic_test() ->
 %% 测试：多步执行
 step_api_multi_step_test() ->
     Graph = make_chain_graph(),
-    %% 创建需要多步的计算函数
-    ComputeFn = fun(Ctx) ->
-        Vertex = maps:get(vertex, Ctx),
-        Id = pregel_vertex:id(Vertex),
-        Superstep = maps:get(superstep, Ctx),
-        case Superstep of
-            0 ->
-                case Id of
-                    v1 ->
-                        Outbox = [{v2, hello}],
-                        #{vertex => pregel_vertex:halt(Vertex), outbox => Outbox, status => ok};
-                    _ ->
-                        #{vertex => Vertex, outbox => [], status => ok}
-                end;
-            _ ->
-                #{vertex => pregel_vertex:halt(Vertex), outbox => [], status => ok}
-        end
-    end,
+    ComputeFn = make_send_compute_fn(),
+    InitialState = #{started => true},
 
-    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{num_workers => 1}),
+    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
+        num_workers => 1,
+        global_state => InitialState
+    }),
     try
         %% 第一步返回 initial checkpoint（不执行超步）
         Step1 = pregel_master:step(Master),
@@ -141,8 +131,12 @@ step_api_multi_step_test() ->
 get_checkpoint_data_test() ->
     Graph = make_chain_graph(),
     ComputeFn = make_halt_compute_fn(),
+    InitialState = #{checkpoint_test => true},
 
-    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{num_workers => 1}),
+    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
+        num_workers => 1,
+        global_state => InitialState
+    }),
     try
         %% 执行一步
         _Step = pregel_master:step(Master),
@@ -152,57 +146,27 @@ get_checkpoint_data_test() ->
 
         ?assert(maps:is_key(superstep, CheckpointData)),
         ?assert(maps:is_key(vertices, CheckpointData)),
-        ?assert(maps:is_key(pending_messages, CheckpointData)),
-        ?assert(maps:is_key(vertex_inbox, CheckpointData))
+        ?assert(maps:is_key(vertex_inbox, CheckpointData)),
+        ?assert(maps:is_key(pending_deltas, CheckpointData)),
+        %% 全局状态模式：检查 global_state
+        ?assert(maps:is_key(global_state, CheckpointData))
     after
         pregel_master:stop(Master)
     end.
 
 %%====================================================================
-%% 默认 State Reducer 测试（last_write_win）
+%% 全局状态和 Delta 测试
 %%====================================================================
 
-%% 测试：默认 reducer 只保留最后一条消息
-default_state_reducer_test() ->
+%% 测试：全局状态初始化
+global_state_initialization_test() ->
     Graph = make_chain_graph(),
-    ComputeFn = make_send_multi_to_target_compute_fn(),
-
-    %% 不传 state_reducer，使用默认的 last_write_win
-    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{num_workers => 1}),
-    try
-        Result = run_until_done(Master),
-
-        %% 验证执行成功
-        ?assertEqual(completed, maps:get(status, Result)),
-
-        %% 获取结果图
-        FinalGraph = maps:get(graph, Result),
-
-        %% 获取 v2 的最终值（应该只有最后一条消息）
-        V2 = pregel_graph:get(FinalGraph, v2),
-        V2Value = pregel_vertex:value(V2),
-
-        %% 默认 last_write_win 应该只保留最后一条消息
-        ?assertEqual([msg3], V2Value)
-    after
-        pregel_master:stop(Master)
-    end.
-
-%%====================================================================
-%% 自定义 State Reducer 测试
-%%====================================================================
-
-%% 测试：append reducer 保留所有消息
-custom_state_reducer_append_test() ->
-    Graph = make_chain_graph(),
-    ComputeFn = make_send_multi_to_target_compute_fn(),
-
-    %% 自定义 reducer：保留所有消息
-    AppendReducer = fun(#{messages := Msgs}) -> Msgs end,
+    ComputeFn = make_halt_compute_fn(),
+    InitialState = #{key1 => value1, key2 => value2},
 
     {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
         num_workers => 1,
-        state_reducer => AppendReducer
+        global_state => InitialState
     }),
     try
         Result = run_until_done(Master),
@@ -210,52 +174,88 @@ custom_state_reducer_append_test() ->
         %% 验证执行成功
         ?assertEqual(completed, maps:get(status, Result)),
 
-        %% 获取结果图
-        FinalGraph = maps:get(graph, Result),
-
-        %% 获取 v2 的最终值（应该包含所有消息）
-        V2 = pregel_graph:get(FinalGraph, v2),
-        V2Value = pregel_vertex:value(V2),
-
-        %% append reducer 应该保留所有消息
-        ?assertEqual([msg1, msg2, msg3], V2Value)
+        %% 验证全局状态保留初始值
+        GlobalState = maps:get(global_state, Result),
+        ?assertEqual(value1, maps:get(key1, GlobalState)),
+        ?assertEqual(value2, maps:get(key2, GlobalState))
     after
         pregel_master:stop(Master)
     end.
 
-%% 测试：数值求和 reducer
-state_reducer_sum_test() ->
-    Graph = make_fan_graph(),
-
-    %% 创建发送数值消息的计算函数
+%% 测试：Delta 合并
+delta_merge_test() ->
+    Graph = make_chain_graph(),
+    %% 创建更新状态的计算函数
     ComputeFn = fun(Ctx) ->
-        Vertex = maps:get(vertex, Ctx),
-        Id = pregel_vertex:id(Vertex),
-        Superstep = maps:get(superstep, Ctx),
-        Messages = maps:get(messages, Ctx, []),
+        #{vertex_id := Id, superstep := Superstep} = Ctx,
+        case Superstep of
+            0 ->
+                %% 超步 0：每个顶点更新自己的键
+                Key = list_to_atom(atom_to_list(Id) ++ "_result"),
+                Delta = #{Key => Id},
+                #{delta => Delta, outbox => [], status => ok};
+            _ ->
+                #{delta => #{}, outbox => [], status => ok}
+        end
+    end,
+    InitialState = #{initial => true},
+
+    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
+        num_workers => 1,
+        global_state => InitialState
+    }),
+    try
+        Result = run_until_done(Master),
+
+        %% 验证执行成功
+        ?assertEqual(completed, maps:get(status, Result)),
+
+        %% 验证所有顶点的 delta 都被合并
+        %% 注意：graph_state 将所有键转换为 binary，使用 graph_state:get 访问
+        GlobalState = maps:get(global_state, Result),
+        ?assertEqual(v1, graph_state:get(GlobalState, v1_result)),
+        ?assertEqual(v2, graph_state:get(GlobalState, v2_result)),
+        ?assertEqual(v3, graph_state:get(GlobalState, v3_result))
+    after
+        pregel_master:stop(Master)
+    end.
+
+%%====================================================================
+%% Field Reducers 测试
+%%====================================================================
+
+%% 测试：append field reducer
+field_reducer_append_test() ->
+    Graph = make_fan_graph(),
+    %% 创建向 messages 列表追加的计算函数
+    ComputeFn = fun(Ctx) ->
+        #{vertex_id := Id, superstep := Superstep} = Ctx,
         case Superstep of
             0 ->
                 case Id of
                     v_center ->
-                        #{vertex => Vertex, outbox => [], status => ok};
+                        #{delta => #{}, outbox => [], status => ok};
                     _ ->
-                        %% 源顶点向中心发送自己的值
-                        Value = pregel_vertex:value(Vertex),
-                        #{vertex => pregel_vertex:halt(Vertex), outbox => [{v_center, Value}], status => ok}
+                        %% 源顶点发送消息并更新 messages 列表
+                        Delta = #{messages => [Id]},
+                        #{delta => Delta, outbox => [{v_center, activate}], status => ok}
                 end;
             _ ->
-                %% 保存收到的消息并停止
-                NewVertex = pregel_vertex:set_value(Vertex, Messages),
-                #{vertex => pregel_vertex:halt(NewVertex), outbox => [], status => ok}
+                #{delta => #{}, outbox => [], status => ok}
         end
     end,
+    InitialState = #{messages => []},
 
-    %% 数值求和 reducer
-    SumReducer = fun(#{messages := Msgs}) -> [lists:sum(Msgs)] end,
+    %% 配置 append reducer 用于 messages 字段
+    %% 注意：graph_state 将 atom 键转换为 binary，需要使用 binary 键
+    FieldReducers = #{
+        <<"messages">> => fun graph_state_reducer:append_reducer/2
+    },
 
     {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
         num_workers => 1,
-        state_reducer => SumReducer
+        global_state => InitialState,
+        field_reducers => FieldReducers
     }),
     try
         Result = run_until_done(Master),
@@ -263,15 +263,58 @@ state_reducer_sum_test() ->
         %% 验证执行成功
         ?assertEqual(completed, maps:get(status, Result)),
 
-        %% 获取结果图
-        FinalGraph = maps:get(graph, Result),
+        %% 验证 messages 被正确追加
+        GlobalState = maps:get(global_state, Result),
+        Messages = graph_state:get(GlobalState, messages),
+        %% 所有源顶点都应该在 messages 列表中
+        ?assertEqual(3, length(Messages)),
+        ?assert(lists:member(v1, Messages)),
+        ?assert(lists:member(v2, Messages)),
+        ?assert(lists:member(v3, Messages))
+    after
+        pregel_master:stop(Master)
+    end.
 
-        %% 获取 v_center 的最终值
-        VCenter = pregel_graph:get(FinalGraph, v_center),
-        VCenterValue = pregel_vertex:value(VCenter),
+%% 测试：merge field reducer
+field_reducer_merge_test() ->
+    Graph = make_chain_graph(),
+    %% 创建合并 context map 的计算函数
+    ComputeFn = fun(Ctx) ->
+        #{vertex_id := Id, superstep := Superstep} = Ctx,
+        case Superstep of
+            0 ->
+                Key = atom_to_binary(Id, utf8),
+                Delta = #{context => #{Key => true}},
+                #{delta => Delta, outbox => [], status => ok};
+            _ ->
+                #{delta => #{}, outbox => [], status => ok}
+        end
+    end,
+    InitialState = #{context => #{}},
 
-        %% 求和 reducer：10 + 20 + 30 = 60
-        ?assertEqual([60], VCenterValue)
+    %% 配置 merge reducer 用于 context 字段
+    %% 注意：graph_state 将 atom 键转换为 binary，需要使用 binary 键
+    FieldReducers = #{
+        <<"context">> => fun graph_state_reducer:merge_reducer/2
+    },
+
+    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
+        num_workers => 1,
+        global_state => InitialState,
+        field_reducers => FieldReducers
+    }),
+    try
+        Result = run_until_done(Master),
+
+        %% 验证执行成功
+        ?assertEqual(completed, maps:get(status, Result)),
+
+        %% 验证 context 被正确合并
+        GlobalState = maps:get(global_state, Result),
+        Context = graph_state:get(GlobalState, context),
+        ?assertEqual(true, maps:get(<<"v1">>, Context)),
+        ?assertEqual(true, maps:get(<<"v2">>, Context)),
+        ?assertEqual(true, maps:get(<<"v3">>, Context))
     after
         pregel_master:stop(Master)
     end.
@@ -280,52 +323,22 @@ state_reducer_sum_test() ->
 %% 边界情况测试
 %%====================================================================
 
-%% 测试：空消息列表
-state_reducer_empty_messages_test() ->
+%% 测试：空 delta
+empty_delta_test() ->
     Graph = make_chain_graph(),
     ComputeFn = make_halt_compute_fn(),
-
-    %% 自定义 reducer
-    AppendReducer = fun(#{messages := Msgs}) -> Msgs end,
+    InitialState = #{initial => true},
 
     {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
         num_workers => 1,
-        state_reducer => AppendReducer
+        global_state => InitialState
     }),
     try
         Result = run_until_done(Master),
-        ?assertEqual(completed, maps:get(status, Result))
-    after
-        pregel_master:stop(Master)
-    end.
-
-%% 测试：reducer 返回空列表
-state_reducer_returns_empty_test() ->
-    Graph = make_chain_graph(),
-    ComputeFn = make_send_multi_to_target_compute_fn(),
-
-    %% 过滤掉所有消息的 reducer
-    FilterReducer = fun(#{messages := _Msgs}) -> [] end,
-
-    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
-        num_workers => 1,
-        state_reducer => FilterReducer
-    }),
-    try
-        Result = run_until_done(Master),
-
-        %% 验证执行成功
         ?assertEqual(completed, maps:get(status, Result)),
-
-        %% 获取结果图
-        FinalGraph = maps:get(graph, Result),
-
-        %% v2 不应该收到任何消息
-        V2 = pregel_graph:get(FinalGraph, v2),
-        V2Value = pregel_vertex:value(V2),
-
-        %% reducer 返回空列表，v2 不应该收到消息
-        ?assertEqual([], V2Value)
+        %% 状态应保持不变
+        GlobalState = maps:get(global_state, Result),
+        ?assertEqual(true, maps:get(initial, GlobalState))
     after
         pregel_master:stop(Master)
     end.
@@ -338,7 +351,11 @@ state_reducer_returns_empty_test() ->
 pregel_run_api_test() ->
     Graph = make_chain_graph(),
     ComputeFn = make_halt_compute_fn(),
+    InitialState = #{test => value},
 
-    Result = pregel:run(Graph, ComputeFn, #{num_workers => 1}),
+    Result = pregel:run(Graph, ComputeFn, #{
+        num_workers => 1,
+        global_state => InitialState
+    }),
 
     ?assertEqual(completed, maps:get(status, Result)).

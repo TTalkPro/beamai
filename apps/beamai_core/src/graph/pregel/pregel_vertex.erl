@@ -3,9 +3,13 @@
 %%%
 %%% 顶点是图计算的基本单元，每个顶点包含:
 %%% - id: 唯一标识符
-%%% - value: 顶点值（算法计算的结果）
 %%% - edges: 出边列表
 %%% - halted: 是否已投票停止
+%%%
+%%% 全局状态模式说明：
+%%% 顶点不再包含 value 字段。在全局状态模式下，所有状态数据
+%%% 由 Master 持有的 global_state 管理，顶点只是纯计算单元，
+%%% 负责表示图的拓扑结构（id + edges）和活跃状态（halted）。
 %%%
 %%% 设计模式: 不可变数据结构 + 函数式操作
 %%% @end
@@ -13,14 +17,14 @@
 -module(pregel_vertex).
 
 %% 构造函数
--export([new/1, new/2, new/3]).
+-export([new/1, new/2]).
 
 %% 读取操作
--export([id/1, value/1, edges/1, neighbors/1, out_degree/1]).
+-export([id/1, edges/1, neighbors/1, out_degree/1]).
 -export([is_halted/1, is_active/1]).
 
 %% 修改操作
--export([set_value/2, halt/1, activate/1]).
+-export([halt/1, activate/1]).
 -export([add_edge/2, add_edge/3, remove_edge/2, set_edges/2]).
 
 %% 边操作
@@ -40,9 +44,9 @@
     weight := number()
 }.
 
+%% 顶点类型（全局状态模式：不含 value）
 -type vertex() :: #{
     id := vertex_id(),
-    value := term(),
     edges := [edge()],
     halted := boolean()
 }.
@@ -51,20 +55,15 @@
 %% 构造函数
 %%====================================================================
 
-%% @doc 创建顶点（仅ID，值为 undefined）
+%% @doc 创建顶点（仅ID，无边）
 -spec new(vertex_id()) -> vertex().
 new(Id) ->
-    new(Id, undefined, []).
+    new(Id, []).
 
-%% @doc 创建顶点（ID + 值）
--spec new(vertex_id(), term()) -> vertex().
-new(Id, Value) ->
-    new(Id, Value, []).
-
-%% @doc 创建完整顶点
--spec new(vertex_id(), term(), [edge()]) -> vertex().
-new(Id, Value, Edges) ->
-    #{id => Id, value => Value, edges => Edges, halted => false}.
+%% @doc 创建顶点（ID + 边）
+-spec new(vertex_id(), [edge()]) -> vertex().
+new(Id, Edges) ->
+    #{id => Id, edges => Edges, halted => false}.
 
 %%====================================================================
 %% 读取操作
@@ -73,10 +72,6 @@ new(Id, Value, Edges) ->
 %% @doc 获取顶点ID
 -spec id(vertex()) -> vertex_id().
 id(#{id := Id}) -> Id.
-
-%% @doc 获取顶点值
--spec value(vertex()) -> term().
-value(#{value := V}) -> V.
 
 %% @doc 获取所有出边
 -spec edges(vertex()) -> [edge()].
@@ -102,10 +97,6 @@ is_active(V) -> not is_halted(V).
 %%====================================================================
 %% 修改操作
 %%====================================================================
-
-%% @doc 设置顶点值
--spec set_value(vertex(), term()) -> vertex().
-set_value(V, Value) -> V#{value => Value}.
 
 %% @doc 投票停止
 -spec halt(vertex()) -> vertex().

@@ -106,6 +106,8 @@ partition_graph(Graph, NumWorkers) ->
 
 %% @doc 将图分区到多个 Worker（使用指定策略）
 %% 返回: #{WorkerId => Graph}
+%%
+%% 全局状态模式：顶点不再包含 value，只复制 id 和 edges
 -spec partition_graph(pregel_graph:graph(), pos_integer(), strategy()) ->
     #{non_neg_integer() => pregel_graph:graph()}.
 partition_graph(Graph, NumWorkers, Strategy) ->
@@ -119,9 +121,8 @@ partition_graph(Graph, NumWorkers, Strategy) ->
             lists:foldl(
                 fun(V, G) ->
                     Id = pregel_vertex:id(V),
-                    Value = pregel_vertex:value(V),
                     Edges = pregel_vertex:edges(V),
-                    pregel_graph:add_vertex(G, Id, Value, Edges)
+                    pregel_graph:add_vertex(G, Id, Edges)
                 end,
                 pregel_graph:new(),
                 WorkerVertices

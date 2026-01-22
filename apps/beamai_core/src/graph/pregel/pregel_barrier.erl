@@ -4,11 +4,16 @@
 %%% 提供 BSP（批量同步并行）模型的同步屏障实现。
 %%% 负责跟踪超步同步状态和汇总 Worker 结果。
 %%%
+%%% 全局状态模式：
+%%% - 收集所有 Worker 的 deltas（增量更新）
+%%% - deltas 用于合并到 Master 的 global_state
+%%% - outbox 用于消息路由（非状态消息）
+%%%
 %%% 功能:
 %%%   - 创建和管理同步屏障状态
 %%%   - 记录 Worker 完成通知
 %%%   - 检测屏障完成条件
-%%%   - 汇总超步执行结果（含失败和中断信息）
+%%%   - 汇总超步执行结果（含 deltas、失败和中断信息）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -33,13 +38,18 @@
 
 -opaque t() :: #barrier{}.
 
+%% Delta 类型（与 pregel_worker 一致）
+-type delta() :: #{atom() | binary() => term()}.
+
 %% 超步结果汇总类型
 -type superstep_results() :: #{
     active_count := non_neg_integer(),
     message_count := non_neg_integer(),
-    %% 所有 Worker 的 inbox 汇总（用于 checkpoint，支持单顶点重启）
+    %% 所有 Worker 的 inbox 汇总（用于 checkpoint，支持重试）
     inbox := #{term() => [term()]},
-    %% 所有 Worker 的 outbox 汇总（用于 Master 集中路由）
+    %% 所有 Worker 的 deltas 汇总（用于合并到 global_state）
+    deltas := [delta()],
+    %% 所有 Worker 的 outbox 汇总（用于 Master 集中路由非状态消息）
     outbox := [{term(), term()}],
     failed_count := non_neg_integer(),
     failed_vertices := [{term(), term()}],
@@ -87,6 +97,8 @@ reset(NumWorkers, _Barrier) ->
 %%
 %% 将多个 Worker 的结果合并为单一的超步结果，包括：
 %% - 活跃顶点数、消息数
+%% - deltas 列表（用于合并到 global_state）
+%% - outbox 列表（用于消息路由）
 %% - 失败顶点数和列表
 %% - 中断顶点数和列表
 %%
@@ -108,6 +120,7 @@ empty_results() ->
         active_count => 0,
         message_count => 0,
         inbox => #{},
+        deltas => [],
         outbox => [],
         failed_count => 0,
         failed_vertices => [],
@@ -126,6 +139,9 @@ merge_worker_result(WorkerResult, Acc) ->
         %% 合并所有 Worker 的 inbox（用于 checkpoint）
         inbox => maps:merge(maps:get(inbox, Acc),
                             maps:get(inbox, WorkerResult, #{})),
+        %% 汇总所有 Worker 的 deltas（用于合并到 global_state）
+        deltas => maps:get(deltas, WorkerResult, []) ++
+                  maps:get(deltas, Acc),
         %% 汇总所有 Worker 的 outbox（用于 Master 集中路由）
         outbox => maps:get(outbox, WorkerResult, []) ++
                   maps:get(outbox, Acc),

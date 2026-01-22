@@ -1,194 +1,167 @@
-# Pregel 错误处理与 Checkpoint 支持任务
+# Graph 层全局状态模式重构任务
 
-## 任务概述
+> 设计文档: `info/graph_global_state_redesign.md`
 
-为 Pregel 设计统一的回调机制，支持：
-1. Graph 层保存 checkpoint
-2. Graph 层处理失败并决策是否继续
-3. Human-in-the-loop（中断与恢复）
+## 概述
 
-**设计原则**: Pregel 层只负责调用回调和执行返回的决策，不包含业务逻辑。
+将 graph 层从"消息传递模式"重构为"全局状态 + Delta 增量更新模式"。
 
----
+### 核心变更
 
-## P0: 回调函数设计与实现 ✅
-
-**优先级**: P0 (必须)
-
-**前置条件**: Worker 错误上报已完成
-
-### 设计概述
-
-```
-  超级步编号:  0(initial)    1          2          3(final)
-              │            │          │          │
-  回调时机:   执行前      超步0后    超步1后     结束时
-              │            │          │          │
-  type:     initial      step       step       final
-
-  注意：error 和 interrupt 不是 type，而是通过独立字段报告
-```
-
-### 统一回调设计
-
-```erlang
-%% opts 中的回调配置
--type opts() :: #{
-    ...
-    on_superstep_complete => fun((superstep_complete_info()) -> superstep_complete_result())
-}.
-
-%% 回调信息
--type superstep_complete_info() :: #{
-    type := initial | step | final,
-    superstep := non_neg_integer(),
-    active_count := non_neg_integer(),
-    message_count := non_neg_integer(),
-    %% 错误信息
-    failed_count := non_neg_integer(),
-    failed_vertices := [{vertex_id(), term()}],
-    %% 中断信息（human-in-the-loop）
-    interrupted_count := non_neg_integer(),
-    interrupted_vertices := [{vertex_id(), term()}],
-    %% Checkpoint 支持
-    get_checkpoint_data := fun(() -> checkpoint_data())
-}.
-
-%% Checkpoint 数据（按需获取）
--type checkpoint_data() :: #{
-    superstep := non_neg_integer(),
-    vertices := #{vertex_id() => vertex()},
-    pending_messages := [{vertex_id(), term()}],  %% 来自汇总的 outbox
-    vertex_inbox := #{vertex_id() => [term()]}   %% 顶点收件箱（支持单顶点重启）
-}.
-
-%% 回调返回值
--type superstep_complete_result() :: continue | {stop, term()}.
-```
+- Master 持有全局状态，Worker 只负责计算
+- 节点发送 Delta（`#{field => value}`），而不是完整状态
+- 使用 field_reducers 按字段合并 Delta
+- 延迟提交：出错时暂存 Delta，不 apply
+- 简化 vertex：移除 value，只保留 id 和 edges
 
 ---
 
-### 4.0 扩展 pregel_worker 支持 interrupt ✅
+## 状态：已完成 ✅
 
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_worker.erl`
+**完成日期**: 2026-01-22
 
-**目的**: 支持 human-in-the-loop 场景，顶点计算可返回 interrupt 状态
-
-- [x] 修改 `compute_status()` 类型，增加 `{interrupt, term()}`
-- [x] 修改 `process_compute_result/3`，处理 interrupt 状态
-- [x] 修改 `execute_superstep/1`，收集 interrupted_vertices
-- [x] 修改 `notify_master_done/5`，上报 interrupted_count 和 interrupted_vertices
+所有 5 个阶段已完成，39 个测试全部通过。
 
 ---
 
-### 4.1 定义回调类型 ✅
+## Phase 1: Pregel 层核心重构 ✅
 
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
+### 1.1 重构 pregel_master.erl ✅
 
-- [x] 定义 `superstep_complete_info()` 类型（含 interrupted 字段）
-- [x] 定义 `checkpoint_data()` 类型
-- [x] 定义 `superstep_complete_result()` 类型
-- [x] 导出类型
+- [x] 添加 `global_state` 字段到 `#state{}` record
+- [x] 添加 `field_reducers` 字段到 `#state{}` record
+- [x] 添加 `pending_deltas` 字段（延迟提交）
+- [x] 修改 `init/1`：初始化 global_state 和 field_reducers
+- [x] 修改 `opts()` 类型：
+  - [x] 添加 `global_state` 选项
+  - [x] 添加 `field_reducers` 选项
+  - [x] 删除 `state_reducer` 选项
+- [x] 修改 `complete_superstep/1`：
+  - [x] 收集所有 Worker 的 deltas
+  - [x] 检查是否有失败/中断
+  - [x] 成功时：apply field_reducers，广播新 global_state
+  - [x] 失败时：暂存 pending_deltas，不 apply
+- [x] 实现 `apply_deltas/3`：使用 field_reducers 合并 deltas
+- [x] 实现 `broadcast_global_state/2`：广播全局状态给所有 Worker
+- [x] 修改 `execute_retry/2`：处理延迟提交的重试逻辑
+- [x] 添加 `get_global_state/1` API
+- [x] 删除旧的 `state_reducer` 和消息合并相关代码
 
----
+### 1.2 重构 pregel_worker.erl ✅
 
-### 4.2 实现 get_checkpoint_data 函数 ✅
+- [x] 添加 `global_state` 字段到 `#state{}` record
+- [x] 修改 `init/1`：接收初始 global_state
+- [x] 添加 `handle_cast({global_state, State}, ...)`：接收广播的全局状态
+- [x] 修改 `compute_context` 类型
+- [x] 修改 `compute_result` 类型（返回 delta）
+- [x] 修改 `make_context/4`：传入 global_state 而不是 vertex
+- [x] 修改 `process_compute_result/3`：从结果中提取 delta
+- [x] 修改 `notify_master_done/6`：上报 deltas 列表
+- [x] 删除对 `pregel_vertex:value/1` 的依赖
 
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
+### 1.3 简化 pregel_vertex.erl ✅
 
-- [x] 实现 `collect_vertices_from_workers/1` - 从 Workers 收集顶点状态
-- [x] 实现 `make_get_checkpoint_data/3` - 创建按需获取函数
+- [x] 删除 `value` 字段从类型定义
+- [x] 删除 `value/1` 函数
+- [x] 删除 `set_value/2` 函数
+- [x] 简化 `new/1,2`：
+  - [x] `new(Id)` - 只需 id
+  - [x] `new(Id, Edges)` - id + edges
+- [x] 更新类型定义为纯拓扑结构
 
----
+### 1.4 更新 pregel_barrier.erl ✅
 
-### 4.3 修改 pregel_master 调用回调 ✅
-
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
-
-- [x] 添加 `on_superstep_complete` 到 #state
-- [x] 修改 `handle_call(start_execution)` - 启动后调用 initial 回调
-- [x] 修改 `complete_superstep/1` - 调用 step/final 回调
-- [x] 实现 `call_superstep_complete/3` - 统一的回调调用
-- [x] 实现 `determine_callback_type/2` - 判断回调类型
-- [x] 实现 `build_superstep_complete_info/3` - 构建回调信息
-- [x] 实现 `empty_superstep_results/0` - 创建空结果（用于 initial 回调）
-
----
-
-### 4.4 修改 pregel_barrier 汇总失败和中断信息 ✅
-
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_barrier.erl`
-
-- [x] 修改 `aggregate_results/1` 返回 map 格式
-- [x] 添加 failed_count 和 failed_vertices 汇总
-- [x] 添加 interrupted_count 和 interrupted_vertices 汇总
-- [x] 添加 outbox 汇总（用于 Master 集中路由）
-
----
-
-### 4.5 添加测试 ✅
-
-- [x] `pregel_worker_tests.erl` - 13 tests
-- [x] `pregel_barrier_tests.erl` - 9 tests
-- [x] `pregel_master_callback_tests.erl` - 11 tests
-- [x] `graph_compute_tests.erl` - 4 tests
+- [x] 修改 `superstep_results()` 类型：增加 `deltas` 字段
+- [x] 修改 `aggregate_results/1`：收集 deltas
 
 ---
 
-### 4.6 移除 pending_messages，实现 BSP 集中路由 ✅
+## Phase 2: Graph 层适配 ✅
 
-详见 `TASK_DONE.md`
+### 2.1 重构 graph_runner.erl ✅
+
+- [x] 修改 `run_options` 类型
+- [x] 修改 `run/3`：传递 global_state 和 field_reducers 给 pregel
+- [x] 新增 `build_compute_config/3`：传递 nodes 配置
+- [x] 更新 `checkpoint_data` 结构
+
+### 2.2 重构 graph_state_reducer.erl ✅
+
+- [x] 保留并增强内置 reducer：
+  - [x] `append_reducer/2` - 列表追加
+  - [x] `merge_reducer/2` - Map 合并
+  - [x] `last_write_win_reducer/2` - 后值覆盖
+- [x] 实现新函数：
+  - [x] `apply_delta/3` - 对单个 delta 按字段应用 reducer
+  - [x] `apply_deltas/3` - 批量应用 deltas
+
+### 2.3 更新 graph_compute.erl ✅
+
+- [x] 修改 compute 函数以适配新模型
+- [x] 从 config 获取 nodes 配置
+- [x] 返回 `#{delta, outbox, status}` 格式
+
+### 2.4 更新 graph_send.erl ✅
+
+- [x] 更新消息发送逻辑
 
 ---
 
-## 职责分离
+## Phase 3: beamai_agent 层迁移 ✅
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    分层职责                                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Graph 层                                                       │
-│  ─────────                                                      │
-│  • 实现 on_superstep_complete 回调                              │
-│  • 决定是否保存 checkpoint                                       │
-│  • 决定失败/中断时是否继续                                       │
-│  • 处理 human-in-the-loop（中断恢复）                            │
-│  • 返回 continue | {stop, Reason}                               │
-│                                                                 │
-│  ─────────────────────────────────────────────────────────────  │
-│                                                                 │
-│  Pregel 层 (pregel_master)                                      │
-│  ─────────────────────────                                      │
-│  • 在合适时机调用回调（initial/step/final）                      │
-│  • 提供 get_checkpoint_data 函数                                │
-│  • 汇总并传递 failed/interrupted 信息                           │
-│  • 集中路由所有消息（从 Worker outbox 汇总后路由）              │
-│  • 根据回调返回值执行（继续或停止）                              │
-│  • 不做业务决策                                                  │
-│                                                                 │
-│  ─────────────────────────────────────────────────────────────  │
-│                                                                 │
-│  Pregel 层 (pregel_barrier)                                     │
-│  ─────────────────────────                                      │
-│  • 汇总所有 Worker 的结果                                        │
-│  • 包含 failed_count/failed_vertices                            │
-│  • 包含 interrupted_count/interrupted_vertices                  │
-│  • 包含 outbox（所有 Worker 的输出消息）                        │
-│  • 包含 inbox（所有 Worker 的收件箱，用于 checkpoint）         │
-│                                                                 │
-│  ─────────────────────────────────────────────────────────────  │
-│                                                                 │
-│  Pregel 层 (pregel_worker)                                      │
-│  ─────────────────────────                                      │
-│  • 处理 compute_status: ok | {error, R} | {interrupt, R}       │
-│  • 上报 failed_count/failed_vertices                            │
-│  • 上报 interrupted_count/interrupted_vertices                  │
-│  • 上报 outbox（不再直接路由）                                  │
-│  • 上报 inbox（用于 checkpoint，支持单顶点重启）               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+### 3.1 更新 beamai_agent_runner.erl ✅
+
+- [x] 修改 `build_run_options/2`：构建初始 `global_state`
+- [x] 传入 `field_reducers` 配置
+- [x] 修改 `handle_graph_result/2`：从结果中提取新的 global_state
+
+### 3.2 重构 beamai_nodes.erl ✅
+
+- [x] 所有节点改为从 `global_state` 读取数据
+- [x] 返回 `delta` 而不是更新 vertex value
+
+### 3.3 更新 beamai_node_registry.erl ✅
+
+- [x] 更新节点构建逻辑
+
+---
+
+## Phase 4: 测试更新 ✅
+
+### 4.1 Pregel 层测试 ✅
+
+- [x] 更新 `pregel_master_tests.erl`
+  - [x] 测试 global_state 初始化
+  - [x] 测试 delta 合并
+  - [x] 测试 field_reducers
+  - [x] 测试 global_state 广播
+- [x] 更新 `pregel_worker_tests.erl`
+  - [x] 测试接收 global_state
+  - [x] 测试返回 delta
+- [x] 更新 `pregel_barrier_tests.erl`
+  - [x] 测试 delta 汇总
+
+### 4.2 Graph 层测试 ✅
+
+- [x] 更新 `graph_compute_tests.erl`
+  - [x] 测试 from_pregel_result 提取 global_state
+
+---
+
+## Phase 5: 清理 ✅
+
+### 5.1 清理废弃代码 ✅
+
+- [x] `pregel_vertex.erl`: 已移除 `value` 字段和相关函数
+- [x] `pregel_master.erl`: 已移除 `state_reducer` 相关代码
+- [x] `pregel_worker.erl`: 已移除 vertex value 操作
+- [x] 保留向后兼容的废弃函数（返回 undefined/空值）
+
+### 5.2 更新文档 ✅
+
+- [x] 更新 `pregel.erl` 文档注释
+- [x] 更新 `examples/src/example_pregel.erl` 示例代码
+- [x] 更新 `info/pregel_graph_compute_fn.md` 文档
 
 ---
 
@@ -196,192 +169,73 @@
 
 | 测试文件 | 测试数量 |
 |----------|----------|
+| `pregel_master_tests.erl` | 9 tests |
 | `pregel_worker_tests.erl` | 13 tests |
 | `pregel_barrier_tests.erl` | 9 tests |
-| `pregel_master_callback_tests.erl` | 11 tests |
-| `pregel_message_routing_tests.erl` | 8 tests |
-| `pregel_checkpoint_restore_tests.erl` | 15 tests |
-| `graph_compute_tests.erl` | 4 tests |
-| **总计** | **60 tests** |
+| `graph_compute_tests.erl` | 8 tests |
+| **总计** | **39 tests, 0 failures** |
 
 ---
 
-## 相关文档
-
-- `info/pregel_callback_checkpoint_analysis.md` - 回调与 Checkpoint 分析
-- `info/pregel_master_failure_handling.md` - Master 失败处理设计
-- `info/pregel_worker_error_handling_design.md` - Worker 错误处理设计
-- `info/pregel_message_reliability_analysis.md` - 消息可靠性分析
-- `info/pregel_outbox_vs_pending_writes.md` - Outbox 与 pending_writes 对比
-- `info/pregel_single_vertex_restart.md` - 单顶点重启设计
-
----
-
-## P1: Checkpoint 恢复功能 ✅
-
-**优先级**: P1 (高)
-
-**前置条件**: P0 回调机制已完成 ✅
-
-**目标**: 支持从 checkpoint 恢复执行，实现完整的保存-恢复流程
-
-### 设计概述
-
-```
-保存 checkpoint（已实现）:
-┌─────────────────────────────────────────────────────────────┐
-│  on_superstep_complete 回调                                  │
-│         │                                                    │
-│         ▼                                                    │
-│  get_checkpoint_data() ──► checkpoint_data()                │
-│                              │                               │
-│                              ├── superstep: 2                │
-│                              ├── vertices: #{v1 => ...}      │
-│                              └── pending_messages: [...]     │
-└─────────────────────────────────────────────────────────────┘
-
-恢复 checkpoint（已实现）:
-┌─────────────────────────────────────────────────────────────┐
-│  pregel_master:run(Graph, ComputeFn, Opts)                   │
-│                                      │                       │
-│                                      ▼                       │
-│  Opts = #{                                                   │
-│      restore_from => #{              %% 恢复选项             │
-│          superstep => 2,             %% 从超步 2 开始        │
-│          vertices => #{...},         %% 恢复的顶点状态       │
-│          messages => [...]           %% 待投递的消息         │
-│      }                                                       │
-│  }                                                           │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 类型设计
+## Delta 格式规范
 
 ```erlang
-%% 恢复选项
--type restore_opts() :: #{
-    superstep := non_neg_integer(),        %% 起始超步
-    vertices := #{vertex_id() => vertex()}, %% 顶点状态
-    messages => [{vertex_id(), term()}]     %% 待投递消息（可选）
-}.
+%% Delta 是简单的 field => value 映射
+-type delta() :: #{atom() | binary() => term()}.
 
-%% 扩展 opts()
--type opts() :: #{
-    combiner => pregel_combiner:spec(),
-    max_supersteps => pos_integer(),
-    num_workers => pos_integer(),
-    on_superstep_complete => superstep_complete_callback(),
-    restore_from => restore_opts()  %% 从 checkpoint 恢复
-}.
+%% 示例
+#{
+    messages => [NewMessage],      %% append_reducer 处理
+    context => #{key => value},    %% merge_reducer 处理
+    last_response => Response      %% last_write_win 处理
+}
+
+%% field_reducers 配置（注意：键使用 binary 格式）
+#{
+    <<"messages">> => fun graph_state_reducer:append_reducer/2,
+    <<"context">> => fun graph_state_reducer:merge_reducer/2
+    %% 未配置的字段默认 last_write_win
+}
 ```
 
 ---
 
-### 5.1 扩展 opts() 类型支持恢复选项 ✅
+## 架构说明
 
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
+### apply_deltas 流程
 
-- [x] 定义 `restore_opts()` 类型
-- [x] 修改 `opts()` 类型，添加 `restore_from` 选项
-- [x] 导出类型
-
----
-
-### 5.2 修改 pregel_master init 支持初始状态 ✅
-
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
-
-- [x] 修改 `init/1`，解析 `restore_from` 选项
-- [x] 从 `restore_from.superstep` 初始化超步号
-- [x] 添加 `get_restore_superstep/1` 辅助函数
-
----
-
-### 5.3 修改 start_workers 支持顶点状态恢复 ✅
-
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
-
-- [x] 修改 `start_workers/1`，支持传入恢复的顶点状态
-- [x] 修改 `start_worker_processes/6`，合并恢复的顶点
-- [x] 添加 `get_restore_vertices/1` 和 `merge_restored_vertices/2` 辅助函数
-
----
-
-### 5.4 实现初始消息注入 ✅
-
-**文件**: `apps/beamai_core/src/graph/pregel/pregel_master.erl`
-
-- [x] 修改 `handle_call(start_execution)`，在启动超步前注入消息
-- [x] 添加 `inject_restore_messages/1` 函数
-- [x] 使用现有的 `route_all_messages/3` 将消息路由到 Workers
-
----
-
-### 5.5 添加测试 ✅
-
-**文件**: `apps/beamai_core/test/pregel_checkpoint_restore_tests.erl`
-
-- [x] 测试从指定超步恢复（restore_from_superstep_2_test）
-- [x] 测试顶点状态恢复（restored_vertex_values_test, final_graph_has_restored_vertices_test）
-- [x] 测试消息注入（injected_messages_received_test）
-- [x] 测试完整的保存-恢复流程（save_and_restore_consistency_test）
-- [x] 测试边界情况（empty_messages_restore_test, partial_vertices_restore_test 等）
-- [x] 测试 vertex_inbox（checkpoint_contains_vertex_inbox_test, vertex_inbox_for_single_vertex_restart_test）
-
-**测试统计**: 15 tests
-
----
-
-### 5.6 更新文档
-
-- [ ] 更新 `info/pregel_callback_checkpoint_analysis.md` 添加恢复流程说明
-
----
-
-### 5.7 增强 vertex_inbox 支持单顶点重启 ✅
-
-**目标**: 支持单顶点重启场景，在 checkpoint 中保存每个顶点的收件箱
-
-**设计说明**:
-```
-原有设计（仅支持全图恢复）:
-┌─────────────────────────────────────────────────────────────┐
-│  checkpoint_data = #{                                        │
-│      superstep => 2,                                         │
-│      vertices => #{v1 => ..., v2 => ...},                   │
-│      pending_messages => [{v3, msg1}, {v4, msg2}]  ◀── outbox│
-│  }                                                           │
-│                                                              │
-│  问题: pending_messages 是 outbox（输出消息），不是 inbox   │
-│        无法知道某个顶点在该超步收到了哪些消息                │
-│        无法对单个失败顶点重放消息                            │
-└─────────────────────────────────────────────────────────────┘
-
-增强设计（支持单顶点重启）:
-┌─────────────────────────────────────────────────────────────┐
-│  checkpoint_data = #{                                        │
-│      superstep => 2,                                         │
-│      vertices => #{v1 => ..., v2 => ...},                   │
-│      pending_messages => [{v3, msg1}, {v4, msg2}],           │
-│      vertex_inbox => #{v1 => [msg_a], v2 => [msg_b, msg_c]} │
-│  }              ▲                                            │
-│                 └── 新增：每个顶点在该超步收到的消息         │
-│                                                              │
-│  支持场景:                                                   │
-│  1. 顶点 v1 计算失败，可以只重启 v1，重放 inbox 中的消息    │
-│  2. human-in-the-loop 中断后，可以只恢复特定顶点            │
-└─────────────────────────────────────────────────────────────┘
+```erlang
+%% Delta 合并过程
+apply_deltas(GlobalState, Deltas, FieldReducers) ->
+    lists:foldl(fun(Delta, AccState) ->
+        apply_delta(Delta, AccState, FieldReducers)
+    end, GlobalState, Deltas).
 ```
 
-**修改内容**:
+### 全局状态同步模式
 
-- [x] `pregel_worker.erl`: 上报 inbox 到 Master
-- [x] `pregel_barrier.erl`: 汇总所有 Worker 的 inbox
-- [x] `pregel_master.erl`: 在 checkpoint_data 中包含 vertex_inbox
-- [x] 添加测试验证 vertex_inbox 功能
+当前使用 **Push 模式**：
+1. Master 完成超步后 apply_deltas 得到 NewGlobalState
+2. Master 广播 NewGlobalState 给所有 Worker
+3. Master 发送 start_superstep 开始下一超步
+
+可选的 **Pull 模式**（未实现，但已验证可行）：
+1. Master 完成超步后 apply_deltas 得到 NewGlobalState（保留在 Master）
+2. Master 发送 start_superstep 开始下一超步
+3. Worker 主动调用 get_global_state 同步状态
+4. **不会死锁**：因为同步调用发生在计算开始前
 
 ---
 
-## 已完成任务
+## 修改的核心文件
 
-见 `TASK_DONE.md`
+| 文件 | 修改类型 |
+|------|----------|
+| `pregel_master.erl` | 添加 global_state、field_reducers、delta 合并逻辑 |
+| `pregel_worker.erl` | 接收 global_state、返回 delta |
+| `pregel_vertex.erl` | 简化为纯拓扑结构 |
+| `pregel_barrier.erl` | 汇总 deltas |
+| `pregel.erl` | 添加 get_result_global_state/1 API |
+| `graph_runner.erl` | 构建 global_state 和 config |
+| `graph_compute.erl` | 适配新模型 |
+| `graph_builder.erl` | 创建纯拓扑顶点 |

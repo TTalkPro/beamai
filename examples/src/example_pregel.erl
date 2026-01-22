@@ -1,10 +1,17 @@
 %%%-------------------------------------------------------------------
-%%% @doc Pregel Example - 并行 BSP/Pregel 使用示例
+%%% @doc Pregel Example - 并行 BSP/Pregel 使用示例（全局状态模式）
 %%%
 %%% 演示:
-%%% 1. PageRank 算法
-%%% 2. SSSP (单源最短路径)
-%%% 3. 连通分量
+%%% 1. 简单消息传递测试
+%%% 2. PageRank 算法
+%%% 3. SSSP (单源最短路径)
+%%% 4. 连通分量
+%%%
+%%% 全局状态模式说明：
+%%% - Master 持有 global_state，Worker 是纯计算单元
+%%% - 计算函数返回 #{delta => Map, outbox => List, status => ok}
+%%% - delta 是增量更新，通过 field_reducers 合并到 global_state
+%%% - 顶点只是拓扑结构（id + edges），不含 value
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -25,53 +32,69 @@
 %% 简单测试
 %%====================================================================
 
-%% @doc 简单的并行执行测试
+%% @doc 简单的并行执行测试（全局状态模式）
 simple_test() ->
-    io:format("=== Simple Pregel Test ===~n"),
+    io:format("=== Simple Pregel Test (Global State Mode) ===~n"),
 
     %% 创建一个简单的图: A -> B -> C
+    %% 全局状态模式：顶点只包含拓扑结构（id + edges）
     G0 = pregel:new_graph(),
-    G1 = pregel:add_vertex(G0, a, 1),
-    G2 = pregel:add_vertex(G1, b, 2),
-    G3 = pregel:add_vertex(G2, c, 3),
+    G1 = pregel:add_vertex(G0, a, []),
+    G2 = pregel:add_vertex(G1, b, []),
+    G3 = pregel:add_vertex(G2, c, []),
     G4 = pregel:add_edge(G3, a, b),
     G5 = pregel:add_edge(G4, b, c),
 
     io:format("Graph created with ~p vertices~n", [pregel:vertex_count(G5)]),
 
-    %% 定义简单的计算函数: 每个顶点向邻居发送自己的值
+    %% 定义简单的计算函数（全局状态模式）
+    %% 每个顶点向邻居发送自己的值，并更新 global_state
     ComputeFn = fun(Ctx) ->
-        Superstep = pregel:get_superstep(Ctx),
-        Value = pregel:get_vertex_value(Ctx),
-        Messages = pregel:get_messages(Ctx),
+        #{vertex_id := Id, superstep := Superstep, messages := Messages,
+          global_state := State, vertex := Vertex} = Ctx,
+
+        %% 从 global_state 获取当前值
+        Value = graph_state:get(State, Id, 0),
+        Neighbors = pregel_vertex:neighbors(Vertex),
 
         io:format("  Superstep ~p: Vertex ~p, Value=~p, Messages=~p~n",
-                  [Superstep, pregel:get_vertex_id(Ctx), Value, Messages]),
+                  [Superstep, Id, Value, Messages]),
 
         case Superstep >= 2 of
             true ->
-                pregel:vote_to_halt(Ctx);
+                %% 停止计算，不更新状态
+                #{delta => #{}, outbox => [], status => ok};
             false ->
-                %% 将自己的值发送给邻居
-                Ctx1 = pregel:send_to_all_neighbors(Ctx, Value),
-                %% 更新值为收到消息的和
+                %% 计算新值（当前值 + 收到消息之和）
                 NewValue = case Messages of
                     [] -> Value;
                     _ -> Value + lists:sum(Messages)
                 end,
-                pregel:set_value(Ctx1, NewValue)
+                %% 发送消息给邻居
+                Outbox = [{N, NewValue} || N <- Neighbors],
+                %% 返回 delta 更新
+                Delta = #{Id => NewValue},
+                #{delta => Delta, outbox => Outbox, status => ok}
         end
     end,
+
+    %% 初始全局状态
+    InitialState = #{a => 1, b => 2, c => 3},
 
     %% 运行 Pregel
     io:format("~nStarting Pregel execution...~n"),
     Result = pregel:run(G5, ComputeFn, #{
         max_supersteps => 5,
-        num_workers => 2
+        num_workers => 2,
+        global_state => InitialState
     }),
 
     io:format("~nResult: ~p~n", [maps:get(status, Result)]),
     io:format("Supersteps: ~p~n", [maps:get(supersteps, Result)]),
+
+    %% 显示最终全局状态
+    FinalState = pregel:get_result_global_state(Result),
+    io:format("Final global_state: ~p~n", [FinalState]),
 
     Result.
 
@@ -82,6 +105,7 @@ simple_test() ->
 run_all() ->
     io:format("~n========================================~n"),
     io:format("    Erlang Pregel Examples~n"),
+    io:format("    (Global State Mode)~n"),
     io:format("========================================~n~n"),
 
     simple_test(),
@@ -137,12 +161,13 @@ run_pagerank() ->
     io:format("Result: ~p~n", [maps:get(status, Result)]),
     io:format("Supersteps: ~p~n", [maps:get(supersteps, Result)]),
 
-    %% 显示 PageRank 值
-    Values = pregel:vertex_values(Result),
+    %% 显示 PageRank 值（从 global_state 获取）
+    Values = pregel:get_result_global_state(Result),
     io:format("PageRank values:~n"),
     maps:foreach(
-        fun(V, Rank) ->
-            io:format("  ~p: ~.4f~n", [V, Rank])
+        fun(V, Rank) when is_number(Rank) ->
+            io:format("  ~p: ~.4f~n", [V, Rank]);
+           (_, _) -> ok
         end,
         Values
     ),
@@ -181,16 +206,17 @@ run_sssp() ->
     io:format("Result: ~p~n", [maps:get(status, Result)]),
     io:format("Supersteps: ~p~n", [maps:get(supersteps, Result)]),
 
-    %% 显示距离
-    Values = pregel:vertex_values(Result),
+    %% 显示距离（从 global_state 获取）
+    Values = pregel:get_result_global_state(Result),
     io:format("Shortest distances from 'a':~n"),
     maps:foreach(
-        fun(V, Dist) ->
+        fun(V, Dist) when is_number(Dist); Dist =:= infinity ->
             DistStr = case Dist of
                 infinity -> "infinity";
                 _ -> io_lib:format("~p", [Dist])
             end,
-            io:format("  ~p: ~s~n", [V, DistStr])
+            io:format("  ~p: ~s~n", [V, DistStr]);
+           (_, _) -> ok
         end,
         Values
     ),
@@ -226,12 +252,13 @@ run_connected_components() ->
     io:format("Result: ~p~n", [maps:get(status, Result)]),
     io:format("Supersteps: ~p~n", [maps:get(supersteps, Result)]),
 
-    %% 显示组件
-    Values = pregel:vertex_values(Result),
+    %% 显示组件（从 global_state 获取）
+    Values = pregel:get_result_global_state(Result),
     io:format("Connected components:~n"),
     maps:foreach(
-        fun(V, Component) ->
-            io:format("  ~p: component ~p~n", [V, Component])
+        fun(V, Component) when is_atom(V) ->
+            io:format("  ~p: component ~p~n", [V, Component]);
+           (_, _) -> ok
         end,
         Values
     ),

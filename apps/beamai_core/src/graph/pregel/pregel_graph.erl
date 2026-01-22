@@ -14,7 +14,7 @@
 -export([new/0, new/1, from_edges/1, from_edges/2]).
 
 %% 顶点操作
--export([add_vertex/2, add_vertex/3, add_vertex/4]).
+-export([add_vertex/2, add_vertex/3]).
 -export([get/2, has/2, remove/2, update/3]).
 -export([vertices/1, ids/1, size/1]).
 
@@ -82,18 +82,19 @@ new(Config) ->
 from_edges(Edges) ->
     from_edges(Edges, #{}).
 
-%% @doc 从边列表和初始值构建图
-%% InitialValues: #{vertex_id() => value}
+%% @doc 从边列表和附加顶点ID构建图
+%% 全局状态模式：InitialValues 参数已废弃，仅用于向后兼容
+%% ExtraIds: 额外的顶点ID映射（只取keys，values被忽略）
 -spec from_edges([{vertex_id(), vertex_id()} |
                   {vertex_id(), vertex_id(), number()}],
                  #{vertex_id() => term()}) -> graph().
-from_edges(Edges, InitialValues) ->
-    %% 收集所有顶点ID（包括边端点和初始值中的ID）
+from_edges(Edges, ExtraIds) ->
+    %% 收集所有顶点ID（包括边端点和额外ID）
     EdgeIds = collect_vertex_ids(Edges),
-    InitIds = maps:keys(InitialValues),
+    InitIds = maps:keys(ExtraIds),
     AllIds = lists:usort(EdgeIds ++ InitIds),
     %% 创建顶点
-    Graph0 = create_vertices(AllIds, InitialValues),
+    Graph0 = create_vertices(AllIds),
     %% 添加边
     add_edges(Graph0, Edges).
 
@@ -104,17 +105,12 @@ from_edges(Edges, InitialValues) ->
 %% @doc 添加顶点（仅ID）
 -spec add_vertex(graph(), vertex_id()) -> graph().
 add_vertex(Graph, Id) ->
-    add_vertex(Graph, Id, undefined, []).
+    add_vertex(Graph, Id, []).
 
-%% @doc 添加顶点（带值）
--spec add_vertex(graph(), vertex_id(), term()) -> graph().
-add_vertex(Graph, Id, Value) ->
-    add_vertex(Graph, Id, Value, []).
-
-%% @doc 添加顶点（带值和边）
--spec add_vertex(graph(), vertex_id(), term(), [edge()]) -> graph().
-add_vertex(#{vertices := Vertices} = Graph, Id, Value, Edges) ->
-    Vertex = pregel_vertex:new(Id, Value, Edges),
+%% @doc 添加顶点（带边）
+-spec add_vertex(graph(), vertex_id(), [edge()]) -> graph().
+add_vertex(#{vertices := Vertices} = Graph, Id, Edges) ->
+    Vertex = pregel_vertex:new(Id, Edges),
     Graph#{vertices => Vertices#{Id => Vertex}}.
 
 %% @doc 获取顶点
@@ -260,12 +256,11 @@ collect_vertex_ids(Edges) ->
     )).
 
 %% @private 根据ID列表创建顶点
--spec create_vertices([vertex_id()], #{vertex_id() => term()}) -> graph().
-create_vertices(Ids, InitialValues) ->
+-spec create_vertices([vertex_id()]) -> graph().
+create_vertices(Ids) ->
     lists:foldl(
         fun(Id, G) ->
-            Value = maps:get(Id, InitialValues, undefined),
-            add_vertex(G, Id, Value)
+            add_vertex(G, Id)
         end,
         new(),
         Ids
