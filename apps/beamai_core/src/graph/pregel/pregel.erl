@@ -1,16 +1,18 @@
 %%%-------------------------------------------------------------------
-%%% @doc Pregel 主入口 API 模块（全局状态模式）
+%%% @doc Pregel 主入口 API 模块（全局状态模式 - 无 inbox 版本）
 %%%
 %%% 提供统一的 API 接口:
 %%% - 图构建: new_graph, add_vertex, add_edge, from_edges
 %%% - Pregel 执行: run, start, step, get_result, stop
 %%% - 结果查询: get_result_graph, get_result_status, get_result_global_state
 %%%
-%%% 全局状态模式说明：
+%%% 全局状态模式（无 inbox 版本）说明：
 %%% - Master 持有 global_state，Worker 是纯计算单元
-%%% - 计算函数返回 #{delta => Map, outbox => List, status => ok}
+%%% - 计算函数返回 #{delta => Map, activations => List, status => ok}
 %%% - delta 是增量更新，通过 field_reducers 合并到 global_state
+%%% - activations 是要激活的顶点ID列表（替代旧的 outbox 消息）
 %%% - 顶点只是拓扑结构（id + edges），不含 value
+%%% - 节点不再通过 inbox 接收消息，而是通过被激活来触发计算
 %%%
 %%% 使用示例:
 %%% <pre>
@@ -20,14 +22,14 @@
 %%% G2 = pregel:add_vertex(G1, b, []),
 %%% G3 = pregel:add_edge(G2, a, b),
 %%%
-%%% %% 定义计算函数（返回 delta + outbox）
+%%% %% 定义计算函数（返回 delta + activations）
 %%% ComputeFn = fun(Ctx) ->
-%%%     #{vertex_id := Id, global_state := State, vertex := Vertex} = Ctx,
+%%%     #{vertex_id := Id, global_state := State} = Ctx,
 %%%     Value = graph_state:get(State, Id, 0),
-%%%     Neighbors = pregel_vertex:neighbors(Vertex),
-%%%     Outbox = [{N, Value} || N <- Neighbors],
+%%%     %% 激活邻居节点（只需ID列表，不传递数据）
+%%%     Activations = [b],
 %%%     Delta = #{Id => Value + 1},
-%%%     #{delta => Delta, outbox => Outbox, status => ok}
+%%%     #{delta => Delta, activations => Activations, status => ok}
 %%% end,
 %%%
 %%% %% 执行（指定初始全局状态）
@@ -51,6 +53,7 @@
 
 %% Pregel 执行 - 步进式 API
 -export([start/3, step/1, retry/2, get_checkpoint_data/1, get_result/1, stop/1]).
+-export([get_global_state/1]).
 %% Pregel 执行 - 简化 API（内部使用步进式）
 -export([run/2, run/3]).
 
@@ -179,6 +182,11 @@ get_result(Master) ->
 stop(Master) ->
     pregel_master:stop(Master).
 
+%% @doc 获取当前全局状态（运行中）
+-spec get_global_state(pid()) -> map().
+get_global_state(Master) ->
+    pregel_master:get_global_state(Master).
+
 %%====================================================================
 %% Pregel 执行 API - 简化（内部使用步进式）
 %%====================================================================
@@ -231,9 +239,13 @@ get_vertex_id(#{vertex := Vertex}) ->
 get_vertex_value(_Ctx) ->
     undefined.
 
-%% @doc 获取收到的消息列表
+%% @doc 获取收到的消息列表 (已废弃 - 无 inbox 版本不传递消息)
+%% 在新的 activations 模式下，节点不再接收消息。
+%% 所有数据应从 global_state 中获取。
+%% @deprecated
 -spec get_messages(context()) -> [term()].
-get_messages(#{messages := Messages}) -> Messages.
+get_messages(Ctx) ->
+    maps:get(messages, Ctx, []).
 
 %% @doc 获取当前超步编号
 -spec get_superstep(context()) -> non_neg_integer().
@@ -268,10 +280,15 @@ set_value(Ctx, _Value) ->
 vote_to_halt(#{vertex := Vertex} = Ctx) ->
     Ctx#{vertex => pregel_vertex:halt(Vertex)}.
 
-%% @doc 发送消息给指定顶点
+%% @doc 发送消息给指定顶点 (已废弃 - 无 inbox 版本使用 activations)
+%% 在新的 activations 模式下，此函数不再适用。
+%% 请在计算函数中直接返回 activations 列表。
+%% @deprecated
 -spec send_message(context(), vertex_id(), term()) -> context().
-send_message(#{outbox := Outbox} = Ctx, Target, Value) ->
-    Ctx#{outbox => [{Target, Value} | Outbox]}.
+send_message(Ctx, Target, _Value) ->
+    %% 转换为激活模式：只记录目标顶点ID
+    Activations = maps:get(activations, Ctx, []),
+    Ctx#{activations => [Target | Activations]}.
 
 %% @doc 向所有邻居发送相同消息
 -spec send_to_all_neighbors(context(), term()) -> context().

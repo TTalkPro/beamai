@@ -36,10 +36,10 @@
 
 %% @doc 返回全局 Pregel 计算函数
 %%
-%% 全局状态模式：
+%% 全局状态模式（无 inbox 版本）：
 %% - 从 context 中的 global_state 读取当前状态
 %% - 返回 delta（增量更新）而不是更新 vertex value
-%% - 发送 activate 消息协调下一步执行
+%% - 返回 activations（顶点ID列表）指定下一步激活的顶点
 %%
 %% 返回值包含 status 字段表示执行状态：
 %% - status => ok: 计算成功
@@ -51,27 +51,31 @@ compute_fn() ->
         try
             execute_node(Ctx)
         catch
-            throw:{interrupt, Reason, Delta, Outbox} ->
+            throw:{interrupt, Reason, Delta, Activations} ->
                 %% 中断：返回 delta 和中断状态
-                #{delta => Delta, outbox => Outbox, status => {interrupt, Reason}};
+                #{delta => Delta, activations => Activations, status => {interrupt, Reason}};
             Class:Reason:_Stacktrace ->
                 %% 失败时返回错误状态，空 delta
-                #{delta => #{}, outbox => [], status => {error, {Class, Reason}}}
+                #{delta => #{}, activations => [], status => {error, {Class, Reason}}}
         end
     end.
 
 %% @private 执行节点计算
+%%
+%% 无 inbox 版本：节点通过被激活来触发计算
+%% - 不再从 inbox 读取消息
+%% - 从 global_state 读取所有需要的数据
 -spec execute_node(pregel_worker:context()) -> pregel_worker:compute_result().
 execute_node(Ctx) ->
-    #{vertex_id := VertexId, global_state := GlobalState, inbox := Messages} = Ctx,
+    #{vertex_id := VertexId, global_state := GlobalState} = Ctx,
 
     case VertexId of
         ?START_NODE ->
-            handle_start_node(Ctx, GlobalState, Messages);
+            handle_start_node(Ctx, GlobalState);
         ?END_NODE ->
-            handle_end_node(Ctx, Messages);
+            handle_end_node(Ctx);
         _ ->
-            handle_regular_node(Ctx, GlobalState, Messages)
+            handle_regular_node(Ctx, GlobalState)
     end.
 
 %% @doc 从 Pregel 结果中提取最终状态
@@ -97,61 +101,36 @@ from_pregel_result(Result) ->
 
 %% @private 处理起始节点
 %%
-%% 起始节点在超步 0 被激活，执行后发送 activate 消息到下游节点
--spec handle_start_node(pregel_worker:context(), graph_state:state(), [term()]) ->
+%% 无 inbox 版本：节点被激活时执行
+%% - 超步 0 时自动激活
+%% - 后续超步由 Master 通过 activations 激活
+-spec handle_start_node(pregel_worker:context(), graph_state:state()) ->
     pregel_worker:compute_result().
-handle_start_node(Ctx, GlobalState, Messages) ->
-    #{superstep := Superstep, config := Config} = Ctx,
-
-    case Superstep of
-        0 ->
-            %% 超步 0：执行起始节点，发送 activate 到下游
-            NodeConfig = get_node_config(?START_NODE, Config),
-            execute_and_route(Ctx, GlobalState, NodeConfig);
-        _ ->
-            %% 后续超步：如果收到消息则处理，否则 halt
-            case has_activation_message(Messages) of
-                true ->
-                    NodeConfig = get_node_config(?START_NODE, Config),
-                    execute_and_route(Ctx, GlobalState, NodeConfig);
-                false ->
-                    #{delta => #{}, outbox => [], status => ok}
-            end
-    end.
+handle_start_node(Ctx, GlobalState) ->
+    #{config := Config} = Ctx,
+    %% 被激活即执行节点
+    NodeConfig = get_node_config(?START_NODE, Config),
+    execute_and_route(Ctx, GlobalState, NodeConfig).
 
 %% @private 处理终止节点
 %%
-%% 终止节点收到 activate 消息后，标记执行完成
--spec handle_end_node(pregel_worker:context(), [term()]) ->
+%% 无 inbox 版本：终止节点被激活时标记执行完成
+-spec handle_end_node(pregel_worker:context()) ->
     pregel_worker:compute_result().
-handle_end_node(_Ctx, []) ->
-    #{delta => #{}, outbox => [], status => ok};
-handle_end_node(_Ctx, Messages) ->
-    case has_activation_message(Messages) of
-        true ->
-            %% 收到激活消息，标记完成
-            #{delta => #{}, outbox => [], status => ok};
-        false ->
-            #{delta => #{}, outbox => [], status => ok}
-    end.
+handle_end_node(_Ctx) ->
+    %% 终止节点被激活，标记完成，不激活其他节点
+    #{delta => #{}, activations => [], status => ok}.
 
 %% @private 处理普通节点
--spec handle_regular_node(pregel_worker:context(), graph_state:state(), [term()]) ->
+%%
+%% 无 inbox 版本：节点被激活时执行
+%% - resume 数据现在通过 global_state 传递
+-spec handle_regular_node(pregel_worker:context(), graph_state:state()) ->
     pregel_worker:compute_result().
-handle_regular_node(_Ctx, _GlobalState, []) ->
-    %% 无消息，保持 halt
-    #{delta => #{}, outbox => [], status => ok};
-handle_regular_node(Ctx, GlobalState, Messages) ->
-    case has_activation_message(Messages) of
-        true ->
-            #{vertex_id := VertexId, config := Config} = Ctx,
-            NodeConfig = get_node_config(VertexId, Config),
-            %% 处理 resume 消息
-            NewGlobalState = apply_resume_messages(GlobalState, Messages),
-            execute_and_route(Ctx, NewGlobalState, NodeConfig);
-        false ->
-            #{delta => #{}, outbox => [], status => ok}
-    end.
+handle_regular_node(Ctx, GlobalState) ->
+    #{vertex_id := VertexId, config := Config} = Ctx,
+    NodeConfig = get_node_config(VertexId, Config),
+    execute_and_route(Ctx, GlobalState, NodeConfig).
 
 %%====================================================================
 %% 节点执行
@@ -173,12 +152,12 @@ execute_and_route(Ctx, GlobalState, NodeConfig) ->
             %% 执行节点
             case graph_node:execute(Node, GlobalState) of
                 {ok, NewState} ->
-                    %% 成功：计算 delta，发送 activate 到下游
+                    %% 成功：计算 delta，激活下游顶点
                     Delta = compute_delta(GlobalState, NewState),
-                    Outbox = build_outbox(Edges, NewState),
-                    #{delta => Delta, outbox => Outbox, status => ok};
+                    Activations = build_activations(Edges, NewState),
+                    #{delta => Delta, activations => Activations, status => ok};
                 {interrupt, Reason, NewState} ->
-                    %% 中断：保存 delta，但不发送消息
+                    %% 中断：保存 delta，但不激活下游
                     Delta = compute_delta(GlobalState, NewState),
                     throw({interrupt, Reason, Delta, []});
                 {error, Reason} ->
@@ -191,8 +170,8 @@ execute_and_route(Ctx, GlobalState, NodeConfig) ->
 -spec route_to_next(graph_state:state(), [graph_edge:edge()]) ->
     pregel_worker:compute_result().
 route_to_next(State, Edges) ->
-    Outbox = build_outbox(Edges, State),
-    #{delta => #{}, outbox => Outbox, status => ok}.
+    Activations = build_activations(Edges, State),
+    #{delta => #{}, activations => Activations, status => ok}.
 
 %% @private 计算 delta（状态差异）
 %%
@@ -218,47 +197,24 @@ compute_delta(OldState, NewState) ->
     ).
 
 %%====================================================================
-%% 消息处理
+%% 激活构建
 %%====================================================================
 
-%% @private 检查是否有激活消息
--spec has_activation_message([term()]) -> boolean().
-has_activation_message([]) -> false;
-has_activation_message([activate | _]) -> true;
-has_activation_message([{activate, _} | _]) -> true;
-has_activation_message([{resume, _} | _]) -> true;
-has_activation_message([_ | Rest]) -> has_activation_message(Rest).
-
-%% @private 应用 resume 消息到状态
--spec apply_resume_messages(graph_state:state(), [term()]) -> graph_state:state().
-apply_resume_messages(State, []) ->
-    State;
-apply_resume_messages(State, [{resume, ResumeData} | Rest]) when is_map(ResumeData) ->
-    %% 将 resume data 合并到状态
-    NewState = maps:fold(
-        fun(Key, Value, Acc) ->
-            graph_state:set(Acc, Key, Value)
-        end,
-        State,
-        ResumeData
-    ),
-    apply_resume_messages(NewState, Rest);
-apply_resume_messages(State, [_ | Rest]) ->
-    apply_resume_messages(State, Rest).
-
-%% @private 构建输出消息（activate 消息）
--spec build_outbox([graph_edge:edge()], graph_state:state()) -> [{atom(), term()}].
-build_outbox([], _State) ->
-    %% 无边，发送到终止节点
-    [{?END_NODE, activate}];
-build_outbox(Edges, State) ->
+%% @private 构建要激活的顶点列表
+%%
+%% 无 inbox 版本：返回顶点ID列表而不是消息元组
+-spec build_activations([graph_edge:edge()], graph_state:state()) -> [atom()].
+build_activations([], _State) ->
+    %% 无边，激活终止节点
+    [?END_NODE];
+build_activations(Edges, State) ->
     lists:foldl(
         fun(Edge, Acc) ->
             case graph_edge:resolve(Edge, State) of
                 {ok, TargetNode} when is_atom(TargetNode) ->
-                    [{TargetNode, activate} | Acc];
+                    [TargetNode | Acc];
                 {ok, TargetNodes} when is_list(TargetNodes) ->
-                    [{T, activate} || T <- TargetNodes] ++ Acc;
+                    TargetNodes ++ Acc;
                 {error, _} ->
                     Acc
             end

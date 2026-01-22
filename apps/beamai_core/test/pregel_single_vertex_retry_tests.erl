@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc 单顶点重试功能测试
+%%% @doc 单顶点重试功能测试（全局状态模式 - 无 inbox 版本）
 %%%
 %%% 测试 Pregel 层步进式 API 的重试功能
 %%% @end
@@ -24,25 +24,20 @@ simple_graph() ->
     InitialValues = #{v1 => 0, v2 => 0, v3 => 0},
     pregel_graph:from_edges(Edges, InitialValues).
 
-%% 总是成功的计算函数
+%% 总是成功的计算函数（全局状态模式）
 success_compute_fn() ->
-    fun(#{vertex := V, messages := Msgs} = _Ctx) ->
-        OldValue = pregel_vertex:value(V),
-        NewValue = OldValue + length(Msgs) + 1,
-        NewVertex = pregel_vertex:set_value(
-            pregel_vertex:halt(V),
-            NewValue
-        ),
-        #{status => ok, vertex => NewVertex, outbox => []}
+    fun(#{vertex_id := Id, global_state := GlobalState} = _Ctx) ->
+        OldValue = maps:get(Id, GlobalState, 0),
+        NewValue = OldValue + 1,
+        #{status => ok, delta => #{Id => NewValue}, activations => []}
     end.
 
-%% 第一次失败，第二次成功的计算函数
-%% 使用 ETS 表跟踪重试次数（因为失败时顶点状态不会被更新）
+%% 第一次失败，第二次成功的计算函数（全局状态模式）
+%% 使用 ETS 表跟踪重试次数
 fail_then_success_compute_fn(FailVertexId) ->
     %% 创建 ETS 表来跟踪调用次数
     Table = ets:new(retry_tracker, [public, set]),
-    fun(#{vertex := V} = _Ctx) ->
-        Id = pregel_vertex:id(V),
+    fun(#{vertex_id := Id, global_state := _GlobalState} = _Ctx) ->
         case Id =:= FailVertexId of
             true ->
                 %% 获取并更新调用次数
@@ -55,32 +50,27 @@ fail_then_success_compute_fn(FailVertexId) ->
                     0 ->
                         %% 第一次：失败
                         #{status => {error, first_attempt_failed},
-                          vertex => V,
-                          outbox => []};
+                          delta => #{},
+                          activations => []};
                     _ ->
                         %% 第二次及以后：成功
-                        NewVertex = pregel_vertex:set_value(
-                            pregel_vertex:halt(V),
-                            {retried, Count + 1}
-                        ),
-                        #{status => ok, vertex => NewVertex, outbox => []}
+                        #{status => ok,
+                          delta => #{Id => {retried, Count + 1}},
+                          activations => []}
                 end;
             false ->
                 %% 其他顶点：成功
-                NewVertex = pregel_vertex:set_value(
-                    pregel_vertex:halt(V),
-                    success
-                ),
-                #{status => ok, vertex => NewVertex, outbox => []}
+                #{status => ok,
+                  delta => #{Id => success},
+                  activations => []}
         end
     end.
 
-%% 带消息的计算函数（失败后重试时需要消息）
+%% 带激活链的计算函数（失败后重试时激活下游）
 %% 使用 ETS 表跟踪重试次数
-fail_then_success_with_messages_fn(FailVertexId) ->
-    Table = ets:new(retry_tracker_msgs, [public, set]),
-    fun(#{vertex := V, messages := Msgs} = _Ctx) ->
-        Id = pregel_vertex:id(V),
+fail_then_success_with_activations_fn(FailVertexId, DownstreamId) ->
+    Table = ets:new(retry_tracker_activations, [public, set]),
+    fun(#{vertex_id := Id, global_state := _GlobalState} = _Ctx) ->
         case Id =:= FailVertexId of
             true ->
                 Count = case ets:lookup(Table, Id) of
@@ -91,23 +81,19 @@ fail_then_success_with_messages_fn(FailVertexId) ->
                 case Count of
                     0 ->
                         #{status => {error, first_attempt_failed},
-                          vertex => V,
-                          outbox => []};
+                          delta => #{},
+                          activations => []};
                     _ ->
-                        %% 重试成功，使用消息
-                        NewVertex = pregel_vertex:set_value(
-                            pregel_vertex:halt(V),
-                            {retried_with_messages, Msgs}
-                        ),
-                        #{status => ok, vertex => NewVertex, outbox => []}
+                        %% 重试成功，激活下游顶点
+                        #{status => ok,
+                          delta => #{Id => {retried_success, Count + 1}},
+                          activations => [DownstreamId]}
                 end;
             false ->
-                NewVertex = pregel_vertex:set_value(
-                    pregel_vertex:halt(V),
-                    success
-                ),
-                %% 发送消息给 FailVertexId
-                #{status => ok, vertex => NewVertex, outbox => [{FailVertexId, hello}]}
+                %% 其他顶点（如下游顶点）：记录被激活
+                #{status => ok,
+                  delta => #{Id => activated_by_retry},
+                  activations => []}
         end
     end.
 
@@ -144,7 +130,7 @@ run_with_retry(Master, MaxRetries) ->
 %% 测试用例
 %%====================================================================
 
-%% 测试：基本重试功能 - 失败顶点可以被重试
+%% 测试：基本重试功能 - 失败顶点可以被重试（全局状态模式）
 basic_retry_test() ->
     Graph = simple_graph(),
     ComputeFn = fail_then_success_compute_fn(v1),
@@ -156,80 +142,23 @@ basic_retry_test() ->
         %% 验证执行完成
         ?assertEqual(completed, maps:get(status, Result)),
 
-        %% 验证 v1 被重试成功
-        FinalGraph = maps:get(graph, Result),
-        V1 = pregel_graph:get(FinalGraph, v1),
-        V1Value = pregel_vertex:value(V1),
+        %% 验证 v1 被重试成功（通过 global_state 检查）
+        GlobalState = maps:get(global_state, Result),
+        V1Value = graph_state:get(GlobalState, v1),
         ?assertEqual({retried, 2}, V1Value)
     after
         pregel_master:stop(Master)
     end.
 
-%% 测试：重试时使用保存的 inbox 消息
-%% 注意：默认 state_reducer 使用 last_write_win，多条相同消息会被合并
-%% 如需保留所有消息，需要使用自定义 state_reducer
-retry_uses_saved_inbox_test() ->
-    Graph = simple_graph(),
-    ComputeFn = fail_then_success_with_messages_fn(v1),
-
-    %% 使用 append reducer 保留所有消息
-    AppendReducer = fun(#{messages := Msgs}) -> Msgs end,
-
-    {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
-        num_workers => 1,
-        state_reducer => AppendReducer
-    }),
-    try
-        Result = run_with_retry(Master),
-
-        ?assertEqual(completed, maps:get(status, Result)),
-
-        %% 验证 v1 重试时收到了消息
-        FinalGraph = maps:get(graph, Result),
-        V1 = pregel_graph:get(FinalGraph, v1),
-        V1Value = pregel_vertex:value(V1),
-
-        %% 使用 append reducer，应该收到来自 v2 和 v3 的所有消息
-        ?assertMatch({retried_with_messages, [hello, hello]}, V1Value)
-    after
-        pregel_master:stop(Master)
-    end.
-
-%% 测试：重试成功后 outbox 消息被正确路由
-retry_outbox_routing_test() ->
-    %% 创建图：v1 -> v2 -> v3
+%% 测试：重试成功后 activations 被正确路由
+retry_activations_routing_test() ->
+    %% 创建图：v1, v2, v3 独立
     Edges = [],
     InitialValues = #{v1 => start, v2 => 0, v3 => 0},
     Graph = pregel_graph:from_edges(Edges, InitialValues),
 
-    %% 使用 ETS 跟踪 v1 的调用次数
-    Table = ets:new(outbox_routing_tracker, [public, set]),
-
-    %% v1 第一次失败，重试后发消息给 v2
-    ComputeFn = fun(#{vertex := V, messages := Msgs, superstep := Step} = _Ctx) ->
-        Id = pregel_vertex:id(V),
-        case {Id, Step} of
-            {v1, 0} ->
-                Count = case ets:lookup(Table, v1) of
-                    [] -> 0;
-                    [{_, N}] -> N
-                end,
-                ets:insert(Table, {v1, Count + 1}),
-                case Count of
-                    0 ->
-                        #{status => {error, first_fail}, vertex => V, outbox => []};
-                    _ ->
-                        NewV = pregel_vertex:halt(pregel_vertex:set_value(V, retried)),
-                        #{status => ok, vertex => NewV, outbox => [{v2, from_v1}]}
-                end;
-            {v2, _} ->
-                NewV = pregel_vertex:halt(pregel_vertex:set_value(V, {received, Msgs})),
-                #{status => ok, vertex => NewV, outbox => []};
-            _ ->
-                NewV = pregel_vertex:halt(V),
-                #{status => ok, vertex => NewV, outbox => []}
-        end
-    end,
+    %% v1 第一次失败，重试后激活 v2
+    ComputeFn = fail_then_success_with_activations_fn(v1, v2),
 
     {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{num_workers => 1}),
     try
@@ -237,11 +166,10 @@ retry_outbox_routing_test() ->
 
         ?assertEqual(completed, maps:get(status, Result)),
 
-        %% 验证 v2 收到了 v1 重试后发送的消息
-        FinalGraph = maps:get(graph, Result),
-        V2Final = pregel_graph:get(FinalGraph, v2),
-        V2Value = pregel_vertex:value(V2Final),
-        ?assertEqual({received, [from_v1]}, V2Value)
+        %% 验证 v2 被 v1 重试后激活了
+        GlobalState = maps:get(global_state, Result),
+        V2Value = graph_state:get(GlobalState, v2),
+        ?assertEqual(activated_by_retry, V2Value)
     after
         pregel_master:stop(Master)
     end.

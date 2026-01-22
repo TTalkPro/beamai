@@ -62,12 +62,13 @@
     checkpoint_callback_result()).
 
 %% Checkpoint 恢复选项
-%% 全局状态模式：状态从 global_state 恢复
+%% 全局状态模式（无 inbox 版本）：状态从 global_state 恢复
+%% resume_data 中的数据会被合并到 global_state 中
 -type restore_options() :: #{
     pregel_checkpoint := pregel:checkpoint_data(),  %% pregel checkpoint 数据
     global_state => state(),                        %% 恢复时的全局状态
     iteration => non_neg_integer(),                 %% 迭代次数（可选）
-    resume_data => #{pregel:vertex_id() => term()}  %% 恢复时注入的用户数据（可选）
+    resume_data => #{pregel:vertex_id() => term()}  %% 恢复时注入的用户数据（合并到 global_state）
 }.
 
 -type run_options() :: #{
@@ -235,6 +236,8 @@ run_with_checkpoint(Graph, InitialState, Options) ->
 
 %% @private 准备恢复选项
 %% 返回：{GlobalState, PregelRestoreOpts, StartIteration}
+%%
+%% 无 inbox 版本：使用 pending_activations 替代 pending_messages
 -spec prepare_restore_options(restore_options() | undefined, state()) ->
     {state(), pregel:restore_opts() | undefined, non_neg_integer()}.
 prepare_restore_options(undefined, GlobalState) ->
@@ -248,27 +251,49 @@ prepare_restore_options(RestoreOpts, _DefaultGlobalState) ->
     Iteration = maps:get(iteration, RestoreOpts, 0),
     ResumeData = maps:get(resume_data, RestoreOpts, #{}),
 
-    %% 构建 pregel restore_opts
-    #{superstep := Superstep, vertices := Vertices, pending_messages := PendingMessages} = PregelCheckpoint,
+    %% 构建 pregel restore_opts（无 inbox 版本）
+    #{superstep := Superstep, vertices := Vertices} = PregelCheckpoint,
+    %% pending_activations 可能是 undefined（表示无延迟提交）或列表
+    RawPendingActivations = maps:get(pending_activations, PregelCheckpoint, []),
+    PendingActivations = case RawPendingActivations of
+        undefined -> [];
+        List when is_list(List) -> List
+    end,
 
-    %% 将 resume_data 转换为消息并合并到 pending_messages
-    ResumeMessages = maps:fold(
-        fun(VertexId, Data, Acc) ->
-            [{VertexId, {resume, Data}} | Acc]
-        end,
-        [],
-        ResumeData
-    ),
-    AllMessages = ResumeMessages ++ PendingMessages,
+    %% 将 resume_data 中的顶点添加到激活列表
+    %% 在无 inbox 版本中，resume 数据通过 global_state 传递
+    ResumeVertexIds = maps:keys(ResumeData),
+    AllActivations = lists:usort(ResumeVertexIds ++ PendingActivations),
+
+    %% 如果有 resume_data，将其合并到 global_state
+    %% graph_state 只接受 atom 或 binary 键，所以使用 binary 格式的键
+    FinalGlobalState = case map_size(ResumeData) of
+        0 -> GlobalState;
+        _ -> maps:fold(
+                 fun(VertexId, Data, Acc) ->
+                     %% 将 resume data 存储在 global_state 中
+                     %% 键格式: <<"resume_data:vertex_id">>
+                     VertexIdBin = if
+                         is_atom(VertexId) -> atom_to_binary(VertexId, utf8);
+                         is_binary(VertexId) -> VertexId;
+                         true -> iolist_to_binary(io_lib:format("~p", [VertexId]))
+                     end,
+                     Key = <<"resume_data:", VertexIdBin/binary>>,
+                     graph_state:set(Acc, Key, Data)
+                 end,
+                 GlobalState,
+                 ResumeData
+             )
+    end,
 
     PregelRestoreOpts = #{
         superstep => Superstep,
         vertices => Vertices,
-        messages => AllMessages,
-        global_state => GlobalState
+        pending_activations => AllActivations,
+        global_state => FinalGlobalState
     },
 
-    {GlobalState, PregelRestoreOpts, Iteration}.
+    {FinalGlobalState, PregelRestoreOpts, Iteration}.
 
 %% @private 默认 checkpoint 回调（不做任何事）
 -spec default_checkpoint_callback(pregel:superstep_info(), checkpoint_data()) -> continue.

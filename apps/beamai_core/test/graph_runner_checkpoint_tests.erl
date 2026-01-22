@@ -115,11 +115,10 @@ checkpoint_contains_pregel_data_test() ->
     receive
         {checkpoint, Data} ->
             PregelCheckpoint = maps:get(pregel_checkpoint, Data),
-            %% 验证 pregel checkpoint 结构
+            %% 验证 pregel checkpoint 结构（无 inbox 版本）
             ?assert(maps:is_key(superstep, PregelCheckpoint)),
             ?assert(maps:is_key(vertices, PregelCheckpoint)),
-            ?assert(maps:is_key(pending_messages, PregelCheckpoint)),
-            ?assert(maps:is_key(vertex_inbox, PregelCheckpoint))
+            ?assert(maps:is_key(pending_activations, PregelCheckpoint))
     after 1000 ->
         ?assert(false)
     end.

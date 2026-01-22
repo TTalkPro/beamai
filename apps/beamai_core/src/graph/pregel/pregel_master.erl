@@ -46,13 +46,13 @@
 -type field_reducer() :: fun((OldValue :: term(), NewValue :: term()) -> term()).
 -type field_reducers() :: #{atom() | binary() => field_reducer()}.
 
-%% Checkpoint 数据 (全局状态模式)
+%% Checkpoint 数据 (全局状态模式 - 无 inbox 版本)
 -type checkpoint_data() :: #{
     superstep := non_neg_integer(),
     global_state := graph_state:state(),
     pending_deltas := [delta()] | undefined,
-    vertices := #{vertex_id() => vertex()},
-    vertex_inbox := #{vertex_id() => [term()]}
+    pending_activations := [vertex_id()] | undefined,
+    vertices := #{vertex_id() => vertex()}
 }.
 
 %% Checkpoint 类型
@@ -68,7 +68,7 @@
     type := checkpoint_type(),           %% checkpoint 类型
     superstep := non_neg_integer(),
     active_count := non_neg_integer(),
-    message_count := non_neg_integer(),
+    activation_count := non_neg_integer(),  %% 下一超步待激活的顶点数
     failed_count := non_neg_integer(),
     failed_vertices := [{vertex_id(), term()}],
     interrupted_count := non_neg_integer(),
@@ -82,13 +82,13 @@
 
 -type done_reason() :: completed | max_supersteps.
 
-%% Checkpoint 恢复选项
+%% Checkpoint 恢复选项 (无 inbox 版本)
 -type restore_opts() :: #{
     superstep := non_neg_integer(),
     global_state := graph_state:state(),
     pending_deltas => [delta()],
-    vertices => #{vertex_id() => vertex()},
-    messages => [{vertex_id(), term()}]
+    pending_activations => [vertex_id()],
+    vertices => #{vertex_id() => vertex()}
 }.
 
 %% Pregel 执行选项
@@ -109,7 +109,7 @@
     stats := #{atom() => term()}
 }.
 
-%% Master 内部状态
+%% Master 内部状态 (无 inbox 版本)
 -record(state, {
     graph            :: graph(),                    %% 原始图
     compute_fn       :: compute_fn(),               %% 计算函数
@@ -124,7 +124,7 @@
     global_state     :: graph_state:state(),        %% 全局状态
     field_reducers   :: field_reducers(),           %% 字段级 reducer
     pending_deltas   :: [delta()] | undefined,      %% 延迟提交的 deltas
-    pending_inbox    :: #{vertex_id() => [term()]} | undefined,  %% 延迟提交的 inbox
+    pending_activations :: [vertex_id()] | undefined,  %% 延迟提交的 activations
     %% 超步结果（用于 get_checkpoint_data 和重试）
     last_results     :: pregel_barrier:superstep_results() | undefined,
     %% 状态标志
@@ -188,9 +188,13 @@ init({Graph, ComputeFn, Opts}) ->
         _ -> maps:get(global_state, Opts, graph_state:new())
     end,
 
-    %% 初始化 pending_deltas（从恢复选项）
+    %% 初始化 pending_deltas 和 pending_activations（从恢复选项）
     PendingDeltas = case RestoreOpts of
         #{pending_deltas := PD} -> PD;
+        _ -> undefined
+    end,
+    PendingActivations = case RestoreOpts of
+        #{pending_activations := PA} -> PA;
         _ -> undefined
     end,
 
@@ -207,7 +211,7 @@ init({Graph, ComputeFn, Opts}) ->
         global_state = GlobalState,
         field_reducers = maps:get(field_reducers, Opts, #{}),
         pending_deltas = PendingDeltas,
-        pending_inbox = undefined,
+        pending_activations = PendingActivations,
         last_results = undefined,
         initialized = false,
         initial_returned = false,
@@ -224,24 +228,28 @@ handle_call(step, _From, #state{initialized = false} = State) ->
     %% 首次 step：初始化 workers，返回 initial checkpoint
     %% 不启动超步，让调用者有机会保存初始状态
     StateWithWorkers = start_workers(State),
-    inject_restore_messages(StateWithWorkers),
-    StateReady = StateWithWorkers#state{
+    %% 注入恢复的 activations（如果有）
+    StateReady = inject_restore_activations(StateWithWorkers),
+    StateFinal = StateReady#state{
         restore_from = undefined,
         initialized = true,
         initial_returned = true
     },
     %% 构建 initial 类型的 info
     Info = build_superstep_info(initial, undefined),
-    {reply, {continue, Info}, StateReady};
+    {reply, {continue, Info}, StateFinal};
 
-handle_call(step, From, #state{initialized = true} = State) ->
+handle_call(step, From, #state{initialized = true, pending_activations = PendingActivations} = State) ->
     %% 后续 step：广播全局状态，启动超步执行
     broadcast_global_state(State),
+    %% 获取要激活的顶点列表（pending_activations 或 last_results 的 activations）
+    Activations = get_activations_for_superstep(PendingActivations, State#state.last_results),
     NewState = State#state{
         step_caller = From,
-        barrier = pregel_barrier:new(maps:size(State#state.workers))
+        barrier = pregel_barrier:new(maps:size(State#state.workers)),
+        pending_activations = undefined  %% 清除已使用的 pending_activations
     },
-    broadcast_start_superstep(NewState),
+    broadcast_start_superstep(NewState, Activations),
     {noreply, NewState};
 
 handle_call({retry, _VertexIds}, _From, #state{halted = true} = State) ->
@@ -267,20 +275,26 @@ handle_call(get_checkpoint_data, _From, #state{
     superstep = Superstep,
     global_state = GlobalState,
     pending_deltas = PendingDeltas,
+    pending_activations = PendingActivations,
     workers = Workers,
     last_results = Results
 } = State) ->
     Vertices = collect_vertices_from_workers(Workers),
-    Inbox = case Results of
-        undefined -> #{};
-        _ -> maps:get(inbox, Results, #{})
+    %% 获取 activations：优先使用 pending_activations，否则从 last_results 获取
+    Activations = case PendingActivations of
+        undefined ->
+            case Results of
+                undefined -> undefined;
+                _ -> maps:get(activations, Results, undefined)
+            end;
+        _ -> PendingActivations
     end,
     Data = #{
         superstep => Superstep,
         global_state => GlobalState,
         pending_deltas => PendingDeltas,
-        vertices => Vertices,
-        vertex_inbox => Inbox
+        pending_activations => Activations,
+        vertices => Vertices
     },
     {reply, Data, State};
 
@@ -418,11 +432,16 @@ broadcast_global_state(#state{workers = Workers, global_state = GlobalState}) ->
         Workers
     ).
 
-%% @private 广播开始超步
--spec broadcast_start_superstep(#state{}) -> ok.
-broadcast_start_superstep(#state{workers = Workers, superstep = Superstep}) ->
+%% @private 广播开始超步（带 activations）
+-spec broadcast_start_superstep(#state{}, [vertex_id()]) -> ok.
+broadcast_start_superstep(#state{workers = Workers, num_workers = NumWorkers, superstep = Superstep}, Activations) ->
+    %% 按 Worker 分组 activations
+    GroupedActivations = group_activations_by_worker(Activations, NumWorkers),
     maps:foreach(
-        fun(_Id, Pid) -> pregel_worker:start_superstep(Pid, Superstep) end,
+        fun(WorkerId, Pid) ->
+            WorkerActivations = maps:get(WorkerId, GroupedActivations, []),
+            pregel_worker:start_superstep(Pid, Superstep, WorkerActivations)
+        end,
         Workers
     ).
 
@@ -493,14 +512,12 @@ last_write_win(_Old, New) -> New.
 
 %% @private 完成超步处理
 %%
-%% 全局状态模式：收集所有 Worker 的 delta，合并到全局状态
+%% 全局状态模式（无 inbox 版本）：收集所有 Worker 的 delta 和 activations
 -spec complete_superstep(#state{}) -> #state{}.
 complete_superstep(#state{
     barrier = Barrier,
     superstep = Superstep,
     max_supersteps = MaxSupersteps,
-    workers = Workers,
-    num_workers = NumWorkers,
     global_state = GlobalState,
     field_reducers = FieldReducers,
     step_caller = Caller
@@ -510,8 +527,10 @@ complete_superstep(#state{
     AggregatedResults = pregel_barrier:aggregate_results(Results),
     TotalActive = maps:get(active_count, AggregatedResults),
 
-    %% 2. 收集所有 deltas
+    %% 2. 收集所有 deltas 和 activations
     AllDeltas = maps:get(deltas, AggregatedResults, []),
+    AllActivations = maps:get(activations, AggregatedResults, []),
+    TotalActivations = length(AllActivations),
 
     %% 3. 检查是否有失败/中断
     FailedCount = maps:get(failed_count, AggregatedResults, 0),
@@ -519,52 +538,46 @@ complete_superstep(#state{
     HasError = FailedCount > 0 orelse InterruptedCount > 0,
 
     %% 4. 根据是否有错误决定处理方式
-    {NewGlobalState, NewPendingDeltas, NewPendingInbox} = case HasError of
+    {NewGlobalState, NewPendingDeltas, NewPendingActivations} = case HasError of
         true ->
-            %% 延迟提交：暂存 deltas，不 apply
-            Inbox = maps:get(inbox, AggregatedResults, #{}),
-            {GlobalState, AllDeltas, Inbox};
+            %% 延迟提交：暂存 deltas 和 activations，不 apply
+            {GlobalState, AllDeltas, AllActivations};
         false ->
             %% 正常提交：apply deltas 到全局状态
             UpdatedState = apply_deltas(GlobalState, AllDeltas, FieldReducers),
             {UpdatedState, undefined, undefined}
     end,
 
-    %% 5. 获取并路由 outbox 消息（节点间非状态消息）
-    AllOutbox = maps:get(outbox, AggregatedResults, []),
-    route_all_messages(AllOutbox, Workers, NumWorkers),
-    TotalMessages = length(AllOutbox),
-
-    %% 6. 更新 AggregatedResults
+    %% 5. 更新 AggregatedResults（添加 activation_count）
     UpdatedResults = AggregatedResults#{
-        message_count => TotalMessages,
+        activation_count => TotalActivations,
         superstep => Superstep
     },
 
-    %% 7. 检查终止条件
-    Halted = (TotalActive =:= 0) andalso (TotalMessages =:= 0) andalso (not HasError),
+    %% 6. 检查终止条件
+    Halted = (TotalActive =:= 0) andalso (TotalActivations =:= 0) andalso (not HasError),
     MaxReached = Superstep >= MaxSupersteps - 1,
     IsDone = Halted orelse MaxReached,
 
-    %% 8. 确定 checkpoint 类型并构建返回信息
+    %% 7. 确定 checkpoint 类型并构建返回信息
     Type = case IsDone of
         true -> final;
         false -> determine_checkpoint_type(UpdatedResults)
     end,
     Info = build_superstep_info(Type, UpdatedResults),
 
-    %% 9. 更新状态
+    %% 8. 更新状态
     NewState = State#state{
         global_state = NewGlobalState,
         pending_deltas = NewPendingDeltas,
-        pending_inbox = NewPendingInbox,
+        pending_activations = NewPendingActivations,
         last_results = UpdatedResults,
         step_caller = undefined,
         superstep = if IsDone -> Superstep; true -> Superstep + 1 end,
         halted = IsDone
     },
 
-    %% 10. 回复调用者
+    %% 9. 回复调用者
     Reply = case IsDone of
         true ->
             Reason = if Halted -> completed; true -> max_supersteps end,
@@ -580,95 +593,8 @@ complete_superstep(#state{
 -spec execute_retry([vertex_id()], #state{}) -> {noreply, #state{}}.
 execute_retry(VertexIds, #state{
     workers = Workers,
-    num_workers = NumWorkers,
     superstep = Superstep,
     last_results = LastResults,
-    global_state = GlobalState,
-    field_reducers = FieldReducers,
-    step_caller = Caller
-} = State) ->
-    %% 1. 从上次结果获取 inbox
-    Inbox = maps:get(inbox, LastResults, #{}),
-
-    %% 2. 广播当前全局状态
-    broadcast_global_state(State),
-
-    %% 3. 调用所有 Workers 重试指定顶点
-    RetryResults = maps:fold(
-        fun(_WorkerId, Pid, Acc) ->
-            case pregel_worker:retry_vertices(Pid, VertexIds, Inbox) of
-                {ok, Result} -> [Result | Acc];
-                _ -> Acc
-            end
-        end,
-        [],
-        Workers
-    ),
-
-    %% 4. 收集重试产生的 deltas
-    RetryDeltas = lists:flatmap(
-        fun(R) -> maps:get(deltas, R, []) end,
-        RetryResults
-    ),
-
-    %% 5. 检查是否仍有失败
-    {StillFailed, StillInterrupted} = collect_retry_failures(RetryResults),
-    HasError = length(StillFailed) > 0 orelse length(StillInterrupted) > 0,
-
-    %% 6. 根据是否有错误决定处理方式
-    {NewGlobalState, NewPendingDeltas, NewPendingInbox} = case HasError of
-        true ->
-            %% 仍有错误，暂存
-            {GlobalState, RetryDeltas, Inbox};
-        false ->
-            %% 成功，apply deltas
-            UpdatedState = apply_deltas(GlobalState, RetryDeltas, FieldReducers),
-            {UpdatedState, undefined, undefined}
-    end,
-
-    %% 7. 路由 outbox 消息
-    RetryOutbox = lists:flatmap(
-        fun(R) -> maps:get(outbox, R, []) end,
-        RetryResults
-    ),
-    route_all_messages(RetryOutbox, Workers, NumWorkers),
-
-    %% 8. 更新结果
-    UpdatedResults = LastResults#{
-        failed_count => length(StillFailed),
-        failed_vertices => StillFailed,
-        interrupted_count => length(StillInterrupted),
-        interrupted_vertices => StillInterrupted,
-        message_count => maps:get(message_count, LastResults, 0) + length(RetryOutbox),
-        superstep => Superstep
-    },
-
-    %% 9. 确定 checkpoint 类型并构建返回信息
-    Type = determine_checkpoint_type(UpdatedResults),
-    Info = build_superstep_info(Type, UpdatedResults),
-
-    %% 10. 更新状态
-    NewState = State#state{
-        global_state = NewGlobalState,
-        pending_deltas = NewPendingDeltas,
-        pending_inbox = NewPendingInbox,
-        last_results = UpdatedResults,
-        step_caller = undefined
-    },
-
-    %% 11. 回复调用者
-    gen_server:reply(Caller, {continue, Info}),
-
-    {noreply, NewState}.
-
-%% @private 执行延迟提交重试
--spec execute_deferred_retry([vertex_id()], #state{}) -> {noreply, #state{}}.
-execute_deferred_retry(VertexIds, #state{
-    workers = Workers,
-    num_workers = NumWorkers,
-    superstep = Superstep,
-    pending_deltas = PendingDeltas,
-    pending_inbox = PendingInbox,
     global_state = GlobalState,
     field_reducers = FieldReducers,
     step_caller = Caller
@@ -677,13 +603,9 @@ execute_deferred_retry(VertexIds, #state{
     broadcast_global_state(State),
 
     %% 2. 调用所有 Workers 重试指定顶点
-    Inbox = case PendingInbox of
-        undefined -> #{};
-        _ -> PendingInbox
-    end,
     RetryResults = maps:fold(
         fun(_WorkerId, Pid, Acc) ->
-            case pregel_worker:retry_vertices(Pid, VertexIds, Inbox) of
+            case pregel_worker:retry_vertices(Pid, VertexIds) of
                 {ok, Result} -> [Result | Acc];
                 _ -> Acc
             end
@@ -692,63 +614,148 @@ execute_deferred_retry(VertexIds, #state{
         Workers
     ),
 
-    %% 3. 收集重试产生的新 deltas
+    %% 3. 收集重试产生的 deltas 和 activations
     RetryDeltas = lists:flatmap(
         fun(R) -> maps:get(deltas, R, []) end,
+        RetryResults
+    ),
+    RetryActivations = lists:flatmap(
+        fun(R) -> maps:get(activations, R, []) end,
+        RetryResults
+    ),
+
+    %% 4. 检查是否仍有失败
+    {StillFailed, StillInterrupted} = collect_retry_failures(RetryResults),
+    HasError = length(StillFailed) > 0 orelse length(StillInterrupted) > 0,
+
+    %% 5. 根据是否有错误决定处理方式
+    {NewGlobalState, NewPendingDeltas, NewPendingActivations} = case HasError of
+        true ->
+            %% 仍有错误，暂存
+            LastActivations = maps:get(activations, LastResults, []),
+            {GlobalState, RetryDeltas, LastActivations ++ RetryActivations};
+        false ->
+            %% 成功，apply deltas
+            UpdatedState = apply_deltas(GlobalState, RetryDeltas, FieldReducers),
+            {UpdatedState, undefined, undefined}
+    end,
+
+    %% 6. 更新结果
+    UpdatedResults = LastResults#{
+        failed_count => length(StillFailed),
+        failed_vertices => StillFailed,
+        interrupted_count => length(StillInterrupted),
+        interrupted_vertices => StillInterrupted,
+        activation_count => maps:get(activation_count, LastResults, 0) + length(RetryActivations),
+        activations => maps:get(activations, LastResults, []) ++ RetryActivations,
+        superstep => Superstep
+    },
+
+    %% 7. 确定 checkpoint 类型并构建返回信息
+    Type = determine_checkpoint_type(UpdatedResults),
+    Info = build_superstep_info(Type, UpdatedResults),
+
+    %% 8. 更新状态
+    NewState = State#state{
+        global_state = NewGlobalState,
+        pending_deltas = NewPendingDeltas,
+        pending_activations = NewPendingActivations,
+        last_results = UpdatedResults,
+        step_caller = undefined
+    },
+
+    %% 9. 回复调用者
+    gen_server:reply(Caller, {continue, Info}),
+
+    {noreply, NewState}.
+
+%% @private 执行延迟提交重试
+-spec execute_deferred_retry([vertex_id()], #state{}) -> {noreply, #state{}}.
+execute_deferred_retry(VertexIds, #state{
+    workers = Workers,
+    superstep = Superstep,
+    pending_deltas = PendingDeltas,
+    pending_activations = PendingActivations,
+    global_state = GlobalState,
+    field_reducers = FieldReducers,
+    step_caller = Caller
+} = State) ->
+    %% 1. 广播当前全局状态
+    broadcast_global_state(State),
+
+    %% 2. 调用所有 Workers 重试指定顶点
+    RetryResults = maps:fold(
+        fun(_WorkerId, Pid, Acc) ->
+            case pregel_worker:retry_vertices(Pid, VertexIds) of
+                {ok, Result} -> [Result | Acc];
+                _ -> Acc
+            end
+        end,
+        [],
+        Workers
+    ),
+
+    %% 3. 收集重试产生的新 deltas 和 activations
+    RetryDeltas = lists:flatmap(
+        fun(R) -> maps:get(deltas, R, []) end,
+        RetryResults
+    ),
+    RetryActivations = lists:flatmap(
+        fun(R) -> maps:get(activations, R, []) end,
         RetryResults
     ),
 
     %% 4. 合并 deltas（替换重试顶点的 delta）
     RetriedVertexIds = get_retried_vertex_ids(RetryResults),
     MergedDeltas = merge_pending_deltas(PendingDeltas, RetryDeltas, RetriedVertexIds),
+    %% 合并 activations
+    CurrentPendingActivations = case PendingActivations of
+        undefined -> [];
+        _ -> PendingActivations
+    end,
+    MergedActivations = CurrentPendingActivations ++ RetryActivations,
 
     %% 5. 检查是否仍有失败
     {StillFailed, StillInterrupted} = collect_retry_failures(RetryResults),
     HasError = length(StillFailed) > 0 orelse length(StillInterrupted) > 0,
 
     %% 6. 根据是否有错误决定处理方式
-    {NewGlobalState, NewPendingDeltas, NewPendingInbox} = case HasError of
+    {NewGlobalState, NewPendingDeltas, NewPendingActivations} = case HasError of
         true ->
             %% 仍有错误，继续暂存
-            {GlobalState, MergedDeltas, Inbox};
+            {GlobalState, MergedDeltas, MergedActivations};
         false ->
             %% 全部成功，apply 所有 deltas
             UpdatedState = apply_deltas(GlobalState, MergedDeltas, FieldReducers),
             {UpdatedState, undefined, undefined}
     end,
 
-    %% 7. 路由 outbox 消息
-    RetryOutbox = lists:flatmap(
-        fun(R) -> maps:get(outbox, R, []) end,
-        RetryResults
-    ),
-    route_all_messages(RetryOutbox, Workers, NumWorkers),
-
-    %% 8. 构建更新结果
+    %% 7. 构建更新结果
     UpdatedResults = #{
         failed_count => length(StillFailed),
         failed_vertices => StillFailed,
         interrupted_count => length(StillInterrupted),
         interrupted_vertices => StillInterrupted,
-        message_count => length(RetryOutbox),
+        activation_count => length(MergedActivations),
+        activations => MergedActivations,
         superstep => Superstep,
         active_count => 0
     },
 
-    %% 9. 确定 checkpoint 类型并构建返回信息
+    %% 8. 确定 checkpoint 类型并构建返回信息
     Type = determine_checkpoint_type(UpdatedResults),
     Info = build_superstep_info(Type, UpdatedResults),
 
-    %% 10. 更新状态
+    %% 9. 更新状态
     NewState = State#state{
         global_state = NewGlobalState,
         pending_deltas = NewPendingDeltas,
-        pending_inbox = NewPendingInbox,
+        pending_activations = NewPendingActivations,
         last_results = UpdatedResults,
         step_caller = undefined
     },
 
-    %% 11. 回复调用者
+    %% 10. 回复调用者
     gen_server:reply(Caller, {continue, Info}),
 
     {noreply, NewState}.
@@ -785,39 +792,33 @@ merge_pending_deltas(PendingDeltas, RetryDeltas, _RetriedVertexIds) ->
     %% 因为 deltas 是增量，重试的结果会覆盖之前的
     PendingDeltas ++ RetryDeltas.
 
-%% @private 统一路由所有消息到目标 Worker
--spec route_all_messages([{term(), term()}],
-                          #{non_neg_integer() => pid()},
-                          pos_integer()) -> ok.
-route_all_messages([], _Workers, _NumWorkers) ->
-    ok;
-route_all_messages(Messages, Workers, NumWorkers) ->
-    %% 按目标 Worker 分组消息
-    GroupedMessages = group_messages_by_worker(Messages, NumWorkers),
-    %% 发送到各 Worker
-    maps:foreach(
-        fun(TargetWorkerId, Msgs) ->
-            case maps:get(TargetWorkerId, Workers, undefined) of
-                undefined -> ok;
-                Pid -> pregel_worker:receive_messages(Pid, Msgs)
-            end
-        end,
-        GroupedMessages
-    ).
-
-%% @private 按目标 Worker 分组消息
--spec group_messages_by_worker([{term(), term()}], pos_integer()) ->
-    #{non_neg_integer() => [{term(), term()}]}.
-group_messages_by_worker(Messages, NumWorkers) ->
+%% @private 按目标 Worker 分组 activations
+-spec group_activations_by_worker([vertex_id()], pos_integer()) ->
+    #{non_neg_integer() => [vertex_id()]}.
+group_activations_by_worker(Activations, NumWorkers) ->
     lists:foldl(
-        fun({TargetVertex, Value}, Acc) ->
-            WorkerId = pregel_partition:worker_id(TargetVertex, NumWorkers, hash),
+        fun(VertexId, Acc) ->
+            WorkerId = pregel_partition:worker_id(VertexId, NumWorkers, hash),
             Existing = maps:get(WorkerId, Acc, []),
-            Acc#{WorkerId => [{TargetVertex, Value} | Existing]}
+            Acc#{WorkerId => [VertexId | Existing]}
         end,
         #{},
-        Messages
+        Activations
     ).
+
+%% @private 获取下一超步要激活的顶点列表
+-spec get_activations_for_superstep([vertex_id()] | undefined,
+                                     pregel_barrier:superstep_results() | undefined) ->
+    [vertex_id()].
+get_activations_for_superstep(PendingActivations, _LastResults) when is_list(PendingActivations) ->
+    %% 有 pending_activations 时使用它（恢复场景或延迟提交）
+    PendingActivations;
+get_activations_for_superstep(undefined, undefined) ->
+    %% 首次超步，激活所有顶点（通过空列表表示）
+    [];
+get_activations_for_superstep(undefined, LastResults) ->
+    %% 从上次结果获取 activations
+    maps:get(activations, LastResults, []).
 
 %%====================================================================
 %% 辅助函数
@@ -830,7 +831,7 @@ build_superstep_info(Type, undefined) ->
         type => Type,
         superstep => 0,
         active_count => 0,
-        message_count => 0,
+        activation_count => 0,
         failed_count => 0,
         failed_vertices => [],
         interrupted_count => 0,
@@ -841,7 +842,7 @@ build_superstep_info(Type, Results) ->
         type => Type,
         superstep => maps:get(superstep, Results, 0),
         active_count => maps:get(active_count, Results, 0),
-        message_count => maps:get(message_count, Results, 0),
+        activation_count => maps:get(activation_count, Results, 0),
         failed_count => maps:get(failed_count, Results, 0),
         failed_vertices => maps:get(failed_vertices, Results, []),
         interrupted_count => maps:get(interrupted_count, Results, 0),
@@ -863,8 +864,8 @@ determine_checkpoint_type(Results) ->
 -spec get_done_reason(#state{}) -> done_reason().
 get_done_reason(#state{superstep = Superstep, max_supersteps = MaxSupersteps, last_results = Results}) ->
     TotalActive = maps:get(active_count, Results, 0),
-    TotalMessages = maps:get(message_count, Results, 0),
-    Halted = (TotalActive =:= 0) andalso (TotalMessages =:= 0),
+    TotalActivations = maps:get(activation_count, Results, 0),
+    Halted = (TotalActive =:= 0) andalso (TotalActivations =:= 0),
     case Halted of
         true -> completed;
         false when Superstep >= MaxSupersteps - 1 -> max_supersteps;
@@ -914,21 +915,17 @@ get_restore_vertices(undefined) -> #{};
 get_restore_vertices(#{vertices := Vertices}) -> Vertices;
 get_restore_vertices(_) -> #{}.
 
-%% @private 获取恢复选项中的消息列表
--spec get_restore_messages(restore_opts() | undefined) -> [{vertex_id(), term()}].
-get_restore_messages(undefined) -> [];
-get_restore_messages(#{messages := Messages}) -> Messages;
-get_restore_messages(_) -> [].
+%% @private 获取恢复选项中的 activations 列表
+-spec get_restore_activations(restore_opts() | undefined) -> [vertex_id()] | undefined.
+get_restore_activations(undefined) -> undefined;
+get_restore_activations(#{pending_activations := Activations}) -> Activations;
+get_restore_activations(_) -> undefined.
 
-%% @private 注入恢复的消息到 Workers
--spec inject_restore_messages(#state{}) -> ok.
-inject_restore_messages(#state{
-    restore_from = RestoreOpts,
-    workers = Workers,
-    num_workers = NumWorkers
-}) ->
-    Messages = get_restore_messages(RestoreOpts),
-    route_all_messages(Messages, Workers, NumWorkers).
+%% @private 注入恢复的 activations 到状态
+-spec inject_restore_activations(#state{}) -> #state{}.
+inject_restore_activations(#state{restore_from = RestoreOpts} = State) ->
+    Activations = get_restore_activations(RestoreOpts),
+    State#state{pending_activations = Activations}.
 
 %% @private 合并恢复的顶点到分区顶点
 -spec merge_restored_vertices(#{vertex_id() => vertex()},

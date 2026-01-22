@@ -583,3 +583,187 @@ route_all_messages(Messages, Workers, NumWorkers) ->
 
 - `info/pregel_message_reliability_analysis.md` - 消息可靠性分析
 - `info/pregel_outbox_vs_pending_writes.md` - Outbox 与 pending_writes 对比
+
+---
+
+## P0: Graph 层全局状态模式重构 ✅
+
+**完成日期**: 2026-01-22
+
+### 任务概述
+
+将 graph 层从"消息传递模式"重构为"全局状态 + Delta 增量更新模式"。
+
+**核心变更**：
+- Master 持有全局状态（global_state），Worker 只负责计算
+- 节点发送 Delta（`#{field => value}`），而不是完整状态
+- 使用 field_reducers 按字段合并 Delta
+- 延迟提交：出错时暂存 Delta，不 apply
+- 简化 vertex：移除 value，只保留 id 和 edges
+
+---
+
+### Phase 1: Pregel 层核心重构 ✅
+
+#### 1.1 重构 pregel_master.erl ✅
+
+- [x] 添加 `global_state`、`field_reducers`、`pending_deltas` 字段
+- [x] 实现 `apply_deltas/3`：`lists:foldl(apply_delta, GlobalState, Deltas)`
+- [x] 实现 `broadcast_global_state/2`：广播全局状态给所有 Worker
+- [x] 添加 `get_global_state/1` API
+- [x] 处理 binary/atom 键标准化
+
+```erlang
+%% Delta 合并核心逻辑
+apply_deltas(State, Deltas, FieldReducers) ->
+    lists:foldl(fun(Delta, AccState) ->
+        apply_delta(Delta, AccState, FieldReducers)
+    end, State, Deltas).
+```
+
+#### 1.2 重构 pregel_worker.erl ✅
+
+- [x] 接收 global_state（通过 cast 或 init）
+- [x] 计算函数返回 `#{delta => Map, outbox => List, status => ok}`
+- [x] 上报 deltas 列表给 Master
+- [x] 顶点计算完成后自动 halt
+
+#### 1.3 简化 pregel_vertex.erl ✅
+
+- [x] 移除 `value` 字段
+- [x] 类型简化为纯拓扑结构：`#{id, edges, halted}`
+
+#### 1.4 更新 pregel_barrier.erl ✅
+
+- [x] 汇总所有 Worker 的 deltas
+
+---
+
+### Phase 2: Graph 层适配 ✅
+
+- [x] `graph_runner.erl`：构建 global_state 和 field_reducers
+- [x] `graph_builder.erl`：创建纯拓扑顶点（无 value）
+- [x] `graph_compute.erl`：适配新模型，返回 delta 格式
+
+---
+
+### Phase 3: beamai_agent 层迁移 ✅
+
+- [x] `beamai_agent_runner.erl`：构建初始 global_state
+- [x] `beamai_nodes.erl`：返回 delta 而非完整状态
+
+---
+
+### Phase 4: 测试更新 ✅
+
+- [x] 更新所有测试文件适配新 API
+- [x] 添加 `pregel:get_result_global_state/1` 实现
+
+---
+
+### Phase 5: 清理 ✅
+
+- [x] 更新 `pregel.erl` 文档注释
+- [x] 更新 `examples/src/example_pregel.erl` 示例
+- [x] 更新 `info/pregel_graph_compute_fn.md` 文档
+- [x] 保留向后兼容的废弃函数
+
+---
+
+### 架构说明
+
+#### Delta 格式
+
+```erlang
+%% Delta 是简单的 field => value 映射
+-type delta() :: #{atom() | binary() => term()}.
+
+%% 示例
+#{
+    messages => [NewMessage],      %% append_reducer 处理
+    context => #{key => value},    %% merge_reducer 处理
+    last_response => Response      %% last_write_win 处理
+}
+```
+
+#### Field Reducers
+
+```erlang
+%% 配置（键使用 binary 格式，因为 graph_state 内部标准化为 binary）
+#{
+    <<"messages">> => fun graph_state_reducer:append_reducer/2,
+    <<"context">> => fun graph_state_reducer:merge_reducer/2
+    %% 未配置的字段默认 last_write_win
+}
+```
+
+#### 全局状态同步模式
+
+当前使用 **Push 模式**：
+```
+Master                          Worker
+  │  1. apply_deltas()            │
+  │     NewGlobalState            │
+  │  2. cast {global_state, GS}   │
+  │ ─────────────────────────────>│
+  │  3. cast {start_superstep, N} │
+  │ ─────────────────────────────>│
+```
+
+可选的 **Pull 模式**（已验证可行，不会死锁）：
+```
+Master                          Worker
+  │  1. apply_deltas()            │
+  │     NewGlobalState (保留)      │
+  │  2. cast {start_superstep, N} │
+  │ ─────────────────────────────>│
+  │  3. call get_global_state     │
+  │ <─────────────────────────────│
+  │ ─────────────────────────────>│
+```
+
+---
+
+### 验收结果 ✅
+
+#### 功能验收
+
+- [x] global_state 正确初始化和传递
+- [x] Delta 正确合并（使用 field_reducers）
+- [x] 顶点简化为纯拓扑结构
+- [x] 向后兼容的废弃函数工作正常
+
+#### 测试覆盖
+
+| 测试文件 | 测试数量 |
+|----------|----------|
+| `pregel_master_tests.erl` | 9 tests |
+| `pregel_worker_tests.erl` | 13 tests |
+| `pregel_barrier_tests.erl` | 9 tests |
+| `graph_compute_tests.erl` | 8 tests |
+| **总计** | **39 tests, 0 failures** |
+
+---
+
+### 修改的文件
+
+| 文件 | 修改类型 |
+|------|----------|
+| `pregel_master.erl` | 添加 global_state、field_reducers、delta 合并逻辑 |
+| `pregel_worker.erl` | 接收 global_state、返回 delta |
+| `pregel_vertex.erl` | 简化为纯拓扑结构 |
+| `pregel_barrier.erl` | 汇总 deltas |
+| `pregel.erl` | 添加 get_result_global_state/1 API |
+| `graph_runner.erl` | 构建 global_state 和 config |
+| `graph_compute.erl` | 适配新模型 |
+| `graph_builder.erl` | 创建纯拓扑顶点 |
+| `example_pregel.erl` | 更新示例代码 |
+| `pregel_graph_compute_fn.md` | 更新文档 |
+
+---
+
+### 相关文档
+
+- `info/graph_global_state_redesign.md` - 设计文档
+- `info/pregel_graph_compute_fn.md` - 计算函数文档（已更新）
+- `TASK.md` - 任务跟踪（已标记完成）

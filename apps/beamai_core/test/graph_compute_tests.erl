@@ -16,12 +16,11 @@
 %% 测试辅助函数
 %%====================================================================
 
-%% 创建简单的测试上下文（全局状态模式）
+%% 创建简单的测试上下文（全局状态模式 - 无 inbox 版本）
 make_test_context(VertexId, GlobalState) ->
     #{
         vertex_id => VertexId,
         global_state => GlobalState,
-        inbox => [],
         superstep => 0,
         num_vertices => 1,
         config => #{nodes => #{}}
@@ -50,11 +49,11 @@ compute_fn_success_returns_ok_status_test() ->
 %% 测试：异常时返回 status => {error, Reason}
 compute_fn_exception_returns_error_status_test() ->
     %% 准备：创建一个配置了不存在节点的上下文
+    %% 无 inbox 版本：节点被激活时直接执行
     GlobalState = #{},
     Ctx = #{
         vertex_id => test_node,
         global_state => GlobalState,
-        inbox => [activate],  %% 有激活消息以触发处理
         superstep => 0,
         num_vertices => 1,
         config => #{
@@ -79,13 +78,13 @@ compute_fn_exception_returns_error_status_test() ->
     ?assertMatch({error, _}, maps:get(status, Result)),
     %% 验证：返回结构包含必要字段
     ?assert(maps:is_key(delta, Result)),
-    ?assert(maps:is_key(outbox, Result)),
-    %% 验证：outbox 为空（失败时不发送消息）
-    ?assertEqual([], maps:get(outbox, Result)),
+    ?assert(maps:is_key(activations, Result)),
+    %% 验证：activations 为空（失败时不激活下游）
+    ?assertEqual([], maps:get(activations, Result)),
     %% 验证：delta 为空（失败时不更新状态）
     ?assertEqual(#{}, maps:get(delta, Result)).
 
-%% 测试：返回结构符合 compute_result 类型（全局状态模式）
+%% 测试：返回结构符合 compute_result 类型（全局状态模式 - 无 inbox 版本）
 compute_fn_result_structure_test() ->
     %% 准备
     GlobalState = #{initial => true},
@@ -97,7 +96,7 @@ compute_fn_result_structure_test() ->
 
     %% 验证：包含所有必要字段
     ?assert(maps:is_key(delta, Result)),
-    ?assert(maps:is_key(outbox, Result)),
+    ?assert(maps:is_key(activations, Result)),
     ?assert(maps:is_key(status, Result)).
 
 %%====================================================================
@@ -110,7 +109,6 @@ start_node_activated_at_superstep_0_test() ->
     Ctx = #{
         vertex_id => '__start__',
         global_state => GlobalState,
-        inbox => [],
         superstep => 0,
         num_vertices => 3,
         config => #{
@@ -127,17 +125,16 @@ start_node_activated_at_superstep_0_test() ->
 
     %% 验证：status 为 ok
     ?assertEqual(ok, maps:get(status, Result)),
-    %% 验证：发送了激活消息到下一节点
-    Outbox = maps:get(outbox, Result),
-    ?assert(length(Outbox) > 0).
+    %% 验证：激活了下一节点
+    Activations = maps:get(activations, Result),
+    ?assert(length(Activations) > 0).
 
-%% 测试：__end__ 节点收到激活消息后正常完成
+%% 测试：__end__ 节点被激活后正常完成
 end_node_completes_on_activate_test() ->
     GlobalState = #{result => <<"final">>},
     Ctx = #{
         vertex_id => '__end__',
         global_state => GlobalState,
-        inbox => [activate],
         superstep => 1,
         num_vertices => 3,
         config => #{
@@ -152,23 +149,26 @@ end_node_completes_on_activate_test() ->
 
     %% 验证：status 为 ok
     ?assertEqual(ok, maps:get(status, Result)),
-    %% 验证：不发送消息（终止节点）
-    ?assertEqual([], maps:get(outbox, Result)),
+    %% 验证：不激活其他节点（终止节点）
+    ?assertEqual([], maps:get(activations, Result)),
     %% 验证：delta 为空（终止节点不更新状态）
     ?assertEqual(#{}, maps:get(delta, Result)).
 
-%% 测试：普通节点无消息时保持 halt
-regular_node_no_messages_halts_test() ->
+%% 测试：普通节点被激活时执行并路由到下一节点
+regular_node_activated_routes_test() ->
+    %% 无 inbox 版本：节点被激活时直接执行
     GlobalState = #{},
     Ctx = #{
         vertex_id => regular_node,
         global_state => GlobalState,
-        inbox => [],  %% 无消息
         superstep => 1,
         num_vertices => 3,
         config => #{
             nodes => #{
-                regular_node => #{}
+                regular_node => #{
+                    %% 无 node 定义，直接路由
+                    edges => []
+                }
             }
         }
     },
@@ -178,10 +178,10 @@ regular_node_no_messages_halts_test() ->
 
     %% 验证：status 为 ok
     ?assertEqual(ok, maps:get(status, Result)),
-    %% 验证：delta 为空
+    %% 验证：delta 为空（无 node 执行）
     ?assertEqual(#{}, maps:get(delta, Result)),
-    %% 验证：不发送消息
-    ?assertEqual([], maps:get(outbox, Result)).
+    %% 验证：激活了终止节点（无边时默认激活 __end__）
+    ?assertEqual(['__end__'], maps:get(activations, Result)).
 
 %%====================================================================
 %% from_pregel_result 测试

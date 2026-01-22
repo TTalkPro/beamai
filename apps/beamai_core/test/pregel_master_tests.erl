@@ -6,6 +6,7 @@
 %%% - 全局状态和 field_reducers 功能
 %%% - Delta 增量更新合并
 %%% - Checkpoint 数据获取
+%%% - Activation 机制（无 inbox 版本）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -31,32 +32,32 @@ make_fan_graph() ->
     pregel_graph:from_edges(Edges).
 
 %% 创建简单计算函数（所有顶点立即停止）
-%% 全局状态模式：返回 delta 而非 vertex
+%% 全局状态模式：返回 delta 和 activations
 make_halt_compute_fn() ->
-    fun(Ctx) ->
-        #{delta => #{}, outbox => [], status => ok}
+    fun(_Ctx) ->
+        #{delta => #{}, activations => [], status => ok}
     end.
 
-%% 创建发送消息并更新状态的计算函数
-%% 全局状态模式：通过 delta 更新状态
+%% 创建发送激活信号并更新状态的计算函数
+%% 全局状态模式：通过 delta 更新状态，通过 activations 激活下游顶点
 make_send_compute_fn() ->
     fun(Ctx) ->
-        #{vertex_id := Id, global_state := State, superstep := Superstep} = Ctx,
+        #{vertex_id := Id, superstep := Superstep} = Ctx,
         case Superstep of
             0 ->
                 case Id of
                     v1 ->
-                        %% v1 向 v2 发送激活消息，更新全局状态
-                        Outbox = [{v2, activate}],
+                        %% v1 激活 v2，更新全局状态
+                        Activations = [v2],
                         Delta = #{v1_done => true},
-                        #{delta => Delta, outbox => Outbox, status => ok};
+                        #{delta => Delta, activations => Activations, status => ok};
                     _ ->
-                        #{delta => #{}, outbox => [], status => ok}
+                        #{delta => #{}, activations => [], status => ok}
                 end;
             _ ->
                 %% 后续超步：标记完成
                 Delta = #{atom_to_binary(Id, utf8) => done},
-                #{delta => Delta, outbox => [], status => ok}
+                #{delta => Delta, activations => [], status => ok}
         end
     end.
 
@@ -101,7 +102,7 @@ step_api_basic_test() ->
         pregel_master:stop(Master)
     end.
 
-%% 测试：多步执行
+%% 测试：多步执行（通过 activations）
 step_api_multi_step_test() ->
     Graph = make_chain_graph(),
     ComputeFn = make_send_compute_fn(),
@@ -116,11 +117,11 @@ step_api_multi_step_test() ->
         Step1 = pregel_master:step(Master),
         ?assertMatch({continue, #{type := initial}}, Step1),
 
-        %% 第二步执行超步 0，v1 发送消息给 v2，应该继续
+        %% 第二步执行超步 0，v1 激活 v2，应该继续
         Step2 = pregel_master:step(Master),
         ?assertMatch({continue, #{type := step}}, Step2),
 
-        %% 第三步执行超步 1，v2 处理消息并停止，应该完成
+        %% 第三步执行超步 1，v2 被激活并处理，应该完成
         Step3 = pregel_master:step(Master),
         ?assertMatch({done, completed, _}, Step3)
     after
@@ -146,7 +147,8 @@ get_checkpoint_data_test() ->
 
         ?assert(maps:is_key(superstep, CheckpointData)),
         ?assert(maps:is_key(vertices, CheckpointData)),
-        ?assert(maps:is_key(vertex_inbox, CheckpointData)),
+        %% 无 inbox 版本使用 pending_activations
+        ?assert(maps:is_key(pending_activations, CheckpointData)),
         ?assert(maps:is_key(pending_deltas, CheckpointData)),
         %% 全局状态模式：检查 global_state
         ?assert(maps:is_key(global_state, CheckpointData))
@@ -193,9 +195,9 @@ delta_merge_test() ->
                 %% 超步 0：每个顶点更新自己的键
                 Key = list_to_atom(atom_to_list(Id) ++ "_result"),
                 Delta = #{Key => Id},
-                #{delta => Delta, outbox => [], status => ok};
+                #{delta => Delta, activations => [], status => ok};
             _ ->
-                #{delta => #{}, outbox => [], status => ok}
+                #{delta => #{}, activations => [], status => ok}
         end
     end,
     InitialState = #{initial => true},
@@ -234,14 +236,14 @@ field_reducer_append_test() ->
             0 ->
                 case Id of
                     v_center ->
-                        #{delta => #{}, outbox => [], status => ok};
+                        #{delta => #{}, activations => [], status => ok};
                     _ ->
-                        %% 源顶点发送消息并更新 messages 列表
+                        %% 源顶点发送激活信号并更新 messages 列表
                         Delta = #{messages => [Id]},
-                        #{delta => Delta, outbox => [{v_center, activate}], status => ok}
+                        #{delta => Delta, activations => [v_center], status => ok}
                 end;
             _ ->
-                #{delta => #{}, outbox => [], status => ok}
+                #{delta => #{}, activations => [], status => ok}
         end
     end,
     InitialState = #{messages => []},
@@ -285,9 +287,9 @@ field_reducer_merge_test() ->
             0 ->
                 Key = atom_to_binary(Id, utf8),
                 Delta = #{context => #{Key => true}},
-                #{delta => Delta, outbox => [], status => ok};
+                #{delta => Delta, activations => [], status => ok};
             _ ->
-                #{delta => #{}, outbox => [], status => ok}
+                #{delta => #{}, activations => [], status => ok}
         end
     end,
     InitialState = #{context => #{}},
