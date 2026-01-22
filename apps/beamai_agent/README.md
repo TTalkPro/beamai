@@ -285,11 +285,11 @@ Config = #{
     tools => Tools
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"calc-agent">>, Config),
-{ok, Response} = beamai_agent:chat(Agent, <<"What is 123 * 456?">>).
+{ok, State} = beamai_agent:new(Config),
+{ok, Result, _NewState} = beamai_agent:run(State, <<"What is 123 * 456?">>).
 ```
 
-### 使用检查点
+### 使用 Memory 持久化
 
 ```erlang
 %% 创建 LLM 配置
@@ -302,29 +302,22 @@ LLM = llm_client:create(openai, #{
 {ok, _} = beamai_store_ets:start_link(my_store, #{}),
 {ok, Memory} = beamai_memory:new(#{context_store => {beamai_store_ets, my_store}}),
 
-%% 启动带存储的 Agent
+%% 创建带存储的 Agent
 Config = #{
     system_prompt => <<"You are a helpful assistant.">>,
     llm => LLM,
     storage => Memory
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"persistent-agent">>, Config),
+{ok, State0} = beamai_agent:new(Config),
 
-%% 对话
-{ok, _} = beamai_agent:chat(Agent, <<"Remember: my name is Alice.">>),
+%% 对话（checkpoint 自动保存）
+{ok, _, State1} = beamai_agent:run(State0, <<"Remember: my name is Alice.">>),
+{ok, _, _State2} = beamai_agent:run(State1, <<"What's the weather?">>),
 
-%% 保存检查点
-{ok, CpId} = beamai_agent:save_checkpoint(Agent, #{tag => <<"after_intro">>}),
-
-%% 更多对话...
-{ok, _} = beamai_agent:chat(Agent, <<"What's the weather?">>),
-
-%% 恢复到之前的检查点
-ok = beamai_agent:restore_from_checkpoint(Agent, CpId),
-
-%% 现在 Agent 只记得 "my name is Alice"
-{ok, Messages} = beamai_agent:get_messages(Agent).
+%% 从 Memory 恢复会话
+{ok, RestoredState} = beamai_agent:restore_from_memory(#{llm => LLM}, Memory),
+Messages = beamai_agent:get_messages(RestoredState).
 ```
 
 ### 使用阿里云百炼
@@ -341,8 +334,8 @@ Config = #{
     llm => LLM
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"bailian-agent">>, Config),
-{ok, Response} = beamai_agent:chat(Agent, <<"你好！介绍一下你自己。">>).
+{ok, State} = beamai_agent:new(Config),
+{ok, Result, _} = beamai_agent:run(State, <<"你好！介绍一下你自己。">>).
 ```
 
 ### 使用智谱 AI
@@ -360,8 +353,8 @@ Config = #{
     llm => LLM
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"zhipu-agent">>, Config),
-{ok, Response} = beamai_agent:chat(Agent, <<"你好！介绍一下你自己。">>).
+{ok, State} = beamai_agent:new(Config),
+{ok, Result, _} = beamai_agent:run(State, <<"你好！介绍一下你自己。">>).
 ```
 
 ### 使用协调器 (Pipeline 模式)

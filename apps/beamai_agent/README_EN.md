@@ -65,44 +65,29 @@ beamai_coordinator:delegate_parallel(CoordinatorPid, [WorkerName], Task) -> {ok,
 
 ## API Documentation
 
-### beamai_agent
+### beamai_agent (Pure Function API)
 
 ```erlang
-%% Start Agent
-beamai_agent:start_link(AgentId, Config) -> {ok, Pid} | {error, Reason}.
+%% Core API
+beamai_agent:new(Config) -> {ok, State} | {error, Reason}.
+beamai_agent:run(State, Message) -> {ok, Result, NewState} | {error, Reason}.
+beamai_agent:run(State, Message, Opts) -> {ok, Result, NewState} | {error, Reason}.
+beamai_agent:restore_from_memory(Config, Memory) -> {ok, State} | {error, Reason}.
 
-%% Stop Agent
-beamai_agent:stop(Pid) -> ok.
+%% State Query
+beamai_agent:get_messages(State) -> [Message].
+beamai_agent:get_full_messages(State) -> [Message].
+beamai_agent:get_scratchpad(State) -> [Step].
+beamai_agent:get_context(State) -> Context.
+beamai_agent:get_context(State, Key) -> Value | undefined.
+beamai_agent:get_context(State, Key, Default) -> Value.
 
-%% Send message
-beamai_agent:chat(Pid, Message) -> {ok, Response} | {error, Reason}.
-beamai_agent:chat(Pid, Message, Timeout) -> {ok, Response} | {error, Reason}.
-
-%% Checkpoint operations
-beamai_agent:save_checkpoint(Pid) -> {ok, CheckpointId} | {error, Reason}.
-beamai_agent:save_checkpoint(Pid, Metadata) -> {ok, CheckpointId} | {error, Reason}.
-beamai_agent:load_checkpoint(Pid, CheckpointId) -> {ok, Checkpoint} | {error, Reason}.
-beamai_agent:load_latest_checkpoint(Pid) -> {ok, Checkpoint} | {error, Reason}.
-beamai_agent:list_checkpoints(Pid) -> {ok, [Checkpoint]} | {error, Reason}.
-beamai_agent:restore_from_checkpoint(Pid, CheckpointId) -> ok | {error, Reason}.
-
-%% Get state
-beamai_agent:get_state(Pid) -> {ok, State}.
-beamai_agent:get_messages(Pid) -> {ok, Messages}.
-
-%% Context API (user-defined context, participates in conversation)
-beamai_agent:get_context(Pid) -> Context.
-beamai_agent:get_context(Pid, Key) -> Value | undefined.
-beamai_agent:get_context(Pid, Key, Default) -> Value.
-beamai_agent:set_context(Pid, Context) -> ok.
-beamai_agent:put_context(Pid, Key, Value) -> ok.
-
-%% Meta API (process-level metadata, does not participate in conversation)
-beamai_agent:get_meta(Pid) -> Meta.
-beamai_agent:get_meta(Pid, Key) -> Value | undefined.
-beamai_agent:get_meta(Pid, Key, Default) -> Value.
-beamai_agent:set_meta(Pid, Meta) -> ok.
-beamai_agent:put_meta(Pid, Key, Value) -> ok.
+%% State Modification
+beamai_agent:set_context(State, Context) -> NewState.
+beamai_agent:update_context(State, Updates) -> NewState.
+beamai_agent:put_context(State, Key, Value) -> NewState.
+beamai_agent:clear_messages(State) -> NewState.
+beamai_agent:clear_scratchpad(State) -> NewState.
 ```
 
 ### Configuration Structure
@@ -252,15 +237,12 @@ Config = #{
     llm => LLM
 },
 
-%% Start Agent
-{ok, Agent} = beamai_agent:start_link(<<"my-agent">>, Config),
+%% Create Agent state
+{ok, State0} = beamai_agent:new(Config),
 
-%% Conversation
-{ok, Response1} = beamai_agent:chat(Agent, <<"Hello!">>),
-{ok, Response2} = beamai_agent:chat(Agent, <<"What can you do?">>),
-
-%% Stop
-beamai_agent:stop(Agent).
+%% Multi-turn conversation
+{ok, _Result1, State1} = beamai_agent:run(State0, <<"Hello!">>),
+{ok, _Result2, _State2} = beamai_agent:run(State1, <<"What can you do?">>).
 ```
 
 ### Using Tools
@@ -303,11 +285,11 @@ Config = #{
     tools => Tools
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"calc-agent">>, Config),
-{ok, Response} = beamai_agent:chat(Agent, <<"What is 123 * 456?">>).
+{ok, State} = beamai_agent:new(Config),
+{ok, Result, _NewState} = beamai_agent:run(State, <<"What is 123 * 456?">>).
 ```
 
-### Using Checkpoints
+### Using Memory Persistence
 
 ```erlang
 %% Create LLM configuration
@@ -320,29 +302,22 @@ LLM = llm_client:create(openai, #{
 {ok, _} = beamai_store_ets:start_link(my_store, #{}),
 {ok, Memory} = beamai_memory:new(#{context_store => {beamai_store_ets, my_store}}),
 
-%% Start Agent with storage
+%% Create Agent with storage
 Config = #{
     system_prompt => <<"You are a helpful assistant.">>,
     llm => LLM,
     storage => Memory
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"persistent-agent">>, Config),
+{ok, State0} = beamai_agent:new(Config),
 
-%% Conversation
-{ok, _} = beamai_agent:chat(Agent, <<"Remember: my name is Alice.">>),
+%% Conversation (checkpoint auto-saved)
+{ok, _, State1} = beamai_agent:run(State0, <<"Remember: my name is Alice.">>),
+{ok, _, _State2} = beamai_agent:run(State1, <<"What's the weather?">>),
 
-%% Save checkpoint
-{ok, CpId} = beamai_agent:save_checkpoint(Agent, #{tag => <<"after_intro">>}),
-
-%% More conversation...
-{ok, _} = beamai_agent:chat(Agent, <<"What's the weather?">>),
-
-%% Restore to previous checkpoint
-ok = beamai_agent:restore_from_checkpoint(Agent, CpId),
-
-%% Now the Agent only remembers "my name is Alice"
-{ok, Messages} = beamai_agent:get_messages(Agent).
+%% Restore session from Memory
+{ok, RestoredState} = beamai_agent:restore_from_memory(#{llm => LLM}, Memory),
+Messages = beamai_agent:get_messages(RestoredState).
 ```
 
 ### Using Alibaba Cloud Bailian
@@ -359,8 +334,8 @@ Config = #{
     llm => LLM
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"bailian-agent">>, Config),
-{ok, Response} = beamai_agent:chat(Agent, <<"Hello! Please introduce yourself.">>).
+{ok, State} = beamai_agent:new(Config),
+{ok, Result, _} = beamai_agent:run(State, <<"Hello! Please introduce yourself.">>).
 ```
 
 ### Using Zhipu AI
@@ -378,8 +353,8 @@ Config = #{
     llm => LLM
 },
 
-{ok, Agent} = beamai_agent:start_link(<<"zhipu-agent">>, Config),
-{ok, Response} = beamai_agent:chat(Agent, <<"Hello! Please introduce yourself.">>).
+{ok, State} = beamai_agent:new(Config),
+{ok, Result, _} = beamai_agent:run(State, <<"Hello! Please introduce yourself.">>).
 ```
 
 ### Using Coordinator (Pipeline Mode)
