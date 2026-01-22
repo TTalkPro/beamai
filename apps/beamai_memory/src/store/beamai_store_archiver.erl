@@ -349,6 +349,7 @@ checkpoint_tuple_to_map({Checkpoint, Metadata, ParentConfig}) ->
             %% 执行标识
             <<"run_id">> => Metadata#checkpoint_metadata.run_id,
             <<"agent_id">> => Metadata#checkpoint_metadata.agent_id,
+            <<"agent_name">> => Metadata#checkpoint_metadata.agent_name,
             <<"iteration">> => Metadata#checkpoint_metadata.iteration,
             %% 用户自定义元数据
             <<"metadata">> => Metadata#checkpoint_metadata.metadata
@@ -384,6 +385,7 @@ map_to_checkpoint_tuple(Map) when is_map(Map) ->
                 %% 执行标识
                 run_id = maps_get(<<"run_id">>, MetaMap, undefined),
                 agent_id = maps_get(<<"agent_id">>, MetaMap, undefined),
+                agent_name = maps_get(<<"agent_name">>, MetaMap, undefined),
                 iteration = maps_get(<<"iteration">>, MetaMap, 0),
                 %% 用户自定义元数据
                 metadata = maps_get(<<"metadata">>, MetaMap, #{})

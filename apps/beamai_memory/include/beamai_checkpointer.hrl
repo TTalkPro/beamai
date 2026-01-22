@@ -145,6 +145,15 @@
     %% - 关联 Agent 配置和状态
     agent_id :: binary() | undefined,
 
+    %% Agent 名称
+    %%
+    %% 执行此图的 Agent 的人类可读名称。
+    %% 用于：
+    %% - 日志和调试时的可读性
+    %% - UI 展示
+    %% - 多 Agent 系统中的标识
+    agent_name :: binary() | undefined,
+
     %% Graph 层迭代次数
     %%
     %% 区别于 Pregel 层的 step（超步）：

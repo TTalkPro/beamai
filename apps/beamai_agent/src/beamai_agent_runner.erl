@@ -166,8 +166,10 @@ agent_field_reducers() ->
 -spec build_graph_from_nodes(map(), pos_integer()) -> {ok, map()} | {error, term()}.
 build_graph_from_nodes(Nodes, MaxIterations) ->
     %% 创建构建器
+    %% 每次迭代（LLM 调用 + 工具执行）大约需要 10 个超步
+    %% 为每次迭代分配 15 个超步以确保足够
     Builder0 = graph:builder(#{
-        max_iterations => MaxIterations * 2
+        max_iterations => MaxIterations * 15
     }),
 
     %% 添加所有节点

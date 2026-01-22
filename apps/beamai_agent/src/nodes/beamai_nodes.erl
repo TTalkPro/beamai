@@ -191,6 +191,10 @@ route_after_llm_impl(false, false, false, FinishReason, ToolCalls) ->
 %% @private 基于 finish_reason 路由
 -spec route_by_finish_reason(binary(), [map()]) -> atom().
 route_by_finish_reason(<<"tool_calls">>, _) ->
+    %% OpenAI 工具调用
+    execute_tools;
+route_by_finish_reason(<<"tool_use">>, _) ->
+    %% Anthropic 工具调用
     execute_tools;
 route_by_finish_reason(<<"stop">>, _) ->
     '__end__';

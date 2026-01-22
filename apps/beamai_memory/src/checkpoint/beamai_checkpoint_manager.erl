@@ -696,6 +696,7 @@ checkpoint_to_map(Checkpoint) ->
             %% 执行标识
             <<"run_id">> => undefined,
             <<"agent_id">> => undefined,
+            <<"agent_name">> => undefined,
             <<"iteration">> => 0,
             %% 用户自定义元数据
             <<"metadata">> => #{}
@@ -728,6 +729,7 @@ map_to_checkpoint_tuple(Map) when is_map(Map) ->
                 %% 执行标识
                 run_id = undefined,
                 agent_id = undefined,
+                agent_name = undefined,
                 iteration = 0,
                 %% 用户自定义元数据
                 metadata = #{}

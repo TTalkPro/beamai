@@ -143,11 +143,25 @@ from_pregel_result(Result) ->
         {error, Reason} ->
             {error, Reason};
         undefined ->
-            case Status of
-                max_supersteps ->
-                    {error, max_iterations_exceeded};
-                completed ->
-                    find_last_result(Graph)
+            %% __end__ 节点没有结果，尝试从其他节点获取最后状态
+            case find_last_result(Graph) of
+                {ok, LastState} ->
+                    case Status of
+                        max_supersteps ->
+                            %% 达到最大超步，返回部分结果
+                            {error, {partial_result, LastState, max_iterations_exceeded}};
+                        completed ->
+                            {ok, LastState}
+                    end;
+                {error, no_result_found} ->
+                    case Status of
+                        max_supersteps ->
+                            {error, max_iterations_exceeded};
+                        completed ->
+                            {error, no_result_found}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
             end
     end.
 

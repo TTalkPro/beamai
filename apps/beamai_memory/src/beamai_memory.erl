@@ -208,6 +208,7 @@ save_checkpoint(#{context_store := Store}, Config, State, MetadataMap) ->
         %% 执行标识
         run_id = maps:get(run_id, State, maps:get(run_id, Config, undefined)),
         agent_id = maps:get(agent_id, Config, undefined),
+        agent_name = maps:get(agent_name, Config, undefined),
         iteration = maps:get(iteration, State, 0),
 
         %% 用户自定义元数据
@@ -834,6 +835,7 @@ checkpoint_to_map(Checkpoint, Metadata, ParentConfig) ->
             %% 执行标识
             run_id => Metadata#checkpoint_metadata.run_id,
             agent_id => Metadata#checkpoint_metadata.agent_id,
+            agent_name => Metadata#checkpoint_metadata.agent_name,
             iteration => Metadata#checkpoint_metadata.iteration,
             %% 用户自定义元数据
             metadata => Metadata#checkpoint_metadata.metadata
@@ -874,6 +876,7 @@ map_to_checkpoint_tuple(Map) when is_map(Map) ->
                 %% 执行标识
                 run_id = get_flex(run_id, MetaMap, undefined),
                 agent_id = get_flex(agent_id, MetaMap, undefined),
+                agent_name = get_flex(agent_name, MetaMap, undefined),
                 iteration = get_flex(iteration, MetaMap, 0),
                 %% 用户自定义元数据
                 metadata = get_flex(metadata, MetaMap, #{})

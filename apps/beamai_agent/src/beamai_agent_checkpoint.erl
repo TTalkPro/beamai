@@ -271,14 +271,43 @@ checkpoint_to_map({#checkpoint{id = Id, values = Values}, Metadata, _ParentConfi
     #{
         id => Id,
         data => Values,
-        metadata => Metadata
+        metadata => metadata_to_map(Metadata)
     };
 checkpoint_to_map({Checkpoint, Metadata, _ParentConfig}) when is_map(Checkpoint) ->
     %% 兼容 map 格式
     #{
         id => maps:get(id, Checkpoint, undefined),
         data => maps:get(values, Checkpoint, maps:get(channel_values, Checkpoint, #{})),
-        metadata => Metadata
+        metadata => metadata_to_map(Metadata)
     };
 checkpoint_to_map(_) ->
+    #{}.
+
+%% @private 将 checkpoint_metadata 记录转换为 map
+-spec metadata_to_map(tuple() | map()) -> map().
+metadata_to_map(#checkpoint_metadata{
+    checkpoint_type = Type,
+    step = Step,
+    active_vertices = ActiveVertices,
+    completed_vertices = CompletedVertices,
+    run_id = RunId,
+    agent_id = AgentId,
+    agent_name = AgentName,
+    iteration = Iteration,
+    metadata = UserMetadata
+}) ->
+    #{
+        checkpoint_type => Type,
+        step => Step,
+        active_vertices => ActiveVertices,
+        completed_vertices => CompletedVertices,
+        run_id => RunId,
+        agent_id => AgentId,
+        agent_name => AgentName,
+        iteration => Iteration,
+        metadata => UserMetadata
+    };
+metadata_to_map(Metadata) when is_map(Metadata) ->
+    Metadata;
+metadata_to_map(_) ->
     #{}.

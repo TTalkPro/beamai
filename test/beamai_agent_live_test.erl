@@ -42,7 +42,7 @@ glm_config() ->
 %%====================================================================
 
 setup() ->
-    application:ensure_all_started(beamai_runtime),
+    application:ensure_all_started(beamai_agent),
     ok.
 
 cleanup(_) ->
@@ -123,7 +123,7 @@ test_single_tool() ->
     CalculatorTool = #{
         name => <<"calculator">>,
         description => <<"Perform basic arithmetic. Use this for any math calculation.">>,
-        input_schema => #{
+        parameters => #{
             type => object,
             properties => #{
                 <<"expression">> => #{
@@ -173,7 +173,7 @@ test_multi_tools() ->
     WeatherTool = #{
         name => <<"get_weather">>,
         description => <<"Get current weather for a city. Always use this tool when asked about weather.">>,
-        input_schema => #{
+        parameters => #{
             type => object,
             properties => #{
                 <<"city">> => #{
@@ -192,7 +192,7 @@ test_multi_tools() ->
     TimeTool = #{
         name => <<"get_time">>,
         description => <<"Get current time for a timezone">>,
-        input_schema => #{
+        parameters => #{
             type => object,
             properties => #{
                 <<"timezone">> => #{

@@ -490,6 +490,10 @@ extract_state_from_vertices(Vertices) ->
 -spec handle_pregel_result({ok, state()} | {error, term()}, state(), run_options()) -> run_result().
 handle_pregel_result({ok, FinalState}, _InitialState, _Options) ->
     #{status => completed, final_state => FinalState, iterations => 0};
+handle_pregel_result({error, {partial_result, PartialState, max_iterations_exceeded}}, _InitialState, Options) ->
+    %% 达到最大迭代但有部分结果 - 返回部分状态
+    MaxIter = maps:get(max_iterations, Options, 100),
+    #{status => max_iterations, final_state => PartialState, iterations => MaxIter};
 handle_pregel_result({error, {partial_result, PartialState, Reason}}, _InitialState, _Options) ->
     #{status => error, final_state => PartialState, iterations => 0, error => Reason};
 handle_pregel_result({error, max_iterations_exceeded}, InitialState, Options) ->
