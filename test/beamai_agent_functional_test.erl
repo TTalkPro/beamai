@@ -8,6 +8,7 @@
 -module(beamai_agent_functional_test).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("beamai_agent/include/beamai_agent.hrl").
 
 %%====================================================================
 %% Test fixtures
@@ -19,6 +20,25 @@ setup() ->
 
 cleanup(_) ->
     ok.
+
+%%====================================================================
+%% 辅助函数 - 使用记录访问器代替 element()
+%%====================================================================
+
+%% @private 从状态中获取 Agent ID
+get_agent_id(#state{config = #agent_config{id = Id}}) -> Id.
+
+%% @private 从状态中获取系统提示词
+get_system_prompt(#state{config = #agent_config{system_prompt = Prompt}}) -> Prompt.
+
+%% @private 从状态中获取存储后端
+get_storage(#state{config = #agent_config{storage = Storage}}) -> Storage.
+
+%% @private 从状态中获取消息列表
+get_messages(#state{messages = Messages}) -> Messages.
+
+%% @private 从状态中获取 scratchpad
+get_scratchpad(#state{scratchpad = Scratchpad}) -> Scratchpad.
 
 %%====================================================================
 %% create_state 测试
@@ -37,8 +57,8 @@ create_state_test_() ->
                    llm => llm_client:create(mock, #{})
                },
                {ok, State} = beamai_agent:create_state(Config),
-               ?assert(is_binary(element(2, State))),  %% id field
-               ?assertEqual(<<"You are helpful">>, element(4, State))  %% system_prompt
+               ?assert(is_binary(get_agent_id(State))),
+               ?assertEqual(<<"You are helpful">>, get_system_prompt(State))
            end},
 
           {"create_state/2 creates state with specified id",
@@ -48,7 +68,7 @@ create_state_test_() ->
                    llm => llm_client:create(mock, #{})
                },
                {ok, State} = beamai_agent:create_state(<<"my-agent-id">>, Config),
-               ?assertEqual(<<"my-agent-id">>, element(2, State))
+               ?assertEqual(<<"my-agent-id">>, get_agent_id(State))
            end},
 
           {"create_state disables storage in pure function mode",
@@ -60,8 +80,7 @@ create_state_test_() ->
                },
                {ok, State} = beamai_agent:create_state(Config),
                %% storage 应该是 undefined（被强制禁用）
-               %% state record: storage 在第 19 位（添加 buffer_config 后）
-               ?assertEqual(undefined, element(19, State))
+               ?assertEqual(undefined, get_storage(State))
            end}
          ]
      end}.
@@ -107,11 +126,11 @@ export_import_test_() ->
                Exported = beamai_agent:export_state(OrigState),
 
                %% 导入时需要传入配置
-               {ok, RestoredState} = beamai_agent:import_state(Exported, Config),
+               {ok, RestoredState} = beamai_agent:import_state_pure(Exported, Config),
 
                %% import_state 会生成新的 ID，但保留对话数据
-               ?assert(is_binary(element(2, RestoredState))),
-               ?assertEqual(<<"Original prompt">>, element(4, RestoredState))
+               ?assert(is_binary(get_agent_id(RestoredState))),
+               ?assertEqual(<<"Original prompt">>, get_system_prompt(RestoredState))
            end},
 
           {"import_state restores messages and scratchpad",
@@ -139,14 +158,14 @@ export_import_test_() ->
                    system_prompt => <<"Test">>,
                    llm => llm_client:create(mock, #{})
                },
-               {ok, State} = beamai_agent:import_state(ExportedData, Config),
+               {ok, State} = beamai_agent:import_state_pure(ExportedData, Config),
 
-               %% 验证 messages 恢复（第 10 位）
-               Messages = element(10, State),
+               %% 验证 messages 恢复
+               Messages = get_messages(State),
                ?assertEqual(3, length(Messages)),
 
-               %% 验证 scratchpad 恢复（第 12 位）
-               Scratchpad = element(12, State),
+               %% 验证 scratchpad 恢复
+               Scratchpad = get_scratchpad(State),
                ?assertEqual(1, length(Scratchpad))
            end},
 
@@ -160,12 +179,12 @@ export_import_test_() ->
                },
 
                %% 使用配置创建状态
-               {ok, State} = beamai_agent:import_state(ExportedData, #{
+               {ok, State} = beamai_agent:import_state_pure(ExportedData, #{
                    system_prompt => <<"New prompt">>,
                    llm => llm_client:create(mock, #{})
                }),
 
-               ?assertEqual(<<"New prompt">>, element(4, State))
+               ?assertEqual(<<"New prompt">>, get_system_prompt(State))
            end},
 
           {"export/import roundtrip preserves data",
@@ -184,13 +203,13 @@ export_import_test_() ->
                Exported = beamai_agent:export_state(State1),
                Binary = term_to_binary(Exported),
                Restored = binary_to_term(Binary),
-               {ok, State2} = beamai_agent:import_state(Restored, Config),
+               {ok, State2} = beamai_agent:import_state_pure(Restored, Config),
 
                %% 验证对话数据保持一致
-               ?assertEqual(element(10, State1), element(10, State2)),  %% messages
-               ?assertEqual(element(12, State1), element(12, State2)),  %% scratchpad
+               ?assertEqual(get_messages(State1), get_messages(State2)),
+               ?assertEqual(get_scratchpad(State1), get_scratchpad(State2)),
                %% 配置通过 Config 传入，应该相同
-               ?assertEqual(element(4, State1), element(4, State2))  %% system_prompt
+               ?assertEqual(get_system_prompt(State1), get_system_prompt(State2))
            end}
          ]
      end}.
@@ -226,7 +245,7 @@ concurrency_test_() ->
                lists:foreach(fun({ok, _State}) -> ok end, Results),
 
                %% 所有 ID 应该唯一
-               Ids = [element(2, S) || {ok, S} <- Results],
+               Ids = [get_agent_id(S) || {ok, S} <- Results],
                ?assertEqual(10, length(lists:usort(Ids)))
            end}
          ]
@@ -251,14 +270,14 @@ immutability_test_() ->
                {ok, State} = beamai_agent:create_state(Config),
 
                %% 导出前记录 ID
-               OriginalId = element(2, State),
+               OriginalId = get_agent_id(State),
 
                %% 多次导出
                _Export1 = beamai_agent:export_state(State),
                _Export2 = beamai_agent:export_state(State),
 
                %% 原始状态不变
-               ?assertEqual(OriginalId, element(2, State))
+               ?assertEqual(OriginalId, get_agent_id(State))
            end}
          ]
      end}.

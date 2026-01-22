@@ -1,70 +1,60 @@
 %%%-------------------------------------------------------------------
-%%% @doc Graph-based Agent Facade Module
+%%% @doc Agent 门面模块
 %%%
-%%% This module serves as the API facade for the agent system.
-%%% Actual implementation is delegated to specialized modules:
+%%% 本模块作为 Agent 系统的 API 门面。
+%%% 实际实现委托给专门的模块：
 %%%
-%%% - beamai_agent_server: gen_server implementation (stateful)
-%%% - beamai_agent_api: Pure function API (stateless)
-%%% - beamai_agent_init: Initialization logic
-%%% - beamai_agent_runner: Graph execution logic
-%%% - beamai_agent_callbacks: Callback management
-%%% - beamai_agent_checkpoint: Checkpoint persistence
+%%% - beamai_agent_server: gen_server 实现（有状态进程）
+%%% - beamai_agent_api: 纯函数 API（无状态）
+%%% - beamai_agent_init: 初始化逻辑
+%%% - beamai_agent_runner: 图执行逻辑
+%%% - beamai_agent_callbacks: 回调管理
+%%% - beamai_agent_checkpoint: Checkpoint 持久化
 %%%
-%%% == Usage Modes ==
+%%% == 使用模式 ==
 %%%
-%%% === Pure Function Mode (Recommended) ===
-%%% For single conversations, high concurrency, stateless services.
-%%% Main API: run_once/2, create_state/1, run_with_state/3
+%%% === 纯函数模式（推荐） ===
+%%% 适用于单次对话、高并发、无状态服务。
+%%% 主要 API: run_once/2, create_state/1, run_with_state/3
 %%%
-%%% === Process Mode (Advanced) ===
-%%% For long-running services, supervision trees, auto state management.
-%%% Main API: start_link/2, run/2, save_checkpoint/1
+%%% === 进程模式（高级） ===
+%%% 适用于长期运行的服务、监督树、自动状态管理。
+%%% 主要 API: start_link/2, run/2
+%%%
+%%% 设计原则：
+%%% - 本模块为纯门面，不包含业务逻辑
+%%% - 进程 API 委托给 beamai_agent_server
+%%% - 纯函数 API 委托给 beamai_agent_api
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_agent).
 
--behaviour(gen_server).
-
 -include("beamai_agent.hrl").
 
-%% Process API (delegates to beamai_agent_server)
--export([start_link/2, stop/1, run/2, run/3]).
+%%====================================================================
+%% 进程 API（委托给 beamai_agent_server）
+%%====================================================================
+-export([start_link/2, stop/1]).
+-export([run/2, run/3]).
 -export([add_tool/2, remove_tool/2, set_system_prompt/2]).
 
-%% Pure function API (delegates to beamai_agent_api)
--export([
-    run_once/2,
-    run_with_state/3,
-    create_state/1,
-    create_state/2,
-    export_state/1,
-    import_state/2
-]).
-
-%% Scratchpad API
+%% 状态查询 API
 -export([get_scratchpad/1, clear_scratchpad/1]).
-
-%% Messages API
 -export([get_messages/1, clear_messages/1]).
 
 %% Context API
 -export([get_context/1, get_context/2, get_context/3]).
 -export([set_context/2, update_context/2, put_context/3]).
 
-%% Meta API (进程级元数据，不参与对话)
+%% Meta API（进程级元数据，不参与对话）
 -export([get_meta/1, get_meta/2, get_meta/3]).
 -export([set_meta/2, put_meta/3]).
 
-%% Checkpoint API 已移除
-%% Checkpoint 现在通过 on_checkpoint 回调自动保存
-%% 用户可通过 beamai_memory API 直接访问 checkpoints
-
-%% Interrupt control API
+%% 中断控制 API
 -export([resume/2, abort/1]).
 
-%% Callback API
+%% 回调 API
 -export([set_callbacks/2, get_callbacks/1]).
 -export([emit_custom_event/3, emit_custom_event/4]).
 
@@ -72,499 +62,304 @@
 -export([get_middlewares/1, add_middleware/2, remove_middleware/2]).
 -export([set_middlewares/2]).
 
-%% Graph building API
+%% 状态导入/导出 API（进程模式）
+-export([export_state/1, import_state/2]).
+
+%%====================================================================
+%% 纯函数 API（委托给 beamai_agent_api）
+%%====================================================================
+-export([
+    run_once/2,
+    run_with_state/3,
+    create_state/1,
+    create_state/2
+]).
+
+%% 纯函数状态导入/导出
+-export([export_state_pure/1, import_state_pure/2]).
+
+%%====================================================================
+%% 图构建 API
+%%====================================================================
 -export([build_graph/1]).
 
-%% Coordinator API
+%%====================================================================
+%% 协调器 API
+%%====================================================================
 -export([start_pipeline/2, start_orchestrator/2]).
 
-%% gen_server callbacks (for backward compatibility)
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
-
 %%====================================================================
-%% Process API (delegates to beamai_agent_server)
+%% 进程 API 实现
 %%====================================================================
 
-%% @doc Start Graph Agent
+%% @doc 启动 Agent 进程
+%%
+%% 创建一个 gen_server 进程来管理 Agent 状态。
+%% 适用于需要长期运行的场景。
+%%
+%% @param Id Agent 唯一标识符
+%% @param Opts 配置选项
+%% @returns {ok, Pid} | {error, Reason}
 -spec start_link(binary(), map()) -> {ok, pid()} | {error, term()}.
 start_link(Id, Opts) ->
-    gen_server:start_link(?MODULE, {Id, Opts}, []).
+    beamai_agent_server:start_link(Id, Opts).
 
-%% @doc Stop Agent
+%% @doc 停止 Agent 进程
 -spec stop(pid()) -> ok.
 stop(Pid) ->
     beamai_agent_server:stop(Pid).
 
-%% @doc Run conversation
+%% @doc 执行对话
 -spec run(pid(), binary()) -> {ok, map()} | {error, term()}.
 run(Pid, Msg) ->
-    run(Pid, Msg, #{}).
+    beamai_agent_server:run(Pid, Msg).
 
-%% @doc Run conversation with options
+%% @doc 执行对话（带选项）
 -spec run(pid(), binary(), map()) -> {ok, map()} | {error, term()}.
 run(Pid, Msg, Opts) ->
-    Timeout = maps:get(timeout, Opts, 300000),
-    gen_server:call(Pid, {run, Msg, Opts}, Timeout).
+    beamai_agent_server:run(Pid, Msg, Opts).
 
-%% @doc Add tool to Agent
+%% @doc 添加工具
 -spec add_tool(pid(), map()) -> ok | {error, term()}.
 add_tool(Pid, Tool) ->
-    gen_server:call(Pid, {tool, add, Tool}).
+    beamai_agent_server:add_tool(Pid, Tool).
 
-%% @doc Remove tool from Agent
+%% @doc 移除工具
 -spec remove_tool(pid(), binary()) -> ok | {error, term()}.
 remove_tool(Pid, Name) ->
-    gen_server:call(Pid, {tool, remove, Name}).
+    beamai_agent_server:remove_tool(Pid, Name).
 
-%% @doc Set system prompt
+%% @doc 设置系统提示词
 -spec set_system_prompt(pid(), binary()) -> ok | {error, term()}.
 set_system_prompt(Pid, Prompt) ->
-    gen_server:call(Pid, {config, set_prompt, Prompt}).
+    beamai_agent_server:set_system_prompt(Pid, Prompt).
 
 %%====================================================================
-%% Scratchpad API
+%% 状态查询 API
 %%====================================================================
 
-%% @doc Get scratchpad steps
+%% @doc 获取 scratchpad（中间步骤记录）
 -spec get_scratchpad(pid()) -> [map()].
 get_scratchpad(Pid) ->
-    gen_server:call(Pid, {state, get_scratchpad}).
+    beamai_agent_server:get_scratchpad(Pid).
 
-%% @doc Clear scratchpad
+%% @doc 清空 scratchpad
 -spec clear_scratchpad(pid()) -> ok.
 clear_scratchpad(Pid) ->
-    gen_server:call(Pid, {state, clear_scratchpad}).
+    beamai_agent_server:clear_scratchpad(Pid).
 
-%%====================================================================
-%% Messages API
-%%====================================================================
-
-%% @doc Get conversation history
+%% @doc 获取对话历史
 -spec get_messages(pid()) -> [map()].
 get_messages(Pid) ->
-    gen_server:call(Pid, {state, get_messages}).
+    beamai_agent_server:get_messages(Pid).
 
-%% @doc Clear conversation history
+%% @doc 清空对话历史
 -spec clear_messages(pid()) -> ok.
 clear_messages(Pid) ->
-    gen_server:call(Pid, {state, clear_messages}).
+    beamai_agent_server:clear_messages(Pid).
 
 %%====================================================================
 %% Context API
 %%====================================================================
 
-%% @doc Get full context
+%% @doc 获取完整上下文
 -spec get_context(pid()) -> map().
 get_context(Pid) ->
-    gen_server:call(Pid, {context, get}).
+    beamai_agent_server:get_context(Pid).
 
-%% @doc Get context value
+%% @doc 获取上下文值
 -spec get_context(pid(), atom() | binary()) -> term() | undefined.
 get_context(Pid, Key) ->
     get_context(Pid, Key, undefined).
 
-%% @doc Get context value with default
+%% @doc 获取上下文值（带默认值）
 -spec get_context(pid(), atom() | binary(), term()) -> term().
 get_context(Pid, Key, Default) ->
-    Context = gen_server:call(Pid, {context, get}),
+    Context = beamai_agent_server:get_context(Pid),
     maps:get(Key, Context, Default).
 
-%% @doc Set entire context
+%% @doc 设置完整上下文
 -spec set_context(pid(), map()) -> ok.
 set_context(Pid, Context) when is_map(Context) ->
-    gen_server:call(Pid, {context, set, Context}).
+    beamai_agent_server:set_context(Pid, Context).
 
-%% @doc Update context (merge)
+%% @doc 更新上下文（合并）
 -spec update_context(pid(), map()) -> ok.
 update_context(Pid, Updates) when is_map(Updates) ->
-    gen_server:call(Pid, {context, update, Updates}).
+    beamai_agent_server:update_context(Pid, Updates).
 
-%% @doc Set single context value
+%% @doc 设置单个上下文值
 -spec put_context(pid(), atom() | binary(), term()) -> ok.
 put_context(Pid, Key, Value) ->
-    gen_server:call(Pid, {context, put, Key, Value}).
+    beamai_agent_server:put_context(Pid, Key, Value).
 
 %%====================================================================
-%% Meta API (进程级元数据，不参与对话)
+%% Meta API（进程级元数据，不参与对话）
 %%====================================================================
 
-%% @doc Get full meta
+%% @doc 获取完整元数据
 -spec get_meta(pid()) -> map().
 get_meta(Pid) ->
-    gen_server:call(Pid, {meta, get}).
+    beamai_agent_server:get_meta(Pid).
 
-%% @doc Get meta value
+%% @doc 获取元数据值
 -spec get_meta(pid(), atom() | binary()) -> term() | undefined.
 get_meta(Pid, Key) ->
     get_meta(Pid, Key, undefined).
 
-%% @doc Get meta value with default
+%% @doc 获取元数据值（带默认值）
 -spec get_meta(pid(), atom() | binary(), term()) -> term().
 get_meta(Pid, Key, Default) ->
-    Meta = gen_server:call(Pid, {meta, get}),
+    Meta = beamai_agent_server:get_meta(Pid),
     maps:get(Key, Meta, Default).
 
-%% @doc Set entire meta
+%% @doc 设置完整元数据
 -spec set_meta(pid(), map()) -> ok.
 set_meta(Pid, Meta) when is_map(Meta) ->
-    gen_server:call(Pid, {meta, set, Meta}).
+    beamai_agent_server:set_meta(Pid, Meta).
 
-%% @doc Set single meta value
+%% @doc 设置单个元数据值
 -spec put_meta(pid(), atom() | binary(), term()) -> ok.
 put_meta(Pid, Key, Value) ->
-    gen_server:call(Pid, {meta, put, Key, Value}).
+    beamai_agent_server:put_meta(Pid, Key, Value).
 
 %%====================================================================
-%% Interrupt Control API
+%% 中断控制 API
 %%====================================================================
 
-%% @doc Resume interrupted execution
+%% @doc 恢复中断的执行
 -spec resume(pid(), confirm | reject | {modify, term()}) -> ok | {error, term()}.
 resume(Pid, Action) ->
-    gen_server:call(Pid, {interrupt, resume, Action}, 60000).
+    beamai_agent_server:resume(Pid, Action).
 
-%% @doc Abort current execution
+%% @doc 中止当前执行
 -spec abort(pid()) -> ok.
 abort(Pid) ->
-    gen_server:call(Pid, {interrupt, abort}).
+    beamai_agent_server:abort(Pid).
 
 %%====================================================================
-%% Callback API
+%% 回调 API
 %%====================================================================
 
-%% @doc Set callback handlers
+%% @doc 设置回调处理器
 -spec set_callbacks(pid(), map()) -> ok.
 set_callbacks(Pid, CallbackOpts) ->
-    gen_server:call(Pid, {callback, set, CallbackOpts}).
+    beamai_agent_server:set_callbacks(Pid, CallbackOpts).
 
-%% @doc Get current callback config
+%% @doc 获取当前回调配置
 -spec get_callbacks(pid()) -> map().
 get_callbacks(Pid) ->
-    gen_server:call(Pid, {callback, get}).
+    beamai_agent_server:get_callbacks(Pid).
 
-%% @doc Emit custom event
+%% @doc 发送自定义事件
 -spec emit_custom_event(pid(), atom() | binary(), term()) -> ok.
 emit_custom_event(Pid, EventName, Data) ->
-    emit_custom_event(Pid, EventName, Data, #{}).
+    beamai_agent_server:emit_custom_event(Pid, EventName, Data).
 
-%% @doc Emit custom event with metadata
+%% @doc 发送自定义事件（带元数据）
 -spec emit_custom_event(pid(), atom() | binary(), term(), map()) -> ok.
 emit_custom_event(Pid, EventName, Data, Metadata) ->
-    gen_server:cast(Pid, {emit_custom_event, EventName, Data, Metadata}).
+    beamai_agent_server:emit_custom_event(Pid, EventName, Data, Metadata).
 
 %%====================================================================
 %% Middleware API
 %%====================================================================
 
-%% @doc Get current middlewares
+%% @doc 获取当前 middleware 列表
 -spec get_middlewares(pid()) -> [term()].
 get_middlewares(Pid) ->
-    gen_server:call(Pid, {middleware, get}).
+    beamai_agent_server:get_middlewares(Pid).
 
-%% @doc Add middleware
+%% @doc 添加 middleware
 -spec add_middleware(pid(), term()) -> ok | {error, term()}.
 add_middleware(Pid, MiddlewareSpec) ->
-    gen_server:call(Pid, {middleware, add, MiddlewareSpec}).
+    beamai_agent_server:add_middleware(Pid, MiddlewareSpec).
 
-%% @doc Remove middleware
+%% @doc 移除 middleware
 -spec remove_middleware(pid(), module()) -> ok | {error, term()}.
 remove_middleware(Pid, Module) ->
-    gen_server:call(Pid, {middleware, remove, Module}).
+    beamai_agent_server:remove_middleware(Pid, Module).
 
-%% @doc Set all middlewares
+%% @doc 设置所有 middleware
 -spec set_middlewares(pid(), [term()]) -> ok | {error, term()}.
 set_middlewares(Pid, Middlewares) ->
-    gen_server:call(Pid, {middleware, set, Middlewares}).
+    beamai_agent_server:set_middlewares(Pid, Middlewares).
 
 %%====================================================================
-%% Graph Building API
+%% 状态导入/导出 API（进程模式）
 %%====================================================================
 
-%% @doc Build Agent execution graph
--spec build_graph(map()) -> {ok, map()} | {error, term()}.
-build_graph(Opts) ->
-    beamai_agent_runner:build_graph(Opts).
+%% @doc 导出状态（用于外部持久化）
+%%
+%% 支持 pid（进程模式）或 #state{}（纯函数模式）。
+-spec export_state(pid() | #state{}) -> map().
+export_state(Pid) when is_pid(Pid) ->
+    beamai_agent_server:export_state(Pid);
+export_state(#state{} = State) ->
+    beamai_agent_api:export_state(State).
+
+%% @doc 导入状态
+%%
+%% 进程模式：传入 pid 和导出数据
+%% 纯函数模式：使用 import_state_pure/2
+-spec import_state(pid(), map()) -> ok.
+import_state(Pid, ExportedData) when is_pid(Pid) ->
+    beamai_agent_server:import_state(Pid, ExportedData).
 
 %%====================================================================
-%% Pure Function API (delegates to beamai_agent_api)
+%% 纯函数 API 实现
 %%====================================================================
 
-%% @doc Single execution (no state, recommended for single conversations)
+%% @doc 单次执行（无状态保留，推荐用于单轮对话）
 -spec run_once(map(), binary()) -> {ok, map()} | {error, term()}.
 run_once(Config, Message) ->
     beamai_agent_api:run_once(Config, Message).
 
-%% @doc Execute with state (multi-turn conversations)
+%% @doc 带状态执行（多轮对话）
 -spec run_with_state(#state{}, binary(), map()) ->
     {ok, map(), #state{}} | {error, term(), #state{}}.
 run_with_state(State, Message, Opts) ->
     beamai_agent_api:run_with_state(State, Message, Opts).
 
-%% @doc Create Agent state (auto-generated ID)
+%% @doc 创建 Agent 状态（自动生成 ID）
 -spec create_state(map()) -> {ok, #state{}} | {error, term()}.
 create_state(Config) ->
     beamai_agent_api:create_state(Config).
 
-%% @doc Create Agent state (specified ID)
+%% @doc 创建 Agent 状态（指定 ID）
 -spec create_state(binary(), map()) -> {ok, #state{}} | {error, term()}.
 create_state(Id, Config) ->
     beamai_agent_api:create_state(Id, Config).
 
-%% @doc Export state for external persistence
--spec export_state(pid() | #state{}) -> map().
-export_state(Pid) when is_pid(Pid) ->
-    gen_server:call(Pid, {state, export});
-export_state(#state{} = State) ->
+%% @doc 导出纯函数状态
+-spec export_state_pure(#state{}) -> map().
+export_state_pure(#state{} = State) ->
     beamai_agent_api:export_state(State).
 
-%% @doc Import state
--spec import_state(pid(), map()) -> ok;
-                  (map(), map()) -> {ok, #state{}} | {error, term()}.
-import_state(Pid, ExportedData) when is_pid(Pid) ->
-    gen_server:call(Pid, {state, import, ExportedData});
-import_state(ExportedData, Config) when is_map(ExportedData), is_map(Config) ->
+%% @doc 导入纯函数状态
+-spec import_state_pure(map(), map()) -> {ok, #state{}} | {error, term()}.
+import_state_pure(ExportedData, Config) ->
     beamai_agent_api:import_state(ExportedData, Config).
 
 %%====================================================================
-%% Coordinator API
+%% 图构建 API
 %%====================================================================
 
-%% @doc Start Pipeline coordinator
+%% @doc 构建 Agent 执行图
+-spec build_graph(map()) -> {ok, map()} | {error, term()}.
+build_graph(Opts) ->
+    beamai_agent_runner:build_graph(Opts).
+
+%%====================================================================
+%% 协调器 API
+%%====================================================================
+
+%% @doc 启动 Pipeline 协调器
 -spec start_pipeline(binary(), map()) -> {ok, pid()} | {error, term()}.
 start_pipeline(Id, Opts) ->
     beamai_coordinator:start_pipeline(Id, Opts).
 
-%% @doc Start Orchestrator coordinator
+%% @doc 启动 Orchestrator 协调器
 -spec start_orchestrator(binary(), map()) -> {ok, pid()} | {error, term()}.
 start_orchestrator(Id, Opts) ->
     beamai_coordinator:start_orchestrator(Id, Opts).
-
-%%====================================================================
-%% gen_server Callbacks (delegates to beamai_agent_server logic)
-%%====================================================================
-
-%% @doc Initialize
-init({Id, Opts}) ->
-    case beamai_agent_init:create_state(Id, Opts) of
-        {ok, State} -> {ok, State};
-        {error, Reason} -> {stop, Reason}
-    end.
-
-%% @doc Handle synchronous calls
-handle_call({run, Msg, Opts}, _From, State) ->
-    handle_run(Msg, Opts, State);
-
-handle_call({tool, add, Tool}, _From,
-            #state{config = #agent_config{tools = Tools, tool_handlers = Handlers} = Config} = State) ->
-    NewTools = [Tool | Tools],
-    NewHandlers = maps:merge(Handlers, beamai_nodes:build_tool_handlers([Tool])),
-    NewConfig = Config#agent_config{tools = NewTools, tool_handlers = NewHandlers},
-    handle_rebuild(State#state{config = NewConfig}, State);
-
-handle_call({tool, remove, Name}, _From,
-            #state{config = #agent_config{tools = Tools, tool_handlers = Handlers} = Config} = State) ->
-    NewTools = lists:filter(fun(#{name := ToolName}) -> ToolName =/= Name end, Tools),
-    NewHandlers = maps:remove(Name, Handlers),
-    NewConfig = Config#agent_config{tools = NewTools, tool_handlers = NewHandlers},
-    handle_rebuild(State#state{config = NewConfig}, State);
-
-handle_call({config, set_prompt, Prompt}, _From, #state{config = Config} = State) ->
-    NewConfig = Config#agent_config{system_prompt = Prompt},
-    handle_rebuild(State#state{config = NewConfig}, State);
-
-handle_call({state, get_scratchpad}, _From, #state{scratchpad = Pad} = State) ->
-    {reply, lists:reverse(Pad), State};
-
-handle_call({state, clear_scratchpad}, _From, State) ->
-    {reply, ok, State#state{scratchpad = []}};
-
-handle_call({state, get_messages}, _From, #state{messages = Msgs} = State) ->
-    {reply, Msgs, State};
-
-handle_call({state, clear_messages}, _From, State) ->
-    {reply, ok, State#state{messages = []}};
-
-handle_call({state, export}, _From, State) ->
-    Exported = #{
-        messages => State#state.messages,
-        full_messages => State#state.full_messages,
-        scratchpad => State#state.scratchpad,
-        context => State#state.context
-    },
-    {reply, Exported, State};
-
-handle_call({state, import, ExportedData}, _From, #state{context = CurrentCtx} = State) ->
-    Messages = maps:get(messages, ExportedData, []),
-    FullMessages = maps:get(full_messages, ExportedData, []),
-    Scratchpad = maps:get(scratchpad, ExportedData, []),
-    Context = maps:get(context, ExportedData, #{}),
-    MergedCtx = maps:merge(CurrentCtx, Context),
-    NewState = State#state{
-        messages = Messages,
-        full_messages = FullMessages,
-        scratchpad = Scratchpad,
-        context = MergedCtx
-    },
-    {reply, ok, NewState};
-
-handle_call({context, get}, _From, #state{context = Context} = State) ->
-    {reply, Context, State};
-
-handle_call({context, set, NewContext}, _From, State) ->
-    {reply, ok, State#state{context = NewContext}};
-
-handle_call({context, update, Updates}, _From, #state{context = Context} = State) ->
-    {reply, ok, State#state{context = maps:merge(Context, Updates)}};
-
-handle_call({context, put, Key, Value}, _From, #state{context = Context} = State) ->
-    {reply, ok, State#state{context = maps:put(Key, Value, Context)}};
-
-handle_call({meta, get}, _From, #state{config = #agent_config{meta = Meta}} = State) ->
-    {reply, Meta, State};
-
-handle_call({meta, set, NewMeta}, _From, #state{config = Config} = State) ->
-    NewConfig = Config#agent_config{meta = NewMeta},
-    {reply, ok, State#state{config = NewConfig}};
-
-handle_call({meta, put, Key, Value}, _From, #state{config = #agent_config{meta = Meta} = Config} = State) ->
-    NewConfig = Config#agent_config{meta = maps:put(Key, Value, Meta)},
-    {reply, ok, State#state{config = NewConfig}};
-
-%% Checkpoint handle_call 已移除
-%% Checkpoint 现在通过 on_checkpoint 回调自动保存
-%% 用户可通过 beamai_memory API 直接访问 checkpoints
-
-handle_call({interrupt, resume, Action}, _From, #state{pending_action = Pending} = State)
-  when Pending =/= undefined ->
-    NewState = State#state{pending_action = undefined},
-    case Action of
-        confirm -> {reply, ok, NewState};
-        reject -> {reply, ok, NewState};
-        {modify, _} -> {reply, ok, NewState};
-        _ -> {reply, {error, invalid_action}, State}
-    end;
-
-handle_call({interrupt, resume, _}, _From, State) ->
-    {reply, {error, no_pending_action}, State};
-
-handle_call({interrupt, abort}, _From, State) ->
-    {reply, ok, State#state{pending_action = undefined}};
-
-handle_call({callback, get}, _From, #state{config = #agent_config{callbacks = Callbacks}} = State) ->
-    {reply, beamai_agent_callbacks:to_map(Callbacks), State};
-
-handle_call({callback, set, CallbackOpts}, _From,
-            #state{config = #agent_config{callbacks = Callbacks} = Config} = State) ->
-    NewCallbacks = beamai_agent_callbacks:update(Callbacks, CallbackOpts),
-    NewConfig = Config#agent_config{callbacks = NewCallbacks},
-    {reply, ok, State#state{config = NewConfig}};
-
-handle_call({middleware, get}, _From, #state{config = #agent_config{middlewares = Middlewares}} = State) ->
-    {reply, Middlewares, State};
-
-handle_call({middleware, add, Spec}, _From, #state{config = #agent_config{middlewares = Middlewares}} = State) ->
-    handle_update_middlewares(Middlewares ++ [Spec], State);
-
-handle_call({middleware, remove, Module}, _From,
-            #state{config = #agent_config{middlewares = Middlewares}} = State) ->
-    NewMiddlewares = lists:filter(fun(Spec) ->
-        extract_middleware_module(Spec) =/= Module
-    end, Middlewares),
-    handle_update_middlewares(NewMiddlewares, State);
-
-handle_call({middleware, set, NewMiddlewares}, _From, State) ->
-    handle_update_middlewares(NewMiddlewares, State);
-
-handle_call(_Request, _From, State) ->
-    {reply, {error, unknown_request}, State}.
-
-%% @doc Handle asynchronous messages
-handle_cast({emit_custom_event, EventName, Data, Metadata},
-            #state{config = #agent_config{callbacks = Callbacks}} = State) ->
-    FullMetadata = maps:merge(beamai_agent_callbacks:build_metadata(State), Metadata),
-    beamai_agent_callbacks:invoke(on_custom_event, [EventName, Data, FullMetadata], Callbacks),
-    {noreply, State};
-
-handle_cast(_Msg, State) ->
-    {noreply, State}.
-
-%% @doc Handle other messages
-handle_info(_Info, State) ->
-    {noreply, State}.
-
-%% @doc Terminate callback
-terminate(_Reason, _State) ->
-    ok.
-
-%%====================================================================
-%% Internal Functions
-%%====================================================================
-
-%% @private Handle run request
-%%
-%% Checkpoint 保存现在通过 on_checkpoint 回调自动进行（在图执行层）
--spec handle_run(binary(), map(), #state{}) ->
-    {reply, {ok, map()} | {error, term()}, #state{}}.
-handle_run(Msg, Opts, #state{config = #agent_config{callbacks = Callbacks}} = State) ->
-    Metadata = beamai_agent_callbacks:build_metadata(State),
-
-    beamai_agent_callbacks:invoke(on_chain_start, [Msg, Metadata], Callbacks),
-
-    case beamai_agent_runner:execute(Msg, Opts, State) of
-        {ok, Result, NewState} ->
-            beamai_agent_callbacks:invoke(on_chain_end, [Result, Metadata],
-                                          NewState#state.config#agent_config.callbacks),
-            %% Checkpoint 已通过 on_checkpoint 回调自动保存
-            {reply, {ok, Result}, NewState};
-        {error, Reason, NewState} ->
-            beamai_agent_callbacks:invoke(on_chain_error, [Reason, Metadata],
-                                          NewState#state.config#agent_config.callbacks),
-            {reply, {error, Reason}, NewState}
-    end.
-
-%% @private Handle graph rebuild
--spec handle_rebuild(#state{}, #state{}) -> {reply, ok | {error, term()}, #state{}}.
-handle_rebuild(NewState, OldState) ->
-    case beamai_agent_runner:rebuild_graph(NewState) of
-        {ok, UpdatedState} -> {reply, ok, UpdatedState};
-        {error, Reason} -> {reply, {error, Reason}, OldState}
-    end.
-
-%% @private Handle middleware update
--spec handle_update_middlewares([term()], #state{}) ->
-    {reply, ok | {error, term()}, #state{}}.
-handle_update_middlewares(NewMiddlewares,
-                          #state{config = #agent_config{tools = Tools, system_prompt = Prompt,
-                                                         llm_config = LLMConfig, max_iterations = MaxIter,
-                                                         response_format = RF} = Config} = State) ->
-    NewChain = case NewMiddlewares of
-        [] -> undefined;
-        _ -> beamai_middleware_runner:init(NewMiddlewares)
-    end,
-
-    Opts = #{
-        tools => Tools,
-        system_prompt => Prompt,
-        llm => LLMConfig,
-        max_iterations => MaxIter,
-        response_format => RF,
-        middlewares => NewMiddlewares
-    },
-
-    case beamai_agent_runner:build_graph(Opts) of
-        {ok, NewGraph} ->
-            NewConfig = Config#agent_config{
-                middlewares = NewMiddlewares,
-                middleware_chain = NewChain,
-                graph = NewGraph
-            },
-            {reply, ok, State#state{config = NewConfig}};
-        {error, Reason} ->
-            {reply, {error, Reason}, State}
-    end.
-
-%% @private Extract middleware module from spec
--spec extract_middleware_module(term()) -> module().
-extract_middleware_module({Module, _Opts, _Priority}) -> Module;
-extract_middleware_module({Module, _Opts}) -> Module;
-extract_middleware_module(Module) when is_atom(Module) -> Module.
