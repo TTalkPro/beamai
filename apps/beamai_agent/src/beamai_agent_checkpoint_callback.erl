@@ -57,8 +57,24 @@ create_callback(#state{config = #agent_config{id = AgentId, name = AgentName}}, 
         PregelCheckpoint = maps:get(pregel_checkpoint, CheckpointData, #{}),
 
         %% StateData = global_state（直接存储 agent 状态）
-        %% global_state 已经包含 messages, full_messages, scratchpad, context 等
-        StateData = extract_graph_state(PregelCheckpoint),
+        %% 重要：使用 checkpoint_data.global_state 而不是 pregel_checkpoint.global_state
+        %% checkpoint_data.global_state 是最新的全局状态（已应用 deltas）
+        %% pregel_checkpoint.global_state 可能是旧的快照
+        StateData = maps:get(global_state, CheckpointData, extract_graph_state(PregelCheckpoint)),
+
+        %% DEBUG: 对比两个 global_state
+        PregelGlobalState = extract_graph_state(PregelCheckpoint),
+        PregelMsgs = get_messages_from_state(PregelGlobalState),
+        DirectMsgs = get_messages_from_state(StateData),
+        logger:info("[CHECKPOINT DEBUG] type=~p, superstep=~p",
+                    [CheckpointType, maps:get(superstep, CheckpointData, 0)]),
+        logger:info("[CHECKPOINT DEBUG] pregel_checkpoint.global_state.messages: ~p 条",
+                    [length(PregelMsgs)]),
+        logger:info("[CHECKPOINT DEBUG] checkpoint_data.global_state.messages: ~p 条",
+                    [length(DirectMsgs)]),
+        %% 打印消息角色
+        logger:info("[CHECKPOINT DEBUG] StateData messages roles: ~p",
+                    [[maps:get(role, M, maps:get(<<"role">>, M, unknown)) || M <- DirectMsgs]]),
 
         %% 构建配置
         Config = #{
@@ -105,3 +121,11 @@ create_callback(#state{config = #agent_config{id = AgentId, name = AgentName}}, 
 -spec extract_graph_state(map()) -> map().
 extract_graph_state(PregelCheckpoint) ->
     maps:get(global_state, PregelCheckpoint, #{}).
+
+%% @private 从状态中提取 messages（支持 atom 和 binary 键）
+-spec get_messages_from_state(map()) -> [map()].
+get_messages_from_state(State) ->
+    case maps:get(<<"messages">>, State, undefined) of
+        undefined -> maps:get(messages, State, []);
+        Msgs -> Msgs
+    end.

@@ -310,34 +310,38 @@ example_list_all_checkpoints(LLMConfig) ->
         {ok, Checkpoints} ->
             io:format("~n共找到 ~p 个 checkpoints~n~n", [length(Checkpoints)]),
 
+            %% 按 timestamp 排序（从旧到新）
+            SortedCheckpoints = lists:sort(
+                fun({CpA, _, _}, {CpB, _, _}) ->
+                    get_checkpoint_field(CpA, timestamp) =< get_checkpoint_field(CpB, timestamp)
+                end,
+                Checkpoints
+            ),
+
             %% 遍历并打印每个 checkpoint 的详情
             lists:foldl(fun({Cp, Meta, _Parent}, Index) ->
                 print_checkpoint_details(Index, Cp, Meta),
                 Index + 1
-            end, 1, Checkpoints),
+            end, 1, SortedCheckpoints),
 
-            %% 6. 演示加载最新 checkpoint（final 类型）的完整数据
-            %% 注意：第一个 checkpoint 通常是 initial 类型，还没有 LLM 回复
-            %% 最后一个 checkpoint 是 final 类型，包含完整的对话历史
-            case lists:reverse(Checkpoints) of
-                [{LastCp, _, _} | _] ->
-                    LastCpId = get_checkpoint_field(LastCp, id),
-                    io:format("~n" ++ string:copies("-", 60) ++ "~n"),
-                    io:format("加载最新 checkpoint (~s) 的完整数据:~n", [LastCpId]),
-                    io:format(string:copies("-", 60) ++ "~n"),
-                    %% 使用 load_checkpoint_tuple 获取完整信息（包括 metadata）
-                    case beamai_memory:load_checkpoint_tuple(Memory, #{
-                        thread_id => ThreadId,
-                        checkpoint_id => LastCpId
-                    }) of
-                        {ok, {LoadedCp, LoadedMeta, _}} ->
-                            print_checkpoint_data(LoadedCp, LoadedMeta);
-                        {error, LoadErr} ->
-                            io:format("加载失败: ~p~n", [LoadErr])
-                    end;
-                [] ->
-                    io:format("没有 checkpoint 可加载~n")
-            end;
+            %% 6. 演示加载最后 2 个 checkpoint 的完整数据
+            %% 按时间排序后，最后的 checkpoint 应该是 final 类型，包含 LLM 回复
+            Last2 = lists:nthtail(max(0, length(SortedCheckpoints) - 2), SortedCheckpoints),
+            lists:foreach(fun({Cp, _, _}) ->
+                CpId = get_checkpoint_field(Cp, id),
+                io:format("~n" ++ string:copies("-", 60) ++ "~n"),
+                io:format("加载 checkpoint (~s) 的完整数据:~n", [CpId]),
+                io:format(string:copies("-", 60) ++ "~n"),
+                case beamai_memory:load_checkpoint_tuple(Memory, #{
+                    thread_id => ThreadId,
+                    checkpoint_id => CpId
+                }) of
+                    {ok, {LoadedCp, LoadedMeta, _}} ->
+                        print_checkpoint_data(LoadedCp, LoadedMeta);
+                    {error, LoadErr} ->
+                        io:format("加载失败: ~p~n", [LoadErr])
+                end
+            end, Last2);
 
         {error, not_found} ->
             io:format("没有找到任何 checkpoints~n");

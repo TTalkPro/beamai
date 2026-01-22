@@ -149,7 +149,7 @@ start_sse_stream(Req0, Id, Params, State) ->
 
     %% 创建任务并异步执行
     Server = maps:get(a2a_server, State),
-    Message = maps:get(<<"message">>, Params, #{}),
+    _Message = maps:get(<<"message">>, Params, #{}),
 
     %% 发送初始事件
     send_sse_event(Req, <<"connected">>, #{<<"id">> => Id}),

@@ -127,6 +127,8 @@
     pending_activations :: [vertex_id()] | undefined,  %% 延迟提交的 activations
     %% 超步结果（用于 get_checkpoint_data 和重试）
     last_results     :: pregel_barrier:superstep_results() | undefined,
+    %% 计算配置（传递给 workers 的 config）
+    config           :: map(),                      %% 计算配置（包含 nodes 定义等）
     %% 状态标志
     initialized      :: boolean(),                  %% 是否已初始化 workers
     initial_returned :: boolean(),                  %% 是否已返回 initial checkpoint
@@ -213,6 +215,7 @@ init({Graph, ComputeFn, Opts}) ->
         pending_deltas = PendingDeltas,
         pending_activations = PendingActivations,
         last_results = undefined,
+        config = maps:get(config, Opts, #{}),  %% 存储计算配置
         initialized = false,
         initial_returned = false,
         halted = false
@@ -350,6 +353,7 @@ start_workers(#state{
     compute_fn = ComputeFn,
     num_workers = NumWorkers,
     global_state = GlobalState,
+    config = Config,
     restore_from = RestoreOpts
 } = State) ->
     %% 分区图
@@ -359,9 +363,9 @@ start_workers(#state{
     %% 获取恢复的顶点状态
     RestoredVertices = get_restore_vertices(RestoreOpts),
 
-    %% 启动 Worker（传入全局状态）
+    %% 启动 Worker（传入全局状态和计算配置）
     Workers = start_worker_processes(Partitions, ComputeFn, NumWorkers, NumVertices,
-                                      RestoredVertices, GlobalState),
+                                      RestoredVertices, GlobalState, Config),
 
     %% 广播 Worker PID 映射
     broadcast_worker_pids(Workers),
@@ -377,10 +381,11 @@ start_workers(#state{
                               pos_integer(),
                               non_neg_integer(),
                               #{vertex_id() => vertex()},
-                              graph_state:state()) ->
+                              graph_state:state(),
+                              map()) ->
     #{non_neg_integer() => pid()}.
 start_worker_processes(Partitions, ComputeFn, NumWorkers, NumVertices,
-                       RestoredVertices, GlobalState) ->
+                       RestoredVertices, GlobalState, Config) ->
     maps:fold(
         fun(WorkerId, WorkerGraph, Acc) ->
             %% 获取分区顶点
@@ -394,7 +399,8 @@ start_worker_processes(Partitions, ComputeFn, NumWorkers, NumVertices,
                 compute_fn => ComputeFn,
                 num_workers => NumWorkers,
                 num_vertices => NumVertices,
-                global_state => GlobalState
+                global_state => GlobalState,
+                config => Config  %% 传递计算配置给 Worker
             },
             {ok, Pid} = pregel_worker:start_link(WorkerId, Opts),
             Acc#{WorkerId => Pid}

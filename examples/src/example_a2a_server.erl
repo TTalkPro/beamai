@@ -42,6 +42,7 @@
 -module(example_a2a_server).
 
 -export([start/0, start/1, stop/0]).
+-export([example_custom_start/0]).  %% 自定义启动示例
 
 %% 默认配置
 -define(DEFAULT_PORT, 8080).
