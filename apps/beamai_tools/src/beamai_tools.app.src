@@ -9,12 +9,12 @@
     beamai_core
    ]},
   %% 可选依赖：通过 Adapter 模式解耦
-  %% - beamai_llm: 提供 llm_client (beamai_llm_adapter 默认实现)
+  %% - beamai_llm: 提供 beamai_chat_completion (beamai_llm_adapter 默认实现)
   %% - beamai_memory: 提供 beamai_conversation_buffer (beamai_buffer_adapter 默认实现)
   {optional_applications, [beamai_llm, beamai_memory]},
   {env,[
     %% LLM 适配器默认模块（实现 beamai_llm_behaviour）
-    %% {llm_module, llm_client},
+    %% {llm_module, beamai_chat_completion},
     %% Buffer 适配器默认模块（实现 beamai_buffer_behaviour）
     %% {buffer_module, beamai_conversation_buffer}
   ]},

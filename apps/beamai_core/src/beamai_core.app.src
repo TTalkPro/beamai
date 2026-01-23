@@ -1,7 +1,7 @@
 {application, beamai_core, [
     {description, "Agent Framework Core - Behaviours and Pure Functions"},
     {vsn, "0.1.0"},
-    {registered, [beamai_core_sup, beamai_http_pool, beamai_dispatch_pool]},
+    {registered, [beamai_core_sup, beamai_http_pool]},
     {mod, {beamai_core_app, []}},
     {applications, [
         kernel,
@@ -11,7 +11,7 @@
         hackney
     ]},
     %% Gun 作为可选依赖，用于 HTTP/2 支持
-    {optional_applications, [gun, poolboy]},
+    {optional_applications, [gun]},
     {env, [
         %% HTTP 后端配置（可选：beamai_http_hackney | beamai_http_gun）
         %% {http_backend, beamai_http_hackney}
@@ -40,30 +40,7 @@
         beamai_http,
         beamai_http_hackney,
         beamai_http_gun,
-        beamai_http_pool,
-        %% Graph Core
-        graph,
-        graph_builder,
-        graph_dsl,
-        graph_edge,
-        graph_node,
-        graph_runner,
-        graph_dispatch,
-        graph_command,
-        graph_state,
-        %% Pregel
-        pregel,
-        pregel_barrier,
-        pregel_graph,
-        pregel_master,
-        pregel_partition,
-        pregel_utils,
-        pregel_vertex,
-        pregel_worker,
-        pregel_dispatch_worker,
-        graph_compute,
-        %% Graph Patterns
-        graph_parallel_experts
+        beamai_http_pool
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

@@ -1,5 +1,13 @@
 -module(beamai).
 
+%% @doc BeamAI Kernel Facade API
+%%
+%% Top-level entry point for the Semantic Kernel architecture.
+%% Provides a simple, discoverable API for:
+%% - Building kernels with plugins and LLM services
+%% - Invoking functions and chat completions
+%% - Tool calling loops (LLM + function execution)
+
 %% Kernel
 -export([kernel/0, kernel/1]).
 
@@ -11,8 +19,8 @@
 %% Function
 -export([function/2, function/3]).
 
-%% Service
--export([add_chat/2, add_embedding/2]).
+%% Service (LLM)
+-export([add_llm/3, add_llm/2]).
 
 %% Filter
 -export([add_filter/2, add_filter/4]).
@@ -81,16 +89,29 @@ function(Name, Handler, Opts) ->
     beamai_function:new(Name, Handler, Opts).
 
 %%====================================================================
-%% Service
+%% Service (LLM)
 %%====================================================================
 
--spec add_chat(beamai_kernel:kernel(), map()) -> beamai_kernel:kernel().
-add_chat(Kernel, Config) ->
-    beamai_kernel:add_chat_completion(Kernel, Config).
+%% @doc Add LLM service by provider and options.
+%%
+%% Example:
+%%   K1 = beamai:add_llm(K0, anthropic, #{
+%%       model => <<"claude-sonnet-4-20250514">>,
+%%       api_key => os:getenv("ANTHROPIC_API_KEY")
+%%   })
+-spec add_llm(beamai_kernel:kernel(), beamai_chat_completion:provider(), map()) -> beamai_kernel:kernel().
+add_llm(Kernel, Provider, Opts) ->
+    LlmConfig = beamai_chat_completion:create(Provider, Opts),
+    beamai_kernel:add_service(Kernel, LlmConfig).
 
--spec add_embedding(beamai_kernel:kernel(), map()) -> beamai_kernel:kernel().
-add_embedding(Kernel, Config) ->
-    beamai_kernel:add_embedding(Kernel, Config).
+%% @doc Add LLM service with a pre-built config.
+%%
+%% Example:
+%%   LLM = beamai_chat_completion:create(openai, #{model => <<"gpt-4">>, api_key => Key}),
+%%   K1 = beamai:add_llm(K0, LLM)
+-spec add_llm(beamai_kernel:kernel(), beamai_chat_completion:config()) -> beamai_kernel:kernel().
+add_llm(Kernel, LlmConfig) ->
+    beamai_kernel:add_service(Kernel, LlmConfig).
 
 %%====================================================================
 %% Filter
@@ -121,22 +142,22 @@ invoke(Kernel, FuncName, Args) ->
 invoke(Kernel, FuncName, Args, Context) ->
     beamai_kernel:invoke(Kernel, FuncName, Args, Context).
 
--spec chat(beamai_kernel:kernel(), [beamai_context:message()]) ->
+-spec chat(beamai_kernel:kernel(), [map()]) ->
     {ok, map()} | {error, term()}.
 chat(Kernel, Messages) ->
     chat(Kernel, Messages, #{}).
 
--spec chat(beamai_kernel:kernel(), [beamai_context:message()], beamai_kernel:chat_opts()) ->
+-spec chat(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
     {ok, map()} | {error, term()}.
 chat(Kernel, Messages, Opts) ->
     beamai_kernel:invoke_chat(Kernel, Messages, Opts).
 
--spec chat_with_tools(beamai_kernel:kernel(), [beamai_context:message()]) ->
+-spec chat_with_tools(beamai_kernel:kernel(), [map()]) ->
     {ok, map()} | {error, term()}.
 chat_with_tools(Kernel, Messages) ->
     chat_with_tools(Kernel, Messages, #{}).
 
--spec chat_with_tools(beamai_kernel:kernel(), [beamai_context:message()], beamai_kernel:chat_opts()) ->
+-spec chat_with_tools(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
     {ok, map()} | {error, term()}.
 chat_with_tools(Kernel, Messages, Opts) ->
     beamai_kernel:invoke_chat_with_tools(Kernel, Messages, Opts).
@@ -162,9 +183,9 @@ functions(Kernel) ->
 tools(Kernel) ->
     beamai_kernel:get_tool_schemas(Kernel).
 
--spec tools(beamai_kernel:kernel(), openai | anthropic) -> [map()].
-tools(Kernel, Format) ->
-    beamai_kernel:get_tool_schemas(Kernel, Format).
+-spec tools(beamai_kernel:kernel(), openai | anthropic | atom()) -> [map()].
+tools(Kernel, Provider) ->
+    beamai_kernel:get_tool_schemas(Kernel, Provider).
 
 %%====================================================================
 %% Context

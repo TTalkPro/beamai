@@ -2,7 +2,7 @@
 %%% @doc LLM 客户端适配器
 %%%
 %%% 封装 LLM 客户端调用，支持运行时注入自定义实现。
-%%% 默认使用 llm_client (beamai_llm)，但可以通过配置替换。
+%%% 默认使用 beamai_chat_completion (beamai_llm)，但可以通过配置替换。
 %%%
 %%% 这使得 beamai_tools 不需要硬依赖 beamai_llm。
 %%%
@@ -10,19 +10,19 @@
 %%%
 %%% 1. Application 环境变量（全局配置）：
 %%% ```
-%%% application:set_env(beamai_tools, llm_module, my_llm_client).
+%%% application:set_env(beamai_tools, llm_module, my_beamai_chat_completion).
 %%% ```
 %%%
 %%% 2. 调用时传入（局部配置）：
 %%% ```
-%%% beamai_llm_adapter:chat(Config, Request, #{llm_module => my_llm_client}).
+%%% beamai_llm_adapter:chat(Config, Request, #{llm_module => my_beamai_chat_completion}).
 %%% ```
 %%%
 %%% == 自定义实现 ==
 %%%
 %%% 自定义模块需实现 beamai_llm_behaviour：
 %%% ```
-%%% -module(my_llm_client).
+%%% -module(my_beamai_chat_completion).
 %%% -behaviour(beamai_llm_behaviour).
 %%% -export([chat/2, is_valid_config/1]).
 %%% ```
@@ -63,7 +63,7 @@ chat(Config, Request) ->
 chat(Config, Request, Opts) ->
     Module = get_module(Opts),
     %% 提取 messages 和其他选项
-    %% llm_client:chat/3 期望 (Config, Messages, Opts)，其中 Messages 是列表
+    %% beamai_chat_completion:chat/3 期望 (Config, Messages, Opts)，其中 Messages 是列表
     Messages = maps:get(messages, Request, []),
     RequestOpts = maps:without([messages], Request),
     try
@@ -115,7 +115,7 @@ get_module() ->
 %% 优先级：
 %% 1. Opts 中的 llm_module
 %% 2. Application 环境变量 beamai_tools.llm_module
-%% 3. 默认值 llm_client
+%% 3. 默认值 beamai_chat_completion
 %%
 %% @param Opts 选项
 %% @returns 模块名
@@ -123,7 +123,7 @@ get_module() ->
 get_module(Opts) ->
     case maps:get(llm_module, Opts, undefined) of
         undefined ->
-            application:get_env(beamai_tools, llm_module, llm_client);
+            application:get_env(beamai_tools, llm_module, beamai_chat_completion);
         Module ->
             Module
     end.

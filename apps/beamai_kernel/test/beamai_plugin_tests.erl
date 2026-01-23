@@ -76,7 +76,7 @@ to_tool_schemas_openai_test() ->
     Schemas = beamai_plugin:to_tool_schemas(Plugin, openai),
     ?assertEqual(2, length(Schemas)),
     [S1 | _] = Schemas,
-    ?assertEqual(<<"function">>, maps:get(type, S1)).
+    ?assertEqual(<<"function">>, maps:get(<<"type">>, S1)).
 
 to_tool_schemas_anthropic_test() ->
     Funcs = [
@@ -87,8 +87,8 @@ to_tool_schemas_anthropic_test() ->
     Plugin = beamai_plugin:new(<<"web">>, Funcs),
     Schemas = beamai_plugin:to_tool_schemas(Plugin, anthropic),
     [S1 | _] = Schemas,
-    ?assert(maps:is_key(name, S1)),
-    ?assert(maps:is_key(input_schema, S1)).
+    ?assert(maps:is_key(<<"name">>, S1)),
+    ?assert(maps:is_key(<<"input_schema">>, S1)).
 
 %%====================================================================
 %% from_module/1 Tests

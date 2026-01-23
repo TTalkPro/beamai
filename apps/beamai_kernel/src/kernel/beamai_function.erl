@@ -4,6 +4,7 @@
 -export([new/2, new/3]).
 -export([validate/1]).
 -export([invoke/2, invoke/3]).
+-export([to_tool_spec/1]).
 -export([to_tool_schema/1, to_tool_schema/2]).
 -export([get_name/1, get_full_name/1]).
 
@@ -28,8 +29,7 @@
     fun((args()) -> function_result())
     | fun((args(), beamai_context:t()) -> function_result())
     | {module(), atom()}
-    | {module(), atom(), [term()]}
-    | {service, service_type(), map()}.
+    | {module(), atom(), [term()]}.
 
 -type function_result() ::
     {ok, term()}
@@ -58,7 +58,6 @@
 }.
 
 -type filter_ref() :: binary() | atom().
--type service_type() :: chat_completion | embedding | atom().
 
 %%====================================================================
 %% API
@@ -73,7 +72,7 @@ new(Name, Handler, Opts) ->
     maps:merge(Opts, #{name => Name, handler => Handler}).
 
 -spec validate(function_def()) -> ok | {error, [term()]}.
-validate(#{name := Name, handler := Handler} = _FuncDef) ->
+validate(#{name := Name, handler := Handler}) ->
     Errors = lists:flatten([
         validate_name(Name),
         validate_handler(Handler)
@@ -95,30 +94,60 @@ invoke(#{handler := Handler} = FuncDef, Args, Context) ->
     RetryConf = maps:get(retry, FuncDef, #{max => 0, delay => 0}),
     invoke_with_retry(Handler, Args, Context, RetryConf, Timeout).
 
+%% @doc Convert function_def to unified tool spec
+-spec to_tool_spec(function_def()) -> map().
+to_tool_spec(FuncDef) ->
+    #{
+        name => full_name(FuncDef),
+        description => maps:get(description, FuncDef, <<"">>),
+        parameters => build_json_schema(maps:get(parameters, FuncDef, #{}))
+    }.
+
+%% @doc Convert to provider-specific tool schema
 -spec to_tool_schema(function_def()) -> map().
 to_tool_schema(FuncDef) ->
     to_tool_schema(FuncDef, openai).
 
--spec to_tool_schema(function_def(), openai | anthropic) -> map().
-to_tool_schema(#{name := _Name} = FuncDef, openai) ->
-    Description = maps:get(description, FuncDef, <<"">>),
-    Parameters = build_json_schema(maps:get(parameters, FuncDef, #{})),
+-spec to_tool_schema(function_def(), openai | anthropic | atom()) -> map().
+to_tool_schema(FuncDef, Provider) ->
+    ToolSpec = to_tool_spec(FuncDef),
+    tool_spec_to_provider(ToolSpec, Provider).
+
+%%--------------------------------------------------------------------
+%% Provider-specific schema conversion
+%%--------------------------------------------------------------------
+
+tool_spec_to_provider(ToolSpec, anthropic) ->
+    to_anthropic_schema(ToolSpec);
+tool_spec_to_provider(ToolSpec, _) ->
+    %% OpenAI format (also used by ollama, zhipu, deepseek, etc.)
+    to_openai_schema(ToolSpec).
+
+to_openai_schema(#{name := Name, description := Desc, parameters := Params}) ->
     #{
-        type => <<"function">>,
-        function => #{
-            name => full_name(FuncDef),
-            description => Description,
-            parameters => Parameters
+        <<"type">> => <<"function">>,
+        <<"function">> => #{
+            <<"name">> => Name,
+            <<"description">> => Desc,
+            <<"parameters">> => Params
         }
     };
-to_tool_schema(#{name := _Name} = FuncDef, anthropic) ->
-    Description = maps:get(description, FuncDef, <<"">>),
-    Parameters = build_json_schema(maps:get(parameters, FuncDef, #{})),
+to_openai_schema(#{name := Name, description := Desc}) ->
+    to_openai_schema(#{name => Name, description => Desc, parameters => default_params()});
+to_openai_schema(#{name := Name}) ->
+    to_openai_schema(#{name => Name, description => <<"Tool: ", Name/binary>>, parameters => default_params()}).
+
+to_anthropic_schema(#{name := Name, description := Desc, parameters := Params}) ->
     #{
-        name => full_name(FuncDef),
-        description => Description,
-        input_schema => Parameters
-    }.
+        <<"name">> => Name,
+        <<"description">> => Desc,
+        <<"input_schema">> => Params
+    };
+to_anthropic_schema(#{name := Name, description := Desc}) ->
+    to_anthropic_schema(#{name => Name, description => Desc, parameters => default_params()}).
+
+default_params() ->
+    #{type => object, properties => #{}, required => []}.
 
 -spec get_name(function_def()) -> binary().
 get_name(#{name := Name}) -> Name.
@@ -142,8 +171,7 @@ validate_handler(Fun) when is_function(Fun, 1) -> [];
 validate_handler(Fun) when is_function(Fun, 2) -> [];
 validate_handler({M, F}) when is_atom(M), is_atom(F) -> [];
 validate_handler({M, F, A}) when is_atom(M), is_atom(F), is_list(A) -> [];
-validate_handler({service, Type, Config}) when is_atom(Type), is_map(Config) -> [];
-validate_handler(_) -> [{invalid_handler, <<"handler must be fun/1, fun/2, {M,F}, {M,F,A}, or {service, Type, Config}">>}].
+validate_handler(_) -> [{invalid_handler, <<"handler must be fun/1, fun/2, {M,F}, or {M,F,A}">>}].
 
 invoke_with_retry(Handler, Args, Context, #{max := Max, delay := Delay}, Timeout) ->
     invoke_with_retry(Handler, Args, Context, Max, Delay, Timeout).
@@ -172,17 +200,15 @@ call_handler({M, F}, Args, Context, _Timeout) ->
     catch Class:Reason:Stack ->
         {error, #{class => Class, reason => Reason, stacktrace => Stack}}
     end;
-call_handler({service, _Type, _Config}, _Args, _Context, _Timeout) ->
-    %% Service delegation handled at kernel level
-    {error, service_delegation_not_implemented};
 call_handler({M, F, ExtraArgs}, Args, Context, _Timeout) ->
     try erlang:apply(M, F, [Args, Context | ExtraArgs])
     catch Class:Reason:Stack ->
         {error, #{class => Class, reason => Reason, stacktrace => Stack}}
     end.
 
+%% Convert our param_spec format to JSON Schema format
 build_json_schema(Params) when map_size(Params) =:= 0 ->
-    #{type => <<"object">>, properties => #{}};
+    #{type => object, properties => #{}, required => []};
 build_json_schema(Params) ->
     Properties = maps:fold(fun(K, Spec, Acc) ->
         Key = to_binary(K),
@@ -193,14 +219,10 @@ build_json_schema(Params) ->
     (_, _, Acc) ->
         Acc
     end, [], Params),
-    Schema = #{type => <<"object">>, properties => Properties},
-    case Required of
-        [] -> Schema;
-        _ -> Schema#{required => Required}
-    end.
+    #{type => object, properties => Properties, required => Required}.
 
 param_to_json_schema(#{type := Type} = Spec) ->
-    S0 = #{type => type_to_json(Type)},
+    S0 = #{type => type_to_schema(Type)},
     S1 = case maps:find(description, Spec) of
         {ok, D} -> S0#{description => D};
         error -> S0
@@ -221,13 +243,13 @@ param_to_json_schema(#{type := Type} = Spec) ->
             S3
     end.
 
-type_to_json(string) -> <<"string">>;
-type_to_json(integer) -> <<"integer">>;
-type_to_json(float) -> <<"number">>;
-type_to_json(boolean) -> <<"boolean">>;
-type_to_json(array) -> <<"array">>;
-type_to_json(object) -> <<"object">>;
-type_to_json(Other) -> atom_to_binary(Other, utf8).
+type_to_schema(string) -> string;
+type_to_schema(integer) -> integer;
+type_to_schema(float) -> number;
+type_to_schema(boolean) -> boolean;
+type_to_schema(array) -> array;
+type_to_schema(object) -> object;
+type_to_schema(Other) -> Other.
 
 to_binary(A) when is_atom(A) -> atom_to_binary(A, utf8);
 to_binary(B) when is_binary(B) -> B.

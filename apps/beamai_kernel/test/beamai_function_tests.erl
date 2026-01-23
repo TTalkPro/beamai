@@ -40,10 +40,6 @@ validate_valid_mfa_extra_test() ->
     F = beamai_function:new(<<"test">>, {erlang, apply, []}),
     ?assertEqual(ok, beamai_function:validate(F)).
 
-validate_valid_service_test() ->
-    F = beamai_function:new(<<"test">>, {service, chat_completion, #{}}),
-    ?assertEqual(ok, beamai_function:validate(F)).
-
 validate_missing_fields_test() ->
     ?assertMatch({error, _}, beamai_function:validate(#{})).
 
@@ -94,10 +90,10 @@ invoke_with_context_update_test() ->
     ?assertMatch({ok, 1, _}, beamai_function:invoke(F, #{}, beamai_context:new())).
 
 %%====================================================================
-%% to_tool_schema/1,2 Tests
+%% to_tool_spec/1 Tests
 %%====================================================================
 
-to_tool_schema_openai_test() ->
+to_tool_spec_test() ->
     F = beamai_function:new(<<"search">>, fun(_) -> {ok, []} end, #{
         description => <<"Search the web">>,
         parameters => #{
@@ -105,17 +101,40 @@ to_tool_schema_openai_test() ->
             limit => #{type => integer, default => 10}
         }
     }),
-    Schema = beamai_function:to_tool_schema(F, openai),
-    ?assertEqual(<<"function">>, maps:get(type, Schema)),
-    Func = maps:get(function, Schema),
-    ?assertEqual(<<"search">>, maps:get(name, Func)),
-    ?assertEqual(<<"Search the web">>, maps:get(description, Func)),
-    Params = maps:get(parameters, Func),
-    ?assertEqual(<<"object">>, maps:get(type, Params)),
+    Spec = beamai_function:to_tool_spec(F),
+    ?assertEqual(<<"search">>, maps:get(name, Spec)),
+    ?assertEqual(<<"Search the web">>, maps:get(description, Spec)),
+    Params = maps:get(parameters, Spec),
+    ?assertEqual(object, maps:get(type, Params)),
     Props = maps:get(properties, Params),
     ?assert(maps:is_key(<<"query">>, Props)),
     ?assert(maps:is_key(<<"limit">>, Props)),
     ?assertEqual([<<"query">>], maps:get(required, Params)).
+
+to_tool_spec_with_plugin_test() ->
+    F = beamai_function:new(<<"search">>, fun(_) -> {ok, []} end, #{
+        plugin => <<"web">>,
+        description => <<"Search">>
+    }),
+    Spec = beamai_function:to_tool_spec(F),
+    ?assertEqual(<<"web.search">>, maps:get(name, Spec)).
+
+%%====================================================================
+%% to_tool_schema/1,2 Tests
+%%====================================================================
+
+to_tool_schema_openai_test() ->
+    F = beamai_function:new(<<"search">>, fun(_) -> {ok, []} end, #{
+        description => <<"Search the web">>,
+        parameters => #{
+            query => #{type => string, required => true}
+        }
+    }),
+    Schema = beamai_function:to_tool_schema(F, openai),
+    ?assertEqual(<<"function">>, maps:get(<<"type">>, Schema)),
+    Func = maps:get(<<"function">>, Schema),
+    ?assertEqual(<<"search">>, maps:get(<<"name">>, Func)),
+    ?assertEqual(<<"Search the web">>, maps:get(<<"description">>, Func)).
 
 to_tool_schema_anthropic_test() ->
     F = beamai_function:new(<<"search">>, fun(_) -> {ok, []} end, #{
@@ -125,18 +144,9 @@ to_tool_schema_anthropic_test() ->
         }
     }),
     Schema = beamai_function:to_tool_schema(F, anthropic),
-    ?assertEqual(<<"search">>, maps:get(name, Schema)),
-    ?assertEqual(<<"Search">>, maps:get(description, Schema)),
-    ?assert(maps:is_key(input_schema, Schema)).
-
-to_tool_schema_with_plugin_test() ->
-    F = beamai_function:new(<<"search">>, fun(_) -> {ok, []} end, #{
-        plugin => <<"web">>,
-        description => <<"Search">>
-    }),
-    Schema = beamai_function:to_tool_schema(F, openai),
-    Func = maps:get(function, Schema),
-    ?assertEqual(<<"web.search">>, maps:get(name, Func)).
+    ?assertEqual(<<"search">>, maps:get(<<"name">>, Schema)),
+    ?assertEqual(<<"Search">>, maps:get(<<"description">>, Schema)),
+    ?assert(maps:is_key(<<"input_schema">>, Schema)).
 
 %%====================================================================
 %% get_name/1, get_full_name/1 Tests

@@ -2,8 +2,8 @@
     {description, "BeamAI Kernel - Semantic Kernel Architecture for Erlang"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib, jsx, hackney]},
-    {optional_applications, []},
+    {applications, [kernel, stdlib, jsx, beamai_core, beamai_llm]},
+    {optional_applications, [beamai_tools]},
     {env, []},
     {modules, [
         beamai,
@@ -13,14 +13,7 @@
         beamai_context,
         beamai_filter,
         beamai_result,
-        beamai_service,
-        beamai_chat_completion,
-        beamai_prompt,
-        beamai_connector,
-        beamai_connector_openai,
-        beamai_connector_anthropic,
-        beamai_connector_zhipu,
-        beamai_connector_ollama
+        beamai_prompt
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

@@ -4,9 +4,7 @@
 -export([new/0, new/1]).
 -export([add_plugin/2, add_plugin/3]).
 -export([add_plugin_from_module/2]).
--export([add_service/3]).
--export([add_chat_completion/2]).
--export([add_embedding/2]).
+-export([add_service/2]).
 -export([add_filter/2]).
 
 %% Invoke API
@@ -17,27 +15,19 @@
 %% Query API
 -export([get_function/2]).
 -export([list_functions/1]).
+-export([get_tool_specs/1]).
 -export([get_tool_schemas/1, get_tool_schemas/2]).
--export([get_service/2]).
+-export([get_service/1]).
 
 %% Types
--export_type([kernel/0, service_type/0, service_config/0, kernel_settings/0,
-              chat_opts/0]).
+-export_type([kernel/0, kernel_settings/0, chat_opts/0]).
 
 -type kernel() :: #{
     '__kernel__' := true,
     plugins := #{binary() => beamai_plugin:plugin_def()},
-    services := #{service_type() => service_config()},
+    llm_config := beamai_chat_completion:config() | undefined,
     filters := [beamai_filter:filter_def()],
     settings := kernel_settings()
-}.
-
--type service_type() :: chat_completion | embedding | memory | atom().
-
--type service_config() :: #{
-    type := service_type(),
-    connector := module(),
-    config := map()
 }.
 
 -type kernel_settings() :: #{
@@ -47,12 +37,8 @@
 }.
 
 -type chat_opts() :: #{
-    model => binary(),
-    temperature => float(),
-    max_tokens => pos_integer(),
     tools => [map()],
     tool_choice => auto | none | required,
-    stream => boolean(),
     max_tool_iterations => pos_integer(),
     atom() => term()
 }.
@@ -70,7 +56,7 @@ new(Settings) ->
     #{
         '__kernel__' => true,
         plugins => #{},
-        services => #{},
+        llm_config => undefined,
         filters => [],
         settings => Settings
     }.
@@ -91,27 +77,10 @@ add_plugin_from_module(Kernel, Module) ->
         {error, Reason} -> erlang:error({plugin_load_failed, Module, Reason})
     end.
 
--spec add_service(kernel(), service_type(), service_config()) -> kernel().
-add_service(#{services := Services} = Kernel, Type, Config) ->
-    Kernel#{services => Services#{Type => Config#{type => Type}}}.
-
--spec add_chat_completion(kernel(), map()) -> kernel().
-add_chat_completion(Kernel, Config) ->
-    ServiceConfig = #{
-        type => chat_completion,
-        connector => maps:get(connector, Config),
-        config => maps:without([connector], Config)
-    },
-    add_service(Kernel, chat_completion, ServiceConfig).
-
--spec add_embedding(kernel(), map()) -> kernel().
-add_embedding(Kernel, Config) ->
-    ServiceConfig = #{
-        type => embedding,
-        connector => maps:get(connector, Config),
-        config => maps:without([connector], Config)
-    },
-    add_service(Kernel, embedding, ServiceConfig).
+%% @doc Add LLM service configuration (created via beamai_chat_completion:create/2)
+-spec add_service(kernel(), beamai_chat_completion:config()) -> kernel().
+add_service(Kernel, LlmConfig) ->
+    Kernel#{llm_config => LlmConfig}.
 
 -spec add_filter(kernel(), beamai_filter:filter_def()) -> kernel().
 add_filter(#{filters := Filters} = Kernel, Filter) ->
@@ -150,16 +119,16 @@ invoke(#{filters := Filters} = Kernel, FuncName, Args, Context0) ->
             {error, {function_not_found, FuncName}}
     end.
 
--spec invoke_chat(kernel(), [beamai_context:message()], chat_opts()) ->
+-spec invoke_chat(kernel(), [map()], chat_opts()) ->
     {ok, map()} | {error, term()}.
 invoke_chat(Kernel, Messages, Opts) ->
-    case get_service(Kernel, chat_completion) of
-        {ok, ServiceConfig} ->
+    case get_service(Kernel) of
+        {ok, LlmConfig} ->
             #{filters := Filters} = Kernel,
             Context = beamai_context:new(),
             case beamai_filter:apply_pre_chat_filters(Filters, Messages, Context) of
                 {ok, FilteredMsgs, FilteredCtx} ->
-                    Result = beamai_chat_completion:chat(ServiceConfig, FilteredMsgs, Opts),
+                    Result = beamai_chat_completion:chat(LlmConfig, FilteredMsgs, Opts),
                     case Result of
                         {ok, Response} ->
                             case beamai_filter:apply_post_chat_filters(Filters, Response, FilteredCtx) of
@@ -173,21 +142,21 @@ invoke_chat(Kernel, Messages, Opts) ->
                     Err
             end;
         error ->
-            {error, no_chat_completion_service}
+            {error, no_llm_service}
     end.
 
--spec invoke_chat_with_tools(kernel(), [beamai_context:message()], chat_opts()) ->
+-spec invoke_chat_with_tools(kernel(), [map()], chat_opts()) ->
     {ok, map()} | {error, term()}.
 invoke_chat_with_tools(Kernel, Messages, Opts) ->
-    ToolSchemas = get_tool_schemas(Kernel),
-    ChatOpts = Opts#{tools => ToolSchemas, tool_choice => maps:get(tool_choice, Opts, auto)},
-    case get_service(Kernel, chat_completion) of
-        {ok, ServiceConfig} ->
+    ToolSpecs = get_tool_specs(Kernel),
+    ChatOpts = Opts#{tools => ToolSpecs, tool_choice => maps:get(tool_choice, Opts, auto)},
+    case get_service(Kernel) of
+        {ok, LlmConfig} ->
             MaxIter = maps:get(max_tool_iterations, Opts,
                 maps:get(max_tool_iterations, maps:get(settings, Kernel, #{}), 10)),
-            tool_calling_loop(Kernel, Messages, ChatOpts, ServiceConfig, MaxIter);
+            tool_calling_loop(Kernel, LlmConfig, Messages, ChatOpts, MaxIter);
         error ->
-            {error, no_chat_completion_service}
+            {error, no_llm_service}
     end.
 
 %%====================================================================
@@ -203,7 +172,6 @@ get_function(#{plugins := Plugins}, FuncName) ->
                 error -> error
             end;
         [_Name] ->
-            %% Search all plugins
             search_all_plugins(Plugins, FuncName)
     end.
 
@@ -213,33 +181,40 @@ list_functions(#{plugins := Plugins}) ->
         Acc ++ beamai_plugin:list_functions(Plugin)
     end, [], Plugins).
 
+%% @doc Get tool specs in unified format
+-spec get_tool_specs(kernel()) -> [map()].
+get_tool_specs(Kernel) ->
+    Functions = list_functions(Kernel),
+    [beamai_function:to_tool_spec(F) || F <- Functions].
+
+%% @doc Get tool schemas in provider-specific format
 -spec get_tool_schemas(kernel()) -> [map()].
 get_tool_schemas(Kernel) ->
     get_tool_schemas(Kernel, openai).
 
--spec get_tool_schemas(kernel(), openai | anthropic) -> [map()].
-get_tool_schemas(#{plugins := Plugins}, Format) ->
-    maps:fold(fun(_Name, Plugin, Acc) ->
-        Acc ++ beamai_plugin:to_tool_schemas(Plugin, Format)
-    end, [], Plugins).
+-spec get_tool_schemas(kernel(), openai | anthropic | atom()) -> [map()].
+get_tool_schemas(Kernel, Provider) ->
+    Functions = list_functions(Kernel),
+    [beamai_function:to_tool_schema(F, Provider) || F <- Functions].
 
--spec get_service(kernel(), service_type()) -> {ok, service_config()} | error.
-get_service(#{services := Services}, Type) ->
-    maps:find(Type, Services).
+%% @doc Get the LLM service config
+-spec get_service(kernel()) -> {ok, beamai_chat_completion:config()} | error.
+get_service(#{llm_config := undefined}) -> error;
+get_service(#{llm_config := Config}) -> {ok, Config}.
 
 %%====================================================================
 %% Internal - Tool Calling Loop
 %%====================================================================
 
-tool_calling_loop(_Kernel, _Msgs, _Opts, _Svc, 0) ->
+tool_calling_loop(_Kernel, _LlmConfig, _Msgs, _Opts, 0) ->
     {error, max_tool_iterations};
-tool_calling_loop(Kernel, Msgs, Opts, Svc, N) ->
-    case beamai_chat_completion:chat(Svc, Msgs, Opts) of
+tool_calling_loop(Kernel, LlmConfig, Msgs, Opts, N) ->
+    case beamai_chat_completion:chat(LlmConfig, Msgs, Opts) of
         {ok, #{tool_calls := TCs} = _Response} when is_list(TCs), TCs =/= [] ->
             ToolResults = execute_tool_calls(Kernel, TCs),
             AssistantMsg = #{role => assistant, content => null, tool_calls => TCs},
             NewMsgs = Msgs ++ [AssistantMsg | ToolResults],
-            tool_calling_loop(Kernel, NewMsgs, Opts, Svc, N - 1);
+            tool_calling_loop(Kernel, LlmConfig, NewMsgs, Opts, N - 1);
         {ok, Response} ->
             {ok, Response};
         {error, _} = Err ->
@@ -247,8 +222,10 @@ tool_calling_loop(Kernel, Msgs, Opts, Svc, N) ->
     end.
 
 execute_tool_calls(Kernel, ToolCalls) ->
-    lists:map(fun(#{id := Id, function := #{name := Name, arguments := ArgsRaw}}) ->
-        Args = parse_tool_args(ArgsRaw),
+    lists:map(fun(TC) ->
+        Id = get_tool_call_id(TC),
+        Name = get_tool_call_name(TC),
+        Args = get_tool_call_args(TC),
         ResultContent = case invoke(Kernel, Name, Args) of
             {ok, Value} -> encode_result(Value);
             {ok, Value, _Ctx} -> encode_result(Value);
@@ -257,13 +234,27 @@ execute_tool_calls(Kernel, ToolCalls) ->
         #{role => tool, tool_call_id => Id, content => ResultContent}
     end, ToolCalls).
 
-parse_tool_args(Args) when is_map(Args) -> Args;
-parse_tool_args(Args) when is_binary(Args) ->
-    case jsx:is_json(Args) of
-        true -> jsx:decode(Args, [return_maps, {labels, attempt_atom}]);
-        false -> #{raw => Args}
+%% Handle both atom-key and binary-key tool_call formats
+get_tool_call_id(#{id := Id}) -> Id;
+get_tool_call_id(#{<<"id">> := Id}) -> Id;
+get_tool_call_id(_) -> <<"unknown">>.
+
+get_tool_call_name(#{function := #{name := Name}}) -> Name;
+get_tool_call_name(#{<<"function">> := #{<<"name">> := Name}}) -> Name;
+get_tool_call_name(#{name := Name}) -> Name;
+get_tool_call_name(_) -> <<"unknown">>.
+
+get_tool_call_args(#{function := #{arguments := Args}}) -> parse_args(Args);
+get_tool_call_args(#{<<"function">> := #{<<"arguments">> := Args}}) -> parse_args(Args);
+get_tool_call_args(#{arguments := Args}) -> parse_args(Args);
+get_tool_call_args(_) -> #{}.
+
+parse_args(Args) when is_map(Args) -> Args;
+parse_args(Args) when is_binary(Args) ->
+    try jsx:decode(Args, [return_maps, {labels, attempt_atom}])
+    catch _:_ -> #{raw => Args}
     end;
-parse_tool_args(_) -> #{}.
+parse_args(_) -> #{}.
 
 encode_result(Value) when is_binary(Value) -> Value;
 encode_result(Value) when is_map(Value) ->

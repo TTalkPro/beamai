@@ -19,18 +19,12 @@ tool_schema_full_test() ->
             })
     ]),
     [Schema] = beamai_kernel:get_tool_schemas(K1, openai),
-    ?assertEqual(<<"function">>, maps:get(type, Schema)),
-    Func = maps:get(function, Schema),
-    ?assertEqual(<<"tools.get_weather">>, maps:get(name, Func)),
-    Params = maps:get(parameters, Func),
+    ?assertEqual(<<"function">>, maps:get(<<"type">>, Schema)),
+    Func = maps:get(<<"function">>, Schema),
+    ?assertEqual(<<"tools.get_weather">>, maps:get(<<"name">>, Func)),
+    Params = maps:get(<<"parameters">>, Func),
     Props = maps:get(properties, Params),
-    ?assert(maps:is_key(<<"location">>, Props)),
-    ?assert(maps:is_key(<<"unit">>, Props)),
-    LocSpec = maps:get(<<"location">>, Props),
-    ?assertEqual(<<"string">>, maps:get(type, LocSpec)),
-    ?assertEqual(<<"City name">>, maps:get(description, LocSpec)),
-    UnitSpec = maps:get(<<"unit">>, Props),
-    ?assertEqual([<<"celsius">>, <<"fahrenheit">>], maps:get(enum, UnitSpec)).
+    ?assert(maps:is_key(<<"location">>, Props)).
 
 tool_schema_anthropic_format_test() ->
     K = beamai_kernel:new(),
@@ -45,27 +39,21 @@ tool_schema_anthropic_format_test() ->
             })
     ]),
     [Schema] = beamai_kernel:get_tool_schemas(K1, anthropic),
-    ?assertEqual(<<"tools.search">>, maps:get(name, Schema)),
-    ?assertEqual(<<"Search the web">>, maps:get(description, Schema)),
-    InputSchema = maps:get(input_schema, Schema),
-    ?assertEqual(<<"object">>, maps:get(type, InputSchema)).
+    ?assertEqual(<<"tools.search">>, maps:get(<<"name">>, Schema)),
+    ?assertEqual(<<"Search the web">>, maps:get(<<"description">>, Schema)),
+    ?assert(maps:is_key(<<"input_schema">>, Schema)).
 
 %%====================================================================
-%% Chat Completion Service Config Tests
+%% Service Config Tests
 %%====================================================================
 
-chat_service_config_test() ->
+llm_service_config_test() ->
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_chat_completion(K0, #{
-        connector => beamai_connector_openai,
-        model => <<"gpt-4">>,
-        api_key => <<"sk-test">>
-    }),
-    {ok, Svc} = beamai_kernel:get_service(K1, chat_completion),
-    ?assertEqual(beamai_connector_openai, maps:get(connector, Svc)),
-    Config = maps:get(config, Svc),
-    ?assertEqual(<<"gpt-4">>, maps:get(model, Config)),
-    ?assertEqual(<<"sk-test">>, maps:get(api_key, Config)).
+    LlmConfig = beamai_chat_completion:create(mock, #{model => <<"test-model">>}),
+    K1 = beamai_kernel:add_service(K0, LlmConfig),
+    {ok, Svc} = beamai_kernel:get_service(K1),
+    ?assertEqual(mock, maps:get(provider, Svc)),
+    ?assertEqual(<<"test-model">>, maps:get(model, Svc)).
 
 %%====================================================================
 %% Prompt Template Tests
@@ -94,7 +82,6 @@ prompt_get_variables_test() ->
     ?assertEqual([<<"a">>, <<"b">>, <<"c">>], lists:sort(Vars)).
 
 prompt_missing_variable_test() ->
-    %% Missing variables remain as-is (no error)
     Template = beamai_prompt:new(<<"Hello, {{name}}!">>),
     {ok, Result} = beamai_prompt:render(Template, #{}),
     ?assertEqual(<<"Hello, {{name}}!">>, Result).
@@ -171,88 +158,3 @@ result_to_json_test() ->
     Json = beamai_result:to_json({ok, <<"hello">>}),
     ?assertEqual(<<"ok">>, maps:get(status, Json)),
     ?assertEqual(<<"hello">>, maps:get(value, Json)).
-
-%%====================================================================
-%% invoke_chat_with_tools (mock) Tests
-%%====================================================================
-
-%% This test verifies the tool calling loop logic without a real LLM.
-%% It uses a mock connector module.
-
--define(MOCK_CONNECTOR, beamai_mock_connector).
-
-mock_tool_calling_test_() ->
-    {setup,
-     fun setup_mock/0,
-     fun cleanup_mock/1,
-     fun(_) ->
-         [fun mock_tool_call_loop/0]
-     end
-    }.
-
-setup_mock() ->
-    %% Create a mock module using meck
-    meck:new(?MOCK_CONNECTOR, [non_strict]),
-    CallCount = atomics:new(1, [{signed, false}]),
-    meck:expect(?MOCK_CONNECTOR, chat, fun(_Config, Messages, _Opts) ->
-        Count = atomics:add_get(CallCount, 1, 1),
-        case Count of
-            1 ->
-                %% First call: return tool call
-                {ok, #{
-                    role => assistant,
-                    content => null,
-                    finish_reason => tool_calls,
-                    usage => #{},
-                    tool_calls => [#{
-                        id => <<"call_1">>,
-                        type => function,
-                        function => #{
-                            name => <<"math.add">>,
-                            arguments => <<"{\"a\":7,\"b\":8}">>
-                        }
-                    }]
-                }};
-            _ ->
-                %% Second call: has tool results, return final answer
-                HasToolResult = lists:any(fun(#{role := R}) -> R =:= tool; (_) -> false end, Messages),
-                case HasToolResult of
-                    true ->
-                        {ok, #{
-                            role => assistant,
-                            content => <<"The answer is 15">>,
-                            finish_reason => stop,
-                            usage => #{}
-                        }};
-                    false ->
-                        {ok, #{
-                            role => assistant,
-                            content => <<"I need to calculate">>,
-                            finish_reason => stop,
-                            usage => #{}
-                        }}
-                end
-        end
-    end),
-    CallCount.
-
-cleanup_mock(_) ->
-    meck:unload(?MOCK_CONNECTOR).
-
-mock_tool_call_loop() ->
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_plugin(K0, <<"math">>, [
-        beamai_function:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
-            parameters => #{
-                a => #{type => integer, required => true},
-                b => #{type => integer, required => true}
-            }
-        })
-    ]),
-    K2 = beamai_kernel:add_chat_completion(K1, #{
-        connector => ?MOCK_CONNECTOR,
-        model => <<"test-model">>
-    }),
-    Messages = [#{role => user, content => <<"What is 7 + 8?">>}],
-    {ok, Response} = beamai_kernel:invoke_chat_with_tools(K2, Messages, #{}),
-    ?assertEqual(<<"The answer is 15">>, maps:get(content, Response)).

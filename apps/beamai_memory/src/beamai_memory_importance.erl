@@ -301,9 +301,10 @@ calculate_by_llm(Memory, Opts) ->
     %% 获取 LLM 配置
     LLMConfig = maps:get(llm_config, Opts, #{}),
 
-    %% 调用 LLM（需要确保 llm_client 可用）
-    case catch llm_client:simple_chat(Prompt, LLMConfig) of
-        {ok, Response} ->
+    %% 调用 LLM（需要确保 beamai_chat_completion 可用）
+    Messages = [#{role => user, content => Prompt}],
+    case catch beamai_chat_completion:chat(LLMConfig, Messages) of
+        {ok, #{content := Response}} when is_binary(Response) ->
             %% 解析 LLM 响应提取评分
             parse_llm_score(Response);
         {error, Reason} ->
@@ -331,8 +332,9 @@ batch_calculate_by_llm(Memories, Opts) ->
     LLMConfig = maps:get(llm_config, Opts, #{}),
 
     %% 调用 LLM
-    case catch llm_client:simple_chat(Prompt, LLMConfig) of
-        {ok, Response} ->
+    Messages = [#{role => user, content => Prompt}],
+    case catch beamai_chat_completion:chat(LLMConfig, Messages) of
+        {ok, #{content := Response}} when is_binary(Response) ->
             %% 解析批量评分结果
             parse_batch_llm_scores(Response, length(Memories));
         {error, Reason} ->
