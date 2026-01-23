@@ -1,9 +1,21 @@
+%%%-------------------------------------------------------------------
+%%% @doc 过滤器管道：前置/后置拦截
+%%%
+%%% 提供函数调用和 Chat 请求的拦截机制：
+%%% - pre_invocation: 函数执行前拦截（可修改参数或跳过）
+%%% - post_invocation: 函数执行后拦截（可修改结果）
+%%% - pre_chat: Chat 请求前拦截（可修改消息）
+%%% - post_chat: Chat 响应后拦截（可修改响应）
+%%%
+%%% @end
+%%%-------------------------------------------------------------------
 -module(beamai_filter).
 
 %% API
 -export([new/3, new/4]).
 -export([apply_pre_filters/4]).
 -export([apply_post_filters/4]).
+-export([apply_post_filters_result/4]).
 -export([apply_pre_chat_filters/3]).
 -export([apply_post_chat_filters/3]).
 -export([sort_filters/1]).
@@ -95,6 +107,19 @@ apply_post_filters(Filters, FuncDef, Result, Context) ->
             {ok, Value, Context};
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%% @doc 执行后置过滤器并返回最终结果
+%%
+%% 将 filter 内部格式 {ok, Value, Ctx} 转为调用者需要的 {ok, Value}。
+%%
+-spec apply_post_filters_result([filter_def()], beamai_function:function_def(),
+                                 term(), beamai_context:t()) ->
+    {ok, term()} | {error, term()}.
+apply_post_filters_result(Filters, FuncDef, Value, Context) ->
+    case apply_post_filters(Filters, FuncDef, Value, Context) of
+        {ok, FinalValue, _FinalCtx} -> {ok, FinalValue};
+        {error, _} = Err -> Err
     end.
 
 -spec apply_pre_chat_filters([filter_def()], [beamai_context:message()], beamai_context:t()) ->

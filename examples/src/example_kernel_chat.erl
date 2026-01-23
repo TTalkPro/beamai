@@ -1,31 +1,25 @@
 %%%-------------------------------------------------------------------
-%%% @doc Kernel 简单对话示例
+%%% @doc Kernel 对话示例
 %%%
-%%% 演示如何使用 BeamAI Kernel 进行对话，等价于 C# Semantic Kernel:
-%%%
-%%% ```csharp
-%%% var kernel = Kernel.CreateBuilder()
-%%%     .AddChatCompletion(...)
-%%%     .Build();
-%%% var chatService = kernel.GetRequiredService<IChatCompletionService>();
-%%% var chatHistory = new ChatHistory();
-%%% chatHistory.AddSystemMessage("你是一个有帮助的助手。");
-%%% chatHistory.AddUserMessage("你好，请介绍一下自己");
-%%% var response = await chatService.GetChatMessageContentAsync(chatHistory);
-%%% ```
+%%% 演示 beamai Kernel 的多种对话模式：
+%%%   - run/0: 单轮对话（使用预建配置）
+%%%   - run_inline/0: 单轮对话（使用 beamai:add_llm/3 内联配置）
+%%%   - multi_turn/0: 多轮对话
 %%%
 %%% 使用方法:
 %%% ```
 %%% export ZHIPU_API_KEY=your-api-key
 %%% ERL_LIBS=../_build/default/lib rebar3 shell
 %%% example_kernel_chat:run().
+%%% example_kernel_chat:run_inline().
+%%% example_kernel_chat:multi_turn().
 %%% ```
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(example_kernel_chat).
 
--export([run/0, run/1, multi_turn/0, multi_turn/1]).
+-export([run/0, run/1, run_inline/0, multi_turn/0, multi_turn/1]).
 
 %%====================================================================
 %% API
@@ -64,6 +58,35 @@ run(LLMConfig) ->
             %% 5. 将回复加入历史
             _History2 = History1 ++ [#{role => assistant, content => Content}],
             io:format("(Chat history now has ~B messages)~n", [3]);
+        {error, Reason} ->
+            io:format("Error: ~p~n", [Reason])
+    end,
+    ok.
+
+%% @doc 使用 beamai:add_llm/3 内联构建 Kernel（无需预建配置）
+%%
+%% 展示最简洁的方式：直接传入 provider 和选项。
+-spec run_inline() -> ok.
+run_inline() ->
+    io:format("=== BeamAI Inline LLM Config Example ===~n~n"),
+
+    %% 直接用 beamai:add_llm/3 传入 provider + 选项
+    ApiKey = list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    Kernel = beamai:add_llm(beamai:kernel(), zhipu, #{
+        api_key => ApiKey,
+        model => <<"glm-4.6">>,
+        max_tokens => 1024
+    }),
+
+    Messages = [
+        #{role => system, content => <<"用一句话回答。"/utf8>>},
+        #{role => user, content => <<"Erlang OTP 是什么？"/utf8>>}
+    ],
+    io:format("User: Erlang OTP 是什么？~n~n"),
+
+    case beamai:chat(Kernel, Messages) of
+        {ok, #{content := Content}} ->
+            io:format("Assistant: ~ts~n~n", [Content]);
         {error, Reason} ->
             io:format("Error: ~p~n", [Reason])
     end,

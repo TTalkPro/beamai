@@ -1,32 +1,29 @@
 %%%-------------------------------------------------------------------
 %%% @doc LLM 配置构建工具
 %%%
-%%% 提供两种 Zhipu LLM 配置：
-%%%   - anthropic(): 通过 Zhipu 的 Anthropic 兼容 API，使用 GLM-4.7
-%%%   - zhipu(): 通过 Zhipu 原生 API，使用 GLM-4.6
+%%% 提供多种 LLM 配置方案：
+%%%   - anthropic(): Zhipu Anthropic 兼容 API（GLM-4.7）
+%%%   - claude(): Anthropic 原生 API（Claude Sonnet 4）
+%%%   - zhipu(): Zhipu 原生 API（GLM-4.6）
+%%%   - deepseek(): DeepSeek API（deepseek-chat）
+%%%   - openai(): OpenAI 兼容 API（gpt-4）
 %%%
-%%% 使用方法:
-%%% ```
-%%% export ZHIPU_API_KEY=your-api-key
-%%%
-%%% %% Anthropic 兼容方式 (GLM-4.7)
-%%% Config = example_llm_config:anthropic().
-%%%
-%%% %% Zhipu 原生方式 (GLM-4.6)
-%%% Config = example_llm_config:zhipu().
-%%% ```
+%%% 环境变量：
+%%%   ZHIPU_API_KEY     - 智谱 API Key
+%%%   ANTHROPIC_API_KEY - Anthropic API Key
+%%%   DEEPSEEK_API_KEY  - DeepSeek API Key
+%%%   OPENAI_API_KEY    - OpenAI API Key
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(example_llm_config).
 
 -export([
-    anthropic/0,
-    anthropic/1,
-    claude/0,
-    claude/1,
-    zhipu/0,
-    zhipu/1
+    anthropic/0, anthropic/1,
+    claude/0, claude/1,
+    zhipu/0, zhipu/1,
+    deepseek/0, deepseek/1,
+    openai/0, openai/1
 ]).
 
 %%====================================================================
@@ -37,6 +34,8 @@
 -define(ANTHROPIC_DEFAULT_MODEL, <<"glm-4.7">>).
 -define(CLAUDE_DEFAULT_MODEL, <<"claude-sonnet-4-20250514">>).
 -define(ZHIPU_DEFAULT_MODEL, <<"glm-4.6">>).
+-define(DEEPSEEK_DEFAULT_MODEL, <<"deepseek-chat">>).
+-define(OPENAI_DEFAULT_MODEL, <<"gpt-4">>).
 -define(DEFAULT_MAX_TOKENS, 2048).
 
 %%====================================================================
@@ -113,6 +112,52 @@ zhipu(Opts) ->
         model => maps:get(model, Opts, ?ZHIPU_DEFAULT_MODEL),
         max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS)
     }).
+
+%% @doc 创建 DeepSeek LLM 配置（从环境变量获取 API Key）
+-spec deepseek() -> beamai_chat_completion:config().
+deepseek() ->
+    ApiKey = require_env("DEEPSEEK_API_KEY"),
+    deepseek(#{api_key => ApiKey}).
+
+%% @doc 创建 DeepSeek LLM 配置
+%%
+%% Opts 支持:
+%%   - api_key: API Key (必填)
+%%   - model: 模型名 (默认 deepseek-chat)
+%%   - max_tokens: 最大 token 数 (默认 2048)
+-spec deepseek(map()) -> beamai_chat_completion:config().
+deepseek(Opts) ->
+    beamai_chat_completion:create(deepseek, #{
+        api_key => maps:get(api_key, Opts),
+        model => maps:get(model, Opts, ?DEEPSEEK_DEFAULT_MODEL),
+        max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS)
+    }).
+
+%% @doc 创建 OpenAI LLM 配置（从环境变量获取 API Key）
+-spec openai() -> beamai_chat_completion:config().
+openai() ->
+    ApiKey = require_env("OPENAI_API_KEY"),
+    openai(#{api_key => ApiKey}).
+
+%% @doc 创建 OpenAI LLM 配置
+%%
+%% Opts 支持:
+%%   - api_key: API Key (必填)
+%%   - model: 模型名 (默认 gpt-4)
+%%   - max_tokens: 最大 token 数 (默认 2048)
+%%   - base_url: 自定义 API 地址（可选，用于兼容 API）
+-spec openai(map()) -> beamai_chat_completion:config().
+openai(Opts) ->
+    BaseOpts = #{
+        api_key => maps:get(api_key, Opts),
+        model => maps:get(model, Opts, ?OPENAI_DEFAULT_MODEL),
+        max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS)
+    },
+    FinalOpts = case maps:find(base_url, Opts) of
+        {ok, Url} -> BaseOpts#{base_url => Url};
+        error -> BaseOpts
+    end,
+    beamai_chat_completion:create(openai, FinalOpts).
 
 %%====================================================================
 %% 内部函数

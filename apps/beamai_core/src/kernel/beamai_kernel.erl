@@ -1,3 +1,14 @@
+%%%-------------------------------------------------------------------
+%%% @doc Kernel 核心：插件管理、LLM 服务、过滤器、工具调用循环
+%%%
+%%% Kernel 是框架的中枢，负责：
+%%% - 管理插件及其函数注册
+%%% - 持有 LLM 服务配置
+%%% - 执行前置/后置过滤器管道
+%%% - 驱动工具调用循环（LLM ↔ Function）
+%%%
+%%% @end
+%%%-------------------------------------------------------------------
 -module(beamai_kernel).
 
 %% Build API
@@ -40,6 +51,7 @@
     tools => [map()],
     tool_choice => auto | none | required,
     max_tool_iterations => pos_integer(),
+    context => beamai_context:t(),
     atom() => term()
 }.
 
@@ -99,22 +111,7 @@ invoke(#{filters := Filters} = Kernel, FuncName, Args, Context0) ->
     case get_function(Kernel, FuncName) of
         {ok, FuncDef} ->
             Context = beamai_context:with_kernel(Context0, Kernel),
-            case beamai_filter:apply_pre_filters(Filters, FuncDef, Args, Context) of
-                {ok, FilteredArgs, FilteredCtx} ->
-                    Result = beamai_function:invoke(FuncDef, FilteredArgs, FilteredCtx),
-                    case Result of
-                        {ok, Value} ->
-                            apply_post_and_return(Filters, FuncDef, Value, FilteredCtx);
-                        {ok, Value, NewCtx} ->
-                            apply_post_and_return(Filters, FuncDef, Value, NewCtx);
-                        {error, _} = Err ->
-                            Err
-                    end;
-                {skip, Value} ->
-                    {ok, Value};
-                {error, _} = Err ->
-                    Err
-            end;
+            run_invoke_pipeline(Filters, FuncDef, Args, Context);
         error ->
             {error, {function_not_found, FuncName}}
     end.
@@ -125,22 +122,8 @@ invoke_chat(Kernel, Messages, Opts) ->
     case get_service(Kernel) of
         {ok, LlmConfig} ->
             #{filters := Filters} = Kernel,
-            Context = beamai_context:new(),
-            case beamai_filter:apply_pre_chat_filters(Filters, Messages, Context) of
-                {ok, FilteredMsgs, FilteredCtx} ->
-                    Result = beamai_chat_completion:chat(LlmConfig, FilteredMsgs, Opts),
-                    case Result of
-                        {ok, Response} ->
-                            case beamai_filter:apply_post_chat_filters(Filters, Response, FilteredCtx) of
-                                {ok, FinalResp, _} -> {ok, FinalResp};
-                                {error, _} = Err -> Err
-                            end;
-                        {error, _} = Err ->
-                            Err
-                    end;
-                {error, _} = Err ->
-                    Err
-            end;
+            Context = maps:get(context, Opts, beamai_context:new()),
+            run_chat_pipeline(LlmConfig, Filters, Messages, Opts, Context);
         error ->
             {error, no_llm_service}
     end.
@@ -150,11 +133,12 @@ invoke_chat(Kernel, Messages, Opts) ->
 invoke_chat_with_tools(Kernel, Messages, Opts) ->
     ToolSpecs = get_tool_specs(Kernel),
     ChatOpts = Opts#{tools => ToolSpecs, tool_choice => maps:get(tool_choice, Opts, auto)},
+    Context = maps:get(context, Opts, beamai_context:new()),
     case get_service(Kernel) of
         {ok, LlmConfig} ->
             MaxIter = maps:get(max_tool_iterations, Opts,
                 maps:get(max_tool_iterations, maps:get(settings, Kernel, #{}), 10)),
-            tool_calling_loop(Kernel, LlmConfig, Messages, ChatOpts, MaxIter);
+            tool_calling_loop(Kernel, LlmConfig, Messages, ChatOpts, Context, MaxIter);
         error ->
             {error, no_llm_service}
     end.
@@ -206,71 +190,32 @@ get_service(#{llm_config := Config}) -> {ok, Config}.
 %% Internal - Tool Calling Loop
 %%====================================================================
 
-tool_calling_loop(_Kernel, _LlmConfig, _Msgs, _Opts, 0) ->
+tool_calling_loop(_Kernel, _LlmConfig, _Msgs, _Opts, _Context, 0) ->
     {error, max_tool_iterations};
-tool_calling_loop(Kernel, LlmConfig, Msgs, Opts, N) ->
+tool_calling_loop(Kernel, LlmConfig, Msgs, Opts, Context, N) ->
     case beamai_chat_completion:chat(LlmConfig, Msgs, Opts) of
         {ok, #{tool_calls := TCs} = _Response} when is_list(TCs), TCs =/= [] ->
-            ToolResults = execute_tool_calls(Kernel, TCs),
+            {ToolResults, NewContext} = execute_tool_calls(Kernel, TCs, Context),
             AssistantMsg = #{role => assistant, content => null, tool_calls => TCs},
             NewMsgs = Msgs ++ [AssistantMsg | ToolResults],
-            tool_calling_loop(Kernel, LlmConfig, NewMsgs, Opts, N - 1);
+            tool_calling_loop(Kernel, LlmConfig, NewMsgs, Opts, NewContext, N - 1);
         {ok, Response} ->
             {ok, Response};
         {error, _} = Err ->
             Err
     end.
 
-execute_tool_calls(Kernel, ToolCalls) ->
-    lists:map(fun(TC) ->
-        Id = get_tool_call_id(TC),
-        Name = get_tool_call_name(TC),
-        Args = get_tool_call_args(TC),
-        ResultContent = case invoke(Kernel, Name, Args) of
-            {ok, Value} -> encode_result(Value);
-            {ok, Value, _Ctx} -> encode_result(Value);
-            {error, Reason} -> encode_result(#{error => Reason})
+execute_tool_calls(Kernel, ToolCalls, Context) ->
+    lists:foldl(fun(TC, {ResultsAcc, CtxAcc}) ->
+        {Id, Name, Args} = beamai_function:parse_tool_call(TC),
+        {ResultContent, NewCtx} = case invoke(Kernel, Name, Args, CtxAcc) of
+            {ok, Value} -> {beamai_function:encode_result(Value), CtxAcc};
+            {ok, Value, UpdatedCtx} -> {beamai_function:encode_result(Value), UpdatedCtx};
+            {error, Reason} -> {beamai_function:encode_result(#{error => Reason}), CtxAcc}
         end,
-        #{role => tool, tool_call_id => Id, content => ResultContent}
-    end, ToolCalls).
-
-%% Handle both atom-key and binary-key tool_call formats
-get_tool_call_id(#{id := Id}) -> Id;
-get_tool_call_id(#{<<"id">> := Id}) -> Id;
-get_tool_call_id(_) -> <<"unknown">>.
-
-get_tool_call_name(#{function := #{name := Name}}) -> Name;
-get_tool_call_name(#{<<"function">> := #{<<"name">> := Name}}) -> Name;
-get_tool_call_name(#{name := Name}) -> Name;
-get_tool_call_name(_) -> <<"unknown">>.
-
-get_tool_call_args(#{function := #{arguments := Args}}) -> parse_args(Args);
-get_tool_call_args(#{<<"function">> := #{<<"arguments">> := Args}}) -> parse_args(Args);
-get_tool_call_args(#{arguments := Args}) -> parse_args(Args);
-get_tool_call_args(_) -> #{}.
-
-parse_args(Args) when is_map(Args) -> Args;
-parse_args(Args) when is_binary(Args) ->
-    try jsx:decode(Args, [return_maps, {labels, attempt_atom}])
-    catch _:_ -> #{raw => Args}
-    end;
-parse_args(_) -> #{}.
-
-encode_result(Value) when is_binary(Value) -> Value;
-encode_result(Value) when is_map(Value) ->
-    try jsx:encode(Value)
-    catch _:_ -> list_to_binary(io_lib:format("~p", [Value]))
-    end;
-encode_result(Value) when is_list(Value) ->
-    try jsx:encode(Value)
-    catch _:_ -> list_to_binary(io_lib:format("~p", [Value]))
-    end;
-encode_result(Value) when is_number(Value) ->
-    list_to_binary(io_lib:format("~p", [Value]));
-encode_result(Value) when is_atom(Value) ->
-    atom_to_binary(Value, utf8);
-encode_result(Value) ->
-    list_to_binary(io_lib:format("~p", [Value])).
+        Msg = #{role => tool, tool_call_id => Id, content => ResultContent},
+        {ResultsAcc ++ [Msg], NewCtx}
+    end, {[], Context}, ToolCalls).
 
 %%====================================================================
 %% Internal - Helpers
@@ -288,8 +233,45 @@ search_all_plugins(Plugins, FuncName) ->
         [] -> error
     end.
 
-apply_post_and_return(Filters, FuncDef, Value, Context) ->
-    case beamai_filter:apply_post_filters(Filters, FuncDef, Value, Context) of
-        {ok, FinalValue, _FinalCtx} -> {ok, FinalValue};
-        {error, _} = Err -> Err
+%% @private 执行调用管道：前置过滤 → 函数执行 → 后置过滤
+run_invoke_pipeline(Filters, FuncDef, Args, Context) ->
+    case beamai_filter:apply_pre_filters(Filters, FuncDef, Args, Context) of
+        {ok, FilteredArgs, FilteredCtx} ->
+            invoke_and_post_filter(Filters, FuncDef, FilteredArgs, FilteredCtx);
+        {skip, Value} ->
+            {ok, Value};
+        {error, _} = Err ->
+            Err
+    end.
+
+%% @private 调用函数并执行后置过滤器
+invoke_and_post_filter(Filters, FuncDef, Args, Context) ->
+    case beamai_function:invoke(FuncDef, Args, Context) of
+        {ok, Value} ->
+            beamai_filter:apply_post_filters_result(Filters, FuncDef, Value, Context);
+        {ok, Value, NewCtx} ->
+            beamai_filter:apply_post_filters_result(Filters, FuncDef, Value, NewCtx);
+        {error, _} = Err ->
+            Err
+    end.
+
+%% @private 执行 Chat 管道：前置过滤 → LLM 调用 → 后置过滤
+run_chat_pipeline(LlmConfig, Filters, Messages, Opts, Context) ->
+    case beamai_filter:apply_pre_chat_filters(Filters, Messages, Context) of
+        {ok, FilteredMsgs, FilteredCtx} ->
+            call_llm_and_post_filter(LlmConfig, Filters, FilteredMsgs, Opts, FilteredCtx);
+        {error, _} = Err ->
+            Err
+    end.
+
+%% @private 调用 LLM 并执行后置过滤器
+call_llm_and_post_filter(LlmConfig, Filters, Messages, Opts, Context) ->
+    case beamai_chat_completion:chat(LlmConfig, Messages, Opts) of
+        {ok, Response} ->
+            case beamai_filter:apply_post_chat_filters(Filters, Response, Context) of
+                {ok, FinalResp, _} -> {ok, FinalResp};
+                {error, _} = Err -> Err
+            end;
+        {error, _} = Err ->
+            Err
     end.

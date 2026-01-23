@@ -1,3 +1,14 @@
+%%%-------------------------------------------------------------------
+%%% @doc 函数定义：处理器、参数、超时、重试、Schema 生成
+%%%
+%%% 定义 Kernel 可调用的函数单元，支持：
+%%% - 多种处理器形式（fun/1, fun/2, {M,F}, {M,F,A}）
+%%% - 参数 Schema 声明与 JSON Schema 转换
+%%% - 超时和重试策略
+%%% - 生成 OpenAI / Anthropic 格式的 tool schema
+%%%
+%%% @end
+%%%-------------------------------------------------------------------
 -module(beamai_function).
 
 %% API
@@ -7,6 +18,7 @@
 -export([to_tool_spec/1]).
 -export([to_tool_schema/1, to_tool_schema/2]).
 -export([get_name/1, get_full_name/1]).
+-export([parse_tool_call/1, encode_result/1]).
 
 %% Types
 -export_type([function_def/0, handler/0, function_result/0,
@@ -156,6 +168,40 @@ get_name(#{name := Name}) -> Name.
 get_full_name(FuncDef) -> full_name(FuncDef).
 
 %%====================================================================
+%% 工具调用协议
+%%====================================================================
+
+%% @doc 解析 LLM 返回的 tool_call 结构
+%%
+%% 支持 atom-key 和 binary-key 两种格式。
+%% 返回 {Id, FunctionName, ParsedArgs}。
+%%
+-spec parse_tool_call(map()) -> {binary(), binary(), map()}.
+parse_tool_call(TC) ->
+    Id = extract_id(TC),
+    Name = extract_name(TC),
+    Args = extract_args(TC),
+    {Id, Name, Args}.
+
+%% @doc 将函数执行结果编码为 LLM 可读的二进制
+-spec encode_result(term()) -> binary().
+encode_result(Value) when is_binary(Value) -> Value;
+encode_result(Value) when is_map(Value) ->
+    try jsx:encode(Value)
+    catch _:_ -> iolist_to_binary(io_lib:format("~p", [Value]))
+    end;
+encode_result(Value) when is_list(Value) ->
+    try jsx:encode(Value)
+    catch _:_ -> iolist_to_binary(io_lib:format("~p", [Value]))
+    end;
+encode_result(Value) when is_number(Value) ->
+    iolist_to_binary(io_lib:format("~p", [Value]));
+encode_result(Value) when is_atom(Value) ->
+    atom_to_binary(Value, utf8);
+encode_result(Value) ->
+    iolist_to_binary(io_lib:format("~p", [Value])).
+
+%%====================================================================
 %% Internal
 %%====================================================================
 
@@ -211,11 +257,11 @@ build_json_schema(Params) when map_size(Params) =:= 0 ->
     #{type => object, properties => #{}, required => []};
 build_json_schema(Params) ->
     Properties = maps:fold(fun(K, Spec, Acc) ->
-        Key = to_binary(K),
+        Key = beamai_utils:to_binary(K),
         Acc#{Key => param_to_json_schema(Spec)}
     end, #{}, Params),
     Required = maps:fold(fun(K, #{required := true}, Acc) ->
-        [to_binary(K) | Acc];
+        [beamai_utils:to_binary(K) | Acc];
     (_, _, Acc) ->
         Acc
     end, [], Params),
@@ -251,5 +297,28 @@ type_to_schema(array) -> array;
 type_to_schema(object) -> object;
 type_to_schema(Other) -> Other.
 
-to_binary(A) when is_atom(A) -> atom_to_binary(A, utf8);
-to_binary(B) when is_binary(B) -> B.
+%% @private 提取 tool_call 的 ID
+extract_id(#{id := Id}) -> Id;
+extract_id(#{<<"id">> := Id}) -> Id;
+extract_id(_) -> <<"unknown">>.
+
+%% @private 提取 tool_call 的函数名
+extract_name(#{function := #{name := N}}) -> N;
+extract_name(#{<<"function">> := #{<<"name">> := N}}) -> N;
+extract_name(#{name := N}) -> N;
+extract_name(_) -> <<"unknown">>.
+
+%% @private 提取 tool_call 的参数
+extract_args(#{function := #{arguments := A}}) -> parse_args(A);
+extract_args(#{<<"function">> := #{<<"arguments">> := A}}) -> parse_args(A);
+extract_args(#{arguments := A}) -> parse_args(A);
+extract_args(_) -> #{}.
+
+%% @private 解析参数（JSON 字符串或已解码的 map）
+parse_args(Args) when is_map(Args) -> Args;
+parse_args(Args) when is_binary(Args) ->
+    try jsx:decode(Args, [return_maps, {labels, attempt_atom}])
+    catch _:_ -> #{raw => Args}
+    end;
+parse_args(_) -> #{}.
+

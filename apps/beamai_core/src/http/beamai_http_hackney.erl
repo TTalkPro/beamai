@@ -52,16 +52,16 @@ request(Method, Url, Headers, Body, Opts) ->
         with_body
     ],
 
-    UrlBin = to_binary(Url),
-    BodyBin = to_binary(Body),
+    UrlBin = beamai_utils:to_binary(Url),
+    BodyBin = beamai_utils:to_binary(Body),
 
     case hackney:request(Method, UrlBin, Headers, BodyBin, HackneyOpts) of
         {ok, StatusCode, _RespHeaders, RespBody} when StatusCode >= 200, StatusCode < 300 ->
-            {ok, maybe_decode_json(RespBody)};
+            {ok, beamai_utils:decode_json_response(RespBody)};
         {ok, StatusCode, _RespHeaders, RespBody} when StatusCode >= 400 ->
             {error, {http_error, StatusCode, RespBody}};
         {ok, _StatusCode, _RespHeaders, RespBody} ->
-            {ok, maybe_decode_json(RespBody)};
+            {ok, beamai_utils:decode_json_response(RespBody)};
         {error, Reason} ->
             {error, {request_failed, Reason}}
     end.
@@ -82,8 +82,8 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
         {connect_timeout, ConnectTimeout}
     ],
 
-    UrlBin = to_binary(Url),
-    BodyBin = encode_body(Body),
+    UrlBin = beamai_utils:to_binary(Url),
+    BodyBin = beamai_utils:encode_body(Body),
 
     case hackney:request(Method, UrlBin, Headers, BodyBin, HackneyOpts) of
         {ok, ClientRef} ->
@@ -126,27 +126,3 @@ stream_receive_loop(ClientRef, Acc, Handler, Timeout) ->
         {error, timeout}
     end.
 
-%% @private 尝试解析 JSON 响应
-maybe_decode_json(Body) when is_binary(Body) ->
-    case jsx:is_json(Body) of
-        true ->
-            try jsx:decode(Body, [return_maps])
-            catch _:_ -> Body
-            end;
-        false -> Body
-    end;
-maybe_decode_json(Body) ->
-    Body.
-
-%% @private 编码请求体
-encode_body(Body) when is_binary(Body) -> Body;
-encode_body(Body) when is_map(Body) -> jsx:encode(Body);
-encode_body(Body) when is_list(Body) -> jsx:encode(Body);
-encode_body(Body) -> to_binary(Body).
-
-%% @private 转换为二进制
-to_binary(V) when is_binary(V) -> V;
-to_binary(V) when is_list(V) -> list_to_binary(V);
-to_binary(V) when is_atom(V) -> atom_to_binary(V);
-to_binary(V) when is_integer(V) -> integer_to_binary(V);
-to_binary(V) when is_map(V) -> jsx:encode(V).

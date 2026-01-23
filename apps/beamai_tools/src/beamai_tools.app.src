@@ -18,7 +18,7 @@
     %% Buffer 适配器默认模块（实现 beamai_buffer_behaviour）
     %% {buffer_module, beamai_conversation_buffer}
   ]},
-  {modules, []},
+  {modules, [beamai_tool]},
 
   {licenses, ["Apache-2.0"]},
   {links, []}

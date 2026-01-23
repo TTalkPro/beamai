@@ -1,8 +1,8 @@
 %%%-------------------------------------------------------------------
-%%% @doc LLM Chat Completion Behaviour
+%%% @doc LLM 行为接口定义
 %%%
-%%% Defines the standard interface for LLM chat completion.
-%%% Default implementation: beamai_chat_completion (beamai_llm)
+%%% 定义 LLM Chat Completion 的标准接口。
+%%% 默认实现：beamai_chat_completion（位于 beamai_llm 应用）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------

@@ -11,7 +11,11 @@
     {env, []},
     {modules, [
         example_llm_config,
-        example_kernel_chat
+        example_kernel_chat,
+        example_weather_plugin,
+        example_streaming,
+        example_filter,
+        example_prompt
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

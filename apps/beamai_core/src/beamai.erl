@@ -1,12 +1,14 @@
+%%%-------------------------------------------------------------------
+%%% @doc Facade 入口：所有外部调用的统一入口
+%%%
+%%% 提供简洁的顶层 API，涵盖：
+%%% - 构建 Kernel（插件 + LLM 服务）
+%%% - 调用函数和 Chat Completion
+%%% - 工具调用循环（LLM + 函数执行）
+%%%
+%%% @end
+%%%-------------------------------------------------------------------
 -module(beamai).
-
-%% @doc BeamAI Kernel Facade API
-%%
-%% Top-level entry point for the Semantic Kernel architecture.
-%% Provides a simple, discoverable API for:
-%% - Building kernels with plugins and LLM services
-%% - Invoking functions and chat completions
-%% - Tool calling loops (LLM + function execution)
 
 %% Kernel
 -export([kernel/0, kernel/1]).

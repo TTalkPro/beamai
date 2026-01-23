@@ -199,7 +199,7 @@ stream_request(Method, Url, ExtraHeaders, Body, Opts, Handler) ->
     CustomHeaders = maps:get(headers, Opts, []),
     Headers = default_headers() ++ CustomHeaders ++ ExtraHeaders,
     UrlBin = beamai_utils:to_binary(Url),
-    BodyBin = encode_body(Body),
+    BodyBin = beamai_utils:encode_body(Body),
 
     Backend:stream_request(Method, UrlBin, Headers, BodyBin, Opts, Handler).
 
@@ -274,7 +274,7 @@ do_request(Method, Url, ExtraHeaders, Body, Opts, Attempt) ->
 
     Headers = default_headers() ++ CustomHeaders ++ ExtraHeaders,
     UrlBin = beamai_utils:to_binary(Url),
-    BodyBin = encode_body(Body),
+    BodyBin = beamai_utils:encode_body(Body),
 
     case Backend:request(Method, UrlBin, Headers, BodyBin, Opts) of
         {ok, _} = Success ->
@@ -308,9 +308,3 @@ build_query_string(Params) ->
     end, [], Params),
     iolist_to_binary(lists:join(<<"&">>, lists:reverse(Pairs))).
 
-%% @private 编码请求体
--spec encode_body(body()) -> binary().
-encode_body(Body) when is_binary(Body) -> Body;
-encode_body(Body) when is_map(Body) -> jsx:encode(Body);
-encode_body(Body) when is_list(Body) -> jsx:encode(Body);
-encode_body(Body) -> beamai_utils:to_binary(Body).

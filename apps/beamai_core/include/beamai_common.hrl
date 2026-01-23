@@ -118,43 +118,6 @@
 -endif.
 
 %%====================================================================
-%% 回调调用宏
-%%====================================================================
-
-%% @doc 调用回调函数（带回调映射和元数据）
-%% 使用示例：?INVOKE_CALLBACK(on_tool_start, [Name, Args], Callbacks, Meta)
--define(INVOKE_CALLBACK(Name, Args, Callbacks, Meta),
-    beamai_callback_utils:invoke(Name, Args, Callbacks, Meta)
-).
-
-%% @doc 从图状态调用回调
-%% 使用示例：?INVOKE_CALLBACK_FROM_STATE(on_llm_start, [Messages], State)
--define(INVOKE_CALLBACK_FROM_STATE(Name, Args, State),
-    beamai_callback_utils:invoke_from_state(Name, Args, State)
-).
-
-%%====================================================================
-%% 状态操作宏
-%%====================================================================
-
-%% @doc 批量设置图状态
-%% 使用示例：
-%%   NewState = ?SET_STATE_MANY(State, [{key1, val1}, {key2, val2}])
--define(SET_STATE_MANY(State, Pairs),
-    beamai_state_utils:set_many(State, Pairs)
-).
-
-%% @doc 管道式状态更新
-%% 使用示例：
-%%   NewState = ?SET_STATE_PIPELINE(State, [
-%%       fun(S) -> graph:set(S, key1, val1) end,
-%%       fun(S) -> maybe_update(S) end
-%%   ])
--define(SET_STATE_PIPELINE(State, Funs),
-    beamai_state_utils:set_pipeline(State, Funs)
-).
-
-%%====================================================================
 %% 请求构建宏
 %%====================================================================
 

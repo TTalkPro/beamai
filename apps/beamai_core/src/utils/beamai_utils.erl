@@ -22,6 +22,7 @@
 -export([paginate/3, filter_by_time/3]).
 -export([validate_binary/1, validate_map/1]).
 -export([binary_join/2, to_binary/1, ensure_binary/1]).
+-export([encode_body/1, decode_json_response/1]).
 -export([parse_json/1, safe_execute/1, safe_execute/2]).
 -export([format_error/1, format_error/2]).
 
@@ -196,7 +197,7 @@ to_binary(Term) when is_atom(Term) ->
 to_binary(Term) when is_integer(Term) ->
     list_to_binary(integer_to_list(Term));
 to_binary(Term) when is_float(Term) ->
-    list_to_binary(float_to_list(Term));
+    float_to_binary(Term, [{decimals, 10}, compact]);
 to_binary(Term) when is_map(Term) ->
     jsx:encode(Term);
 to_binary(Term) ->
@@ -234,6 +235,42 @@ parse_json(Bin) when is_binary(Bin), byte_size(Bin) > 0 ->
     catch _:_ -> #{}
     end;
 parse_json(_) -> #{}.
+
+%%====================================================================
+%% HTTP 辅助函数
+%%====================================================================
+
+%% @doc 编码 HTTP 请求体为二进制
+%%
+%% binary 直接返回，map/list 编码为 JSON，其他类型转二进制。
+%%
+%% @param Body 请求体
+%% @returns 编码后的二进制
+%%
+-spec encode_body(binary() | map() | list() | term()) -> binary().
+encode_body(Body) when is_binary(Body) -> Body;
+encode_body(Body) when is_map(Body) -> jsx:encode(Body);
+encode_body(Body) when is_list(Body) -> jsx:encode(Body);
+encode_body(Body) -> to_binary(Body).
+
+%% @doc 尝试将 HTTP 响应体解码为 JSON
+%%
+%% 如果是合法 JSON 则解码为 map，否则原样返回。
+%%
+%% @param Body 响应体
+%% @returns 解码后的 map 或原始值
+%%
+-spec decode_json_response(binary() | term()) -> map() | binary() | term().
+decode_json_response(Body) when is_binary(Body), byte_size(Body) > 0 ->
+    case jsx:is_json(Body) of
+        true ->
+            try jsx:decode(Body, [return_maps])
+            catch _:_ -> Body
+            end;
+        false -> Body
+    end;
+decode_json_response(Body) ->
+    Body.
 
 %%====================================================================
 %% 安全执行函数

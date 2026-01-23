@@ -1,18 +1,18 @@
 {application, beamai_core, [
-    {description, "BeamAI Core - Kernel Framework"},
+    {description, "BeamAI Core - Kernel 框架"},
     {vsn, "0.1.0"},
     {registered, [beamai_core_sup, beamai_http_pool]},
     {mod, {beamai_core_app, []}},
     {applications, [kernel, stdlib, jsx, uuid, hackney]},
-    {optional_applications, [gun, beamai_llm, beamai_tools]},
+    {optional_applications, [gun, beamai_llm]},
     {env, []},
     {modules, [
-        %% Application
+        %% OTP 应用
         beamai_core_app,
         beamai_core_sup,
-        %% Facade
+        %% Facade 入口
         beamai,
-        %% Kernel
+        %% Kernel 核心
         beamai_kernel,
         beamai_function,
         beamai_plugin,
@@ -20,28 +20,17 @@
         beamai_filter,
         beamai_result,
         beamai_prompt,
-        %% Behaviours
-        beamai_behaviour,
+        %% 行为接口
         beamai_llm_behaviour,
-        beamai_buffer_behaviour,
         beamai_http_behaviour,
-        %% Data Types
-        beamai_message,
-        beamai_tool,
-        beamai_types,
-        %% Protocol
-        beamai_jsonrpc,
-        beamai_sse,
-        %% Utils
-        beamai_id,
-        beamai_utils,
-        beamai_callback_utils,
-        beamai_state_utils,
-        %% HTTP Client
+        %% HTTP 客户端
         beamai_http,
         beamai_http_hackney,
         beamai_http_gun,
-        beamai_http_pool
+        beamai_http_pool,
+        %% 工具
+        beamai_id,
+        beamai_utils
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

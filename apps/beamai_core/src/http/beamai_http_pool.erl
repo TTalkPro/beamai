@@ -226,7 +226,7 @@ merge_config(Config) ->
 %% @private 获取连接
 do_get_connection(Url, _Opts, #state{pools = Pools, conn_info = ConnInfo,
                                      in_use = InUse, config = Config} = State) ->
-    UrlBin = to_binary(Url),
+    UrlBin = beamai_utils:to_binary(Url),
     {Host, Port, Transport} = parse_url(UrlBin),
     HostKey = make_host_key(Host, Port, Transport),
 
@@ -449,13 +449,8 @@ default_port(_) -> 80.
 
 %% @private 生成主机键
 make_host_key(Host, Port, Transport) ->
-    iolist_to_binary([to_binary(Host), $:, integer_to_binary(Port),
+    iolist_to_binary([beamai_utils:to_binary(Host), $:, integer_to_binary(Port),
                       $:, atom_to_binary(Transport)]).
-
-%% @private 转换为二进制
-to_binary(V) when is_binary(V) -> V;
-to_binary(V) when is_list(V) -> list_to_binary(V);
-to_binary(V) when is_atom(V) -> atom_to_binary(V).
 
 %% @private 转换为字符列表
 to_charlist(V) when is_list(V) -> V;

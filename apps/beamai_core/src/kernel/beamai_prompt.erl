@@ -1,3 +1,13 @@
+%%%-------------------------------------------------------------------
+%%% @doc 提示词模板：{{变量}} 替换
+%%%
+%%% 提供简单的模板渲染功能：
+%%% - 支持 {{variable}} 占位符语法
+%%% - 自动提取模板中的变量名
+%%% - 支持从 Context 或 Map 渲染
+%%%
+%%% @end
+%%%-------------------------------------------------------------------
 -module(beamai_prompt).
 
 %% API
@@ -42,9 +52,9 @@ get_variables(#{input_variables := Vars}) -> Vars.
 do_render(Template, Vars) ->
     try
         Result = maps:fold(fun(Key, Value, Acc) ->
-            KeyBin = to_binary(Key),
+            KeyBin = beamai_utils:to_binary(Key),
             Pattern = <<"{{", KeyBin/binary, "}}">>,
-            ValueBin = to_binary(Value),
+            ValueBin = beamai_utils:to_binary(Value),
             binary:replace(Acc, Pattern, ValueBin, [global])
         end, Template, Vars),
         {ok, Result}
@@ -61,9 +71,3 @@ extract_variables(Template) ->
             []
     end.
 
-to_binary(V) when is_binary(V) -> V;
-to_binary(V) when is_atom(V) -> atom_to_binary(V, utf8);
-to_binary(V) when is_integer(V) -> integer_to_binary(V);
-to_binary(V) when is_float(V) -> float_to_binary(V, [{decimals, 10}, compact]);
-to_binary(V) when is_list(V) -> list_to_binary(V);
-to_binary(V) -> list_to_binary(io_lib:format("~p", [V])).
