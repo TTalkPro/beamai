@@ -55,7 +55,7 @@
 %% - 有工具调用 -> tool_node（执行工具）
 %% - 有最终响应 -> __end__（结束执行）
 %% - 其他情况 -> llm_node（继续对话）
--spec after_llm(graph_state:state()) -> atom() | [graph_send:send()].
+-spec after_llm(graph_state:state()) -> atom() | [graph_dispatch:dispatch()].
 after_llm(State) ->
     PendingTools = state_get(State, pending_tools, []),
     FinalResponse = state_get(State, final_response, undefined),
@@ -73,7 +73,7 @@ after_llm(State) ->
 %% 3. 需要反思 -> reflect_node
 %% 4. 计划完成 -> __end__
 %% 5. 其他情况 -> llm_node（继续循环）
--spec after_tool(graph_state:state()) -> atom() | [graph_send:send()].
+-spec after_tool(graph_state:state()) -> atom() | [graph_dispatch:dispatch()].
 after_tool(State) ->
     ToolResults = state_get(State, tool_results, []),
     dispatch_after_tool(ToolResults, State).
@@ -116,18 +116,18 @@ topological_layers(Graph) ->
 %% @doc 并行分发子任务
 %%
 %% 将多个子任务通过 fan_out 分发到 task_executor 节点并行执行。
--spec fan_out_subtasks(graph_state:state(), [map()]) -> [graph_send:send()].
+-spec fan_out_subtasks(graph_state:state(), [map()]) -> [graph_dispatch:dispatch()].
 fan_out_subtasks(State, Tasks) ->
     Depth = state_get(State, depth, 0),
-    graph_send:fan_out_indexed(task_executor, Tasks, make_task_mapper(Depth)).
+    graph_dispatch:fan_out_indexed(task_executor, Tasks, make_task_mapper(Depth)).
 
 %% @doc 并行分发计划步骤
 %%
 %% 将计划中的多个步骤通过 fan_out 分发并行执行。
--spec fan_out_plan_steps(graph_state:state(), [map()]) -> [graph_send:send()].
+-spec fan_out_plan_steps(graph_state:state(), [map()]) -> [graph_dispatch:dispatch()].
 fan_out_plan_steps(State, Steps) ->
     Depth = state_get(State, depth, 0),
-    graph_send:fan_out(task_executor, Steps, make_step_mapper(Depth)).
+    graph_dispatch:fan_out(task_executor, Steps, make_step_mapper(Depth)).
 
 %%====================================================================
 %% 私有函数 - LLM 后路由
@@ -145,7 +145,7 @@ route_after_llm(_Tools, _) -> tool_node.         %% 有工具则执行
 
 %% @private 分派工具后路由
 %% 委托给 beamai_deepagent_result_analyzer 进行分析
--spec dispatch_after_tool([map()], graph_state:state()) -> atom() | [graph_send:send()].
+-spec dispatch_after_tool([map()], graph_state:state()) -> atom() | [graph_dispatch:dispatch()].
 dispatch_after_tool(Results, State) ->
     case beamai_deepagent_result_analyzer:analyze(Results) of
         {create_plan, PlanMap} -> handle_plan_created(State, PlanMap);
@@ -159,7 +159,7 @@ dispatch_after_tool(Results, State) ->
 %%====================================================================
 
 %% @private 处理计划创建后的路由
--spec handle_plan_created(graph_state:state(), map()) -> atom() | [graph_send:send()].
+-spec handle_plan_created(graph_state:state(), map()) -> atom() | [graph_dispatch:dispatch()].
 handle_plan_created(State, PlanMap) ->
     Plan = beamai_deepagent_plan:from_map(PlanMap),
     Steps = beamai_deepagent_plan:get_steps(Plan),
@@ -167,7 +167,7 @@ handle_plan_created(State, PlanMap) ->
     route_by_parallel_groups(State, ParallelGroups).
 
 %% @private 根据并行分组决定路由
--spec route_by_parallel_groups(graph_state:state(), [[map()]]) -> atom() | [graph_send:send()].
+-spec route_by_parallel_groups(graph_state:state(), [[map()]]) -> atom() | [graph_dispatch:dispatch()].
 route_by_parallel_groups(_State, []) ->
     llm_node;
 route_by_parallel_groups(_State, [[_Single]]) ->

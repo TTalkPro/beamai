@@ -18,7 +18,7 @@
 
 %% 创建多步测试图（节点循环执行多次）
 make_multi_step_graph() ->
-    ProcessFn = fun(State) ->
+    ProcessFn = fun(State, _) ->
         Count = graph_state:get(State, count, 0),
         NewCount = Count + 1,
         State1 = graph_state:set(State, count, NewCount),

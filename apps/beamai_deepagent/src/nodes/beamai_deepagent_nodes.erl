@@ -62,7 +62,7 @@
 %% 类型定义
 %%====================================================================
 
--type node_fun() :: fun((graph_state:state()) ->
+-type node_fun() :: fun((graph_state:state(), map() | undefined) ->
     {ok, graph_state:state()} | {error, term()}).
 
 %%====================================================================
@@ -93,7 +93,7 @@ make_tool_node(Config) ->
 %% 条件：仅当 reflection_enabled 且 should_reflect 为真时执行
 -spec make_reflect_node(map()) -> node_fun().
 make_reflect_node(Config) ->
-    fun(State) -> execute_reflect_node(Config, State) end.
+    fun(State, _VertexInput) -> execute_reflect_node(Config, State) end.
 
 %%====================================================================
 %% 聚合节点

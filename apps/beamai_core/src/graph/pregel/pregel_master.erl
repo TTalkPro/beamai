@@ -446,15 +446,22 @@ broadcast_global_state(#state{workers = Workers, global_state = GlobalState}) ->
         Workers
     ).
 
-%% @private 广播开始超步（带 activations）
--spec broadcast_start_superstep(#state{}, [vertex_id()]) -> ok.
+%% @private 广播开始超步（带 activations，支持 dispatch）
+-spec broadcast_start_superstep(#state{}, [vertex_id() | {dispatch, graph_dispatch:dispatch()}]) -> ok.
 broadcast_start_superstep(#state{workers = Workers, num_workers = NumWorkers, superstep = Superstep}, Activations) ->
-    %% 按 Worker 分组 activations
-    GroupedActivations = pregel_superstep:group_activations_by_worker(Activations, NumWorkers),
+    %% 分离 dispatch 项和普通 activations
+    {DispatchItems, NormalActivations} = pregel_superstep:separate_dispatches(Activations),
+    VertexInputs = pregel_superstep:build_vertex_inputs(DispatchItems),
+    DispatchNodeIds = maps:keys(VertexInputs),
+    AllActivations = lists:usort(NormalActivations ++ DispatchNodeIds),
+    %% 按 Worker 分组
+    GroupedActivations = pregel_superstep:group_activations_by_worker(AllActivations, NumWorkers),
+    GroupedVertexInputs = pregel_superstep:group_vertex_inputs_by_worker(VertexInputs, NumWorkers),
     maps:foreach(
         fun(WorkerId, Pid) ->
             WorkerActivations = maps:get(WorkerId, GroupedActivations, []),
-            pregel_worker:start_superstep(Pid, Superstep, WorkerActivations)
+            WorkerVertexInputs = maps:get(WorkerId, GroupedVertexInputs, #{}),
+            pregel_worker:start_superstep(Pid, Superstep, WorkerActivations, WorkerVertexInputs)
         end,
         Workers
     ).

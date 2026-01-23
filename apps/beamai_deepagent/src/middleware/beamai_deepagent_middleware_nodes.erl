@@ -61,7 +61,7 @@
 %% 类型定义
 %%====================================================================
 
--type node_fun() :: fun((graph_state:state()) ->
+-type node_fun() :: fun((graph_state:state(), map() | undefined) ->
     {ok, graph_state:state()} | {error, term()}).
 
 -type middleware_chain() :: beamai_middleware_runner:middleware_chain().
@@ -85,7 +85,7 @@ make_llm_node(Config, Middlewares) ->
     %% 初始化 Middleware 链
     MwChain = beamai_middleware_runner:init(Middlewares),
 
-    fun(State) ->
+    fun(State, _VertexInput) ->
         %% 存储 Middleware 链到状态
         State0 = state_set(State, mw_chain, MwChain),
 
@@ -111,7 +111,7 @@ make_tool_node(Config, Middlewares) ->
     %% 初始化 Middleware 链
     MwChain = beamai_middleware_runner:init(Middlewares),
 
-    fun(State) ->
+    fun(State, _VertexInput) ->
         %% 从状态获取或使用传入的 Middleware 链
         Chain = state_get(State, mw_chain, MwChain),
 
@@ -132,7 +132,7 @@ make_tool_node(Config, Middlewares) ->
 make_agent_start_node(Middlewares) ->
     MwChain = beamai_middleware_runner:init(Middlewares),
 
-    fun(State) ->
+    fun(State, _VertexInput) ->
         State0 = state_set(State, mw_chain, MwChain),
         handle_agent_hook_result(run_before_agent(State0, MwChain), before_agent)
     end.
@@ -147,7 +147,7 @@ make_agent_start_node(Middlewares) ->
 make_agent_end_node(Middlewares) ->
     MwChain = beamai_middleware_runner:init(Middlewares),
 
-    fun(State) ->
+    fun(State, _VertexInput) ->
         Chain = state_get(State, mw_chain, MwChain),
         %% after_agent 的 goto/halt 通常被忽略（已经结束了）
         case run_after_agent(State, Chain) of

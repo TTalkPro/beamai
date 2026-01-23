@@ -85,13 +85,13 @@ state_tests() ->
 
 node_tests() ->
     %% 创建节点
-    Fun = fun(S) -> {ok, S} end,
+    Fun = fun(S, _) -> {ok, S} end,
     Node = graph_node:new(test_node, Fun),
     ?assertEqual(test_node, graph_node:id(Node)),
     ?assert(graph_node:is_valid(Node)),
 
     %% 执行节点
-    AddOne = fun(State) ->
+    AddOne = fun(State, _) ->
         Count = graph_state:get(State, count, 0),
         {ok, graph_state:set(State, count, Count + 1)}
     end,
@@ -107,7 +107,7 @@ node_tests() ->
     ?assert(graph_node:is_end(EndNode)),
 
     %% 错误处理
-    ErrorFun = fun(_S) -> {error, some_reason} end,
+    ErrorFun = fun(_S, _) -> {error, some_reason} end,
     ErrorNode = graph_node:new(error_node, ErrorFun),
     {error, {node_error, error_node, some_reason}} =
         graph_node:execute(ErrorNode, graph_state:new()),
@@ -151,7 +151,7 @@ edge_tests() ->
 %%====================================================================
 
 builder_tests() ->
-    NodeFun = fun(S) -> {ok, S} end,
+    NodeFun = fun(S, _) -> {ok, S} end,
 
     %% 基本构建
     B0 = graph_builder:new(),
@@ -181,7 +181,7 @@ builder_tests() ->
 
 engine_tests() ->
     %% 简单流程
-    ProcessFun = fun(State) ->
+    ProcessFun = fun(State, _) ->
         {ok, graph_state:set(State, processed, true)}
     end,
 
@@ -196,12 +196,12 @@ engine_tests() ->
     ?assertEqual(true, graph:get(maps:get(final_state, Result1), processed)),
 
     %% 条件流程
-    CheckFun = fun(State) ->
+    CheckFun = fun(State, _) ->
         Value = graph:get(State, value, 0),
         {ok, graph:set(State, is_high, Value > 50)}
     end,
-    HighFun = fun(State) -> {ok, graph:set(State, result, high)} end,
-    LowFun = fun(State) -> {ok, graph:set(State, result, low)} end,
+    HighFun = fun(State, _) -> {ok, graph:set(State, result, high)} end,
+    LowFun = fun(State, _) -> {ok, graph:set(State, result, low)} end,
 
     Router = fun(State) ->
         case graph:get(State, is_high) of
@@ -227,7 +227,7 @@ engine_tests() ->
     ?assertEqual(low, graph:get(maps:get(final_state, LowResult), result)),
 
     %% 循环流程
-    LoopFun = fun(State) ->
+    LoopFun = fun(State, _) ->
         Count = graph:get(State, count, 0),
         {ok, graph:set(State, count, Count + 1)}
     end,
@@ -269,9 +269,9 @@ engine_tests() ->
 
 integration_tests() ->
     %% 线性工作流: A -> B -> C -> END
-    NodeA = fun(S) -> {ok, graph:set(S, history, [a | graph:get(S, history, [])])} end,
-    NodeB = fun(S) -> {ok, graph:set(S, history, [b | graph:get(S, history, [])])} end,
-    NodeC = fun(S) -> {ok, graph:set(S, history, [c | graph:get(S, history, [])])} end,
+    NodeA = fun(S, _) -> {ok, graph:set(S, history, [a | graph:get(S, history, [])])} end,
+    NodeB = fun(S, _) -> {ok, graph:set(S, history, [b | graph:get(S, history, [])])} end,
+    NodeC = fun(S, _) -> {ok, graph:set(S, history, [c | graph:get(S, history, [])])} end,
 
     I1 = graph:builder(),
     I2 = graph:add_node(I1, node_a, NodeA),
@@ -289,7 +289,7 @@ integration_tests() ->
     ?assertEqual([c, b, a], History),
 
     %% 类 Agent 流程
-    ParseFun = fun(State) ->
+    ParseFun = fun(State, _) ->
         Input = graph:get(State, input, <<>>),
         Intent = case binary:match(Input, <<"search">>) of
             nomatch -> chat;
@@ -305,11 +305,11 @@ integration_tests() ->
         end
     end,
 
-    ToolFun = fun(State) ->
+    ToolFun = fun(State, _) ->
         {ok, graph:set(State, tool_result, <<"Found results">>)}
     end,
 
-    RespondFun = fun(State) ->
+    RespondFun = fun(State, _) ->
         ToolResult = graph:get(State, tool_result, undefined),
         Response = case ToolResult of
             undefined -> <<"Hello!">>;
@@ -346,7 +346,7 @@ integration_tests() ->
 
 pregel_integration_tests() ->
     %% 测试 Pregel 图直接生成
-    ProcessFun = fun(State) ->
+    ProcessFun = fun(State, _) ->
         Value = graph:get(State, value, 0),
         {ok, graph:set(State, value, Value * 2)}
     end,
@@ -380,7 +380,7 @@ pregel_integration_tests() ->
 
 dual_engine_tests() ->
     %% 构建简单图
-    DoubleFun = fun(State) ->
+    DoubleFun = fun(State, _) ->
         Value = graph:get(State, value, 0),
         {ok, graph:set(State, value, Value * 2)}
     end,
@@ -399,12 +399,12 @@ dual_engine_tests() ->
     ?assertEqual(10, graph:get(maps:get(final_state, PregelResult), value)),
 
     %% 测试 Pregel 引擎的条件流程
-    CheckFun = fun(State) ->
+    CheckFun = fun(State, _) ->
         Value = graph:get(State, input, 0),
         {ok, graph:set(State, is_large, Value > 100)}
     end,
-    LargeFun = fun(State) -> {ok, graph:set(State, result, large)} end,
-    SmallFun = fun(State) -> {ok, graph:set(State, result, small)} end,
+    LargeFun = fun(State, _) -> {ok, graph:set(State, result, large)} end,
+    SmallFun = fun(State, _) -> {ok, graph:set(State, result, small)} end,
 
     Router = fun(State) ->
         case graph:get(State, is_large) of
@@ -443,7 +443,7 @@ graph_compute_tests() ->
     ?assert(is_function(ComputeFn, 1)),
 
     %% 构建一个简单图用于测试
-    ProcessFun = fun(State) ->
+    ProcessFun = fun(State, _) ->
         Value = graph:get(State, value, 0),
         {ok, graph:set(State, value, Value + 1)}
     end,
@@ -481,8 +481,8 @@ graph_compute_tests() ->
 
 pregel_graph_generation_tests() ->
     %% 测试 compile/1 直接生成 Pregel 图
-    NodeA = fun(S) -> {ok, graph:set(S, a_done, true)} end,
-    NodeB = fun(S) -> {ok, graph:set(S, b_done, true)} end,
+    NodeA = fun(S, _) -> {ok, graph:set(S, a_done, true)} end,
+    NodeB = fun(S, _) -> {ok, graph:set(S, b_done, true)} end,
 
     B1 = graph:builder(),
     B2 = graph:add_node(B1, node_a, NodeA),
@@ -532,16 +532,16 @@ pregel_graph_generation_tests() ->
 
 fanout_parallel_tests() ->
     %% 测试 fanout 边实现的并行执行
-    ExpertA = fun(S) ->
+    ExpertA = fun(S, _) ->
         {ok, graph:set(S, expert_a_result, <<"A分析完成">>)}
     end,
-    ExpertB = fun(S) ->
+    ExpertB = fun(S, _) ->
         {ok, graph:set(S, expert_b_result, <<"B分析完成">>)}
     end,
-    ExpertC = fun(S) ->
+    ExpertC = fun(S, _) ->
         {ok, graph:set(S, expert_c_result, <<"C分析完成">>)}
     end,
-    Synthesize = fun(S) ->
+    Synthesize = fun(S, _) ->
         ResultA = graph:get(S, expert_a_result, <<>>),
         ResultB = graph:get(S, expert_b_result, <<>>),
         ResultC = graph:get(S, expert_c_result, <<>>),
@@ -567,7 +567,7 @@ fanout_parallel_tests() ->
     %% 设置入口为 __start__ 的下一跳（通过 fanout）
     %% 注意：fanout 从 __start__ 出发，所以需要设置一个虚拟入口或直接用 fanout
     %% 实际上我们需要一个 dispatcher 节点
-    Dispatcher = fun(S) -> {ok, S} end,
+    Dispatcher = fun(S, _) -> {ok, S} end,
     B11 = graph:add_node(B10, dispatcher, Dispatcher),
     B12 = graph:set_entry(B11, dispatcher),
     B13 = graph:add_fanout_edge(B12, dispatcher, [expert_a, expert_b, expert_c]),
@@ -598,13 +598,13 @@ fanout_parallel_tests() ->
 
 state_merge_tests() ->
     %% 测试并行分支的状态合并
-    BranchA = fun(S) ->
+    BranchA = fun(S, _) ->
         {ok, graph:set(S, branch_a, <<"result_a">>)}
     end,
-    BranchB = fun(S) ->
+    BranchB = fun(S, _) ->
         {ok, graph:set(S, branch_b, <<"result_b">>)}
     end,
-    Merge = fun(S) ->
+    Merge = fun(S, _) ->
         A = graph:get(S, branch_a, <<"missing">>),
         B = graph:get(S, branch_b, <<"missing">>),
         {ok, graph:set(S, merged, <<A/binary, "+", B/binary>>)}
@@ -616,7 +616,7 @@ state_merge_tests() ->
     B4 = graph:add_node(B3, merge_node, Merge),
 
     %% 分发节点
-    Dispatch = fun(S) -> {ok, S} end,
+    Dispatch = fun(S, _) -> {ok, S} end,
     B5 = graph:add_node(B4, dispatch, Dispatch),
     B6 = graph:set_entry(B5, dispatch),
     B7 = graph:add_fanout_edge(B6, dispatch, [branch_a, branch_b]),
@@ -643,7 +643,7 @@ state_merge_tests() ->
 
 error_handling_tests() ->
     %% 测试节点执行错误
-    ErrorNode = fun(_S) ->
+    ErrorNode = fun(_S, _) ->
         {error, simulated_error}
     end,
 
@@ -658,7 +658,7 @@ error_handling_tests() ->
     ?assertEqual(error, maps:get(status, Result)),
 
     %% 测试最大迭代次数限制
-    LoopNode = fun(S) ->
+    LoopNode = fun(S, _) ->
         Count = graph:get(S, count, 0),
         {ok, graph:set(S, count, Count + 1)}
     end,
@@ -683,13 +683,13 @@ complex_workflow_tests() ->
     %% 模拟 ReAct Agent 工作流
     %% Parse -> Plan -> [Tool | Respond] -> Check -> [Plan | End]
 
-    Parse = fun(S) ->
+    Parse = fun(S, _) ->
         Input = graph:get(S, input, <<>>),
         NeedsTool = binary:match(Input, <<"search">>) =/= nomatch,
         {ok, graph:set(S, needs_tool, NeedsTool)}
     end,
 
-    Plan = fun(S) ->
+    Plan = fun(S, _) ->
         NeedsTool = graph:get(S, needs_tool, false),
         ToolCalls = graph:get(S, tool_calls, 0),
         Action = case {NeedsTool, ToolCalls} of
@@ -699,14 +699,14 @@ complex_workflow_tests() ->
         {ok, graph:set(S, action, Action)}
     end,
 
-    Tool = fun(S) ->
+    Tool = fun(S, _) ->
         ToolCalls = graph:get(S, tool_calls, 0),
         S1 = graph:set(S, tool_result, <<"search_result">>),
         S2 = graph:set(S1, tool_calls, ToolCalls + 1),
         {ok, S2}
     end,
 
-    Respond = fun(S) ->
+    Respond = fun(S, _) ->
         ToolResult = graph:get(S, tool_result, undefined),
         Response = case ToolResult of
             undefined -> <<"Hello!">>;
@@ -715,7 +715,7 @@ complex_workflow_tests() ->
         {ok, graph:set(S, response, Response)}
     end,
 
-    Check = fun(S) ->
+    Check = fun(S, _) ->
         ToolCalls = graph:get(S, tool_calls, 0),
         IsComplete = ToolCalls > 0 orelse graph:get(S, response) =/= undefined,
         {ok, graph:set(S, is_complete, IsComplete)}

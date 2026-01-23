@@ -79,11 +79,11 @@ run_with_engine(Engine) ->
 
 build_react_agent_graph() ->
     %% 节点函数定义
-    ParseFun = fun parse_intent/1,
-    PlanFun = fun plan_actions/1,
-    ToolFun = fun execute_tool/1,
-    CheckFun = fun check_completion/1,
-    RespondFun = fun generate_response/1,
+    ParseFun = fun parse_intent/2,
+    PlanFun = fun plan_actions/2,
+    ToolFun = fun execute_tool/2,
+    CheckFun = fun check_completion/2,
+    RespondFun = fun generate_response/2,
 
     %% 路由函数
     PlanRouter = fun(State) ->
@@ -126,7 +126,7 @@ build_react_agent_graph() ->
 %%====================================================================
 
 %% 解析用户意图
-parse_intent(State) ->
+parse_intent(State, _VertexInput) ->
     Input = graph:get(State, input, <<>>),
 
     %% 简单的意图识别
@@ -144,7 +144,7 @@ parse_intent(State) ->
     {ok, State3}.
 
 %% 规划执行动作
-plan_actions(State) ->
+plan_actions(State, _VertexInput) ->
     Intents = graph:get(State, intents, []),
     CurrentStep = graph:get(State, current_step, 0),
     ToolResults = graph:get(State, tool_results, []),
@@ -166,7 +166,7 @@ plan_actions(State) ->
     {ok, State3}.
 
 %% 执行工具
-execute_tool(State) ->
+execute_tool(State, _VertexInput) ->
     ToolName = graph:get(State, next_tool),
     ToolArgs = graph:get(State, tool_args, #{}),
     ToolCalls = graph:get(State, tool_calls, 0),
@@ -188,7 +188,7 @@ execute_tool(State) ->
     {ok, State3}.
 
 %% 检查是否完成
-check_completion(State) ->
+check_completion(State, _VertexInput) ->
     Intents = graph:get(State, intents, []),
     ToolResults = graph:get(State, tool_results, []),
     ToolCalls = graph:get(State, tool_calls, 0),
@@ -203,7 +203,7 @@ check_completion(State) ->
     {ok, State1}.
 
 %% 生成最终响应
-generate_response(State) ->
+generate_response(State, _VertexInput) ->
     Intents = graph:get(State, intents, []),
     ToolResults = graph:get(State, tool_results, []),
     Input = graph:get(State, input, <<>>),

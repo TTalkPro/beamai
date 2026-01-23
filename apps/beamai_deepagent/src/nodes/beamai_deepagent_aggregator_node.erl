@@ -39,9 +39,9 @@
 %% @doc 创建聚合节点
 %%
 %% 返回一个节点函数，用于聚合并行子任务的结果。
--spec make_aggregate_node() -> fun((graph_state:state()) -> {ok, graph_state:state()}).
+-spec make_aggregate_node() -> fun((graph_state:state(), map() | undefined) -> {ok, graph_state:state()}).
 make_aggregate_node() ->
-    fun execute_aggregate/1.
+    fun(S, _) -> execute_aggregate(S) end.
 
 %%====================================================================
 %% 节点执行

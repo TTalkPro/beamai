@@ -43,7 +43,7 @@
 %% 类型定义
 %%====================================================================
 
--type node_fun() :: fun((graph_state:state()) ->
+-type node_fun() :: fun((graph_state:state(), map() | undefined) ->
     {ok, graph_state:state()} | {error, term()}).
 
 %%====================================================================
@@ -56,7 +56,7 @@
 %% 流程：构建消息 -> 调用 LLM -> 提取工具调用 -> 更新状态
 -spec create(map()) -> node_fun().
 create(Config) ->
-    fun(State) -> execute_llm_node(Config, State) end.
+    fun(State, _VertexInput) -> execute_llm_node(Config, State) end.
 
 %%====================================================================
 %% 工具规格构建

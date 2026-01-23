@@ -23,13 +23,13 @@
 
 %% API
 -export([start_link/2, stop/1]).
--export([start_superstep/3]).
+-export([start_superstep/3, start_superstep/4]).
 -export([get_state/1, get_vertices/1]).
 -export([retry_vertices/2]).
 -export([update_global_state/2]).
 
 %% 内部函数导出（用于测试）
--export([compute_vertices/5]).
+-export([compute_vertices/6]).
 
 %% gen_server 回调
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -65,6 +65,7 @@
     vertex_id := vertex_id(),
     vertex := vertex(),                 %% 完整顶点（扁平化结构）
     global_state := graph_state:state(),
+    vertex_input := map() | undefined,  %% dispatch 分发的输入参数
     superstep := non_neg_integer(),
     num_vertices := non_neg_integer()
 }.
@@ -131,7 +132,12 @@ stop(Pid) ->
 %% Activations: 本 Worker 需要激活的顶点ID列表
 -spec start_superstep(pid(), non_neg_integer(), [vertex_id()]) -> ok.
 start_superstep(Pid, Superstep, Activations) ->
-    gen_server:cast(Pid, {start_superstep, Superstep, Activations}).
+    start_superstep(Pid, Superstep, Activations, #{}).
+
+%% @doc 开始新的超步（带 VertexInputs）
+-spec start_superstep(pid(), non_neg_integer(), [vertex_id()], pregel_superstep:vertex_inputs()) -> ok.
+start_superstep(Pid, Superstep, Activations, VertexInputs) ->
+    gen_server:cast(Pid, {start_superstep, Superstep, Activations, VertexInputs}).
 
 %% @doc 更新全局状态（由 Master 广播调用）
 -spec update_global_state(pid(), graph_state:state()) -> ok.
@@ -197,8 +203,8 @@ handle_call({retry_vertices, VertexIds}, _From, State) ->
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
-handle_cast({start_superstep, Superstep, Activations}, State) ->
-    NewState = execute_superstep(Activations, State#state{superstep = Superstep}),
+handle_cast({start_superstep, Superstep, Activations, VertexInputs}, State) ->
+    NewState = execute_superstep(Activations, VertexInputs, State#state{superstep = Superstep}),
     {noreply, NewState};
 
 handle_cast({global_state, GlobalState}, State) ->
@@ -224,8 +230,8 @@ terminate(_Reason, _State) ->
 %% - Activations 参数指定要激活的顶点
 %% - 计算函数从 global_state 读取数据
 %% - 计算函数返回 delta 和 activations
--spec execute_superstep([vertex_id()], #state{}) -> #state{}.
-execute_superstep(Activations, #state{
+-spec execute_superstep([vertex_id()], pregel_superstep:vertex_inputs(), #state{}) -> #state{}.
+execute_superstep(Activations, VertexInputs, #state{
     vertices = Vertices,
     compute_fn = ComputeFn,
     superstep = Superstep,
@@ -237,7 +243,7 @@ execute_superstep(Activations, #state{
 
     %% 2. 执行所有顶点计算（vertex value 包含 node 和 edges）
     {Deltas, NewActivations, FailedVertices, InterruptedVertices} = compute_vertices(
-        ActiveVertices, ComputeFn, Superstep, NumVertices, GlobalState
+        ActiveVertices, ComputeFn, Superstep, NumVertices, GlobalState, VertexInputs
     ),
 
     %% 3. 更新顶点状态（halt 计算完成的顶点）
@@ -267,21 +273,34 @@ filter_active_vertices(Vertices, Activations) ->
 %%
 %% 无 inbox 版本：计算函数不再接收 messages 参数
 %% 扁平化模式：vertex 直接包含 fun_/metadata/routing_edges
+%% VertexInputs: dispatch 分发的输入参数
 -spec compute_vertices(
     ActiveVertices :: #{vertex_id() => vertex()},
     ComputeFn :: fun((context()) -> compute_result()),
     Superstep :: non_neg_integer(),
     NumVertices :: non_neg_integer(),
-    GlobalState :: graph_state:state()
+    GlobalState :: graph_state:state(),
+    VertexInputs :: pregel_superstep:vertex_inputs()
 ) -> compute_acc().
-compute_vertices(ActiveVertices, ComputeFn, Superstep, NumVertices, GlobalState) ->
+compute_vertices(ActiveVertices, ComputeFn, Superstep, NumVertices, GlobalState, VertexInputs) ->
     InitAcc = {[], [], [], []},  %% {Deltas, Activations, Failed, Interrupted}
     maps:fold(
         fun(Id, Vertex, Acc) ->
-            %% 传递完整顶点（扁平化结构）
-            Context = make_context(Id, Vertex, GlobalState, Superstep, NumVertices),
-            Result = ComputeFn(Context),
-            process_compute_result(Id, Result, Acc)
+            case maps:get(Id, VertexInputs, []) of
+                [] ->
+                    %% 无 dispatch 输入，普通执行
+                    Context = make_context(Id, Vertex, GlobalState, undefined, Superstep, NumVertices),
+                    Result = ComputeFn(Context),
+                    process_compute_result(Id, Result, Acc);
+                Dispatches ->
+                    %% 有 dispatch 输入，每个 dispatch 执行一次
+                    lists:foldl(fun(D, InnerAcc) ->
+                        Input = graph_dispatch:get_input(D),
+                        Context = make_context(Id, Vertex, GlobalState, Input, Superstep, NumVertices),
+                        Result = ComputeFn(Context),
+                        process_compute_result(Id, Result, InnerAcc)
+                    end, Acc, Dispatches)
+            end
         end,
         InitAcc,
         ActiveVertices
@@ -314,12 +333,13 @@ process_compute_result(Id, #{status := {interrupt, Reason}} = Result,
 %% @private 创建计算上下文
 %% 扁平化模式：传递完整顶点，包含 fun_/metadata/routing_edges
 -spec make_context(vertex_id(), vertex(), graph_state:state(),
-                   non_neg_integer(), non_neg_integer()) -> context().
-make_context(VertexId, Vertex, GlobalState, Superstep, NumVertices) ->
+                   map() | undefined, non_neg_integer(), non_neg_integer()) -> context().
+make_context(VertexId, Vertex, GlobalState, VertexInput, Superstep, NumVertices) ->
     #{
         vertex_id => VertexId,
         vertex => Vertex,
         global_state => GlobalState,
+        vertex_input => VertexInput,
         superstep => Superstep,
         num_vertices => NumVertices
     }.
@@ -415,7 +435,7 @@ do_retry_vertices(VertexIds, #state{
 
     %% 3. 执行顶点计算（vertex value 已包含 node 和 edges）
     {Deltas, Activations, FailedVertices, InterruptedVertices} = compute_vertices(
-        RetryVertices, ComputeFn, Superstep, NumVertices, GlobalState
+        RetryVertices, ComputeFn, Superstep, NumVertices, GlobalState, #{}
     ),
 
     %% 4. 构建结果

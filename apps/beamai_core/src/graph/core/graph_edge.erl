@@ -145,7 +145,7 @@ resolve_conditional(#{router := Router} = Edge, State) ->
 %% 1. 单一节点 (atom)
 %% 2. 节点列表 (静态并行)
 %% 3. Send 列表 (动态并行，每个 Send 有独立状态)
--spec apply_route_map(edge(), term()) -> {ok, node_id() | [node_id()] | {sends, [graph_send:send()]}} | {error, term()}.
+-spec apply_route_map(edge(), term()) -> {ok, node_id() | [node_id()] | {dispatches, [graph_dispatch:dispatch()]}} | {error, term()}.
 apply_route_map(#{route_map := RouteMap}, Key) ->
     case maps:find(Key, RouteMap) of
         {ok, Target} -> {ok, Target};
@@ -155,10 +155,10 @@ apply_route_map(_Edge, NodeId) when is_atom(NodeId) ->
     {ok, NodeId};
 apply_route_map(_Edge, [First | _] = Result) ->
     %% 判断是节点列表还是 Send 列表
-    case graph_send:is_send(First) of
+    case graph_dispatch:is_dispatch(First) of
         true ->
-            %% Send 列表 - 动态并行分发
-            {ok, {sends, Result}};
+            %% Dispatch 列表 - 动态并行分发
+            {ok, {dispatches, Result}};
         false when is_atom(First) ->
             %% 节点列表 - 静态并行
             {ok, Result};
@@ -170,8 +170,8 @@ apply_route_map(_Edge, []) ->
     {ok, '__end__'};
 apply_route_map(_Edge, Other) ->
     %% 检查是否是单个 Send
-    case graph_send:is_send(Other) of
-        true -> {ok, {sends, [Other]}};
+    case graph_dispatch:is_dispatch(Other) of
+        true -> {ok, {dispatches, [Other]}};
         false -> {error, {invalid_router_result, Other}}
     end.
 

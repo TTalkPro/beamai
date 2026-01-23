@@ -48,7 +48,7 @@
         graph_edge,
         graph_node,
         graph_runner,
-        graph_send,
+        graph_dispatch,
         graph_state,
         %% Pregel
         pregel,

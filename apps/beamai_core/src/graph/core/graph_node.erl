@@ -29,7 +29,7 @@
 
 %% 类型定义
 -type node_id() :: atom().
--type node_fun() :: fun((graph_state:state()) -> node_result()).
+-type node_fun() :: fun((graph_state:state(), map() | undefined) -> node_result()).
 %% 节点返回值类型：
 %% - {ok, State}: 执行成功
 %% - {error, Reason}: 执行失败
@@ -67,7 +67,7 @@ new(Id, Fun) ->
 
 %% @doc 创建带元数据的新节点
 -spec new(node_id(), node_fun(), metadata()) -> graph_node().
-new(Id, Fun, Metadata) when is_atom(Id), is_function(Fun, 1) ->
+new(Id, Fun, Metadata) when is_atom(Id), is_function(Fun, 2) ->
     #{
         id => Id,
         fun_ => Fun,
@@ -111,7 +111,7 @@ execute(#{fun_ := Fun} = Node, State) ->
 %% 捕获所有异常并包装为错误
 -spec try_execute(graph_node(), node_fun(), graph_state:state()) -> node_result().
 try_execute(Node, Fun, State) ->
-    try Fun(State) of
+    try Fun(State, undefined) of
         {ok, NewState} when is_map(NewState) ->
             {ok, NewState};
         {interrupt, Reason, NewState} when is_map(NewState) ->
@@ -132,12 +132,12 @@ try_execute(Node, Fun, State) ->
 %% @doc 创建起始节点 (图入口)
 -spec start_node() -> graph_node().
 start_node() ->
-    new(?START_NODE, fun(S) -> {ok, S} end, #{description => <<"图入口点"/utf8>>}).
+    new(?START_NODE, fun(S, _) -> {ok, S} end, #{description => <<"图入口点"/utf8>>}).
 
 %% @doc 创建终止节点 (图出口)
 -spec end_node() -> graph_node().
 end_node() ->
-    new(?END_NODE, fun(S) -> {ok, S} end, #{description => <<"图出口点"/utf8>>}).
+    new(?END_NODE, fun(S, _) -> {ok, S} end, #{description => <<"图出口点"/utf8>>}).
 
 %% @doc 检查是否为起始节点
 -spec is_start(graph_node() | node_id()) -> boolean().
@@ -157,7 +157,7 @@ is_end(_) -> false.
 
 %% @doc 验证节点结构是否有效
 -spec is_valid(term()) -> boolean().
-is_valid(#{id := Id, fun_ := Fun}) when is_atom(Id), is_function(Fun, 1) ->
+is_valid(#{id := Id, fun_ := Fun}) when is_atom(Id), is_function(Fun, 2) ->
     true;
 is_valid(_) ->
     false.

@@ -153,6 +153,7 @@ handle_regular_node(Ctx, GlobalState) ->
     pregel_worker:compute_result().
 execute_and_route(Ctx, GlobalState, Vertex) ->
     #{vertex_id := VertexId} = Ctx,
+    VertexInput = maps:get(vertex_input, Ctx, undefined),
     %% 使用扁平化访问器获取属性
     Fun = pregel_vertex:fun_(Vertex),
     RoutingEdges = pregel_vertex:routing_edges(Vertex),
@@ -163,14 +164,14 @@ execute_and_route(Ctx, GlobalState, Vertex) ->
             route_to_next(GlobalState, RoutingEdges);
         _ ->
             %% 执行节点函数
-            execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges)
+            execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput)
     end.
 
 %% @private 执行节点函数并路由
--spec execute_fun_and_route(pregel_vertex:vertex_id(), term(), graph_state:state(), list()) ->
+-spec execute_fun_and_route(pregel_vertex:vertex_id(), term(), graph_state:state(), list(), map() | undefined) ->
     pregel_worker:compute_result().
-execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges) ->
-    try Fun(GlobalState) of
+execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput) ->
+    try Fun(GlobalState, VertexInput) of
         {ok, NewState} ->
             %% 成功：计算 delta，激活下游顶点
             Delta = compute_delta(GlobalState, NewState),
@@ -224,8 +225,8 @@ compute_delta(OldState, NewState) ->
 
 %% @private 构建要激活的顶点列表
 %%
-%% 无 inbox 版本：返回顶点ID列表而不是消息元组
--spec build_activations([graph_edge:edge()], graph_state:state()) -> [atom()].
+%% 无 inbox 版本：返回顶点ID列表或 dispatch 项
+-spec build_activations([graph_edge:edge()], graph_state:state()) -> [atom() | {dispatch, graph_dispatch:dispatch()}].
 build_activations([], _State) ->
     %% 无边，激活终止节点
     [?END_NODE];
@@ -237,6 +238,8 @@ build_activations(Edges, State) ->
                     [TargetNode | Acc];
                 {ok, TargetNodes} when is_list(TargetNodes) ->
                     TargetNodes ++ Acc;
+                {ok, {dispatches, DispatchList}} ->
+                    [{dispatch, D} || D <- DispatchList] ++ Acc;
                 {error, _} ->
                     Acc
             end

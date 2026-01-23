@@ -27,17 +27,21 @@
     build_superstep_info/2,
     determine_checkpoint_type/1,
     get_activations_for_superstep/2,
-    group_activations_by_worker/2
+    group_activations_by_worker/2,
+    separate_dispatches/1,
+    build_vertex_inputs/1,
+    group_vertex_inputs_by_worker/2
 ]).
 
 %% === 类型定义 ===
 -type vertex_id() :: pregel_vertex:vertex_id().
+-type vertex_inputs() :: #{vertex_id() => [graph_dispatch:dispatch()]}.
 -type checkpoint_type() :: initial | step | error | interrupt | final.
 -type superstep_info() :: pregel_master:superstep_info().
 -type field_reducers() :: pregel_master:field_reducers().
 -type delta() :: pregel_master:delta().
 
--export_type([checkpoint_type/0]).
+-export_type([checkpoint_type/0, vertex_inputs/0]).
 
 %%====================================================================
 %% API
@@ -238,3 +242,36 @@ group_activations_by_worker(Activations, NumWorkers) ->
         #{},
         Activations
     ).
+
+%%====================================================================
+%% Dispatch 处理
+%%====================================================================
+
+%% @doc 从激活列表中分离 dispatch 项
+%%
+%% 将混合列表分为 dispatch 项和普通 vertex_id 项。
+-spec separate_dispatches([term()]) -> {[{dispatch, graph_dispatch:dispatch()}], [vertex_id()]}.
+separate_dispatches(Activations) ->
+    lists:partition(fun({dispatch, _}) -> true; (_) -> false end, Activations).
+
+%% @doc 将 dispatch 列表转为 VertexInputs 格式
+%%
+%% 按目标节点分组：#{NodeId => [Dispatch1, Dispatch2, ...]}
+-spec build_vertex_inputs([{dispatch, graph_dispatch:dispatch()}]) -> vertex_inputs().
+build_vertex_inputs(Dispatches) ->
+    lists:foldl(fun({dispatch, D}, Acc) ->
+        NodeId = graph_dispatch:get_node(D),
+        Existing = maps:get(NodeId, Acc, []),
+        Acc#{NodeId => Existing ++ [D]}
+    end, #{}, Dispatches).
+
+%% @doc VertexInputs 按 Worker 分组
+%%
+%% 将 VertexInputs 按顶点所属的 Worker 分组。
+-spec group_vertex_inputs_by_worker(vertex_inputs(), pos_integer()) -> #{non_neg_integer() => vertex_inputs()}.
+group_vertex_inputs_by_worker(VertexInputs, NumWorkers) ->
+    maps:fold(fun(NodeId, Dispatches, Acc) ->
+        WorkerId = pregel_partition:worker_id(NodeId, NumWorkers, hash),
+        WorkerVI = maps:get(WorkerId, Acc, #{}),
+        Acc#{WorkerId => WorkerVI#{NodeId => Dispatches}}
+    end, #{}, VertexInputs).

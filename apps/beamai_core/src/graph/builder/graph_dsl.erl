@@ -39,7 +39,7 @@
 %% 类型定义
 -type node_id() :: atom().
 -type node_fun() :: fun((map()) -> {ok, map()} | {error, term()}).
--type router_fun() :: fun((map()) -> node_id() | [node_id()] | [graph_send:send()]).
+-type router_fun() :: fun((map()) -> node_id() | [node_id()] | [graph_dispatch:dispatch()]).
 
 -type dsl_element() ::
     {node, node_id(), node_fun()} |

@@ -6,7 +6,7 @@
 %%% 核心特性：
 %%% - 图驱动执行：所有 Agent 逻辑用图节点和边表示
 %%% - 动态图构建：create_plan 工具动态生成任务子图
-%%% - 并行优先：使用 graph_send:fan_out 实现子任务并行
+%%% - 并行优先：使用 graph_dispatch:fan_out 实现子任务并行
 %%% - 状态即消息：使用 graph_state 替代 gen_server 状态
 %%%
 %%% 使用示例：

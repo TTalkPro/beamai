@@ -38,7 +38,7 @@
 %% 类型定义
 %%====================================================================
 
--type node_fun() :: fun((graph_state:state()) -> {ok, graph_state:state()}).
+-type node_fun() :: fun((graph_state:state(), map() | undefined) -> {ok, graph_state:state()}).
 
 %%====================================================================
 %% 节点构造器
@@ -50,7 +50,7 @@
 %% 流程：获取待处理工具 -> 逐个执行 -> 收集结果 -> 更新消息
 -spec create(map()) -> node_fun().
 create(Config) ->
-    fun(State) -> execute_tool_node(Config, State) end.
+    fun(State, _VertexInput) -> execute_tool_node(Config, State) end.
 
 %%====================================================================
 %% 工具执行 API

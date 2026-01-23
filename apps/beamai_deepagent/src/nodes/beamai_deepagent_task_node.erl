@@ -32,19 +32,23 @@
 %% @doc 创建任务执行器节点
 %%
 %% 返回一个节点函数，用于执行单个子任务。
--spec make_task_executor(map()) -> fun((graph_state:state()) -> {ok, graph_state:state()}).
+-spec make_task_executor(map()) -> fun((graph_state:state(), map() | undefined) -> {ok, graph_state:state()}).
 make_task_executor(Config) ->
-    fun(State) -> execute_task(State, Config) end.
+    fun(State, VertexInput) -> execute_task(State, Config, VertexInput) end.
 
 %%====================================================================
 %% 节点执行
 %%====================================================================
 
 %% @private 执行任务节点
--spec execute_task(graph_state:state(), map()) -> {ok, graph_state:state()}.
-execute_task(State, Config) ->
-    %% 1. 获取当前子任务
-    case state_get(State, current_subtask, undefined) of
+-spec execute_task(graph_state:state(), map(), map() | undefined) -> {ok, graph_state:state()}.
+execute_task(State, Config, VertexInput) ->
+    %% 1. 获取当前子任务（优先使用 VertexInput）
+    TaskDef0 = case VertexInput of
+        undefined -> state_get(State, current_subtask, undefined);
+        Input -> Input
+    end,
+    case TaskDef0 of
         undefined ->
             %% 没有待执行的子任务，直接返回
             {ok, State};

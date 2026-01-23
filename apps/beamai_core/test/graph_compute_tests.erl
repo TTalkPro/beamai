@@ -21,9 +21,10 @@ make_test_context(VertexId, GlobalState) ->
     #{
         vertex_id => VertexId,
         global_state => GlobalState,
+        vertex_input => undefined,
         superstep => 0,
         num_vertices => 1,
-        config => #{nodes => #{}}
+        vertex => pregel_vertex:new_flat(VertexId, undefined, #{}, [])
     }.
 
 %%====================================================================
@@ -51,23 +52,14 @@ compute_fn_exception_returns_error_status_test() ->
     %% 准备：创建一个配置了不存在节点的上下文
     %% 无 inbox 版本：节点被激活时直接执行
     GlobalState = #{},
+    ThrowFun = fun(_State, _) -> throw(intentional_error) end,
     Ctx = #{
         vertex_id => test_node,
         global_state => GlobalState,
+        vertex_input => undefined,
         superstep => 0,
         num_vertices => 1,
-        config => #{
-            nodes => #{
-                test_node => #{
-                    node => #{
-                        id => test_node,
-                        %% 缺少 function 或 function 会抛异常
-                        function => fun(_State) -> throw(intentional_error) end
-                    },
-                    edges => []
-                }
-            }
-        }
+        vertex => pregel_vertex:new_flat(test_node, ThrowFun, #{}, [])
     },
 
     %% 执行
@@ -109,15 +101,13 @@ start_node_activated_at_superstep_0_test() ->
     Ctx = #{
         vertex_id => '__start__',
         global_state => GlobalState,
+        vertex_input => undefined,
         superstep => 0,
         num_vertices => 3,
-        config => #{
-            nodes => #{
-                '__start__' => #{
-                    edges => [graph_edge:direct('__start__', next_node)]
-                }
-            }
-        }
+        vertex => pregel_vertex:new_flat(
+            '__start__', undefined, #{},
+            [graph_edge:direct('__start__', next_node)]
+        )
     },
 
     ComputeFn = graph_compute:compute_fn(),
@@ -135,13 +125,10 @@ end_node_completes_on_activate_test() ->
     Ctx = #{
         vertex_id => '__end__',
         global_state => GlobalState,
+        vertex_input => undefined,
         superstep => 1,
         num_vertices => 3,
-        config => #{
-            nodes => #{
-                '__end__' => #{}
-            }
-        }
+        vertex => pregel_vertex:new_flat('__end__', undefined, #{}, [])
     },
 
     ComputeFn = graph_compute:compute_fn(),
@@ -161,16 +148,10 @@ regular_node_activated_routes_test() ->
     Ctx = #{
         vertex_id => regular_node,
         global_state => GlobalState,
+        vertex_input => undefined,
         superstep => 1,
         num_vertices => 3,
-        config => #{
-            nodes => #{
-                regular_node => #{
-                    %% 无 node 定义，直接路由
-                    edges => []
-                }
-            }
-        }
+        vertex => pregel_vertex:new_flat(regular_node, undefined, #{}, [])
     },
 
     ComputeFn = graph_compute:compute_fn(),
