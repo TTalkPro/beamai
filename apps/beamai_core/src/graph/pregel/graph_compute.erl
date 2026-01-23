@@ -177,6 +177,9 @@ execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput) ->
             Delta = compute_delta(GlobalState, NewState),
             Activations = build_activations(RoutingEdges, NewState),
             #{delta => Delta, activations => Activations, status => ok};
+        {command, Cmd} when is_map(Cmd) ->
+            %% Command 模式：delta 直接使用，goto 覆盖路由
+            handle_command(Cmd, GlobalState, RoutingEdges);
         {interrupt, Reason, NewState} ->
             %% 中断：保存 delta，但不激活下游
             Delta = compute_delta(GlobalState, NewState),
@@ -218,6 +221,40 @@ compute_delta(OldState, NewState) ->
         #{},
         NewKeys
     ).
+
+%%====================================================================
+%% Command 处理
+%%====================================================================
+
+%% @private 处理 Command 返回值
+%%
+%% Command 的 update 直接作为 delta（跳过 compute_delta）
+%% Command 的 goto 覆盖边路由（undefined 时回退正常路由）
+-spec handle_command(graph_command:command(), graph_state:state(), list()) ->
+    pregel_worker:compute_result().
+handle_command(Cmd, GlobalState, RoutingEdges) ->
+    Delta = graph_command:get_update(Cmd),
+    Goto = graph_command:get_goto(Cmd),
+    Activations = resolve_goto(Goto, GlobalState, Delta, RoutingEdges),
+    #{delta => Delta, activations => Activations, status => ok}.
+
+%% @private 解析 goto 目标为 activations 列表
+-spec resolve_goto(graph_command:goto_target() | undefined, graph_state:state(), map(), list()) ->
+    [atom() | {dispatch, graph_dispatch:dispatch()}].
+resolve_goto(undefined, GlobalState, Delta, RoutingEdges) ->
+    %% 无 goto：合并 delta 到状态后使用正常边路由
+    MergedState = graph_state:set_many(GlobalState, Delta),
+    build_activations(RoutingEdges, MergedState);
+resolve_goto(Target, _, _, _) when is_atom(Target) ->
+    [Target];
+resolve_goto([], _, _, _) ->
+    ['__end__'];
+resolve_goto([First | _] = Targets, _, _, _) when is_atom(First) ->
+    Targets;
+resolve_goto([First | _] = Dispatches, _, _, _) when is_map(First) ->
+    [{dispatch, D} || D <- Dispatches];
+resolve_goto(Dispatch, _, _, _) when is_map(Dispatch) ->
+    [{dispatch, Dispatch}].
 
 %%====================================================================
 %% 激活构建

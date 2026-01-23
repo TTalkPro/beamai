@@ -34,9 +34,11 @@
 %% - {ok, State}: 执行成功
 %% - {error, Reason}: 执行失败
 %% - {interrupt, Reason, State}: 请求中断（human-in-the-loop）
+%% - {command, Command}: Command 模式（同时指定 delta 和路由）
 -type node_result() :: {ok, graph_state:state()}
                      | {error, term()}
-                     | {interrupt, term(), graph_state:state()}.
+                     | {interrupt, term(), graph_state:state()}
+                     | {command, graph_command:command()}.
 -type metadata() :: #{
     description => binary(),
     timeout => pos_integer(),
@@ -114,6 +116,11 @@ try_execute(Node, Fun, State) ->
     try Fun(State, undefined) of
         {ok, NewState} when is_map(NewState) ->
             {ok, NewState};
+        {command, Cmd} when is_map(Cmd) ->
+            case graph_command:is_command(Cmd) of
+                true -> {command, Cmd};
+                false -> {error, {invalid_command, id(Node), Cmd}}
+            end;
         {interrupt, Reason, NewState} when is_map(NewState) ->
             {interrupt, Reason, NewState};
         {error, Reason} ->

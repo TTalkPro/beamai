@@ -289,18 +289,47 @@ execute_step(Graph, Context) ->
     case execute_node(Graph, NodeId, State) of
         {ok, NewState} ->
             route_to_next(Graph, NodeId, NewState, Context, Iter);
+        {command, Cmd} ->
+            handle_command_step(Graph, NodeId, Cmd, State, Context, Iter);
         {error, Reason} ->
             {done, build_error_result(Reason, Context)}
     end.
 
 %% @doc 执行单个节点
--spec execute_node(graph(), node_id(), state()) -> {ok, state()} | {error, term()}.
+-spec execute_node(graph(), node_id(), state()) ->
+    {ok, state()} | {command, graph_command:command()} | {error, term()}.
 execute_node(#{nodes := Nodes}, NodeId, State) ->
     case maps:find(NodeId, Nodes) of
         {ok, Node} ->
             graph_node:execute(Node, State);
         error ->
             {error, {node_not_found, NodeId}}
+    end.
+
+%% @doc 处理 Command 模式的步进执行
+%%
+%% Command 的 update 直接应用为状态更新
+%% Command 的 goto 覆盖边路由
+-spec handle_command_step(graph(), node_id(), graph_command:command(),
+                          state(), execution_context(), non_neg_integer()) ->
+    {ok, execution_context()}.
+handle_command_step(Graph, NodeId, Cmd, OldState, Context, Iter) ->
+    Delta = graph_command:get_update(Cmd),
+    NewState = graph_state:set_many(OldState, Delta),
+    case graph_command:get_goto(Cmd) of
+        undefined ->
+            route_to_next(Graph, NodeId, NewState, Context, Iter);
+        Target when is_atom(Target) ->
+            NewContext = update_context(Context, NodeId, NewState, Target, Iter),
+            {ok, NewContext};
+        [First | _] when is_atom(First) ->
+            %% 多节点并行：legacy runner 仅支持取第一个
+            NewContext = update_context(Context, NodeId, NewState, First, Iter),
+            {ok, NewContext};
+        _ ->
+            %% Dispatch 在 legacy runner 中不支持，回退到 __end__
+            NewContext = update_context(Context, NodeId, NewState, '__end__', Iter),
+            {ok, NewContext}
     end.
 
 %% @doc 路由到下一个节点
