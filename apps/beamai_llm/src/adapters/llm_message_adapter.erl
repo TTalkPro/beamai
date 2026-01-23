@@ -65,7 +65,7 @@ to_openai(Messages) ->
     [to_openai_message(M) || M <- Messages].
 
 to_openai_message(#{role := Role, content := Content} = Msg) ->
-    Base = #{<<"role">> => atom_to_binary(Role), <<"content">> => Content},
+    Base = #{<<"role">> => to_binary_role(Role), <<"content">> => Content},
     Base1 = maybe_add_field(Base, <<"name">>, Msg, name),
     Base2 = maybe_add_field(Base1, <<"tool_call_id">>, Msg, tool_call_id),
     maybe_add_tool_calls_openai(Base2, Msg).
@@ -253,3 +253,8 @@ safe_binary_to_role(RoleBin) when is_binary(RoleBin) ->
             logger:info("Unknown role ~p, keeping as binary", [RoleBin]),
             RoleBin
     end.
+
+%% @private 将 role 转换为 binary，兼容 atom 和 binary 输入
+-spec to_binary_role(atom() | binary()) -> binary().
+to_binary_role(Role) when is_atom(Role) -> atom_to_binary(Role);
+to_binary_role(Role) when is_binary(Role) -> Role.

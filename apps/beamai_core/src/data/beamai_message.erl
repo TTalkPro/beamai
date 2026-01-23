@@ -172,7 +172,8 @@ safe_binary_to_type(TypeBin) when is_binary(TypeBin) ->
 %% @doc 将消息格式化为 LLM API 格式
 -spec format_for_llm(message()) -> map().
 format_for_llm(#{role := Role} = Msg) ->
-    Base = #{<<"role">> => atom_to_binary(Role)},
+    RoleBin = case is_atom(Role) of true -> atom_to_binary(Role); false -> Role end,
+    Base = #{<<"role">> => RoleBin},
     add_fields(Msg, Base, [content, name, tool_call_id, tool_calls]).
 
 %% @private 递归添加字段到格式化消息

@@ -48,12 +48,15 @@ init([]) ->
 %% @private 获取子进程规格
 %% 根据配置的 HTTP 后端决定是否启动连接池
 get_children() ->
-    case should_start_pool() of
-        true ->
-            [http_pool_spec()];
-        false ->
-            []
-    end.
+    HttpChildren = case should_start_pool() of
+        true -> [http_pool_spec()];
+        false -> []
+    end,
+    DispatchChildren = case should_start_dispatch_pool() of
+        true -> [dispatch_pool_spec()];
+        false -> []
+    end,
+    HttpChildren ++ DispatchChildren.
 
 %% @private 判断是否需要启动连接池
 %% 当配置使用 Gun 后端或者 Gun 可用时启动
@@ -81,3 +84,28 @@ http_pool_spec() ->
         type => worker,
         modules => [beamai_http_pool]
     }.
+
+%% @private 判断是否需要启动 dispatch 池
+should_start_dispatch_pool() ->
+    case application:get_env(beamai_core, dispatch_pool_enabled, true) of
+        false -> false;
+        true ->
+            case code:which(poolboy) of
+                non_existing -> false;
+                _ -> true
+            end
+    end.
+
+%% @private Dispatch 进程池子进程规格
+dispatch_pool_spec() ->
+    PoolConfig = application:get_env(beamai_core, dispatch_pool, #{}),
+    Size = maps:get(size, PoolConfig, 20),
+    MaxOverflow = maps:get(max_overflow, PoolConfig, 40),
+    PoolArgs = [
+        {name, {local, beamai_dispatch_pool}},
+        {worker_module, pregel_dispatch_worker},
+        {size, Size},
+        {max_overflow, MaxOverflow},
+        {strategy, fifo}
+    ],
+    poolboy:child_spec(beamai_dispatch_pool, PoolArgs, []).

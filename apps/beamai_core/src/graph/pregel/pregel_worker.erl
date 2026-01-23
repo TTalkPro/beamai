@@ -293,13 +293,21 @@ compute_vertices(ActiveVertices, ComputeFn, Superstep, NumVertices, GlobalState,
                     Result = ComputeFn(Context),
                     process_compute_result(Id, Result, Acc);
                 Dispatches ->
-                    %% 有 dispatch 输入，每个 dispatch 执行一次
-                    lists:foldl(fun(D, InnerAcc) ->
-                        Input = graph_dispatch:get_input(D),
-                        Context = make_context(Id, Vertex, GlobalState, Input, Superstep, NumVertices),
-                        Result = ComputeFn(Context),
-                        process_compute_result(Id, Result, InnerAcc)
-                    end, Acc, Dispatches)
+                    %% 有 dispatch 输入，根据池可用性决定并发或顺序执行
+                    case dispatch_pool_available(Dispatches) of
+                        false ->
+                            %% 顺序回退（单 dispatch 或池不可用）
+                            lists:foldl(fun(D, InnerAcc) ->
+                                Input = graph_dispatch:get_input(D),
+                                Context = make_context(Id, Vertex, GlobalState, Input, Superstep, NumVertices),
+                                Result = ComputeFn(Context),
+                                process_compute_result(Id, Result, InnerAcc)
+                            end, Acc, Dispatches);
+                        {true, PoolName, Timeout} ->
+                            execute_dispatches_concurrent(
+                                Id, Vertex, GlobalState, Superstep, NumVertices,
+                                ComputeFn, Dispatches, Acc, PoolName, Timeout)
+                    end
             end
         end,
         InitAcc,
@@ -343,6 +351,96 @@ make_context(VertexId, Vertex, GlobalState, VertexInput, Superstep, NumVertices)
         superstep => Superstep,
         num_vertices => NumVertices
     }.
+
+%%====================================================================
+%% Dispatch 并发执行
+%%====================================================================
+
+%% @private 检查 dispatch 池是否可用
+-spec dispatch_pool_available([term()]) -> false | {true, atom(), pos_integer()}.
+dispatch_pool_available(Dispatches) when length(Dispatches) =< 1 ->
+    false;
+dispatch_pool_available(_) ->
+    case whereis(beamai_dispatch_pool) of
+        undefined -> false;
+        _Pid ->
+            Timeout = application:get_env(beamai_core, dispatch_timeout, 30000),
+            {true, beamai_dispatch_pool, Timeout}
+    end.
+
+%% @private 并发执行 dispatches
+-spec execute_dispatches_concurrent(
+    vertex_id(), vertex(), graph_state:state(),
+    non_neg_integer(), non_neg_integer(),
+    fun((context()) -> compute_result()),
+    [term()], compute_acc(), atom(), pos_integer()
+) -> compute_acc().
+execute_dispatches_concurrent(Id, Vertex, GlobalState, Superstep, NumVertices,
+                              ComputeFn, Dispatches, Acc, PoolName, Timeout) ->
+    Parent = self(),
+    Ref = make_ref(),
+
+    %% 为每个 dispatch 启动 monitor 进程
+    PidRefs = lists:map(fun(D) ->
+        Input = graph_dispatch:get_input(D),
+        Context = make_context(Id, Vertex, GlobalState, Input, Superstep, NumVertices),
+        spawn_monitor(fun() ->
+            Result = execute_in_pool(ComputeFn, Context, PoolName, Timeout),
+            Parent ! {dispatch_result, Ref, self(), Result}
+        end)
+    end, Dispatches),
+
+    %% 统一回收结果
+    Deadline = erlang:monotonic_time(millisecond) + Timeout + 5000,
+    collect_dispatch_results(Id, PidRefs, Ref, Acc, Deadline).
+
+%% @private 在池中执行单个 dispatch
+-spec execute_in_pool(fun((map()) -> map()), map(), atom(), pos_integer()) ->
+    {ok, map()} | {error, term()}.
+execute_in_pool(ComputeFn, Context, PoolName, Timeout) ->
+    try
+        Worker = poolboy:checkout(PoolName, true, Timeout),
+        try
+            pregel_dispatch_worker:execute(Worker, ComputeFn, Context)
+        after
+            poolboy:checkin(PoolName, Worker)
+        end
+    catch
+        exit:{timeout, _} ->
+            {error, {dispatch_pool_timeout, Timeout}};
+        Class:Reason ->
+            {error, {dispatch_pool_error, {Class, Reason}}}
+    end.
+
+%% @private 回收所有 dispatch 结果
+-spec collect_dispatch_results(
+    vertex_id(), [{pid(), reference()}], reference(), compute_acc(), integer()
+) -> compute_acc().
+collect_dispatch_results(_Id, [], _Ref, Acc, _Deadline) ->
+    Acc;
+collect_dispatch_results(Id, [{Pid, MonRef} | Rest], Ref, Acc, Deadline) ->
+    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {dispatch_result, Ref, Pid, {ok, ComputeResult}} ->
+            erlang:demonitor(MonRef, [flush]),
+            NewAcc = process_compute_result(Id, ComputeResult, Acc),
+            collect_dispatch_results(Id, Rest, Ref, NewAcc, Deadline);
+        {dispatch_result, Ref, Pid, {error, Reason}} ->
+            erlang:demonitor(MonRef, [flush]),
+            ErrorResult = #{delta => #{}, activations => [], status => {error, Reason}},
+            NewAcc = process_compute_result(Id, ErrorResult, Acc),
+            collect_dispatch_results(Id, Rest, Ref, NewAcc, Deadline);
+        {'DOWN', MonRef, process, Pid, Reason} ->
+            ErrorResult = #{delta => #{}, activations => [], status => {error, {dispatch_crash, Reason}}},
+            NewAcc = process_compute_result(Id, ErrorResult, Acc),
+            collect_dispatch_results(Id, Rest, Ref, NewAcc, Deadline)
+    after Remaining ->
+        erlang:demonitor(MonRef, [flush]),
+        exit(Pid, kill),
+        ErrorResult = #{delta => #{}, activations => [], status => {error, dispatch_timeout}},
+        NewAcc = process_compute_result(Id, ErrorResult, Acc),
+        collect_dispatch_results(Id, Rest, Ref, NewAcc, Deadline)
+    end.
 
 %% @private 更新顶点状态
 -spec update_vertex_states(
