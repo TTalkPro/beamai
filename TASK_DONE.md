@@ -1,5 +1,27 @@
 # 已完成任务
 
+## P0: 新增 Dispatch / Command / Graph LLM 示例 ✅
+
+**完成日期**: 2026-01-23
+
+新增三个示例，展示 graph 层核心能力和两种 Provider 配置（GLM-4.6 zhipu_provider / GLM-4.7 anthropic_provider）。
+
+**新增文件**：
+- `examples/src/example_dispatch.erl` - 动态并行分发（fan_out + append_reducer）
+- `examples/src/example_command.erl` - Command 模式（goto 动态路由 + 审查重试循环）
+- `examples/src/example_graph_llm.erl` - 纯图执行 LLM + Tool 循环（条件边 + 工具调用）
+
+**覆盖的核心特性**：
+- `graph_dispatch:fan_out/3` - 动态创建并行分支
+- `graph_command:goto/2` - 同时指定 delta 和路由目标
+- `graph:add_conditional_edge/3` - 条件边路由
+- `field_reducers` (append_reducer) - 并行分支结果合并
+- 两种 Provider: `llm_client:create(zhipu, ...)` / `llm_client:create(anthropic, ...)`
+
+**测试**: Mock 模式和真实 LLM 调用均通过
+
+---
+
 ## P0: Graph 层全局状态模式重构 ✅
 
 **完成日期**: 2026-01-22
