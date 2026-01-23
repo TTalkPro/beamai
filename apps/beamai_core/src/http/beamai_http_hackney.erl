@@ -97,6 +97,13 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
 %%====================================================================
 
 %% @private 流式接收循环
+%%
+%% 处理 hackney 异步消息：
+%% - {status, Code, _}: HTTP 状态码，非 2xx 时关闭连接
+%% - {headers, _}: 响应头（忽略）
+%% - done: 流结束
+%% - Chunk (binary): 数据块，调用 Handler(Chunk, Acc)
+%%   返回 {continue, NewAcc} 继续接收，{done, FinalAcc} 关闭连接
 stream_receive_loop(ClientRef, Acc, Handler, Timeout) ->
     receive
         {hackney_response, ClientRef, {status, StatusCode, _Reason}} ->

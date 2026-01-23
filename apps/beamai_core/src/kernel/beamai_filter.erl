@@ -50,10 +50,25 @@
 %% API
 %%====================================================================
 
+%% @doc 创建过滤器（默认优先级 0）
+%%
+%% @param Name 过滤器名称（用于调试标识）
+%% @param Type 过滤器类型（pre_invocation | post_invocation | pre_chat | post_chat）
+%% @param Handler 过滤器处理函数，接收 filter_context，返回 filter_result
+%% @returns 过滤器定义 Map
 -spec new(binary(), filter_type(), fun((filter_context()) -> filter_result())) -> filter_def().
 new(Name, Type, Handler) ->
     new(Name, Type, Handler, 0).
 
+%% @doc 创建过滤器（指定优先级）
+%%
+%% 优先级数值越小越先执行。同优先级按注册顺序执行。
+%%
+%% @param Name 过滤器名称
+%% @param Type 过滤器类型
+%% @param Handler 处理函数
+%% @param Priority 优先级（整数，越小越先执行）
+%% @returns 过滤器定义 Map
 -spec new(binary(), filter_type(), fun((filter_context()) -> filter_result()), integer()) -> filter_def().
 new(Name, Type, Handler, Priority) ->
     #{
@@ -63,6 +78,18 @@ new(Name, Type, Handler, Priority) ->
         priority => Priority
     }.
 
+%% @doc 执行前置调用过滤器管道
+%%
+%% 依次执行所有 pre_invocation 类型的过滤器。
+%% 过滤器可修改参数（args）和上下文（context），
+%% 也可通过 {skip, Value} 直接跳过函数执行返回结果，
+%% 或通过 {error, Reason} 中止管道。
+%%
+%% @param Filters 过滤器列表
+%% @param FuncDef 即将被调用的函数定义
+%% @param Args 调用参数
+%% @param Context 执行上下文
+%% @returns {ok, 过滤后参数, 过滤后上下文} | {skip, 跳过值} | {error, 原因}
 -spec apply_pre_filters([filter_def()], beamai_function:function_def(), beamai_function:args(), beamai_context:t()) ->
     {ok, beamai_function:args(), beamai_context:t()} | {skip, term()} | {error, term()}.
 apply_pre_filters(Filters, FuncDef, Args, Context) ->
@@ -86,6 +113,16 @@ apply_pre_filters(Filters, FuncDef, Args, Context) ->
             {error, Reason}
     end.
 
+%% @doc 执行后置调用过滤器管道
+%%
+%% 依次执行所有 post_invocation 类型的过滤器。
+%% 过滤器可修改函数执行结果（result）和上下文（context）。
+%%
+%% @param Filters 过滤器列表
+%% @param FuncDef 已执行的函数定义
+%% @param Result 函数执行结果
+%% @param Context 执行上下文
+%% @returns {ok, 过滤后结果, 过滤后上下文} | {error, 原因}
 -spec apply_post_filters([filter_def()], beamai_function:function_def(), term(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
 apply_post_filters(Filters, FuncDef, Result, Context) ->
@@ -122,6 +159,15 @@ apply_post_filters_result(Filters, FuncDef, Value, Context) ->
         {error, _} = Err -> Err
     end.
 
+%% @doc 执行前置 Chat 过滤器管道
+%%
+%% 依次执行所有 pre_chat 类型的过滤器。
+%% 过滤器可修改消息列表（如注入 system 消息）和上下文。
+%%
+%% @param Filters 过滤器列表
+%% @param Messages 消息列表
+%% @param Context 执行上下文
+%% @returns {ok, 过滤后消息列表, 过滤后上下文} | {error, 原因}
 -spec apply_pre_chat_filters([filter_def()], [beamai_context:message()], beamai_context:t()) ->
     {ok, [beamai_context:message()], beamai_context:t()} | {error, term()}.
 apply_pre_chat_filters(Filters, Messages, Context) ->
@@ -142,6 +188,15 @@ apply_pre_chat_filters(Filters, Messages, Context) ->
             {ok, Messages, Context}
     end.
 
+%% @doc 执行后置 Chat 过滤器管道
+%%
+%% 依次执行所有 post_chat 类型的过滤器。
+%% 过滤器可修改 LLM 响应内容（如内容审计、格式转换）。
+%%
+%% @param Filters 过滤器列表
+%% @param Response LLM 响应 Map
+%% @param Context 执行上下文
+%% @returns {ok, 过滤后响应, 过滤后上下文} | {error, 原因}
 -spec apply_post_chat_filters([filter_def()], term(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
 apply_post_chat_filters(Filters, Response, Context) ->
@@ -162,6 +217,9 @@ apply_post_chat_filters(Filters, Response, Context) ->
             {ok, Value, Context}
     end.
 
+%% @doc 按优先级排序过滤器列表
+%%
+%% 优先级缺失时默认为 0。数值越小越先执行。
 -spec sort_filters([filter_def()]) -> [filter_def()].
 sort_filters(Filters) ->
     lists:sort(fun(#{priority := P1}, #{priority := P2}) ->
@@ -169,13 +227,19 @@ sort_filters(Filters) ->
     end, [F#{priority => maps:get(priority, F, 0)} || F <- Filters]).
 
 %%====================================================================
-%% Internal
+%% 内部函数
 %%====================================================================
 
+%% @private 按类型筛选并排序过滤器
 get_filters_by_type(Filters, Type) ->
     Matching = [F || #{type := T} = F <- Filters, T =:= Type],
     sort_filters(Matching).
 
+%% @private 依次执行过滤器链
+%%
+%% 每个过滤器返回 {continue, NewCtx} 时传递给下一个；
+%% 返回 {skip, Value} 或 {error, Reason} 时立即终止链。
+%% 处理器异常时捕获并返回包含错误信息的 {error, ...}。
 run_filter_chain([], FilterCtx) ->
     {continue, FilterCtx};
 run_filter_chain([#{handler := Handler} | Rest], FilterCtx) ->
