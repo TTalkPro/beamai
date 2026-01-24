@@ -112,8 +112,20 @@ context_set_many_test() ->
 context_history_test() ->
     Ctx0 = beamai_context:new(),
     Msg = #{role => user, content => <<"Hello">>},
-    Ctx1 = beamai_context:add_message(Ctx0, Msg),
+    Ctx1 = beamai_context:add_history(Ctx0, Msg),
     ?assertEqual([Msg], beamai_context:get_history(Ctx1)).
+
+context_messages_test() ->
+    Ctx0 = beamai_context:new(),
+    Msg1 = #{role => system, content => <<"You are a helper">>},
+    Msg2 = #{role => user, content => <<"Hello">>},
+    Ctx1 = beamai_context:append_message(Ctx0, Msg1),
+    Ctx2 = beamai_context:append_message(Ctx1, Msg2),
+    ?assertEqual([Msg1, Msg2], beamai_context:get_messages(Ctx2)),
+    %% set_messages 可以替换（用于 summarize 后重置）
+    Summary = #{role => system, content => <<"Summary of conversation">>},
+    Ctx3 = beamai_context:set_messages(Ctx2, [Summary]),
+    ?assertEqual([Summary], beamai_context:get_messages(Ctx3)).
 
 context_kernel_test() ->
     Ctx0 = beamai_context:new(),

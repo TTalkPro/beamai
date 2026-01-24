@@ -1,9 +1,10 @@
 %%%-------------------------------------------------------------------
-%%% @doc 执行上下文：变量、历史、跟踪
+%%% @doc 执行上下文：变量、消息、历史、跟踪
 %%%
 %%% 在函数调用链中传递的不可变上下文，包含：
 %%% - 变量存储（key-value）
-%%% - 消息历史（对话记录）
+%%% - 消息缓冲（发给 LLM 的工作上下文，可被 summarize/truncate）
+%%% - 消息历史（完整原始对话日志，只追加不修改）
 %%% - Kernel 引用
 %%% - 执行跟踪（调试用）
 %%% - 元数据
@@ -16,7 +17,8 @@
 -export([new/0, new/1]).
 -export([get/2, get/3]).
 -export([set/3, set_many/2]).
--export([get_history/1, add_message/2]).
+-export([get_messages/1, set_messages/2, append_message/2]).
+-export([get_history/1, add_history/2]).
 -export([with_kernel/2, get_kernel/1]).
 -export([add_trace/2, get_trace/1]).
 -export([get_metadata/1, set_metadata/3]).
@@ -27,6 +29,7 @@
 -type t() :: #{
     '__context__' := true,
     variables := #{binary() => term()},
+    messages := [message()],
     history := [message()],
     kernel := term() | undefined,
     trace := [trace_entry()],
@@ -68,6 +71,7 @@ new() ->
     #{
         '__context__' => true,
         variables => #{},
+        messages => [],
         history => [],
         kernel => undefined,
         trace => [],
@@ -126,19 +130,43 @@ set(#{variables := Vars} = Ctx, Key, Value) ->
 set_many(#{variables := Vars} = Ctx, NewVars) ->
     Ctx#{variables => maps:merge(Vars, NewVars)}.
 
-%% @doc 获取对话历史
+%% @doc 获取消息缓冲（发给 LLM 的工作上下文）
 %%
-%% 返回当前上下文中积累的所有消息记录。
+%% 可能是经过 summarize/truncate 处理后的消息列表。
+-spec get_messages(t()) -> [message()].
+get_messages(#{messages := Messages}) -> Messages.
+
+%% @doc 替换消息缓冲（用于 summarize/truncate 后重置）
+%%
+%% @param Ctx 上下文
+%% @param Messages 新的消息列表
+%% @returns 更新后的上下文
+-spec set_messages(t(), [message()]) -> t().
+set_messages(Ctx, Messages) ->
+    Ctx#{messages => Messages}.
+
+%% @doc 追加消息到消息缓冲末尾
+%%
+%% @param Ctx 上下文
+%% @param Message 消息 Map
+%% @returns 更新后的上下文
+-spec append_message(t(), message()) -> t().
+append_message(#{messages := Messages} = Ctx, Message) ->
+    Ctx#{messages => Messages ++ [Message]}.
+
+%% @doc 获取完整对话历史（只追加的原始日志）
+%%
+%% 返回上下文中积累的所有原始消息记录，不会被 summarize 影响。
 -spec get_history(t()) -> [message()].
 get_history(#{history := History}) -> History.
 
-%% @doc 追加消息到对话历史末尾
+%% @doc 追加消息到对话历史末尾（只追加，不可修改）
 %%
 %% @param Ctx 上下文
 %% @param Message 消息 Map，至少包含 role 和 content 字段
 %% @returns 包含新消息的上下文
--spec add_message(t(), message()) -> t().
-add_message(#{history := History} = Ctx, Message) ->
+-spec add_history(t(), message()) -> t().
+add_history(#{history := History} = Ctx, Message) ->
     Ctx#{history => History ++ [Message]}.
 
 %% @doc 将 Kernel 引用关联到上下文

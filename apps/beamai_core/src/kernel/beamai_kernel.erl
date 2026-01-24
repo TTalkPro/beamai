@@ -19,9 +19,9 @@
 -export([add_filter/2]).
 
 %% Invoke API
--export([invoke/3, invoke/4]).
+-export([invoke/3]).
+-export([invoke_tool/4]).
 -export([invoke_chat/3]).
--export([invoke_chat_with_tools/3]).
 
 %% Query API
 -export([get_function/2]).
@@ -52,6 +52,7 @@
     tool_choice => auto | none | required,
     max_tool_iterations => pos_integer(),
     context => beamai_context:t(),
+    system_prompts => [map()],
     atom() => term()
 }.
 
@@ -142,32 +143,20 @@ add_filter(#{filters := Filters} = Kernel, Filter) ->
 %% Invoke API
 %%====================================================================
 
-%% @doc 调用 Kernel 中注册的函数（使用空上下文）
-%%
-%% 函数名支持全限定格式 <<"plugin.func">> 或短名 <<"func">>。
-%%
-%% @param Kernel Kernel 实例
-%% @param FuncName 函数名称
-%% @param Args 调用参数 Map
-%% @returns {ok, 结果, 上下文} | {error, 原因}
--spec invoke(kernel(), binary(), beamai_function:args()) ->
-    {ok, term(), beamai_context:t()} | {error, term()}.
-invoke(Kernel, FuncName, Args) ->
-    invoke(Kernel, FuncName, Args, beamai_context:new()).
-
-%% @doc 调用 Kernel 中注册的函数（带上下文）
+%% @doc 调用 Kernel 中注册的工具函数
 %%
 %% 执行流程：查找函数 → 前置过滤器 → 函数执行 → 后置过滤器。
 %% 上下文会自动关联当前 Kernel 引用。
+%% 函数名支持全限定格式 <<"plugin.func">> 或短名 <<"func">>。
 %%
 %% @param Kernel Kernel 实例
 %% @param FuncName 函数名称
 %% @param Args 调用参数
 %% @param Context 执行上下文
 %% @returns {ok, 结果, 更新后上下文} | {error, 原因}
--spec invoke(kernel(), binary(), beamai_function:args(), beamai_context:t()) ->
+-spec invoke_tool(kernel(), binary(), beamai_function:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
-invoke(#{filters := Filters} = Kernel, FuncName, Args, Context0) ->
+invoke_tool(#{filters := Filters} = Kernel, FuncName, Args, Context0) ->
     case get_function(Kernel, FuncName) of
         {ok, FuncDef} ->
             Context = beamai_context:with_kernel(Context0, Kernel),
@@ -204,20 +193,26 @@ invoke_chat(Kernel, Messages, Opts) ->
 %% 循环直到 LLM 返回文本响应或达到最大迭代次数。
 %%
 %% @param Kernel Kernel 实例（需注册函数和 LLM 服务）
-%% @param Messages 初始消息列表
-%% @param Opts Chat 选项（可设置 max_tool_iterations、tool_choice）
+%% @param Messages 新输入消息列表（与 context.messages 组合后发给 LLM）
+%% @param Opts Chat 选项（可设置 system_prompts、max_tool_iterations、tool_choice）
 %% @returns {ok, 最终响应 Map, 更新后上下文} | {error, 原因}
--spec invoke_chat_with_tools(kernel(), [map()], chat_opts()) ->
+-spec invoke(kernel(), [map()], chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
-invoke_chat_with_tools(Kernel, Messages, Opts) ->
+invoke(Kernel, Messages, Opts) ->
     ToolSpecs = get_tool_specs(Kernel),
     ChatOpts = Opts#{tools => ToolSpecs, tool_choice => maps:get(tool_choice, Opts, auto)},
-    Context = maps:get(context, Opts, beamai_context:new()),
+    Context0 = maps:get(context, Opts, beamai_context:new()),
+    SystemPrompts = maps:get(system_prompts, Opts, []),
+    %% 组合 context.messages（已有上下文）+ Messages（新输入）
+    ExistingMsgs = beamai_context:get_messages(Context0),
+    ConvMsgs = ExistingMsgs ++ Messages,
+    %% 记录新输入消息到 messages 和 history（system_prompts 不记录）
+    Context = record_messages(Context0, Messages),
     case get_service(Kernel) of
         {ok, LlmConfig} ->
             MaxIter = maps:get(max_tool_iterations, Opts,
                 maps:get(max_tool_iterations, maps:get(settings, Kernel, #{}), 10)),
-            tool_calling_loop(Kernel, LlmConfig, Messages, ChatOpts, Context, MaxIter);
+            tool_calling_loop(Kernel, LlmConfig, ConvMsgs, ChatOpts, Context, SystemPrompts, MaxIter);
         error ->
             {error, no_llm_service}
     end.
@@ -295,22 +290,21 @@ get_service(#{llm_config := Config}) -> {ok, Config}.
 %% LLM 返回 tool_calls 时：解析调用 → 执行函数 → 拼接结果 → 再次请求 LLM。
 %% 迭代次数耗尽返回 max_tool_iterations 错误。
 %% LLM 返回纯文本响应时终止循环。
-tool_calling_loop(_Kernel, _LlmConfig, _Msgs, _Opts, _Context, 0) ->
+tool_calling_loop(_Kernel, _LlmConfig, _Msgs, _Opts, _Context, _SysPrompts, 0) ->
     {error, max_tool_iterations};
-tool_calling_loop(Kernel, LlmConfig, Msgs, Opts, Context, N) ->
-    case beamai_chat_completion:chat(LlmConfig, Msgs, Opts) of
+tool_calling_loop(Kernel, LlmConfig, Msgs, Opts, Context, SysPrompts, N) ->
+    %% 每次调用 LLM 时，将 system_prompts 拼在最前面
+    LlmMsgs = SysPrompts ++ Msgs,
+    case beamai_chat_completion:chat(LlmConfig, LlmMsgs, Opts) of
         {ok, #{tool_calls := TCs} = _Response} when is_list(TCs), TCs =/= [] ->
-            %% 记录带 tool_calls 的 assistant 消息到 context history
             AssistantMsg = #{role => assistant, content => null, tool_calls => TCs},
-            Ctx1 = beamai_context:add_message(Context, AssistantMsg),
-            %% 执行工具调用，结果消息也会被记录到 context history
+            Ctx1 = track_message(Context, AssistantMsg),
             {ToolResults, Ctx2} = execute_tool_calls(Kernel, TCs, Ctx1),
             NewMsgs = Msgs ++ [AssistantMsg | ToolResults],
-            tool_calling_loop(Kernel, LlmConfig, NewMsgs, Opts, Ctx2, N - 1);
+            tool_calling_loop(Kernel, LlmConfig, NewMsgs, Opts, Ctx2, SysPrompts, N - 1);
         {ok, #{content := Content} = Response} ->
-            %% 记录最终的 assistant 文本响应到 context history
             FinalMsg = #{role => assistant, content => Content},
-            FinalCtx = beamai_context:add_message(Context, FinalMsg),
+            FinalCtx = track_message(Context, FinalMsg),
             {ok, Response, FinalCtx};
         {ok, Response} ->
             {ok, Response, Context};
@@ -325,19 +319,29 @@ tool_calling_loop(Kernel, LlmConfig, Msgs, Opts, Context, N) ->
 execute_tool_calls(Kernel, ToolCalls, Context) ->
     lists:foldl(fun(TC, {ResultsAcc, CtxAcc}) ->
         {Id, Name, Args} = beamai_function:parse_tool_call(TC),
-        {ResultContent, NewCtx} = case invoke(Kernel, Name, Args, CtxAcc) of
+        {ResultContent, NewCtx} = case invoke_tool(Kernel, Name, Args, CtxAcc) of
             {ok, Value, UpdatedCtx} -> {beamai_function:encode_result(Value), UpdatedCtx};
             {error, Reason} -> {beamai_function:encode_result(#{error => Reason}), CtxAcc}
         end,
         Msg = #{role => tool, tool_call_id => Id, name => Name, content => ResultContent},
-        %% 记录 tool 结果消息到 context history
-        Ctx2 = beamai_context:add_message(NewCtx, Msg),
+        Ctx2 = track_message(NewCtx, Msg),
         {ResultsAcc ++ [Msg], Ctx2}
     end, {[], Context}, ToolCalls).
 
 %%====================================================================
 %% 内部函数 - 辅助
 %%====================================================================
+
+%% @private 同时追加消息到 messages 和 history
+track_message(Context, Msg) ->
+    Ctx1 = beamai_context:append_message(Context, Msg),
+    beamai_context:add_history(Ctx1, Msg).
+
+%% @private 批量追加消息到 messages 和 history
+record_messages(Context, Messages) ->
+    lists:foldl(fun(Msg, Ctx) ->
+        track_message(Ctx, Msg)
+    end, Context, Messages).
 
 %% @private 遍历所有插件搜索函数（短名查找）
 %%

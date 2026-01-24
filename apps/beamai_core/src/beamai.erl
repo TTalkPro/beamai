@@ -28,7 +28,7 @@
 -export([add_filter/2, add_filter/4]).
 
 %% Invoke
--export([invoke/3, invoke/4]).
+-export([invoke_tool/4]).
 -export([chat/2, chat/3]).
 -export([chat_with_tools/2, chat_with_tools/3]).
 
@@ -157,19 +157,13 @@ add_filter(Kernel, Name, Type, Handler) ->
 %% Invoke
 %%====================================================================
 
-%% @doc 调用 Kernel 中注册的函数
+%% @doc 调用 Kernel 中注册的工具函数
 %%
 %% 函数名支持 <<"plugin.func">> 或 <<"func">> 格式。
--spec invoke(beamai_kernel:kernel(), binary(), beamai_function:args()) ->
+-spec invoke_tool(beamai_kernel:kernel(), binary(), beamai_function:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
-invoke(Kernel, FuncName, Args) ->
-    beamai_kernel:invoke(Kernel, FuncName, Args).
-
-%% @doc 调用 Kernel 中注册的函数（带上下文）
--spec invoke(beamai_kernel:kernel(), binary(), beamai_function:args(), beamai_context:t()) ->
-    {ok, term(), beamai_context:t()} | {error, term()}.
-invoke(Kernel, FuncName, Args, Context) ->
-    beamai_kernel:invoke(Kernel, FuncName, Args, Context).
+invoke_tool(Kernel, FuncName, Args, Context) ->
+    beamai_kernel:invoke_tool(Kernel, FuncName, Args, Context).
 
 %% @doc 发送 Chat Completion 请求（默认选项）
 -spec chat(beamai_kernel:kernel(), [map()]) ->
@@ -197,7 +191,7 @@ chat_with_tools(Kernel, Messages) ->
 -spec chat_with_tools(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 chat_with_tools(Kernel, Messages, Opts) ->
-    beamai_kernel:invoke_chat_with_tools(Kernel, Messages, Opts).
+    beamai_kernel:invoke(Kernel, Messages, Opts).
 
 %%====================================================================
 %% Prompt

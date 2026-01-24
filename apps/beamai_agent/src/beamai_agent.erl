@@ -732,7 +732,7 @@ stream_final_call(Kernel, Msgs, Opts, Callbacks, Meta) ->
 execute_tools(Kernel, ToolCalls) ->
     lists:foldl(fun(TC, {ResultsAcc, CallsAcc}) ->
         {Id, Name, Args} = beamai_function:parse_tool_call(TC),
-        Result = case beamai_kernel:invoke(Kernel, Name, Args) of
+        Result = case beamai_kernel:invoke_tool(Kernel, Name, Args, beamai_context:new()) of
             {ok, Value, _Ctx} -> beamai_function:encode_result(Value);
             {error, Reason} -> beamai_function:encode_result(#{error => Reason})
         end,
@@ -851,7 +851,7 @@ execute_tools_with_interrupt_check(_Kernel, [], ResultsAcc, CallsAcc) ->
     {ok, lists:reverse(ResultsAcc), lists:reverse(CallsAcc)};
 execute_tools_with_interrupt_check(Kernel, [TC | Rest], ResultsAcc, CallsAcc) ->
     {Id, Name, Args} = beamai_function:parse_tool_call(TC),
-    case beamai_kernel:invoke(Kernel, Name, Args) of
+    case beamai_kernel:invoke_tool(Kernel, Name, Args, beamai_context:new()) of
         {ok, Value, _Ctx} ->
             Result = beamai_function:encode_result(Value),
             Msg = #{role => tool, tool_call_id => Id, content => Result},

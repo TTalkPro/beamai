@@ -193,7 +193,7 @@ full_pipeline_test() ->
     ?assert(length(Filters) >= 1),
 
     %% Invoke a function directly
-    Result = beamai_kernel:invoke(K3, <<"read_todos">>, #{}),
+    Result = beamai_kernel:invoke_tool(K3, <<"read_todos">>, #{}, beamai_context:new()),
     ?assertMatch({ok, _, _}, Result).
 
 available_plugins_test() ->
