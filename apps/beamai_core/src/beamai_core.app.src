@@ -4,7 +4,7 @@
     {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup]},
     {mod, {beamai_core_app, []}},
     {applications, [kernel, stdlib, jsx, uuid, hackney, poolboy]},
-    {optional_applications, [gun, beamai_llm]},
+    {optional_applications, [gun, beamai_llm, beamai_memory]},
     {env, [
         {process_pool_size, 10},
         {process_pool_max_overflow, 20}
@@ -41,6 +41,8 @@
         beamai_process_step_transform,
         beamai_process_worker,
         beamai_process_state,
+        beamai_process_memory_store,
+        beamai_process_store_behaviour,
         beamai_process_sup,
         %% 工具
         beamai_id,
