@@ -2,7 +2,7 @@
 
 English | [中文](MIDDLEWARE.md)
 
-The Middleware system in beamai_agent provides a flexible way to intercept, modify, and control various stages of Agent execution.
+The Middleware system in beamai_plugin provides a flexible way to intercept, modify, and control various stages of Kernel function invocations.
 
 ## Table of Contents
 
@@ -18,65 +18,59 @@ The Middleware system in beamai_agent provides a flexible way to intercept, modi
 
 ## Overview
 
-Middleware are interceptors in the Agent execution process that can:
+Middleware are interceptors in the Kernel function invocation process that can:
 
-- **Modify Input/Output**: Modify messages before and after LLM calls
+- **Modify Input/Output**: Modify context before and after LLM calls or tool invocations
 - **Control Flow**: Skip, retry, or abort execution
-- **Add Functionality**: Logging, monitoring, human approval, etc.
-- **Enforce Limits**: Call count limits, token limits, etc.
+- **Add Functionality**: Rate limiting, human approval, model fallback, etc.
+- **Enforce Limits**: Call count limits, error retry, etc.
 
 ### Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Agent Execution                        │
+│                    Kernel Function Invocation                  │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────────┐                                           │
-│  │ before_agent │  ← Before Agent starts                     │
+│  │   pre_chat   │  ← Before LLM call                        │
 │  └──────┬───────┘                                           │
 │         │                                                    │
 │         ▼                                                    │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │                    Agent Loop                          │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ before_model │  ← Before LLM call                   │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │   LLM Call   │                                      │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ after_model  │  ← After LLM response                │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ before_tools │  ← Before tool execution             │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │Tool Execution│                                      │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ after_tools  │  ← After tool execution              │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  └─────────┴──────────────────────────────────────────────┘ │
+│  ┌──────────────┐                                           │
+│  │   LLM Call   │                                           │
+│  └──────┬───────┘                                           │
 │         │                                                    │
 │         ▼                                                    │
 │  ┌──────────────┐                                           │
-│  │ after_agent  │  ← After Agent ends                        │
-│  └──────────────┘                                           │
+│  │  post_chat   │  ← After LLM response (can retry/fallback)│
+│  └──────┬───────┘                                           │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌────────────────┐                                         │
+│  │pre_invocation  │  ← Before tool execution (can approve)   │
+│  └──────┬─────────┘                                         │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌──────────────┐                                           │
+│  │Tool Execution│                                           │
+│  └──────┬───────┘                                           │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌────────────────┐                                         │
+│  │post_invocation │  ← After tool execution (can retry)      │
+│  └────────────────┘                                         │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Core Modules
+
+| Module | Location | Description |
+|--------|----------|-------------|
+| `beamai_middleware` | `apps/beamai_plugin/src/middleware/` | Middleware behaviour definition |
+| `beamai_middleware_runner` | `apps/beamai_plugin/src/middleware/` | Middleware chain executor |
+| `beamai_middleware_presets` | `apps/beamai_plugin/src/middleware/` | Preset configurations |
 
 ---
 
@@ -84,14 +78,12 @@ Middleware are interceptors in the Agent execution process that can:
 
 ### Hook List
 
-| Hook | Trigger Time | Typical Use |
-|------|----------|----------|
-| `before_agent` | Before Agent execution starts | Initialize counters, record start time |
-| `after_agent` | After Agent execution ends | Clean up resources, record end state |
-| `before_model` | Before each LLM call | Check limits, modify messages, add context |
-| `after_model` | After LLM returns | Process response, log, trigger follow-up actions |
-| `before_tools` | Before tool execution | Human approval, parameter validation, tool filtering |
-| `after_tools` | After tool execution | Result validation, failure retry, result transformation |
+| Hook | Trigger Timing | Typical Use |
+|------|----------------|-------------|
+| `pre_chat` | Before LLM call | Check call limits, modify messages |
+| `post_chat` | After LLM response | Error retry, model fallback |
+| `pre_invocation` | Before tool execution | Human approval, parameter validation |
+| `post_invocation` | After tool execution | Failure retry, count updates |
 
 ### Return Value Types
 
@@ -101,20 +93,32 @@ Middleware hook functions can return the following values:
 %% No modification, continue execution
 ok
 
-%% Update graph state
-{update, #{key => value}}
+%% Modify context and continue (passed to next Middleware)
+{continue, UpdatedFilterCtx}
 
-%% Jump to specified node
-{goto, model | tools | '__end__'}
-
-%% Update state and jump
-{update_goto, #{key => value}, model | tools | '__end__'}
+%% Skip subsequent processing, return result directly
+{skip, Term}
 
 %% Abort execution and return error
-{halt, Reason}
+{error, Reason}
+```
 
-%% Interrupt and wait for user confirmation
-{interrupt, #{type => tool_approval, data => Data}}
+### FilterCtx Structure
+
+Middleware passes context information via `FilterCtx`:
+
+```erlang
+%% pre_chat / post_chat
+FilterCtx = #{
+    result => ok | {error, Reason}   %% LLM call result (available in post_chat)
+}
+
+%% pre_invocation / post_invocation
+FilterCtx = #{
+    function => #{name => <<"tool_name">>, ...},  %% Function definition
+    args => #{<<"param">> => Value},                %% Call arguments
+    result => ok | {error, Error}                   %% Execution result (available in post_invocation)
+}
 ```
 
 ---
@@ -123,7 +127,10 @@ ok
 
 ### 1. middleware_call_limit - Call Limit
 
-Limits various call counts during Agent execution.
+Limits various call counts during function invocation.
+
+**Hooks**: `pre_chat`, `pre_invocation`, `post_invocation`
+**Priority**: 10 (executes first)
 
 ```erlang
 {middleware_call_limit, #{
@@ -131,39 +138,34 @@ Limits various call counts during Agent execution.
     max_tool_calls => 50,            %% Maximum total tool call count
     max_tool_calls_per_turn => 10,   %% Maximum tool calls per turn
     max_iterations => 15,            %% Maximum iterations
-    on_limit_exceeded => halt        %% Action when limit exceeded: halt | warn_and_continue
+    on_limit_exceeded => halt        %% Action when exceeded: halt | warn_and_continue
 }}
 ```
 
-### 2. middleware_summarization - Context Summarization
-
-Automatically compresses long conversation history.
-
-```erlang
-{middleware_summarization, #{
-    window_size => 20,               %% Keep most recent N messages
-    max_tokens => 4000,              %% Token limit
-    summarize => true,               %% Whether to generate summary
-    compress_threshold => 30         %% Message count threshold to trigger compression
-}}
-```
-
-### 3. middleware_human_approval - Human Approval
+### 2. middleware_human_approval - Human Approval
 
 Requests human confirmation before tool execution.
+
+**Hook**: `pre_invocation`
+**Priority**: 50
 
 ```erlang
 {middleware_human_approval, #{
     mode => all,                     %% all | selective | custom | none
+    tools_requiring_approval => [<<"dangerous_tool">>],  %% Tools requiring approval in selective mode
+    approval_fn => fun(FunctionName, Ctx) -> boolean() end,  %% Custom approval function
+    approval_handler => fun(FunctionName, Ctx) -> approve | reject end,  %% Sync approval handler
     timeout => 60000,                %% Approval timeout (ms)
-    timeout_action => reject,        %% Timeout action: reject | approve
-    tools => [<<"dangerous_tool">>]  %% Tools requiring approval in selective mode
+    timeout_action => reject         %% Timeout action: reject | confirm
 }}
 ```
 
-### 4. middleware_tool_retry - Tool Retry
+### 3. middleware_tool_retry - Tool Retry
 
 Automatically retries when tool execution fails.
+
+**Hook**: `post_invocation`
+**Priority**: 80
 
 ```erlang
 {middleware_tool_retry, #{
@@ -174,25 +176,52 @@ Automatically retries when tool execution fails.
         max_delay => 30000,          %% Maximum delay (ms)
         multiplier => 2              %% Exponential factor
     },
-    retryable_errors => all          %% all | [error_type]
+    retryable_errors => all,         %% all | [error_type]
+    retry_fn => fun(Error, Ctx) -> boolean() end,  %% Custom retry decision
+    on_retry => fun(Error, RetryCount, Delay, Ctx) -> ok end,  %% Retry callback
+    enable_delay => true             %% Whether to enable backoff delay
 }}
 ```
 
-### 5. middleware_model_retry - Model Retry
+**Helper functions:**
 
-Automatically retries when LLM call fails.
+```erlang
+%% Check if error is retryable
+middleware_tool_retry:is_retryable(Error, MwState) -> boolean().
+
+%% Calculate backoff delay
+middleware_tool_retry:calculate_delay(RetryCount, BackoffConfig) -> pos_integer().
+```
+
+### 4. middleware_model_retry - Model Retry
+
+Automatically retries when LLM call fails (with Jitter support).
+
+**Hook**: `post_chat`
+**Priority**: 90
 
 ```erlang
 {middleware_model_retry, #{
     max_retries => 3,
-    backoff => #{type => exponential, initial_delay => 1000},
-    retryable_errors => [timeout, rate_limit, server_error]
+    backoff => #{
+        type => exponential,
+        initial_delay => 1000,
+        max_delay => 30000,
+        multiplier => 2,
+        jitter => true               %% Enable random jitter (avoid thundering herd)
+    },
+    retryable_errors => [timeout, rate_limit, server_error],
+    retry_fn => fun(Error, Ctx) -> boolean() end,
+    on_retry => fun(Error, RetryCount, Delay, Ctx) -> ok end
 }}
 ```
 
-### 6. middleware_model_fallback - Model Fallback
+### 5. middleware_model_fallback - Model Fallback
 
 Switches to backup model when primary model fails.
+
+**Hook**: `post_chat`
+**Priority**: 95 (executes last)
 
 ```erlang
 {middleware_model_fallback, #{
@@ -200,90 +229,8 @@ Switches to backup model when primary model fails.
         #{provider => openai, model => <<"gpt-3.5-turbo">>},
         #{provider => ollama, model => <<"llama2">>}
     ],
-    trigger_errors => [rate_limit, timeout]
-}}
-```
-
-### 7. middleware_pii_detection - PII Detection
-
-Detects and handles personally identifiable information.
-
-```erlang
-{middleware_pii_detection, #{
-    action => mask,                  %% mask | warn | block
-    types => [email, phone, id_card],
-    mask_char => <<"*">>
-}}
-```
-
-### 8. middleware_tool_selector - Tool Selector
-
-Dynamically selects available tools based on context.
-
-```erlang
-{middleware_tool_selector, #{
-    strategy => context_based,       %% all | context_based | whitelist
-    whitelist => [<<"search">>, <<"calculate">>],
-    max_tools => 10
-}}
-```
-
-### 9. middleware_todo_list - TODO Management
-
-Provides task tracking capability for Agent.
-
-```erlang
-{middleware_todo_list, #{
-    auto_create => true,             %% Auto-create TODO
-    max_items => 20
-}}
-```
-
-### 10. middleware_shell_tool - Shell Tool
-
-Provides secure shell command execution.
-
-```erlang
-{middleware_shell_tool, #{
-    allowed_commands => [<<"ls">>, <<"cat">>, <<"grep">>],
-    timeout => 30000,
-    sandbox => true
-}}
-```
-
-### 11. middleware_file_search - File Search
-
-Provides file and code search capability.
-
-```erlang
-{middleware_file_search, #{
-    root_path => <<"/project">>,
-    max_results => 100,
-    excluded_paths => [<<"node_modules">>, <<".git">>]
-}}
-```
-
-### 12. middleware_context_editing - Context Editing
-
-Allows dynamic modification of conversation context.
-
-```erlang
-{middleware_context_editing, #{
-    allow_message_deletion => true,
-    allow_message_modification => false
-}}
-```
-
-### 13. middleware_tool_emulator - Tool Emulator
-
-Emulates tool responses in test environments.
-
-```erlang
-{middleware_tool_emulator, #{
-    enabled => true,
-    responses => #{
-        <<"search">> => #{result => <<"mock search result">>}
-    }
+    trigger_errors => [rate_limit, timeout],  %% Error types that trigger fallback
+    on_fallback => fun(OriginalError, FallbackModel) -> ok end  %% Fallback callback
 }}
 ```
 
@@ -294,45 +241,58 @@ Emulates tool responses in test environments.
 ### Using Presets
 
 ```erlang
-%% Default configuration
+%% Default configuration (call_limit + model_retry)
 Middlewares = beamai_middleware_presets:default().
 
-%% Minimal configuration
+%% Minimal configuration (call_limit only)
 Middlewares = beamai_middleware_presets:minimal().
 
-%% Production environment
+%% Production environment (call_limit + tool_retry + model_retry + model_fallback)
 Middlewares = beamai_middleware_presets:production().
 
-%% Development debugging
+%% Development debugging (relaxed call_limit + tool_retry)
 Middlewares = beamai_middleware_presets:development().
 
-%% Human approval
+%% Human approval (call_limit + human_approval)
 Middlewares = beamai_middleware_presets:human_in_loop().
 ```
 
 ### Preset Comparison
 
-| Preset | call_limit | summarization | tool_retry | human_approval |
-|------|------------|---------------|------------|----------------|
-| default | ✓ | ✓ | - | - |
-| minimal | ✓ | - | - | - |
-| production | ✓ (strict) | ✓ | ✓ | - |
-| development | ✓ (relaxed) | ✓ (debug) | ✓ | - |
-| human_in_loop | ✓ | ✓ | - | ✓ |
+| Preset | call_limit | tool_retry | model_retry | model_fallback | human_approval |
+|--------|------------|------------|-------------|----------------|----------------|
+| default | ✓ | - | ✓ | - | - |
+| minimal | ✓ | - | - | - | - |
+| production | ✓ (strict) | ✓ | ✓ | ✓ | - |
+| development | ✓ (relaxed) | ✓ | - | - | - |
+| human_in_loop | ✓ | - | - | - | ✓ |
 
 ### Custom Preset Options
 
 ```erlang
-%% Customize default preset
+%% Customize default preset parameters
 Middlewares = beamai_middleware_presets:default(#{
     call_limit => #{max_model_calls => 30},
-    summarization => #{window_size => 30}
+    model_retry => #{max_retries => 5}
 }).
 
 %% Extend preset
-Middlewares = beamai_middleware_presets:default() ++ [
+Middlewares = beamai_middleware_presets:production() ++ [
     {my_custom_middleware, #{option => value}}
 ].
+```
+
+### Get Individual Middleware Config
+
+```erlang
+%% Get individual Middleware default configuration
+CallLimit = beamai_middleware_presets:call_limit().
+CallLimit2 = beamai_middleware_presets:call_limit(#{max_model_calls => 50}).
+
+HumanApproval = beamai_middleware_presets:human_approval().
+ToolRetry = beamai_middleware_presets:tool_retry().
+ModelRetry = beamai_middleware_presets:model_retry().
+ModelFallback = beamai_middleware_presets:model_fallback().
 ```
 
 ---
@@ -346,9 +306,8 @@ Middlewares = beamai_middleware_presets:default() ++ [
 -behaviour(beamai_middleware).
 
 %% Export callback functions (all callbacks are optional)
--export([init/1, before_agent/2, after_agent/2,
-         before_model/2, after_model/2,
-         before_tools/2, after_tools/2]).
+-export([init/1, pre_chat/2, post_chat/2,
+         pre_invocation/2, post_invocation/2]).
 
 %% Initialize Middleware state
 init(Opts) ->
@@ -357,38 +316,32 @@ init(Opts) ->
         counter => 0
     }.
 
-%% Before Agent starts
-before_agent(State, MwState) ->
-    %% State: graph state (graph_state)
+%% Before LLM call
+pre_chat(FilterCtx, MwState) ->
+    %% FilterCtx: filter context
     %% MwState: Middleware internal state
     ok.
 
-%% After Agent ends
-after_agent(State, MwState) ->
-    ok.
-
-%% Before LLM call
-before_model(State, MwState) ->
-    %% Example: Add system message
-    Messages = graph_state:get(State, messages, []),
-    NewMsg = #{role => system, content => <<"Be concise.">>},
-    {update, #{messages => [NewMsg | Messages]}}.
-
 %% After LLM response
-after_model(State, MwState) ->
-    ok.
+post_chat(FilterCtx, MwState) ->
+    case maps:get(result, FilterCtx, ok) of
+        {error, _} ->
+            %% Can decide to retry
+            ok;
+        ok ->
+            ok
+    end.
 
 %% Before tool execution
-before_tools(State, MwState) ->
-    %% Example: Check dangerous tools
-    PendingTools = graph_state:get(State, pending_tools, []),
-    case contains_dangerous_tool(PendingTools) of
-        true -> {halt, dangerous_tool_blocked};
+pre_invocation(FilterCtx, MwState) ->
+    FuncName = maps:get(name, maps:get(function, FilterCtx, #{}), <<>>),
+    case is_blocked(FuncName) of
+        true -> {error, {blocked_tool, FuncName}};
         false -> ok
     end.
 
 %% After tool execution
-after_tools(State, MwState) ->
+post_invocation(FilterCtx, MwState) ->
     ok.
 ```
 
@@ -398,35 +351,28 @@ after_tools(State, MwState) ->
 -module(middleware_counter).
 -behaviour(beamai_middleware).
 
--export([init/1, before_agent/2, before_model/2, after_agent/2]).
+-export([init/1, pre_chat/2, pre_invocation/2]).
 
-%% Initialize
 init(Opts) ->
     #{
         max_calls => maps:get(max_calls, Opts, 10),
-        current_calls => 0
+        model_count => 0,
+        tool_count => 0
     }.
 
-%% Agent start - Reset counter
-before_agent(_State, MwState) ->
-    %% Store counter in graph state
-    {update, #{middleware_counter => 0}}.
-
-%% Before model call - Check and increment count
-before_model(State, #{max_calls := MaxCalls} = MwState) ->
-    Count = graph_state:get(State, middleware_counter, 0),
+%% Before model call - check and increment count
+pre_chat(_FilterCtx, #{max_calls := MaxCalls, model_count := Count} = MwState) ->
     case Count >= MaxCalls of
         true ->
-            logger:warning("Middleware: Call limit exceeded (~p/~p)", [Count, MaxCalls]),
-            {halt, {call_limit_exceeded, Count}};
+            {error, {model_call_limit_exceeded, Count}};
         false ->
-            {update, #{middleware_counter => Count + 1}}
+            %% Update internal state (via runner's set_middleware_state)
+            ok
     end.
 
-%% Agent end - Record statistics
-after_agent(State, _MwState) ->
-    FinalCount = graph_state:get(State, middleware_counter, 0),
-    logger:info("Middleware: Total model calls: ~p", [FinalCount]),
+%% Before tool call - count
+pre_invocation(_FilterCtx, #{tool_count := Count} = _MwState) ->
+    logger:info("Tool call #~p", [Count + 1]),
     ok.
 ```
 
@@ -436,133 +382,64 @@ after_agent(State, _MwState) ->
 -module(middleware_logger).
 -behaviour(beamai_middleware).
 
--export([init/1, before_model/2, after_model/2, before_tools/2, after_tools/2]).
+-export([init/1, pre_chat/2, post_chat/2, pre_invocation/2, post_invocation/2]).
 
 init(Opts) ->
-    #{
-        log_level => maps:get(log_level, Opts, info),
-        include_content => maps:get(include_content, Opts, false)
-    }.
+    #{log_level => maps:get(log_level, Opts, info)}.
 
-before_model(State, #{log_level := Level, include_content := IncludeContent}) ->
-    Messages = graph_state:get(State, messages, []),
-    case IncludeContent of
-        true ->
-            log(Level, ">>> LLM Request: ~p messages~n~p", [length(Messages), Messages]);
-        false ->
-            log(Level, ">>> LLM Request: ~p messages", [length(Messages)])
+pre_chat(_FilterCtx, #{log_level := Level}) ->
+    log(Level, ">>> LLM call starting"),
+    ok.
+
+post_chat(FilterCtx, #{log_level := Level}) ->
+    case maps:get(result, FilterCtx, ok) of
+        ok -> log(Level, "<<< LLM call succeeded");
+        {error, Reason} -> log(Level, "<<< LLM call failed: ~p", [Reason])
     end,
-    %% Record start time
-    {update, #{mw_model_start_time => erlang:system_time(millisecond)}}.
-
-after_model(State, #{log_level := Level}) ->
-    StartTime = graph_state:get(State, mw_model_start_time, 0),
-    Duration = erlang:system_time(millisecond) - StartTime,
-    Response = graph_state:get(State, last_llm_response, #{}),
-    Content = maps:get(content, Response, <<>>),
-    log(Level, "<<< LLM Response (~pms): ~p chars", [Duration, byte_size(Content)]),
     ok.
 
-before_tools(State, #{log_level := Level}) ->
-    Tools = graph_state:get(State, pending_tools, []),
-    ToolNames = [maps:get(name, T, unknown) || T <- Tools],
-    log(Level, ">>> Tools to execute: ~p", [ToolNames]),
+pre_invocation(FilterCtx, #{log_level := Level}) ->
+    FuncName = maps:get(name, maps:get(function, FilterCtx, #{}), <<"unknown">>),
+    Args = maps:get(args, FilterCtx, #{}),
+    log(Level, ">>> Tool ~ts called with ~p", [FuncName, Args]),
     ok.
 
-after_tools(State, #{log_level := Level}) ->
-    Results = graph_state:get(State, tool_results, []),
-    log(Level, "<<< Tool results: ~p items", [length(Results)]),
+post_invocation(FilterCtx, #{log_level := Level}) ->
+    case maps:get(result, FilterCtx, ok) of
+        ok -> log(Level, "<<< Tool execution succeeded");
+        {error, Reason} -> log(Level, "<<< Tool execution failed: ~p", [Reason])
+    end,
     ok.
 
-%% Internal log function
-log(debug, Fmt, Args) -> logger:debug(Fmt, Args);
+log(info, Fmt) -> logger:info(Fmt);
 log(info, Fmt, Args) -> logger:info(Fmt, Args);
-log(warning, Fmt, Args) -> logger:warning(Fmt, Args);
-log(error, Fmt, Args) -> logger:error(Fmt, Args).
-```
-
-### Complete Example: Sensitive Word Filter
-
-```erlang
--module(middleware_content_filter).
--behaviour(beamai_middleware).
-
--export([init/1, after_model/2]).
-
-init(Opts) ->
-    #{
-        blocked_words => maps:get(blocked_words, Opts, []),
-        replacement => maps:get(replacement, Opts, <<"[FILTERED]">>),
-        action => maps:get(action, Opts, replace)  %% replace | block | warn
-    }.
-
-after_model(State, #{blocked_words := BlockedWords, replacement := Replacement, action := Action}) ->
-    Response = graph_state:get(State, last_llm_response, #{}),
-    Content = maps:get(content, Response, <<>>),
-
-    case check_content(Content, BlockedWords) of
-        {found, Word} ->
-            case Action of
-                block ->
-                    {halt, {blocked_content, Word}};
-                warn ->
-                    logger:warning("Blocked word detected: ~p", [Word]),
-                    ok;
-                replace ->
-                    FilteredContent = filter_content(Content, BlockedWords, Replacement),
-                    NewResponse = Response#{content => FilteredContent},
-                    {update, #{last_llm_response => NewResponse}}
-            end;
-        clean ->
-            ok
-    end.
-
-check_content(Content, BlockedWords) ->
-    LowerContent = string:lowercase(binary_to_list(Content)),
-    case lists:filter(fun(Word) ->
-        string:find(LowerContent, string:lowercase(binary_to_list(Word))) =/= nomatch
-    end, BlockedWords) of
-        [] -> clean;
-        [First|_] -> {found, First}
-    end.
-
-filter_content(Content, BlockedWords, Replacement) ->
-    lists:foldl(fun(Word, Acc) ->
-        binary:replace(Acc, Word, Replacement, [global])
-    end, Content, BlockedWords).
+log(debug, Fmt) -> logger:debug(Fmt);
+log(debug, Fmt, Args) -> logger:debug(Fmt, Args).
 ```
 
 ---
 
 ## Configuration and Usage
 
-### Using in Agent Configuration
+### Integration with Kernel
 
 ```erlang
-%% Method 1: Using presets
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
-    system_prompt => <<"You are helpful.">>,
-    llm => LLMConfig,
-    middlewares => beamai_middleware_presets:default()
-}).
+%% Method 1: Using beamai_plugins with_middleware
+Kernel = beamai_kernel:new(),
+Kernel1 = beamai_plugins:load_all(Kernel, [beamai_plugin_file, beamai_plugin_shell]),
+Kernel2 = beamai_plugins:with_middleware(Kernel1,
+    beamai_middleware_presets:production()),
 
-%% Method 2: Manual configuration
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
-    system_prompt => <<"You are helpful.">>,
-    llm => LLMConfig,
-    middlewares => [
-        {middleware_call_limit, #{max_model_calls => 15}},
-        {middleware_summarization, #{window_size => 20}},
-        {my_custom_middleware, #{option => value}}
-    ]
-}).
+%% Method 2: Manually initialize Middleware chain
+Chain = beamai_middleware_runner:init([
+    {middleware_call_limit, #{max_model_calls => 15}},
+    {middleware_tool_retry, #{max_retries => 5}},
+    {my_custom_middleware, #{option => value}}
+]).
 
-%% Method 3: Mixed configuration
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
-    middlewares => beamai_middleware_presets:production() ++ [
-        {middleware_logger, #{log_level => debug}}
-    ]
-}).
+%% Method 3: Convert to Kernel Filters
+Filters = beamai_middleware_runner:to_filters(Chain),
+Kernel3 = beamai_kernel:add_filter(Kernel, Filters).
 ```
 
 ### Middleware Configuration Format
@@ -582,82 +459,68 @@ middleware_call_limit
 
 - Lower values execute first
 - Default priority is 100
-- Recommended ranges:
-  - 10-30: Pre-checks (limits, validation)
-  - 40-60: Core functionality (approval, retry)
-  - 70-90: Post-processing (logging, monitoring)
+- Built-in Middleware preset priorities:
+  - 10: call_limit (boundary checks, executes first)
+  - 50: human_approval (requires interaction)
+  - 80: tool_retry (recovery mechanism)
+  - 90: model_retry (recovery mechanism)
+  - 95: model_fallback (last resort fallback)
 
 ---
 
 ## Advanced Usage
 
-### Accessing Graph State
+### Direct Hook Execution
 
 ```erlang
-before_model(State, MwState) ->
-    %% Read state
-    Messages = graph_state:get(State, messages, []),
-    Context = graph_state:get(State, context, #{}),
+%% Initialize Middleware chain
+Chain = beamai_middleware_runner:init([
+    {middleware_call_limit, #{max_model_calls => 10}},
+    {middleware_tool_retry, #{max_retries => 3}}
+]),
 
-    %% Check custom key
-    MyData = graph_state:get(State, my_custom_key, undefined),
-
-    %% Update state
-    {update, #{
-        messages => Messages ++ [NewMessage],
-        my_custom_key => NewValue
-    }}.
+%% Execute hook directly
+FilterCtx = #{function => #{name => <<"my_tool">>}, args => #{}},
+Result = beamai_middleware_runner:run_hook(pre_invocation, FilterCtx, Chain).
 ```
 
-### Flow Control
+### Managing Middleware State
 
 ```erlang
-%% Skip tool execution, return directly to LLM
-before_tools(State, _MwState) ->
-    case should_skip_tools(State) of
-        true -> {goto, model};
-        false -> ok
-    end.
+%% Get Middleware internal state
+{ok, State} = beamai_middleware_runner:get_middleware_state(middleware_call_limit, Chain).
 
-%% End Agent immediately
-after_model(State, _MwState) ->
-    case is_final_answer(State) of
-        true -> {goto, '__end__'};
-        false -> ok
-    end.
+%% Update Middleware internal state
+NewChain = beamai_middleware_runner:set_middleware_state(
+    middleware_call_limit,
+    State#{model_call_count => 0},  %% Reset count
+    Chain
+).
 ```
 
-### Interrupt and Resume
+### Modifying Context Passing
 
 ```erlang
-%% Request human confirmation
-before_tools(State, _MwState) ->
-    Tools = graph_state:get(State, pending_tools, []),
-    case needs_approval(Tools) of
-        true ->
-            {interrupt, #{
-                type => tool_approval,
-                data => #{tools => Tools},
-                timeout => 60000
-            }};
-        false ->
-            ok
-    end.
+%% Modify arguments in pre_invocation
+pre_invocation(FilterCtx, _MwState) ->
+    Args = maps:get(args, FilterCtx, #{}),
+    %% Add default arguments
+    NewArgs = maps:merge(#{<<"timeout">> => 30000}, Args),
+    {continue, FilterCtx#{args => NewArgs}}.
 ```
 
-### Inter-Middleware Communication
+### Conditional Skip
 
 ```erlang
-%% Share data through graph state
-before_model(State, _MwState) ->
-    %% Set data for other Middleware to use
-    {update, #{shared_data => #{timestamp => erlang:system_time()}}}.
-
-after_model(State, _MwState) ->
-    %% Read data set by other Middleware
-    SharedData = graph_state:get(State, shared_data, #{}),
-    %% Use SharedData...
-    ok.
+%% Skip tool execution, return cached result
+pre_invocation(FilterCtx, #{cache := Cache} = _MwState) ->
+    FuncName = maps:get(name, maps:get(function, FilterCtx, #{}), <<>>),
+    Args = maps:get(args, FilterCtx, #{}),
+    CacheKey = {FuncName, Args},
+    case maps:get(CacheKey, Cache, undefined) of
+        undefined -> ok;  %% Cache miss, continue execution
+        CachedResult -> {skip, CachedResult}  %% Return cached result
+    end.
 ```
 
 ---
@@ -667,14 +530,19 @@ after_model(State, _MwState) ->
 ### beamai_middleware Behaviour
 
 ```erlang
+-type middleware_state() :: map().
+-type hook_name() :: pre_chat | post_chat | pre_invocation | post_invocation.
+-type middleware_result() :: ok
+                           | {continue, UpdatedFilterCtx :: map()}
+                           | {skip, Term :: term()}
+                           | {error, Reason :: term()}.
+
 %% All callbacks are optional
 -callback init(Opts :: map()) -> middleware_state().
--callback before_agent(State, MwState) -> middleware_result().
--callback after_agent(State, MwState) -> middleware_result().
--callback before_model(State, MwState) -> middleware_result().
--callback after_model(State, MwState) -> middleware_result().
--callback before_tools(State, MwState) -> middleware_result().
--callback after_tools(State, MwState) -> middleware_result().
+-callback pre_chat(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
+-callback post_chat(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
+-callback pre_invocation(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
+-callback post_invocation(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
 ```
 
 ### beamai_middleware_runner
@@ -683,8 +551,12 @@ after_model(State, _MwState) ->
 %% Initialize Middleware chain
 -spec init([middleware_spec()]) -> middleware_chain().
 
+%% Convert to Kernel Filters
+-spec to_filters(middleware_chain()) -> [beamai_filter:filter_def()].
+
 %% Execute hook
--spec run_hook(hook_name(), graph_state(), middleware_chain()) -> run_result().
+-spec run_hook(hook_name(), FilterCtx :: map(), middleware_chain()) ->
+    ok | {continue, map()} | {skip, term()} | {error, term()}.
 
 %% Get/Set Middleware state
 -spec get_middleware_state(module(), middleware_chain()) -> {ok, state()} | {error, not_found}.
@@ -698,22 +570,31 @@ after_model(State, _MwState) ->
 -spec default() -> [middleware_spec()].
 -spec default(map()) -> [middleware_spec()].
 -spec minimal() -> [middleware_spec()].
+-spec minimal(map()) -> [middleware_spec()].
 -spec production() -> [middleware_spec()].
+-spec production(map()) -> [middleware_spec()].
 -spec development() -> [middleware_spec()].
+-spec development(map()) -> [middleware_spec()].
 -spec human_in_loop() -> [middleware_spec()].
+-spec human_in_loop(map()) -> [middleware_spec()].
 
 %% Individual Middleware configuration
 -spec call_limit() -> middleware_spec().
 -spec call_limit(map()) -> middleware_spec().
--spec summarization() -> middleware_spec().
 -spec human_approval() -> middleware_spec().
+-spec human_approval(map()) -> middleware_spec().
 -spec tool_retry() -> middleware_spec().
+-spec tool_retry(map()) -> middleware_spec().
+-spec model_retry() -> middleware_spec().
+-spec model_retry(map()) -> middleware_spec().
+-spec model_fallback() -> middleware_spec().
+-spec model_fallback(map()) -> middleware_spec().
 ```
 
 ---
 
 ## More Resources
 
-- [beamai_agent README](../apps/beamai_agent/README.md)
-- [API Reference](API_REFERENCE.md)
-- [Architecture Design](ARCHITECTURE.md)
+- [beamai_plugin README](../apps/beamai_plugin/README.md) - Plugin module documentation
+- [beamai_core README](../apps/beamai_core/README.md) - Kernel architecture documentation
+- [API Reference](API_REFERENCE.md) - API reference documentation

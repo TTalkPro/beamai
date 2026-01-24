@@ -2,7 +2,7 @@
 
 [English](CALLBACKS_EN.md) | 中文
 
-BeamAI Framework 提供了类似 LangChain 的事件驱动回调系统，用于监听和响应 Agent 执行过程中的各种事件。
+BeamAI Agent 提供事件驱动的回调系统，用于监听和响应 Agent 执行过程中的各种事件。
 
 ## 目录
 
@@ -13,7 +13,6 @@ BeamAI Framework 提供了类似 LangChain 的事件驱动回调系统，用于�
 - [API 参考](#api-参考)
 - [使用示例](#使用示例)
 - [最佳实践](#最佳实践)
-- [扩展开发](#扩展开发)
 
 ---
 
@@ -23,219 +22,149 @@ Callback 系统是 BeamAI Agent 的核心组件之一，允许开发者在 Agent
 
 - **监控和日志**: 记录 LLM 调用、工具执行等事件
 - **调试**: 追踪 Agent 执行流程，定位问题
-- **集成**: 与外部系统（监控、分析、通知）集成
-- **扩展**: 在不修改核心代码的情况下添加功能
+- **流式输出**: 实时接收 LLM 生成的 Token
+- **中断控制**: 通过工具回调中断执行
+- **集成**: 与外部系统（监控、通知）集成
 
 ### 架构图
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Agent 执行流程                                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌──────────────────┐                                                   │
-│  │  on_chain_start  │  ← Agent 执行开始                                  │
-│  └────────┬─────────┘                                                   │
-│           │                                                              │
-│           ▼                                                              │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │                         执行循环                                    │ │
-│  │  ┌──────────────────┐                                              │ │
-│  │  │  on_llm_start    │  ← LLM 调用开始                               │ │
-│  │  └────────┬─────────┘                                              │ │
-│  │           │                                                        │ │
-│  │           ▼                                                        │ │
-│  │  ┌──────────────────┐     ┌──────────────────┐                     │ │
-│  │  │    LLM 调用      │ ──► │  on_llm_new_token│  ← 流式 Token       │ │
-│  │  └────────┬─────────┘     └──────────────────┘                     │ │
-│  │           │                                                        │ │
-│  │           ▼                                                        │ │
-│  │  ┌──────────────────┐     ┌──────────────────┐                     │ │
-│  │  │  on_llm_end      │  或 │  on_llm_error    │                     │ │
-│  │  └────────┬─────────┘     └──────────────────┘                     │ │
-│  │           │                                                        │ │
-│  │           ▼                                                        │ │
-│  │  ┌──────────────────┐                                              │ │
-│  │  │    on_text       │  ← 文本内容生成                               │ │
-│  │  └────────┬─────────┘                                              │ │
-│  │           │                                                        │ │
-│  │           ▼                                                        │ │
-│  │  ┌──────────────────┐                                              │ │
-│  │  │ on_agent_action  │  ← Agent 决定执行动作                         │ │
-│  │  └────────┬─────────┘                                              │ │
-│  │           │                                                        │ │
-│  │           ▼                                                        │ │
-│  │  ┌──────────────────┐                                              │ │
-│  │  │  on_tool_start   │  ← 工具执行开始                               │ │
-│  │  └────────┬─────────┘                                              │ │
-│  │           │                                                        │ │
-│  │           ▼                                                        │ │
-│  │  ┌──────────────────┐     ┌──────────────────┐                     │ │
-│  │  │  on_tool_end     │  或 │  on_tool_error   │                     │ │
-│  │  └────────┬─────────┘     └──────────────────┘                     │ │
-│  │           │                                                        │ │
-│  └───────────┴────────────────────────────────────────────────────────┘ │
-│           │                                                              │
-│           ▼                                                              │
-│  ┌──────────────────┐     ┌──────────────────┐                          │
-│  │ on_agent_finish  │  或 │  on_chain_error  │                          │
-│  └──────────────────┘     └──────────────────┘                          │
-│           │                                                              │
-│           ▼                                                              │
-│  ┌──────────────────┐                                                   │
-│  │  on_chain_end    │  ← Agent 执行结束                                  │
-│  └──────────────────┘                                                   │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                           Agent 执行流程                              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────┐                                               │
+│  │  on_turn_start   │  ← 每轮开始                                   │
+│  └────────┬─────────┘                                               │
+│           │                                                          │
+│           ▼                                                          │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                         执行循环                                │ │
+│  │  ┌──────────────────┐                                          │ │
+│  │  │   on_llm_call    │  ← LLM 调用                              │ │
+│  │  └────────┬─────────┘                                          │ │
+│  │           │                                                    │ │
+│  │           ▼                                                    │ │
+│  │  ┌──────────────────┐                                          │ │
+│  │  │    on_token      │  ← 流式 Token（逐个）                    │ │
+│  │  └────────┬─────────┘                                          │ │
+│  │           │                                                    │ │
+│  │           ▼                                                    │ │
+│  │  ┌──────────────────┐                                          │ │
+│  │  │  on_tool_call    │  ← 工具调用（可返回 interrupt）           │ │
+│  │  └────────┬─────────┘                                          │ │
+│  │           │                                                    │ │
+│  └───────────┴────────────────────────────────────────────────────┘ │
+│           │                                                          │
+│           ▼                                                          │
+│  ┌──────────────────┐     ┌──────────────────┐                      │
+│  │  on_turn_end     │  或 │ on_turn_error    │                      │
+│  └──────────────────┘     └──────────────────┘                      │
+│                                                                      │
+│  ┌──────────────────┐     ┌──────────────────┐                      │
+│  │  on_interrupt    │     │   on_resume      │  ← 中断/恢复事件     │
+│  └──────────────────┘     └──────────────────┘                      │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 核心模块
 
 | 模块 | 位置 | 说明 |
 |------|------|------|
-| `beamai_agent_callbacks` | `apps/beamai_agent/src/` | 回调管理器 |
-| `beamai_callback_utils` | `apps/beamai_core/src/utils/` | 回调工具函数 |
-| `beamai_agent.hrl` | `apps/beamai_agent/include/` | 回调类型定义 |
+| `beamai_agent_callbacks` | `apps/beamai_agent/src/` | 回调管理和调用 |
 
 ---
 
 ## 回调类型
 
-BeamAI 支持 18 种回调类型，覆盖完整的 Agent 生命周期。
+BeamAI 支持 8 种回调类型，覆盖 Agent 执行的关键生命周期。
 
-### LLM 回调（4 种）
+### 回调列表
 
-| 回调名称 | 触发时机 | 参数 |
-|----------|----------|------|
-| `on_llm_start` | LLM 调用开始 | `(Prompts, Meta)` |
-| `on_llm_end` | LLM 调用成功 | `(Response, Meta)` |
-| `on_llm_error` | LLM 调用失败 | `(Error, Meta)` |
-| `on_llm_new_token` | 流式输出新 Token | `(Token, Meta)` |
+| 回调名称 | 触发时机 | 参数 | 返回值 |
+|----------|----------|------|--------|
+| `on_turn_start` | 每轮执行开始 | `(Metadata)` | `ok` |
+| `on_turn_end` | 每轮执行结束 | `(Metadata)` | `ok` |
+| `on_turn_error` | 每轮执行出错 | `(Error, Metadata)` | `ok` |
+| `on_llm_call` | LLM 调用时 | `(Messages, Metadata)` | `ok` |
+| `on_tool_call` | 工具调用时 | `(FunctionName, Args)` | `ok \| {interrupt, Reason}` |
+| `on_token` | 流式 Token 生成 | `(TokenText, Metadata)` | `ok` |
+| `on_interrupt` | Agent 被中断 | `(InterruptState, Metadata)` | `ok` |
+| `on_resume` | Agent 从中断恢复 | `(InterruptState, Metadata)` | `ok` |
+
+### Turn 回调（3 种）
+
+每轮 Agent 执行的生命周期事件：
 
 ```erlang
-%% LLM 回调示例
 #{
-    on_llm_start => fun(Prompts, Meta) ->
-        io:format("LLM 调用开始，消息数: ~p~n", [length(Prompts)])
+    on_turn_start => fun(Meta) ->
+        io:format("第 ~p 轮开始~n", [maps:get(turn_count, Meta)])
     end,
-    on_llm_end => fun(Response, Meta) ->
-        Content = maps:get(content, Response, <<>>),
-        io:format("LLM 响应: ~ts~n", [Content])
+    on_turn_end => fun(Meta) ->
+        io:format("第 ~p 轮结束~n", [maps:get(turn_count, Meta)])
     end,
-    on_llm_error => fun(Error, Meta) ->
-        logger:error("LLM 调用失败: ~p", [Error])
+    on_turn_error => fun(Error, Meta) ->
+        logger:error("执行错误: ~p", [Error])
     end
 }
 ```
 
-### Tool 回调（3 种）
+### LLM 回调（1 种）
 
-| 回调名称 | 触发时机 | 参数 |
-|----------|----------|------|
-| `on_tool_start` | 工具执行开始 | `(ToolName, Args, Meta)` |
-| `on_tool_end` | 工具执行成功 | `(ToolName, Result, Meta)` |
-| `on_tool_error` | 工具执行失败 | `(ToolName, Error, Meta)` |
+LLM 调用事件：
 
 ```erlang
-%% Tool 回调示例
 #{
-    on_tool_start => fun(ToolName, Args, Meta) ->
-        io:format("执行工具: ~ts~n参数: ~p~n", [ToolName, Args])
-    end,
-    on_tool_end => fun(ToolName, Result, Meta) ->
-        io:format("工具 ~ts 完成: ~ts~n", [ToolName, Result])
-    end,
-    on_tool_error => fun(ToolName, Error, Meta) ->
-        logger:warning("工具 ~ts 失败: ~p", [ToolName, Error])
+    on_llm_call => fun(Messages, Meta) ->
+        io:format("LLM 调用，消息数: ~p~n", [length(Messages)])
     end
 }
 ```
 
-### Agent 回调（2 种）
+### Tool 回调（1 种）
 
-| 回调名称 | 触发时机 | 参数 |
-|----------|----------|------|
-| `on_agent_action` | Agent 决定执行动作 | `(Action, Meta)` |
-| `on_agent_finish` | Agent 完成（无工具调用） | `(Result, Meta)` |
+工具调用事件。特别地，`on_tool_call` 可以返回 `{interrupt, Reason}` 来中断执行：
 
 ```erlang
-%% Agent 回调示例
 #{
-    on_agent_action => fun(Action, Meta) ->
-        %% Action 包含工具调用信息
-        ToolCalls = maps:get(tool_calls, Action, []),
-        io:format("Agent 动作: ~p 个工具调用~n", [length(ToolCalls)])
-    end,
-    on_agent_finish => fun(Result, Meta) ->
-        Content = maps:get(content, Result, <<>>),
-        io:format("Agent 完成: ~ts~n", [Content])
+    on_tool_call => fun(FunctionName, Args) ->
+        io:format("调用工具: ~ts~n", [FunctionName]),
+        case FunctionName of
+            <<"dangerous_tool">> ->
+                %% 中断执行，等待人工确认
+                {interrupt, #{reason => require_approval, tool => FunctionName}};
+            _ ->
+                ok
+        end
     end
 }
 ```
 
-### Chain 回调（3 种）
+### Token 回调（1 种）
 
-| 回调名称 | 触发时机 | 参数 |
-|----------|----------|------|
-| `on_chain_start` | Chain/Agent 执行开始 | `(Input, Meta)` |
-| `on_chain_end` | Chain/Agent 执行成功 | `(Output, Meta)` |
-| `on_chain_error` | Chain/Agent 执行失败 | `(Error, Meta)` |
+流式输出时逐个 Token 生成的事件：
 
 ```erlang
-%% Chain 回调示例
 #{
-    on_chain_start => fun(Input, Meta) ->
-        io:format("开始执行，输入: ~ts~n", [Input])
-    end,
-    on_chain_end => fun(Output, Meta) ->
-        io:format("执行完成~n")
-    end,
-    on_chain_error => fun(Error, Meta) ->
-        logger:error("执行失败: ~p", [Error])
+    on_token => fun(TokenText, Meta) ->
+        io:format("~ts", [TokenText])  %% 实时输出
     end
 }
 ```
 
-### Retriever 回调（3 种）- RAG 相关
+### 中断/恢复回调（2 种）
 
-| 回调名称 | 触发时机 | 参数 |
-|----------|----------|------|
-| `on_retriever_start` | 检索开始 | `(Query, Meta)` |
-| `on_retriever_end` | 检索成功 | `(Documents, Meta)` |
-| `on_retriever_error` | 检索失败 | `(Error, Meta)` |
+Agent 中断和恢复事件：
 
 ```erlang
-%% Retriever 回调示例
 #{
-    on_retriever_start => fun(Query, Meta) ->
-        io:format("开始检索: ~ts~n", [Query])
+    on_interrupt => fun(InterruptState, Meta) ->
+        io:format("Agent 被中断: ~p~n", [InterruptState])
     end,
-    on_retriever_end => fun(Documents, Meta) ->
-        io:format("检索到 ~p 个文档~n", [length(Documents)])
-    end
-}
-```
-
-### 其他回调（3 种）
-
-| 回调名称 | 触发时机 | 参数 |
-|----------|----------|------|
-| `on_text` | 生成文本内容 | `(Text, Meta)` |
-| `on_retry` | 重试时触发 | `(RetryState, Meta)` |
-| `on_custom_event` | 自定义事件 | `(EventName, Data, Meta)` |
-
-```erlang
-%% 其他回调示例
-#{
-    on_text => fun(Text, Meta) ->
-        %% 仅当内容非空时触发
-        io:format("生成文本: ~ts~n", [Text])
-    end,
-    on_retry => fun(RetryState, Meta) ->
-        io:format("重试: ~p~n", [RetryState])
-    end,
-    on_custom_event => fun(EventName, Data, Meta) ->
-        io:format("自定义事件 ~p: ~p~n", [EventName, Data])
+    on_resume => fun(InterruptState, Meta) ->
+        io:format("Agent 恢复执行~n")
     end
 }
 ```
@@ -244,63 +173,49 @@ BeamAI 支持 18 种回调类型，覆盖完整的 Agent 生命周期。
 
 ## 使用方法
 
-### 初始化时设置回调
+### 在 Agent 创建时设置回调
 
 ```erlang
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
+LLM = beamai_chat_completion:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+}),
+
+{ok, State} = beamai_agent:new(#{
+    llm => LLM,
     system_prompt => <<"你是一个助手"/utf8>>,
-    llm => LLMConfig,
     callbacks => #{
-        on_llm_start => fun(Prompts, Meta) ->
-            io:format("LLM 开始~n")
+        on_turn_start => fun(Meta) ->
+            io:format("开始执行~n")
         end,
-        on_llm_end => fun(Response, Meta) ->
-            io:format("LLM 结束~n")
+        on_llm_call => fun(Messages, Meta) ->
+            io:format("LLM 调用，~p 条消息~n", [length(Messages)])
         end,
-        on_tool_start => fun(ToolName, Args, Meta) ->
-            io:format("工具: ~ts~n", [ToolName])
+        on_tool_call => fun(FuncName, Args) ->
+            io:format("工具: ~ts~n", [FuncName]),
+            ok
+        end,
+        on_turn_end => fun(Meta) ->
+            io:format("执行完成~n")
         end
     }
-}).
-```
+}),
 
-### 动态设置回调
-
-```erlang
-%% 设置新的回调
-ok = beamai_agent:set_callbacks(Agent, #{
-    on_llm_start => fun(Prompts, Meta) ->
-        io:format("新的 LLM 回调~n")
-    end
-}).
-
-%% 获取当前回调配置
-CallbacksMap = beamai_agent:get_callbacks(Agent).
-```
-
-### 发送自定义事件
-
-```erlang
-%% 发送自定义事件
-beamai_agent:emit_custom_event(Agent, my_event, #{value => 42}).
-
-%% 发送带元数据的自定义事件
-beamai_agent:emit_custom_event(Agent, my_event, #{value => 42}, #{
-    source => <<"my_module">>
-}).
+{ok, Result, _NewState} = beamai_agent:run(State, <<"你好"/utf8>>).
 ```
 
 ---
 
 ## 回调元数据
 
-每个回调都会收到一个 `Meta` 参数，包含执行上下文信息：
+每个回调都会收到一个 `Metadata` 参数（`on_tool_call` 除外），包含执行上下文信息：
 
 ```erlang
-Meta = #{
+Metadata = #{
     agent_id => <<"agent_123">>,     %% Agent ID
     agent_name => <<"my_agent">>,    %% Agent 名称
-    run_id => <<"uuid-...">>,        %% 当前运行 ID（UUID 格式）
+    turn_count => 1,                 %% 当前轮次
     timestamp => 1705658400000       %% 毫秒级时间戳
 }.
 ```
@@ -309,12 +224,11 @@ Meta = #{
 
 ```erlang
 #{
-    on_llm_start => fun(Prompts, Meta) ->
-        AgentName = maps:get(agent_name, Meta),
-        RunId = maps:get(run_id, Meta),
-        Timestamp = maps:get(timestamp, Meta),
-        logger:info("[~ts] LLM 开始 (run: ~ts, time: ~p)",
-            [AgentName, RunId, Timestamp])
+    on_llm_call => fun(Messages, Meta) ->
+        AgentName = maps:get(agent_name, Meta, <<"unknown">>),
+        TurnCount = maps:get(turn_count, Meta, 0),
+        logger:info("[~ts] 第 ~p 轮 LLM 调用，~p 条消息",
+            [AgentName, TurnCount, length(Messages)])
     end
 }
 ```
@@ -323,85 +237,36 @@ Meta = #{
 
 ## API 参考
 
-### beamai_agent 回调 API
+### beamai_agent_callbacks
 
 ```erlang
-%% 设置回调处理器
--spec set_callbacks(pid(), map()) -> ok.
-beamai_agent:set_callbacks(Agent, CallbackOpts).
+-type callbacks() :: #{
+    on_turn_start => fun((map()) -> ok),
+    on_turn_end => fun((map()) -> ok),
+    on_turn_error => fun((term(), map()) -> ok),
+    on_llm_call => fun((list(), map()) -> ok),
+    on_tool_call => fun((binary(), map()) -> ok | {interrupt, term()}),
+    on_token => fun((binary(), map()) -> ok),
+    on_interrupt => fun((term(), map()) -> ok),
+    on_resume => fun((term(), map()) -> ok)
+}.
 
-%% 获取当前回调配置
--spec get_callbacks(pid()) -> map().
-beamai_agent:get_callbacks(Agent).
-
-%% 发送自定义事件
--spec emit_custom_event(pid(), atom() | binary(), term()) -> ok.
-beamai_agent:emit_custom_event(Agent, EventName, Data).
-
-%% 发送自定义事件（带元数据）
--spec emit_custom_event(pid(), atom() | binary(), term(), map()) -> ok.
-beamai_agent:emit_custom_event(Agent, EventName, Data, Metadata).
-```
-
-### beamai_agent_callbacks 内部 API
-
-```erlang
-%% 初始化回调处理器
--spec init(map()) -> #callbacks{}.
-beamai_agent_callbacks:init(Opts).
-
-%% 更新回调处理器
--spec update(#callbacks{}, map()) -> #callbacks{}.
-beamai_agent_callbacks:update(Callbacks, Opts).
-
-%% 调用回调函数
--spec invoke(atom(), list(), #callbacks{}) -> ok.
+%% 安全调用回调（异常不影响 Agent 执行）
+-spec invoke(atom(), list(), callbacks()) -> ok.
 beamai_agent_callbacks:invoke(CallbackName, Args, Callbacks).
 
-%% 将回调记录转换为 map
--spec to_map(#callbacks{}) -> map().
-beamai_agent_callbacks:to_map(Callbacks).
-
 %% 构建回调元数据
--spec build_metadata(#state{}) -> map().
-beamai_agent_callbacks:build_metadata(State).
-
-%% 生成运行 ID
--spec generate_run_id() -> binary().
-beamai_agent_callbacks:generate_run_id().
+-spec build_metadata(agent_state()) -> map().
+beamai_agent_callbacks:build_metadata(AgentState).
 ```
 
-### beamai_callback_utils 工具函数
+### 回调安全机制
 
-```erlang
-%% 调用回调函数（不带元数据）
--spec invoke(atom(), list(), map()) -> ok.
-beamai_callback_utils:invoke(CallbackName, Args, Callbacks).
+回调系统具备以下安全特性：
 
-%% 调用回调函数（带元数据）
--spec invoke(atom(), list(), map(), map()) -> ok.
-beamai_callback_utils:invoke(CallbackName, Args, Callbacks, Meta).
-
-%% 从图状态调用回调
--spec invoke_from_state(atom(), list(), map()) -> ok.
-beamai_callback_utils:invoke_from_state(CallbackName, Args, State).
-
-%% 条件调用回调
--spec maybe_invoke(boolean(), atom(), list(), map()) -> ok.
-beamai_callback_utils:maybe_invoke(Condition, CallbackName, Args, State).
-```
-
-### 调用宏
-
-```erlang
-%% 在 beamai_common.hrl 中定义
-
-%% 直接调用回调
-?INVOKE_CALLBACK(Name, Args, Callbacks, Meta)
-
-%% 从图状态调用回调
-?INVOKE_CALLBACK_FROM_STATE(Name, Args, State)
-```
+- **异常隔离**: 回调函数内的异常会被捕获，不会影响 Agent 主流程
+- **未注册忽略**: 调用未注册的回调名称直接返回 `ok`
+- **可选回调**: 所有回调都是可选的，只需注册需要的即可
 
 ---
 
@@ -410,29 +275,27 @@ beamai_callback_utils:maybe_invoke(Condition, CallbackName, Args, State).
 ### 示例 1：日志记录
 
 ```erlang
-%% 创建日志回调
 LogCallbacks = #{
-    on_llm_start => fun(Prompts, Meta) ->
-        logger:info("[~ts] LLM 开始，消息数: ~p",
-            [maps:get(agent_name, Meta), length(Prompts)])
+    on_turn_start => fun(Meta) ->
+        logger:info("[~ts] 第 ~p 轮开始",
+            [maps:get(agent_name, Meta, <<>>), maps:get(turn_count, Meta, 0)])
     end,
-    on_llm_end => fun(Response, Meta) ->
-        logger:info("[~ts] LLM 完成",
-            [maps:get(agent_name, Meta)])
+    on_llm_call => fun(Messages, Meta) ->
+        logger:info("[~ts] LLM 调用，~p 条消息",
+            [maps:get(agent_name, Meta, <<>>), length(Messages)])
     end,
-    on_tool_start => fun(ToolName, Args, Meta) ->
-        logger:info("[~ts] 工具 ~ts 开始",
-            [maps:get(agent_name, Meta), ToolName])
+    on_tool_call => fun(FuncName, _Args) ->
+        logger:info("工具调用: ~ts", [FuncName]),
+        ok
     end,
-    on_tool_end => fun(ToolName, Result, Meta) ->
-        logger:info("[~ts] 工具 ~ts 完成",
-            [maps:get(agent_name, Meta), ToolName])
+    on_turn_end => fun(Meta) ->
+        logger:info("[~ts] 第 ~p 轮结束",
+            [maps:get(agent_name, Meta, <<>>), maps:get(turn_count, Meta, 0)])
     end
 }.
 
-{ok, Agent} = beamai_agent:start_link(<<"log_agent">>, #{
-    system_prompt => <<"...">>,
-    llm => LLMConfig,
+{ok, State} = beamai_agent:new(#{
+    llm => LLM,
     callbacks => LogCallbacks
 }).
 ```
@@ -440,131 +303,96 @@ LogCallbacks = #{
 ### 示例 2：性能监控
 
 ```erlang
-%% 创建性能监控回调
 PerfCallbacks = #{
-    on_llm_start => fun(_Prompts, Meta) ->
-        %% 记录开始时间到进程字典
+    on_turn_start => fun(_Meta) ->
+        put(turn_start_time, erlang:system_time(millisecond))
+    end,
+    on_llm_call => fun(_Messages, _Meta) ->
         put(llm_start_time, erlang:system_time(millisecond))
     end,
-    on_llm_end => fun(Response, Meta) ->
-        StartTime = get(llm_start_time),
+    on_turn_end => fun(Meta) ->
+        StartTime = get(turn_start_time),
         Duration = erlang:system_time(millisecond) - StartTime,
-        %% 发送到监控系统
-        metrics:histogram(<<"llm.duration_ms">>, Duration),
-        logger:info("LLM 耗时: ~p ms", [Duration])
-    end,
-    on_tool_start => fun(ToolName, _Args, _Meta) ->
-        put({tool_start_time, ToolName}, erlang:system_time(millisecond))
-    end,
-    on_tool_end => fun(ToolName, _Result, _Meta) ->
-        StartTime = get({tool_start_time, ToolName}),
-        Duration = erlang:system_time(millisecond) - StartTime,
-        metrics:histogram(<<"tool.duration_ms">>, Duration, #{tool => ToolName})
+        logger:info("第 ~p 轮耗时: ~p ms",
+            [maps:get(turn_count, Meta, 0), Duration])
     end
 }.
 ```
 
-### 示例 3：进度通知
+### 示例 3：流式输出
 
 ```erlang
-%% 创建进度通知回调（如发送到 WebSocket）
-NotifyCallbacks = #{
-    on_chain_start => fun(Input, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"start">>,
-            input => Input
-        })
+StreamCallbacks = #{
+    on_token => fun(TokenText, _Meta) ->
+        %% 实时输出到终端
+        io:format("~ts", [TokenText])
     end,
-    on_llm_new_token => fun(Token, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"token">>,
-            content => Token
-        })
-    end,
-    on_tool_start => fun(ToolName, Args, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"tool_start">>,
-            tool => ToolName
-        })
-    end,
-    on_chain_end => fun(Output, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"end">>,
-            output => Output
-        })
+    on_turn_end => fun(_Meta) ->
+        io:format("~n")  %% 换行
     end
 }.
 
-notify_client(RunId, Message) ->
-    websocket_handler:send(RunId, jsx:encode(Message)).
+{ok, State} = beamai_agent:new(#{
+    llm => LLM,
+    callbacks => StreamCallbacks
+}).
 ```
 
-### 示例 4：调试追踪
+### 示例 4：工具审批（中断机制）
 
 ```erlang
-%% 创建调试回调
-DebugCallbacks = #{
-    on_llm_start => fun(Prompts, Meta) ->
-        io:format("~n=== LLM 调用开始 ===~n"),
-        io:format("Agent: ~ts~n", [maps:get(agent_name, Meta)]),
-        io:format("消息数: ~p~n", [length(Prompts)]),
-        lists:foreach(fun(Msg) ->
-            Role = maps:get(role, Msg),
-            Content = maps:get(content, Msg, <<>>),
-            io:format("  [~ts] ~ts~n", [Role, truncate(Content, 100)])
-        end, Prompts)
+%% 使用 on_tool_call 的 interrupt 返回值实现人工审批
+ApprovalCallbacks = #{
+    on_tool_call => fun(FuncName, Args) ->
+        DangerousTools = [<<"delete_file">>, <<"execute_command">>],
+        case lists:member(FuncName, DangerousTools) of
+            true ->
+                io:format("工具 ~ts 需要审批，参数: ~p~n", [FuncName, Args]),
+                %% 中断执行
+                {interrupt, #{
+                    reason => require_approval,
+                    tool => FuncName,
+                    args => Args
+                }};
+            false ->
+                ok
+        end
     end,
-    on_llm_end => fun(Response, Meta) ->
-        io:format("~n=== LLM 响应 ===~n"),
-        Content = maps:get(content, Response, <<>>),
-        ToolCalls = maps:get(tool_calls, Response, []),
-        io:format("内容: ~ts~n", [truncate(Content, 200)]),
-        io:format("工具调用: ~p 个~n", [length(ToolCalls)])
+    on_interrupt => fun(InterruptState, _Meta) ->
+        io:format("Agent 已中断，等待审批: ~p~n", [InterruptState])
     end,
-    on_tool_start => fun(ToolName, Args, _Meta) ->
-        io:format("~n>>> 执行工具: ~ts~n", [ToolName]),
-        io:format("    参数: ~p~n", [Args])
-    end,
-    on_tool_end => fun(ToolName, Result, _Meta) ->
-        io:format("<<< 工具完成: ~ts~n", [ToolName]),
-        io:format("    结果: ~ts~n", [truncate(Result, 100)])
+    on_resume => fun(_InterruptState, _Meta) ->
+        io:format("Agent 已恢复执行~n")
     end
 }.
-
-truncate(Bin, MaxLen) when byte_size(Bin) > MaxLen ->
-    <<(binary:part(Bin, 0, MaxLen))/binary, "...">>;
-truncate(Bin, _) -> Bin.
 ```
 
-### 示例 5：异步事件处理
+### 示例 5：WebSocket 通知
 
 ```erlang
-%% 使用进程消息进行异步处理
-Self = self(),
-
-AsyncCallbacks = #{
-    on_llm_end => fun(Response, Meta) ->
-        Self ! {llm_complete, maps:get(run_id, Meta), Response}
+%% 将事件推送到 WebSocket 客户端
+WsCallbacks = #{
+    on_turn_start => fun(Meta) ->
+        ws_send(Meta, #{type => <<"turn_start">>})
     end,
-    on_tool_end => fun(ToolName, Result, Meta) ->
-        Self ! {tool_complete, maps:get(run_id, Meta), ToolName, Result}
+    on_token => fun(TokenText, Meta) ->
+        ws_send(Meta, #{type => <<"token">>, content => TokenText})
     end,
-    on_chain_end => fun(Output, Meta) ->
-        Self ! {agent_complete, maps:get(run_id, Meta), Output}
+    on_tool_call => fun(FuncName, Args) ->
+        ws_send(#{}, #{type => <<"tool_call">>, tool => FuncName, args => Args}),
+        ok
+    end,
+    on_turn_end => fun(Meta) ->
+        ws_send(Meta, #{type => <<"turn_end">>})
+    end,
+    on_turn_error => fun(Error, Meta) ->
+        ws_send(Meta, #{type => <<"error">>, error => Error})
     end
 }.
 
-%% 异步接收事件
-receive
-    {llm_complete, RunId, Response} ->
-        handle_llm_response(RunId, Response);
-    {tool_complete, RunId, ToolName, Result} ->
-        handle_tool_result(RunId, ToolName, Result);
-    {agent_complete, RunId, Output} ->
-        handle_agent_output(RunId, Output)
-after 30000 ->
-    timeout
-end.
+ws_send(Meta, Message) ->
+    AgentId = maps:get(agent_id, Meta, <<"unknown">>),
+    websocket_handler:send(AgentId, jsx:encode(Message)).
 ```
 
 ---
@@ -577,147 +405,63 @@ end.
 
 ```erlang
 %% 推荐：异步处理
-on_llm_end => fun(Response, Meta) ->
-    spawn(fun() -> process_response(Response, Meta) end)
+on_llm_call => fun(Messages, Meta) ->
+    spawn(fun() -> log_to_external_service(Messages, Meta) end)
 end
 
 %% 避免：同步阻塞操作
-on_llm_end => fun(Response, Meta) ->
+on_llm_call => fun(Messages, Meta) ->
     %% 这会阻塞 Agent
     httpc:request(post, {Url, [], "application/json", Body}, [], [])
 end
 ```
 
-### 2. 处理回调异常
+### 2. 异常安全
 
 回调内部的异常不会影响 Agent 执行，但建议添加错误处理：
 
 ```erlang
-on_llm_end => fun(Response, Meta) ->
+on_turn_end => fun(Meta) ->
     try
-        process_response(Response)
+        process_turn_result(Meta)
     catch
         Class:Reason:Stack ->
-            logger:warning("回调处理失败: ~p:~p~n~p",
-                [Class, Reason, Stack])
+            logger:warning("回调处理失败: ~p:~p", [Class, Reason])
     end
 end
 ```
 
-### 3. 使用元数据关联事件
+### 3. 合理使用 on_tool_call 中断
 
-利用 `run_id` 关联同一次执行的所有事件：
+`on_tool_call` 是唯一可以影响执行流程的回调：
 
 ```erlang
-%% 使用 ETS 存储执行上下文
-on_chain_start => fun(Input, Meta) ->
-    RunId = maps:get(run_id, Meta),
-    ets:insert(run_context, {RunId, #{
-        start_time => erlang:system_time(millisecond),
-        input => Input
-    }})
-end,
-
-on_chain_end => fun(Output, Meta) ->
-    RunId = maps:get(run_id, Meta),
-    [{_, Context}] = ets:lookup(run_context, RunId),
-    Duration = erlang:system_time(millisecond) - maps:get(start_time, Context),
-    %% 记录完整的执行信息
-    log_execution(RunId, Context, Output, Duration),
-    ets:delete(run_context, RunId)
+%% 仅对危险操作使用中断
+on_tool_call => fun(FuncName, Args) ->
+    case requires_approval(FuncName, Args) of
+        true -> {interrupt, #{tool => FuncName}};
+        false -> ok  %% 大多数情况应返回 ok
+    end
 end
 ```
 
-### 4. 动态启用/禁用回调
+### 4. 利用元数据关联事件
+
+使用 `turn_count` 和 `agent_id` 关联同一 Agent 的事件：
 
 ```erlang
-%% 根据配置决定是否启用回调
-Callbacks = case os:getenv("DEBUG") of
-    "true" -> debug_callbacks();
-    _ -> #{}
-end,
-
-{ok, Agent} = beamai_agent:start_link(<<"agent">>, #{
-    callbacks => Callbacks
-}).
-```
-
-### 5. 组合多个回调处理器
-
-```erlang
-%% 合并多个回调配置
-merge_callbacks(Callbacks1, Callbacks2) ->
-    maps:fold(fun(Key, Handler2, Acc) ->
-        case maps:get(Key, Acc, undefined) of
-            undefined ->
-                maps:put(Key, Handler2, Acc);
-            Handler1 ->
-                %% 创建组合处理器
-                Combined = fun(Args...) ->
-                    Handler1(Args...),
-                    Handler2(Args...)
-                end,
-                maps:put(Key, Combined, Acc)
-        end
-    end, Callbacks1, Callbacks2).
-
-%% 使用
-AllCallbacks = merge_callbacks(
-    merge_callbacks(LogCallbacks, PerfCallbacks),
-    NotifyCallbacks
-).
-```
-
----
-
-## 扩展开发
-
-### 创建自定义回调处理器模块
-
-```erlang
--module(my_callback_handler).
--export([callbacks/0, callbacks/1]).
-
-%% 默认回调配置
-callbacks() ->
-    callbacks(#{}).
-
-%% 带选项的回调配置
-callbacks(Opts) ->
-    LogLevel = maps:get(log_level, Opts, info),
-    #{
-        on_llm_start => fun(Prompts, Meta) ->
-            log(LogLevel, "LLM 开始: ~p 条消息", [length(Prompts)])
-        end,
-        on_llm_end => fun(Response, Meta) ->
-            log(LogLevel, "LLM 结束", [])
-        end,
-        on_tool_start => fun(ToolName, Args, Meta) ->
-            log(LogLevel, "工具 ~ts 开始", [ToolName])
-        end,
-        on_tool_end => fun(ToolName, Result, Meta) ->
-            log(LogLevel, "工具 ~ts 结束", [ToolName])
-        end
-    }.
-
-log(debug, Fmt, Args) -> logger:debug(Fmt, Args);
-log(info, Fmt, Args) -> logger:info(Fmt, Args);
-log(warning, Fmt, Args) -> logger:warning(Fmt, Args).
-```
-
-### 使用自定义处理器
-
-```erlang
-{ok, Agent} = beamai_agent:start_link(<<"agent">>, #{
-    callbacks => my_callback_handler:callbacks(#{log_level => debug})
-}).
+on_turn_start => fun(Meta) ->
+    ets:insert(agent_events, {
+        {maps:get(agent_id, Meta), maps:get(turn_count, Meta)},
+        #{start_time => erlang:system_time(millisecond)}
+    })
+end
 ```
 
 ---
 
 ## 更多资源
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - 架构设计文档
+- [beamai_agent README](../apps/beamai_agent/README.md) - Agent 模块文档
 - [MIDDLEWARE.md](MIDDLEWARE.md) - Middleware 系统文档
 - [API_REFERENCE.md](API_REFERENCE.md) - API 参考文档
-- [beamai_agent README](../apps/beamai_agent/README.md) - Agent 模块文档

@@ -2,7 +2,7 @@
 
 [English](MIDDLEWARE_EN.md) | 中文
 
-beamai_agent 的 Middleware 系统提供了一种灵活的方式来拦截、修改和控制 Agent 执行的各个阶段。
+beamai_plugin 的 Middleware 系统提供了一种灵活的方式来拦截、修改和控制 Kernel 函数调用的各个阶段。
 
 ## 目录
 
@@ -18,65 +18,59 @@ beamai_agent 的 Middleware 系统提供了一种灵活的方式来拦截、修�
 
 ## 概述
 
-Middleware 是 Agent 执行过程中的拦截器，可以：
+Middleware 是 Kernel 函数调用过程中的拦截器，可以：
 
-- **修改输入/输出**: 在 LLM 调用前后修改消息
+- **修改输入/输出**: 在 LLM 调用或工具调用前后修改上下文
 - **控制流程**: 跳过、重试或中止执行
-- **添加功能**: 日志记录、监控、人工审批等
-- **实施限制**: 调用次数限制、Token 限制等
+- **添加功能**: 限流、人工审批、模型降级等
+- **实施限制**: 调用次数限制、错误重试等
 
 ### 架构图
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Agent 执行                            │
+│                    Kernel 函数调用                            │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────────┐                                           │
-│  │ before_agent │  ← Agent 开始前                            │
+│  │   pre_chat   │  ← LLM 调用前                             │
 │  └──────┬───────┘                                           │
 │         │                                                    │
 │         ▼                                                    │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │                    Agent Loop                          │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ before_model │  ← LLM 调用前                         │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │   LLM Call   │                                      │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ after_model  │  ← LLM 响应后                         │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ before_tools │  ← 工具执行前                         │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │Tool Execution│                                      │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  │         ▼                                              │ │
-│  │  ┌──────────────┐                                      │ │
-│  │  │ after_tools  │  ← 工具执行后                         │ │
-│  │  └──────┬───────┘                                      │ │
-│  │         │                                              │ │
-│  └─────────┴──────────────────────────────────────────────┘ │
+│  ┌──────────────┐                                           │
+│  │   LLM Call   │                                           │
+│  └──────┬───────┘                                           │
 │         │                                                    │
 │         ▼                                                    │
 │  ┌──────────────┐                                           │
-│  │ after_agent  │  ← Agent 结束后                            │
-│  └──────────────┘                                           │
+│  │  post_chat   │  ← LLM 响应后（可重试/降级）              │
+│  └──────┬───────┘                                           │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌────────────────┐                                         │
+│  │pre_invocation  │  ← 工具执行前（可审批/拦截）            │
+│  └──────┬─────────┘                                         │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌──────────────┐                                           │
+│  │Tool Execution│                                           │
+│  └──────┬───────┘                                           │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌────────────────┐                                         │
+│  │post_invocation │  ← 工具执行后（可重试）                 │
+│  └────────────────┘                                         │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### 核心模块
+
+| 模块 | 位置 | 说明 |
+|------|------|------|
+| `beamai_middleware` | `apps/beamai_plugin/src/middleware/` | Middleware 行为定义 |
+| `beamai_middleware_runner` | `apps/beamai_plugin/src/middleware/` | Middleware 链执行器 |
+| `beamai_middleware_presets` | `apps/beamai_plugin/src/middleware/` | 预设配置 |
 
 ---
 
@@ -86,12 +80,10 @@ Middleware 是 Agent 执行过程中的拦截器，可以：
 
 | 钩子 | 触发时机 | 典型用途 |
 |------|----------|----------|
-| `before_agent` | Agent 执行开始前 | 初始化计数器、记录开始时间 |
-| `after_agent` | Agent 执行结束后 | 清理资源、记录结束状态 |
-| `before_model` | 每次 LLM 调用前 | 检查限制、修改 messages、添加上下文 |
-| `after_model` | LLM 返回后 | 处理响应、记录日志、触发后续动作 |
-| `before_tools` | 工具执行前 | 人工审批、参数验证、工具过滤 |
-| `after_tools` | 工具执行后 | 结果验证、失败重试、结果转换 |
+| `pre_chat` | LLM 调用前 | 检查调用限制、修改消息 |
+| `post_chat` | LLM 响应后 | 错误重试、模型降级 |
+| `pre_invocation` | 工具执行前 | 人工审批、参数验证 |
+| `post_invocation` | 工具执行后 | 失败重试、计数更新 |
 
 ### 返回值类型
 
@@ -101,20 +93,32 @@ Middleware 钩子函数可以返回以下值：
 %% 无修改，继续执行
 ok
 
-%% 更新图状态
-{update, #{key => value}}
+%% 修改上下文后继续（传递给下一个 Middleware）
+{continue, UpdatedFilterCtx}
 
-%% 跳转到指定节点
-{goto, model | tools | '__end__'}
-
-%% 更新状态并跳转
-{update_goto, #{key => value}, model | tools | '__end__'}
+%% 跳过后续处理，直接返回结果
+{skip, Term}
 
 %% 中止执行并返回错误
-{halt, Reason}
+{error, Reason}
+```
 
-%% 中断等待用户确认
-{interrupt, #{type => tool_approval, data => Data}}
+### FilterCtx 结构
+
+Middleware 通过 `FilterCtx` 传递上下文信息：
+
+```erlang
+%% pre_chat / post_chat
+FilterCtx = #{
+    result => ok | {error, Reason}   %% LLM 调用结果（post_chat 中可用）
+}
+
+%% pre_invocation / post_invocation
+FilterCtx = #{
+    function => #{name => <<"tool_name">>, ...},  %% 函数定义
+    args => #{<<"param">> => Value},                %% 调用参数
+    result => ok | {error, Error}                   %% 执行结果（post_invocation 中可用）
+}
 ```
 
 ---
@@ -123,7 +127,10 @@ ok
 
 ### 1. middleware_call_limit - 调用限制
 
-限制 Agent 执行过程中的各种调用次数。
+限制函数调用过程中的各种调用次数。
+
+**钩子**: `pre_chat`, `pre_invocation`, `post_invocation`
+**优先级**: 10（最先执行）
 
 ```erlang
 {middleware_call_limit, #{
@@ -135,35 +142,30 @@ ok
 }}
 ```
 
-### 2. middleware_summarization - 上下文摘要
-
-自动压缩长对话历史。
-
-```erlang
-{middleware_summarization, #{
-    window_size => 20,               %% 保留最近 N 条消息
-    max_tokens => 4000,              %% Token 上限
-    summarize => true,               %% 是否生成摘要
-    compress_threshold => 30         %% 触发压缩的消息数阈值
-}}
-```
-
-### 3. middleware_human_approval - 人工审批
+### 2. middleware_human_approval - 人工审批
 
 在工具执行前请求人工确认。
+
+**钩子**: `pre_invocation`
+**优先级**: 50
 
 ```erlang
 {middleware_human_approval, #{
     mode => all,                     %% all | selective | custom | none
+    tools_requiring_approval => [<<"dangerous_tool">>],  %% selective 模式下需审批的工具
+    approval_fn => fun(FunctionName, Ctx) -> boolean() end,  %% custom 模式下的审批函数
+    approval_handler => fun(FunctionName, Ctx) -> approve | reject end,  %% 同步审批处理器
     timeout => 60000,                %% 审批超时时间(ms)
-    timeout_action => reject,        %% 超时行为: reject | approve
-    tools => [<<"dangerous_tool">>]  %% selective 模式下需审批的工具
+    timeout_action => reject         %% 超时行为: reject | confirm
 }}
 ```
 
-### 4. middleware_tool_retry - 工具重试
+### 3. middleware_tool_retry - 工具重试
 
 工具执行失败时自动重试。
+
+**钩子**: `post_invocation`
+**优先级**: 80
 
 ```erlang
 {middleware_tool_retry, #{
@@ -174,25 +176,52 @@ ok
         max_delay => 30000,          %% 最大延迟(ms)
         multiplier => 2              %% 指数因子
     },
-    retryable_errors => all          %% all | [error_type]
+    retryable_errors => all,         %% all | [error_type]
+    retry_fn => fun(Error, Ctx) -> boolean() end,  %% 自定义重试判断
+    on_retry => fun(Error, RetryCount, Delay, Ctx) -> ok end,  %% 重试回调
+    enable_delay => true             %% 是否启用退避延迟
 }}
 ```
 
-### 5. middleware_model_retry - 模型重试
+**辅助函数：**
 
-LLM 调用失败时自动重试。
+```erlang
+%% 判断错误是否可重试
+middleware_tool_retry:is_retryable(Error, MwState) -> boolean().
+
+%% 计算退避延迟
+middleware_tool_retry:calculate_delay(RetryCount, BackoffConfig) -> pos_integer().
+```
+
+### 4. middleware_model_retry - 模型重试
+
+LLM 调用失败时自动重试（支持 Jitter）。
+
+**钩子**: `post_chat`
+**优先级**: 90
 
 ```erlang
 {middleware_model_retry, #{
     max_retries => 3,
-    backoff => #{type => exponential, initial_delay => 1000},
-    retryable_errors => [timeout, rate_limit, server_error]
+    backoff => #{
+        type => exponential,
+        initial_delay => 1000,
+        max_delay => 30000,
+        multiplier => 2,
+        jitter => true               %% 启用随机抖动（避免惊群效应）
+    },
+    retryable_errors => [timeout, rate_limit, server_error],
+    retry_fn => fun(Error, Ctx) -> boolean() end,
+    on_retry => fun(Error, RetryCount, Delay, Ctx) -> ok end
 }}
 ```
 
-### 6. middleware_model_fallback - 模型降级
+### 5. middleware_model_fallback - 模型降级
 
 主模型失败时切换到备用模型。
+
+**钩子**: `post_chat`
+**优先级**: 95（最后执行）
 
 ```erlang
 {middleware_model_fallback, #{
@@ -200,90 +229,8 @@ LLM 调用失败时自动重试。
         #{provider => openai, model => <<"gpt-3.5-turbo">>},
         #{provider => ollama, model => <<"llama2">>}
     ],
-    trigger_errors => [rate_limit, timeout]
-}}
-```
-
-### 7. middleware_pii_detection - PII 检测
-
-检测并处理个人身份信息。
-
-```erlang
-{middleware_pii_detection, #{
-    action => mask,                  %% mask | warn | block
-    types => [email, phone, id_card],
-    mask_char => <<"*">>
-}}
-```
-
-### 8. middleware_tool_selector - 工具选择器
-
-根据上下文动态选择可用工具。
-
-```erlang
-{middleware_tool_selector, #{
-    strategy => context_based,       %% all | context_based | whitelist
-    whitelist => [<<"search">>, <<"calculate">>],
-    max_tools => 10
-}}
-```
-
-### 9. middleware_todo_list - TODO 管理
-
-为 Agent 提供任务追踪能力。
-
-```erlang
-{middleware_todo_list, #{
-    auto_create => true,             %% 自动创建 TODO
-    max_items => 20
-}}
-```
-
-### 10. middleware_shell_tool - Shell 工具
-
-提供安全的 Shell 命令执行。
-
-```erlang
-{middleware_shell_tool, #{
-    allowed_commands => [<<"ls">>, <<"cat">>, <<"grep">>],
-    timeout => 30000,
-    sandbox => true
-}}
-```
-
-### 11. middleware_file_search - 文件搜索
-
-提供文件和代码搜索能力。
-
-```erlang
-{middleware_file_search, #{
-    root_path => <<"/project">>,
-    max_results => 100,
-    excluded_paths => [<<"node_modules">>, <<".git">>]
-}}
-```
-
-### 12. middleware_context_editing - 上下文编辑
-
-允许动态修改对话上下文。
-
-```erlang
-{middleware_context_editing, #{
-    allow_message_deletion => true,
-    allow_message_modification => false
-}}
-```
-
-### 13. middleware_tool_emulator - 工具模拟
-
-在测试环境中模拟工具响应。
-
-```erlang
-{middleware_tool_emulator, #{
-    enabled => true,
-    responses => #{
-        <<"search">> => #{result => <<"mock search result">>}
-    }
+    trigger_errors => [rate_limit, timeout],  %% 触发降级的错误类型
+    on_fallback => fun(OriginalError, FallbackModel) -> ok end  %% 降级回调
 }}
 ```
 
@@ -294,45 +241,58 @@ LLM 调用失败时自动重试。
 ### 使用预设
 
 ```erlang
-%% 默认配置
+%% 默认配置（call_limit + model_retry）
 Middlewares = beamai_middleware_presets:default().
 
-%% 最小配置
+%% 最小配置（仅 call_limit）
 Middlewares = beamai_middleware_presets:minimal().
 
-%% 生产环境
+%% 生产环境（call_limit + tool_retry + model_retry + model_fallback）
 Middlewares = beamai_middleware_presets:production().
 
-%% 开发调试
+%% 开发调试（宽松 call_limit + tool_retry）
 Middlewares = beamai_middleware_presets:development().
 
-%% 人工审批
+%% 人工审批（call_limit + human_approval）
 Middlewares = beamai_middleware_presets:human_in_loop().
 ```
 
 ### 预设内容对比
 
-| 预设 | call_limit | summarization | tool_retry | human_approval |
-|------|------------|---------------|------------|----------------|
-| default | ✓ | ✓ | - | - |
-| minimal | ✓ | - | - | - |
-| production | ✓ (严格) | ✓ | ✓ | - |
-| development | ✓ (宽松) | ✓ (调试) | ✓ | - |
-| human_in_loop | ✓ | ✓ | - | ✓ |
+| 预设 | call_limit | tool_retry | model_retry | model_fallback | human_approval |
+|------|------------|------------|-------------|----------------|----------------|
+| default | ✓ | - | ✓ | - | - |
+| minimal | ✓ | - | - | - | - |
+| production | ✓ (严格) | ✓ | ✓ | ✓ | - |
+| development | ✓ (宽松) | ✓ | - | - | - |
+| human_in_loop | ✓ | - | - | - | ✓ |
 
 ### 自定义预设选项
 
 ```erlang
-%% 自定义 default 预设
+%% 自定义 default 预设参数
 Middlewares = beamai_middleware_presets:default(#{
     call_limit => #{max_model_calls => 30},
-    summarization => #{window_size => 30}
+    model_retry => #{max_retries => 5}
 }).
 
 %% 扩展预设
-Middlewares = beamai_middleware_presets:default() ++ [
+Middlewares = beamai_middleware_presets:production() ++ [
     {my_custom_middleware, #{option => value}}
 ].
+```
+
+### 获取单个 Middleware 配置
+
+```erlang
+%% 获取单个 Middleware 的默认配置
+CallLimit = beamai_middleware_presets:call_limit().
+CallLimit2 = beamai_middleware_presets:call_limit(#{max_model_calls => 50}).
+
+HumanApproval = beamai_middleware_presets:human_approval().
+ToolRetry = beamai_middleware_presets:tool_retry().
+ModelRetry = beamai_middleware_presets:model_retry().
+ModelFallback = beamai_middleware_presets:model_fallback().
 ```
 
 ---
@@ -346,9 +306,8 @@ Middlewares = beamai_middleware_presets:default() ++ [
 -behaviour(beamai_middleware).
 
 %% 导出回调函数（所有回调都是可选的）
--export([init/1, before_agent/2, after_agent/2,
-         before_model/2, after_model/2,
-         before_tools/2, after_tools/2]).
+-export([init/1, pre_chat/2, post_chat/2,
+         pre_invocation/2, post_invocation/2]).
 
 %% 初始化 Middleware 状态
 init(Opts) ->
@@ -357,38 +316,32 @@ init(Opts) ->
         counter => 0
     }.
 
-%% Agent 开始前
-before_agent(State, MwState) ->
-    %% State: 图状态 (graph_state)
+%% LLM 调用前
+pre_chat(FilterCtx, MwState) ->
+    %% FilterCtx: 过滤器上下文
     %% MwState: Middleware 内部状态
     ok.
 
-%% Agent 结束后
-after_agent(State, MwState) ->
-    ok.
-
-%% LLM 调用前
-before_model(State, MwState) ->
-    %% 示例：添加系统消息
-    Messages = graph_state:get(State, messages, []),
-    NewMsg = #{role => system, content => <<"Be concise.">>},
-    {update, #{messages => [NewMsg | Messages]}}.
-
 %% LLM 响应后
-after_model(State, MwState) ->
-    ok.
+post_chat(FilterCtx, MwState) ->
+    case maps:get(result, FilterCtx, ok) of
+        {error, _} ->
+            %% 可以决定重试
+            ok;
+        ok ->
+            ok
+    end.
 
 %% 工具执行前
-before_tools(State, MwState) ->
-    %% 示例：检查危险工具
-    PendingTools = graph_state:get(State, pending_tools, []),
-    case contains_dangerous_tool(PendingTools) of
-        true -> {halt, dangerous_tool_blocked};
+pre_invocation(FilterCtx, MwState) ->
+    FuncName = maps:get(name, maps:get(function, FilterCtx, #{}), <<>>),
+    case is_blocked(FuncName) of
+        true -> {error, {blocked_tool, FuncName}};
         false -> ok
     end.
 
 %% 工具执行后
-after_tools(State, MwState) ->
+post_invocation(FilterCtx, MwState) ->
     ok.
 ```
 
@@ -398,35 +351,28 @@ after_tools(State, MwState) ->
 -module(middleware_counter).
 -behaviour(beamai_middleware).
 
--export([init/1, before_agent/2, before_model/2, after_agent/2]).
+-export([init/1, pre_chat/2, pre_invocation/2]).
 
-%% 初始化
 init(Opts) ->
     #{
         max_calls => maps:get(max_calls, Opts, 10),
-        current_calls => 0
+        model_count => 0,
+        tool_count => 0
     }.
 
-%% Agent 开始 - 重置计数器
-before_agent(_State, MwState) ->
-    %% 将计数器存储到图状态
-    {update, #{middleware_counter => 0}}.
-
 %% 模型调用前 - 检查并递增计数
-before_model(State, #{max_calls := MaxCalls} = MwState) ->
-    Count = graph_state:get(State, middleware_counter, 0),
+pre_chat(_FilterCtx, #{max_calls := MaxCalls, model_count := Count} = MwState) ->
     case Count >= MaxCalls of
         true ->
-            logger:warning("Middleware: Call limit exceeded (~p/~p)", [Count, MaxCalls]),
-            {halt, {call_limit_exceeded, Count}};
+            {error, {model_call_limit_exceeded, Count}};
         false ->
-            {update, #{middleware_counter => Count + 1}}
+            %% 更新内部状态（通过 runner 的 set_middleware_state）
+            ok
     end.
 
-%% Agent 结束 - 记录统计
-after_agent(State, _MwState) ->
-    FinalCount = graph_state:get(State, middleware_counter, 0),
-    logger:info("Middleware: Total model calls: ~p", [FinalCount]),
+%% 工具调用前 - 计数
+pre_invocation(_FilterCtx, #{tool_count := Count} = _MwState) ->
+    logger:info("Tool call #~p", [Count + 1]),
     ok.
 ```
 
@@ -436,133 +382,64 @@ after_agent(State, _MwState) ->
 -module(middleware_logger).
 -behaviour(beamai_middleware).
 
--export([init/1, before_model/2, after_model/2, before_tools/2, after_tools/2]).
+-export([init/1, pre_chat/2, post_chat/2, pre_invocation/2, post_invocation/2]).
 
 init(Opts) ->
-    #{
-        log_level => maps:get(log_level, Opts, info),
-        include_content => maps:get(include_content, Opts, false)
-    }.
+    #{log_level => maps:get(log_level, Opts, info)}.
 
-before_model(State, #{log_level := Level, include_content := IncludeContent}) ->
-    Messages = graph_state:get(State, messages, []),
-    case IncludeContent of
-        true ->
-            log(Level, ">>> LLM Request: ~p messages~n~p", [length(Messages), Messages]);
-        false ->
-            log(Level, ">>> LLM Request: ~p messages", [length(Messages)])
+pre_chat(_FilterCtx, #{log_level := Level}) ->
+    log(Level, ">>> LLM call starting"),
+    ok.
+
+post_chat(FilterCtx, #{log_level := Level}) ->
+    case maps:get(result, FilterCtx, ok) of
+        ok -> log(Level, "<<< LLM call succeeded");
+        {error, Reason} -> log(Level, "<<< LLM call failed: ~p", [Reason])
     end,
-    %% 记录开始时间
-    {update, #{mw_model_start_time => erlang:system_time(millisecond)}}.
-
-after_model(State, #{log_level := Level}) ->
-    StartTime = graph_state:get(State, mw_model_start_time, 0),
-    Duration = erlang:system_time(millisecond) - StartTime,
-    Response = graph_state:get(State, last_llm_response, #{}),
-    Content = maps:get(content, Response, <<>>),
-    log(Level, "<<< LLM Response (~pms): ~p chars", [Duration, byte_size(Content)]),
     ok.
 
-before_tools(State, #{log_level := Level}) ->
-    Tools = graph_state:get(State, pending_tools, []),
-    ToolNames = [maps:get(name, T, unknown) || T <- Tools],
-    log(Level, ">>> Tools to execute: ~p", [ToolNames]),
+pre_invocation(FilterCtx, #{log_level := Level}) ->
+    FuncName = maps:get(name, maps:get(function, FilterCtx, #{}), <<"unknown">>),
+    Args = maps:get(args, FilterCtx, #{}),
+    log(Level, ">>> Tool ~ts called with ~p", [FuncName, Args]),
     ok.
 
-after_tools(State, #{log_level := Level}) ->
-    Results = graph_state:get(State, tool_results, []),
-    log(Level, "<<< Tool results: ~p items", [length(Results)]),
+post_invocation(FilterCtx, #{log_level := Level}) ->
+    case maps:get(result, FilterCtx, ok) of
+        ok -> log(Level, "<<< Tool execution succeeded");
+        {error, Reason} -> log(Level, "<<< Tool execution failed: ~p", [Reason])
+    end,
     ok.
 
-%% 内部日志函数
-log(debug, Fmt, Args) -> logger:debug(Fmt, Args);
+log(info, Fmt) -> logger:info(Fmt);
 log(info, Fmt, Args) -> logger:info(Fmt, Args);
-log(warning, Fmt, Args) -> logger:warning(Fmt, Args);
-log(error, Fmt, Args) -> logger:error(Fmt, Args).
-```
-
-### 完整示例：敏感词过滤
-
-```erlang
--module(middleware_content_filter).
--behaviour(beamai_middleware).
-
--export([init/1, after_model/2]).
-
-init(Opts) ->
-    #{
-        blocked_words => maps:get(blocked_words, Opts, []),
-        replacement => maps:get(replacement, Opts, <<"[FILTERED]">>),
-        action => maps:get(action, Opts, replace)  %% replace | block | warn
-    }.
-
-after_model(State, #{blocked_words := BlockedWords, replacement := Replacement, action := Action}) ->
-    Response = graph_state:get(State, last_llm_response, #{}),
-    Content = maps:get(content, Response, <<>>),
-
-    case check_content(Content, BlockedWords) of
-        {found, Word} ->
-            case Action of
-                block ->
-                    {halt, {blocked_content, Word}};
-                warn ->
-                    logger:warning("Blocked word detected: ~p", [Word]),
-                    ok;
-                replace ->
-                    FilteredContent = filter_content(Content, BlockedWords, Replacement),
-                    NewResponse = Response#{content => FilteredContent},
-                    {update, #{last_llm_response => NewResponse}}
-            end;
-        clean ->
-            ok
-    end.
-
-check_content(Content, BlockedWords) ->
-    LowerContent = string:lowercase(binary_to_list(Content)),
-    case lists:filter(fun(Word) ->
-        string:find(LowerContent, string:lowercase(binary_to_list(Word))) =/= nomatch
-    end, BlockedWords) of
-        [] -> clean;
-        [First|_] -> {found, First}
-    end.
-
-filter_content(Content, BlockedWords, Replacement) ->
-    lists:foldl(fun(Word, Acc) ->
-        binary:replace(Acc, Word, Replacement, [global])
-    end, Content, BlockedWords).
+log(debug, Fmt) -> logger:debug(Fmt);
+log(debug, Fmt, Args) -> logger:debug(Fmt, Args).
 ```
 
 ---
 
 ## 配置和使用
 
-### 在 Agent 配置中使用
+### 与 Kernel 集成
 
 ```erlang
-%% 方式 1：使用预设
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
-    system_prompt => <<"You are helpful.">>,
-    llm => LLMConfig,
-    middlewares => beamai_middleware_presets:default()
-}).
+%% 方式 1：使用 beamai_plugins 的 with_middleware
+Kernel = beamai_kernel:new(),
+Kernel1 = beamai_plugins:load_all(Kernel, [beamai_plugin_file, beamai_plugin_shell]),
+Kernel2 = beamai_plugins:with_middleware(Kernel1,
+    beamai_middleware_presets:production()),
 
-%% 方式 2：手动配置
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
-    system_prompt => <<"You are helpful.">>,
-    llm => LLMConfig,
-    middlewares => [
-        {middleware_call_limit, #{max_model_calls => 15}},
-        {middleware_summarization, #{window_size => 20}},
-        {my_custom_middleware, #{option => value}}
-    ]
-}).
+%% 方式 2：手动初始化 Middleware 链
+Chain = beamai_middleware_runner:init([
+    {middleware_call_limit, #{max_model_calls => 15}},
+    {middleware_tool_retry, #{max_retries => 5}},
+    {my_custom_middleware, #{option => value}}
+]).
 
-%% 方式 3：混合配置
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
-    middlewares => beamai_middleware_presets:production() ++ [
-        {middleware_logger, #{log_level => debug}}
-    ]
-}).
+%% 方式 3：转换为 Kernel Filter
+Filters = beamai_middleware_runner:to_filters(Chain),
+Kernel3 = beamai_kernel:add_filter(Kernel, Filters).
 ```
 
 ### Middleware 配置格式
@@ -582,82 +459,68 @@ middleware_call_limit
 
 - 数值越小，越先执行
 - 默认优先级为 100
-- 推荐范围：
-  - 10-30: 前置检查（限制、验证）
-  - 40-60: 核心功能（审批、重试）
-  - 70-90: 后置处理（日志、监控）
+- 内置 Middleware 预设优先级：
+  - 10: call_limit（边界检查，最先执行）
+  - 50: human_approval（需要交互）
+  - 80: tool_retry（恢复机制）
+  - 90: model_retry（恢复机制）
+  - 95: model_fallback（最后降级）
 
 ---
 
 ## 高级用法
 
-### 访问图状态
+### 直接执行钩子
 
 ```erlang
-before_model(State, MwState) ->
-    %% 读取状态
-    Messages = graph_state:get(State, messages, []),
-    Context = graph_state:get(State, context, #{}),
+%% 初始化 Middleware 链
+Chain = beamai_middleware_runner:init([
+    {middleware_call_limit, #{max_model_calls => 10}},
+    {middleware_tool_retry, #{max_retries => 3}}
+]),
 
-    %% 检查自定义键
-    MyData = graph_state:get(State, my_custom_key, undefined),
-
-    %% 更新状态
-    {update, #{
-        messages => Messages ++ [NewMessage],
-        my_custom_key => NewValue
-    }}.
+%% 直接执行钩子
+FilterCtx = #{function => #{name => <<"my_tool">>}, args => #{}},
+Result = beamai_middleware_runner:run_hook(pre_invocation, FilterCtx, Chain).
 ```
 
-### 流程控制
+### 管理 Middleware 状态
 
 ```erlang
-%% 跳过工具执行，直接返回 LLM
-before_tools(State, _MwState) ->
-    case should_skip_tools(State) of
-        true -> {goto, model};
-        false -> ok
-    end.
+%% 获取 Middleware 内部状态
+{ok, State} = beamai_middleware_runner:get_middleware_state(middleware_call_limit, Chain).
 
-%% 立即结束 Agent
-after_model(State, _MwState) ->
-    case is_final_answer(State) of
-        true -> {goto, '__end__'};
-        false -> ok
-    end.
+%% 更新 Middleware 内部状态
+NewChain = beamai_middleware_runner:set_middleware_state(
+    middleware_call_limit,
+    State#{model_call_count => 0},  %% 重置计数
+    Chain
+).
 ```
 
-### 中断和恢复
+### 修改上下文传递
 
 ```erlang
-%% 请求人工确认
-before_tools(State, _MwState) ->
-    Tools = graph_state:get(State, pending_tools, []),
-    case needs_approval(Tools) of
-        true ->
-            {interrupt, #{
-                type => tool_approval,
-                data => #{tools => Tools},
-                timeout => 60000
-            }};
-        false ->
-            ok
-    end.
+%% 在 pre_invocation 中修改参数
+pre_invocation(FilterCtx, _MwState) ->
+    Args = maps:get(args, FilterCtx, #{}),
+    %% 添加默认参数
+    NewArgs = maps:merge(#{<<"timeout">> => 30000}, Args),
+    {continue, FilterCtx#{args => NewArgs}}.
 ```
 
-### Middleware 间通信
+### 条件跳过
 
 ```erlang
-%% 通过图状态共享数据
-before_model(State, _MwState) ->
-    %% 设置供其他 Middleware 使用的数据
-    {update, #{shared_data => #{timestamp => erlang:system_time()}}}.
-
-after_model(State, _MwState) ->
-    %% 读取其他 Middleware 设置的数据
-    SharedData = graph_state:get(State, shared_data, #{}),
-    %% 使用 SharedData...
-    ok.
+%% 跳过工具执行，返回缓存结果
+pre_invocation(FilterCtx, #{cache := Cache} = _MwState) ->
+    FuncName = maps:get(name, maps:get(function, FilterCtx, #{}), <<>>),
+    Args = maps:get(args, FilterCtx, #{}),
+    CacheKey = {FuncName, Args},
+    case maps:get(CacheKey, Cache, undefined) of
+        undefined -> ok;  %% 缓存未命中，继续执行
+        CachedResult -> {skip, CachedResult}  %% 返回缓存结果
+    end.
 ```
 
 ---
@@ -667,14 +530,19 @@ after_model(State, _MwState) ->
 ### beamai_middleware 行为
 
 ```erlang
+-type middleware_state() :: map().
+-type hook_name() :: pre_chat | post_chat | pre_invocation | post_invocation.
+-type middleware_result() :: ok
+                           | {continue, UpdatedFilterCtx :: map()}
+                           | {skip, Term :: term()}
+                           | {error, Reason :: term()}.
+
 %% 所有回调都是可选的
 -callback init(Opts :: map()) -> middleware_state().
--callback before_agent(State, MwState) -> middleware_result().
--callback after_agent(State, MwState) -> middleware_result().
--callback before_model(State, MwState) -> middleware_result().
--callback after_model(State, MwState) -> middleware_result().
--callback before_tools(State, MwState) -> middleware_result().
--callback after_tools(State, MwState) -> middleware_result().
+-callback pre_chat(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
+-callback post_chat(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
+-callback pre_invocation(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
+-callback post_invocation(FilterCtx :: map(), MwState :: middleware_state()) -> middleware_result().
 ```
 
 ### beamai_middleware_runner
@@ -683,8 +551,12 @@ after_model(State, _MwState) ->
 %% 初始化 Middleware 链
 -spec init([middleware_spec()]) -> middleware_chain().
 
+%% 转换为 Kernel Filters
+-spec to_filters(middleware_chain()) -> [beamai_filter:filter_def()].
+
 %% 执行钩子
--spec run_hook(hook_name(), graph_state(), middleware_chain()) -> run_result().
+-spec run_hook(hook_name(), FilterCtx :: map(), middleware_chain()) ->
+    ok | {continue, map()} | {skip, term()} | {error, term()}.
 
 %% 获取/设置 Middleware 状态
 -spec get_middleware_state(module(), middleware_chain()) -> {ok, state()} | {error, not_found}.
@@ -698,22 +570,31 @@ after_model(State, _MwState) ->
 -spec default() -> [middleware_spec()].
 -spec default(map()) -> [middleware_spec()].
 -spec minimal() -> [middleware_spec()].
+-spec minimal(map()) -> [middleware_spec()].
 -spec production() -> [middleware_spec()].
+-spec production(map()) -> [middleware_spec()].
 -spec development() -> [middleware_spec()].
+-spec development(map()) -> [middleware_spec()].
 -spec human_in_loop() -> [middleware_spec()].
+-spec human_in_loop(map()) -> [middleware_spec()].
 
 %% 单独 Middleware 配置
 -spec call_limit() -> middleware_spec().
 -spec call_limit(map()) -> middleware_spec().
--spec summarization() -> middleware_spec().
 -spec human_approval() -> middleware_spec().
+-spec human_approval(map()) -> middleware_spec().
 -spec tool_retry() -> middleware_spec().
+-spec tool_retry(map()) -> middleware_spec().
+-spec model_retry() -> middleware_spec().
+-spec model_retry(map()) -> middleware_spec().
+-spec model_fallback() -> middleware_spec().
+-spec model_fallback(map()) -> middleware_spec().
 ```
 
 ---
 
 ## 更多资源
 
-- [beamai_agent README](../apps/beamai_agent/README.md)
-- [API 参考](API_REFERENCE.md)
-- [架构设计](ARCHITECTURE.md)
+- [beamai_plugin README](../apps/beamai_plugin/README.md) - Plugin 模块文档
+- [beamai_core README](../apps/beamai_core/README.md) - Kernel 架构文档
+- [API 参考](API_REFERENCE.md) - API 参考文档

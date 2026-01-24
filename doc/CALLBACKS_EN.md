@@ -2,7 +2,7 @@
 
 English | [中文](CALLBACKS.md)
 
-BeamAI Framework provides an event-driven callback system similar to LangChain, used to listen and respond to various events during Agent execution.
+BeamAI Agent provides an event-driven callback system for listening and responding to various events during Agent execution.
 
 ## Table of Contents
 
@@ -13,7 +13,6 @@ BeamAI Framework provides an event-driven callback system similar to LangChain, 
 - [API Reference](#api-reference)
 - [Usage Examples](#usage-examples)
 - [Best Practices](#best-practices)
-- [Extension Development](#extension-development)
 
 ---
 
@@ -23,219 +22,149 @@ The Callback system is one of the core components of BeamAI Agent, allowing deve
 
 - **Monitoring and Logging**: Recording LLM calls, tool executions, and other events
 - **Debugging**: Tracing Agent execution flow, locating issues
-- **Integration**: Integrating with external systems (monitoring, analytics, notifications)
-- **Extension**: Adding functionality without modifying core code
+- **Streaming Output**: Receiving LLM-generated tokens in real-time
+- **Interrupt Control**: Interrupting execution via tool callbacks
+- **Integration**: Integrating with external systems (monitoring, notifications)
 
 ### Architecture Diagram
 
 ```
-+-------------------------------------------------------------------------+
-|                           Agent Execution Flow                           |
-+-------------------------------------------------------------------------+
-|                                                                          |
-|  +------------------+                                                   |
-|  |  on_chain_start  |  <- Agent execution starts                        |
-|  +--------+---------+                                                   |
-|           |                                                              |
-|           v                                                              |
-|  +----------------------------------------------------------------------+ |
-|  |                         Execution Loop                                | |
-|  |  +------------------+                                              | |
-|  |  |  on_llm_start    |  <- LLM call starts                          | |
-|  |  +--------+---------+                                              | |
-|  |           |                                                        | |
-|  |           v                                                        | |
-|  |  +------------------+     +------------------+                     | |
-|  |  |    LLM Call      | --> |  on_llm_new_token|  <- Streaming Token | |
-|  |  +--------+---------+     +------------------+                     | |
-|  |           |                                                        | |
-|  |           v                                                        | |
-|  |  +------------------+     +------------------+                     | |
-|  |  |  on_llm_end      |  or |  on_llm_error    |                     | |
-|  |  +--------+---------+     +------------------+                     | |
-|  |           |                                                        | |
-|  |           v                                                        | |
-|  |  +------------------+                                              | |
-|  |  |    on_text       |  <- Text content generated                   | |
-|  |  +--------+---------+                                              | |
-|  |           |                                                        | |
-|  |           v                                                        | |
-|  |  +------------------+                                              | |
-|  |  | on_agent_action  |  <- Agent decides to execute action          | |
-|  |  +--------+---------+                                              | |
-|  |           |                                                        | |
-|  |           v                                                        | |
-|  |  +------------------+                                              | |
-|  |  |  on_tool_start   |  <- Tool execution starts                    | |
-|  |  +--------+---------+                                              | |
-|  |           |                                                        | |
-|  |           v                                                        | |
-|  |  +------------------+     +------------------+                     | |
-|  |  |  on_tool_end     |  or |  on_tool_error   |                     | |
-|  |  +--------+---------+     +------------------+                     | |
-|  |           |                                                        | |
-|  +-----------+------------------------------------------------------+ |
-|           |                                                              |
-|           v                                                              |
-|  +------------------+     +------------------+                          |
-|  | on_agent_finish  |  or |  on_chain_error  |                          |
-|  +------------------+     +------------------+                          |
-|           |                                                              |
-|           v                                                              |
-|  +------------------+                                                   |
-|  |  on_chain_end    |  <- Agent execution ends                          |
-|  +------------------+                                                   |
-|                                                                          |
-+-------------------------------------------------------------------------+
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Agent Execution Flow                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────┐                                               │
+│  │  on_turn_start   │  ← Each turn starts                           │
+│  └────────┬─────────┘                                               │
+│           │                                                          │
+│           ▼                                                          │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │                      Execution Loop                            │ │
+│  │  ┌──────────────────┐                                          │ │
+│  │  │   on_llm_call    │  ← LLM call                              │ │
+│  │  └────────┬─────────┘                                          │ │
+│  │           │                                                    │ │
+│  │           ▼                                                    │ │
+│  │  ┌──────────────────┐                                          │ │
+│  │  │    on_token      │  ← Streaming tokens (one by one)         │ │
+│  │  └────────┬─────────┘                                          │ │
+│  │           │                                                    │ │
+│  │           ▼                                                    │ │
+│  │  ┌──────────────────┐                                          │ │
+│  │  │  on_tool_call    │  ← Tool call (can return interrupt)      │ │
+│  │  └────────┬─────────┘                                          │ │
+│  │           │                                                    │ │
+│  └───────────┴────────────────────────────────────────────────────┘ │
+│           │                                                          │
+│           ▼                                                          │
+│  ┌──────────────────┐     ┌──────────────────┐                      │
+│  │  on_turn_end     │  or │ on_turn_error    │                      │
+│  └──────────────────┘     └──────────────────┘                      │
+│                                                                      │
+│  ┌──────────────────┐     ┌──────────────────┐                      │
+│  │  on_interrupt    │     │   on_resume      │  ← Interrupt/Resume  │
+│  └──────────────────┘     └──────────────────┘                      │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Core Modules
+### Core Module
 
 | Module | Location | Description |
 |--------|----------|-------------|
-| `beamai_agent_callbacks` | `apps/beamai_agent/src/` | Callback manager |
-| `beamai_callback_utils` | `apps/beamai_core/src/utils/` | Callback utility functions |
-| `beamai_agent.hrl` | `apps/beamai_agent/include/` | Callback type definitions |
+| `beamai_agent_callbacks` | `apps/beamai_agent/src/` | Callback management and invocation |
 
 ---
 
 ## Callback Types
 
-BeamAI supports 18 callback types, covering the complete Agent lifecycle.
+BeamAI supports 8 callback types, covering the critical lifecycle of Agent execution.
 
-### LLM Callbacks (4 types)
+### Callback List
 
-| Callback Name | Trigger Timing | Parameters |
-|---------------|----------------|------------|
-| `on_llm_start` | LLM call starts | `(Prompts, Meta)` |
-| `on_llm_end` | LLM call succeeds | `(Response, Meta)` |
-| `on_llm_error` | LLM call fails | `(Error, Meta)` |
-| `on_llm_new_token` | Streaming output new token | `(Token, Meta)` |
+| Callback Name | Trigger Timing | Parameters | Return Value |
+|---------------|----------------|------------|--------------|
+| `on_turn_start` | Each turn starts | `(Metadata)` | `ok` |
+| `on_turn_end` | Each turn ends | `(Metadata)` | `ok` |
+| `on_turn_error` | Each turn errors | `(Error, Metadata)` | `ok` |
+| `on_llm_call` | LLM call | `(Messages, Metadata)` | `ok` |
+| `on_tool_call` | Tool call | `(FunctionName, Args)` | `ok \| {interrupt, Reason}` |
+| `on_token` | Streaming token generated | `(TokenText, Metadata)` | `ok` |
+| `on_interrupt` | Agent interrupted | `(InterruptState, Metadata)` | `ok` |
+| `on_resume` | Agent resumes from interrupt | `(InterruptState, Metadata)` | `ok` |
+
+### Turn Callbacks (3 types)
+
+Lifecycle events for each Agent execution turn:
 
 ```erlang
-%% LLM callback example
 #{
-    on_llm_start => fun(Prompts, Meta) ->
-        io:format("LLM call started, message count: ~p~n", [length(Prompts)])
+    on_turn_start => fun(Meta) ->
+        io:format("Turn ~p started~n", [maps:get(turn_count, Meta)])
     end,
-    on_llm_end => fun(Response, Meta) ->
-        Content = maps:get(content, Response, <<>>),
-        io:format("LLM response: ~ts~n", [Content])
+    on_turn_end => fun(Meta) ->
+        io:format("Turn ~p ended~n", [maps:get(turn_count, Meta)])
     end,
-    on_llm_error => fun(Error, Meta) ->
-        logger:error("LLM call failed: ~p", [Error])
+    on_turn_error => fun(Error, Meta) ->
+        logger:error("Execution error: ~p", [Error])
     end
 }
 ```
 
-### Tool Callbacks (3 types)
+### LLM Callback (1 type)
 
-| Callback Name | Trigger Timing | Parameters |
-|---------------|----------------|------------|
-| `on_tool_start` | Tool execution starts | `(ToolName, Args, Meta)` |
-| `on_tool_end` | Tool execution succeeds | `(ToolName, Result, Meta)` |
-| `on_tool_error` | Tool execution fails | `(ToolName, Error, Meta)` |
+LLM call event:
 
 ```erlang
-%% Tool callback example
 #{
-    on_tool_start => fun(ToolName, Args, Meta) ->
-        io:format("Executing tool: ~ts~nParameters: ~p~n", [ToolName, Args])
-    end,
-    on_tool_end => fun(ToolName, Result, Meta) ->
-        io:format("Tool ~ts completed: ~ts~n", [ToolName, Result])
-    end,
-    on_tool_error => fun(ToolName, Error, Meta) ->
-        logger:warning("Tool ~ts failed: ~p", [ToolName, Error])
+    on_llm_call => fun(Messages, Meta) ->
+        io:format("LLM call, message count: ~p~n", [length(Messages)])
     end
 }
 ```
 
-### Agent Callbacks (2 types)
+### Tool Callback (1 type)
 
-| Callback Name | Trigger Timing | Parameters |
-|---------------|----------------|------------|
-| `on_agent_action` | Agent decides to execute action | `(Action, Meta)` |
-| `on_agent_finish` | Agent completes (no tool calls) | `(Result, Meta)` |
+Tool call event. Notably, `on_tool_call` can return `{interrupt, Reason}` to interrupt execution:
 
 ```erlang
-%% Agent callback example
 #{
-    on_agent_action => fun(Action, Meta) ->
-        %% Action contains tool call information
-        ToolCalls = maps:get(tool_calls, Action, []),
-        io:format("Agent action: ~p tool calls~n", [length(ToolCalls)])
-    end,
-    on_agent_finish => fun(Result, Meta) ->
-        Content = maps:get(content, Result, <<>>),
-        io:format("Agent finished: ~ts~n", [Content])
+    on_tool_call => fun(FunctionName, Args) ->
+        io:format("Calling tool: ~ts~n", [FunctionName]),
+        case FunctionName of
+            <<"dangerous_tool">> ->
+                %% Interrupt execution, wait for human confirmation
+                {interrupt, #{reason => require_approval, tool => FunctionName}};
+            _ ->
+                ok
+        end
     end
 }
 ```
 
-### Chain Callbacks (3 types)
+### Token Callback (1 type)
 
-| Callback Name | Trigger Timing | Parameters |
-|---------------|----------------|------------|
-| `on_chain_start` | Chain/Agent execution starts | `(Input, Meta)` |
-| `on_chain_end` | Chain/Agent execution succeeds | `(Output, Meta)` |
-| `on_chain_error` | Chain/Agent execution fails | `(Error, Meta)` |
+Token generation event during streaming output:
 
 ```erlang
-%% Chain callback example
 #{
-    on_chain_start => fun(Input, Meta) ->
-        io:format("Starting execution, input: ~ts~n", [Input])
-    end,
-    on_chain_end => fun(Output, Meta) ->
-        io:format("Execution completed~n")
-    end,
-    on_chain_error => fun(Error, Meta) ->
-        logger:error("Execution failed: ~p", [Error])
+    on_token => fun(TokenText, Meta) ->
+        io:format("~ts", [TokenText])  %% Real-time output
     end
 }
 ```
 
-### Retriever Callbacks (3 types) - RAG Related
+### Interrupt/Resume Callbacks (2 types)
 
-| Callback Name | Trigger Timing | Parameters |
-|---------------|----------------|------------|
-| `on_retriever_start` | Retrieval starts | `(Query, Meta)` |
-| `on_retriever_end` | Retrieval succeeds | `(Documents, Meta)` |
-| `on_retriever_error` | Retrieval fails | `(Error, Meta)` |
+Agent interrupt and resume events:
 
 ```erlang
-%% Retriever callback example
 #{
-    on_retriever_start => fun(Query, Meta) ->
-        io:format("Starting retrieval: ~ts~n", [Query])
+    on_interrupt => fun(InterruptState, Meta) ->
+        io:format("Agent interrupted: ~p~n", [InterruptState])
     end,
-    on_retriever_end => fun(Documents, Meta) ->
-        io:format("Retrieved ~p documents~n", [length(Documents)])
-    end
-}
-```
-
-### Other Callbacks (3 types)
-
-| Callback Name | Trigger Timing | Parameters |
-|---------------|----------------|------------|
-| `on_text` | Text content generated | `(Text, Meta)` |
-| `on_retry` | Triggered on retry | `(RetryState, Meta)` |
-| `on_custom_event` | Custom event | `(EventName, Data, Meta)` |
-
-```erlang
-%% Other callback examples
-#{
-    on_text => fun(Text, Meta) ->
-        %% Only triggered when content is non-empty
-        io:format("Generated text: ~ts~n", [Text])
-    end,
-    on_retry => fun(RetryState, Meta) ->
-        io:format("Retry: ~p~n", [RetryState])
-    end,
-    on_custom_event => fun(EventName, Data, Meta) ->
-        io:format("Custom event ~p: ~p~n", [EventName, Data])
+    on_resume => fun(InterruptState, Meta) ->
+        io:format("Agent resumed execution~n")
     end
 }
 ```
@@ -244,63 +173,49 @@ BeamAI supports 18 callback types, covering the complete Agent lifecycle.
 
 ## Usage
 
-### Setting Callbacks at Initialization
+### Setting Callbacks at Agent Creation
 
 ```erlang
-{ok, Agent} = beamai_agent:start_link(<<"my_agent">>, #{
-    system_prompt => <<"You are an assistant"/utf8>>,
-    llm => LLMConfig,
+LLM = beamai_chat_completion:create(anthropic, #{
+    model => <<"glm-4.7">>,
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
+    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+}),
+
+{ok, State} = beamai_agent:new(#{
+    llm => LLM,
+    system_prompt => <<"You are an assistant">>,
     callbacks => #{
-        on_llm_start => fun(Prompts, Meta) ->
-            io:format("LLM started~n")
+        on_turn_start => fun(Meta) ->
+            io:format("Execution started~n")
         end,
-        on_llm_end => fun(Response, Meta) ->
-            io:format("LLM ended~n")
+        on_llm_call => fun(Messages, Meta) ->
+            io:format("LLM call, ~p messages~n", [length(Messages)])
         end,
-        on_tool_start => fun(ToolName, Args, Meta) ->
-            io:format("Tool: ~ts~n", [ToolName])
+        on_tool_call => fun(FuncName, Args) ->
+            io:format("Tool: ~ts~n", [FuncName]),
+            ok
+        end,
+        on_turn_end => fun(Meta) ->
+            io:format("Execution completed~n")
         end
     }
-}).
-```
+}),
 
-### Setting Callbacks Dynamically
-
-```erlang
-%% Set new callbacks
-ok = beamai_agent:set_callbacks(Agent, #{
-    on_llm_start => fun(Prompts, Meta) ->
-        io:format("New LLM callback~n")
-    end
-}).
-
-%% Get current callback configuration
-CallbacksMap = beamai_agent:get_callbacks(Agent).
-```
-
-### Sending Custom Events
-
-```erlang
-%% Send custom event
-beamai_agent:emit_custom_event(Agent, my_event, #{value => 42}).
-
-%% Send custom event with metadata
-beamai_agent:emit_custom_event(Agent, my_event, #{value => 42}, #{
-    source => <<"my_module">>
-}).
+{ok, Result, _NewState} = beamai_agent:run(State, <<"Hello">>).
 ```
 
 ---
 
 ## Callback Metadata
 
-Each callback receives a `Meta` parameter containing execution context information:
+Each callback receives a `Metadata` parameter (except `on_tool_call`), containing execution context information:
 
 ```erlang
-Meta = #{
+Metadata = #{
     agent_id => <<"agent_123">>,     %% Agent ID
     agent_name => <<"my_agent">>,    %% Agent name
-    run_id => <<"uuid-...">>,        %% Current run ID (UUID format)
+    turn_count => 1,                 %% Current turn number
     timestamp => 1705658400000       %% Millisecond timestamp
 }.
 ```
@@ -309,12 +224,11 @@ Meta = #{
 
 ```erlang
 #{
-    on_llm_start => fun(Prompts, Meta) ->
-        AgentName = maps:get(agent_name, Meta),
-        RunId = maps:get(run_id, Meta),
-        Timestamp = maps:get(timestamp, Meta),
-        logger:info("[~ts] LLM started (run: ~ts, time: ~p)",
-            [AgentName, RunId, Timestamp])
+    on_llm_call => fun(Messages, Meta) ->
+        AgentName = maps:get(agent_name, Meta, <<"unknown">>),
+        TurnCount = maps:get(turn_count, Meta, 0),
+        logger:info("[~ts] Turn ~p LLM call, ~p messages",
+            [AgentName, TurnCount, length(Messages)])
     end
 }
 ```
@@ -323,85 +237,36 @@ Meta = #{
 
 ## API Reference
 
-### beamai_agent Callback API
+### beamai_agent_callbacks
 
 ```erlang
-%% Set callback handlers
--spec set_callbacks(pid(), map()) -> ok.
-beamai_agent:set_callbacks(Agent, CallbackOpts).
+-type callbacks() :: #{
+    on_turn_start => fun((map()) -> ok),
+    on_turn_end => fun((map()) -> ok),
+    on_turn_error => fun((term(), map()) -> ok),
+    on_llm_call => fun((list(), map()) -> ok),
+    on_tool_call => fun((binary(), map()) -> ok | {interrupt, term()}),
+    on_token => fun((binary(), map()) -> ok),
+    on_interrupt => fun((term(), map()) -> ok),
+    on_resume => fun((term(), map()) -> ok)
+}.
 
-%% Get current callback configuration
--spec get_callbacks(pid()) -> map().
-beamai_agent:get_callbacks(Agent).
-
-%% Send custom event
--spec emit_custom_event(pid(), atom() | binary(), term()) -> ok.
-beamai_agent:emit_custom_event(Agent, EventName, Data).
-
-%% Send custom event (with metadata)
--spec emit_custom_event(pid(), atom() | binary(), term(), map()) -> ok.
-beamai_agent:emit_custom_event(Agent, EventName, Data, Metadata).
-```
-
-### beamai_agent_callbacks Internal API
-
-```erlang
-%% Initialize callback handler
--spec init(map()) -> #callbacks{}.
-beamai_agent_callbacks:init(Opts).
-
-%% Update callback handler
--spec update(#callbacks{}, map()) -> #callbacks{}.
-beamai_agent_callbacks:update(Callbacks, Opts).
-
-%% Invoke callback function
--spec invoke(atom(), list(), #callbacks{}) -> ok.
+%% Safely invoke callback (exceptions don't affect Agent execution)
+-spec invoke(atom(), list(), callbacks()) -> ok.
 beamai_agent_callbacks:invoke(CallbackName, Args, Callbacks).
 
-%% Convert callback record to map
--spec to_map(#callbacks{}) -> map().
-beamai_agent_callbacks:to_map(Callbacks).
-
 %% Build callback metadata
--spec build_metadata(#state{}) -> map().
-beamai_agent_callbacks:build_metadata(State).
-
-%% Generate run ID
--spec generate_run_id() -> binary().
-beamai_agent_callbacks:generate_run_id().
+-spec build_metadata(agent_state()) -> map().
+beamai_agent_callbacks:build_metadata(AgentState).
 ```
 
-### beamai_callback_utils Utility Functions
+### Callback Safety Mechanisms
 
-```erlang
-%% Invoke callback function (without metadata)
--spec invoke(atom(), list(), map()) -> ok.
-beamai_callback_utils:invoke(CallbackName, Args, Callbacks).
+The callback system provides the following safety features:
 
-%% Invoke callback function (with metadata)
--spec invoke(atom(), list(), map(), map()) -> ok.
-beamai_callback_utils:invoke(CallbackName, Args, Callbacks, Meta).
-
-%% Invoke callback from graph state
--spec invoke_from_state(atom(), list(), map()) -> ok.
-beamai_callback_utils:invoke_from_state(CallbackName, Args, State).
-
-%% Conditional callback invocation
--spec maybe_invoke(boolean(), atom(), list(), map()) -> ok.
-beamai_callback_utils:maybe_invoke(Condition, CallbackName, Args, State).
-```
-
-### Invocation Macros
-
-```erlang
-%% Defined in beamai_common.hrl
-
-%% Direct callback invocation
-?INVOKE_CALLBACK(Name, Args, Callbacks, Meta)
-
-%% Invoke callback from graph state
-?INVOKE_CALLBACK_FROM_STATE(Name, Args, State)
-```
+- **Exception Isolation**: Exceptions within callback functions are caught and don't affect the Agent main flow
+- **Unregistered Ignored**: Calling unregistered callback names directly returns `ok`
+- **Optional Callbacks**: All callbacks are optional, only register what you need
 
 ---
 
@@ -410,29 +275,27 @@ beamai_callback_utils:maybe_invoke(Condition, CallbackName, Args, State).
 ### Example 1: Logging
 
 ```erlang
-%% Create logging callbacks
 LogCallbacks = #{
-    on_llm_start => fun(Prompts, Meta) ->
-        logger:info("[~ts] LLM started, message count: ~p",
-            [maps:get(agent_name, Meta), length(Prompts)])
+    on_turn_start => fun(Meta) ->
+        logger:info("[~ts] Turn ~p started",
+            [maps:get(agent_name, Meta, <<>>), maps:get(turn_count, Meta, 0)])
     end,
-    on_llm_end => fun(Response, Meta) ->
-        logger:info("[~ts] LLM completed",
-            [maps:get(agent_name, Meta)])
+    on_llm_call => fun(Messages, Meta) ->
+        logger:info("[~ts] LLM call, ~p messages",
+            [maps:get(agent_name, Meta, <<>>), length(Messages)])
     end,
-    on_tool_start => fun(ToolName, Args, Meta) ->
-        logger:info("[~ts] Tool ~ts started",
-            [maps:get(agent_name, Meta), ToolName])
+    on_tool_call => fun(FuncName, _Args) ->
+        logger:info("Tool call: ~ts", [FuncName]),
+        ok
     end,
-    on_tool_end => fun(ToolName, Result, Meta) ->
-        logger:info("[~ts] Tool ~ts completed",
-            [maps:get(agent_name, Meta), ToolName])
+    on_turn_end => fun(Meta) ->
+        logger:info("[~ts] Turn ~p ended",
+            [maps:get(agent_name, Meta, <<>>), maps:get(turn_count, Meta, 0)])
     end
 }.
 
-{ok, Agent} = beamai_agent:start_link(<<"log_agent">>, #{
-    system_prompt => <<"...">>,
-    llm => LLMConfig,
+{ok, State} = beamai_agent:new(#{
+    llm => LLM,
     callbacks => LogCallbacks
 }).
 ```
@@ -440,131 +303,96 @@ LogCallbacks = #{
 ### Example 2: Performance Monitoring
 
 ```erlang
-%% Create performance monitoring callbacks
 PerfCallbacks = #{
-    on_llm_start => fun(_Prompts, Meta) ->
-        %% Record start time in process dictionary
+    on_turn_start => fun(_Meta) ->
+        put(turn_start_time, erlang:system_time(millisecond))
+    end,
+    on_llm_call => fun(_Messages, _Meta) ->
         put(llm_start_time, erlang:system_time(millisecond))
     end,
-    on_llm_end => fun(Response, Meta) ->
-        StartTime = get(llm_start_time),
+    on_turn_end => fun(Meta) ->
+        StartTime = get(turn_start_time),
         Duration = erlang:system_time(millisecond) - StartTime,
-        %% Send to monitoring system
-        metrics:histogram(<<"llm.duration_ms">>, Duration),
-        logger:info("LLM duration: ~p ms", [Duration])
-    end,
-    on_tool_start => fun(ToolName, _Args, _Meta) ->
-        put({tool_start_time, ToolName}, erlang:system_time(millisecond))
-    end,
-    on_tool_end => fun(ToolName, _Result, _Meta) ->
-        StartTime = get({tool_start_time, ToolName}),
-        Duration = erlang:system_time(millisecond) - StartTime,
-        metrics:histogram(<<"tool.duration_ms">>, Duration, #{tool => ToolName})
+        logger:info("Turn ~p duration: ~p ms",
+            [maps:get(turn_count, Meta, 0), Duration])
     end
 }.
 ```
 
-### Example 3: Progress Notifications
+### Example 3: Streaming Output
 
 ```erlang
-%% Create progress notification callbacks (e.g., sending to WebSocket)
-NotifyCallbacks = #{
-    on_chain_start => fun(Input, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"start">>,
-            input => Input
-        })
+StreamCallbacks = #{
+    on_token => fun(TokenText, _Meta) ->
+        %% Real-time output to terminal
+        io:format("~ts", [TokenText])
     end,
-    on_llm_new_token => fun(Token, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"token">>,
-            content => Token
-        })
-    end,
-    on_tool_start => fun(ToolName, Args, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"tool_start">>,
-            tool => ToolName
-        })
-    end,
-    on_chain_end => fun(Output, Meta) ->
-        notify_client(maps:get(run_id, Meta), #{
-            type => <<"end">>,
-            output => Output
-        })
+    on_turn_end => fun(_Meta) ->
+        io:format("~n")  %% Newline
     end
 }.
 
-notify_client(RunId, Message) ->
-    websocket_handler:send(RunId, jsx:encode(Message)).
+{ok, State} = beamai_agent:new(#{
+    llm => LLM,
+    callbacks => StreamCallbacks
+}).
 ```
 
-### Example 4: Debug Tracing
+### Example 4: Tool Approval (Interrupt Mechanism)
 
 ```erlang
-%% Create debug callbacks
-DebugCallbacks = #{
-    on_llm_start => fun(Prompts, Meta) ->
-        io:format("~n=== LLM Call Started ===~n"),
-        io:format("Agent: ~ts~n", [maps:get(agent_name, Meta)]),
-        io:format("Message count: ~p~n", [length(Prompts)]),
-        lists:foreach(fun(Msg) ->
-            Role = maps:get(role, Msg),
-            Content = maps:get(content, Msg, <<>>),
-            io:format("  [~ts] ~ts~n", [Role, truncate(Content, 100)])
-        end, Prompts)
+%% Use on_tool_call's interrupt return value for human approval
+ApprovalCallbacks = #{
+    on_tool_call => fun(FuncName, Args) ->
+        DangerousTools = [<<"delete_file">>, <<"execute_command">>],
+        case lists:member(FuncName, DangerousTools) of
+            true ->
+                io:format("Tool ~ts requires approval, args: ~p~n", [FuncName, Args]),
+                %% Interrupt execution
+                {interrupt, #{
+                    reason => require_approval,
+                    tool => FuncName,
+                    args => Args
+                }};
+            false ->
+                ok
+        end
     end,
-    on_llm_end => fun(Response, Meta) ->
-        io:format("~n=== LLM Response ===~n"),
-        Content = maps:get(content, Response, <<>>),
-        ToolCalls = maps:get(tool_calls, Response, []),
-        io:format("Content: ~ts~n", [truncate(Content, 200)]),
-        io:format("Tool calls: ~p~n", [length(ToolCalls)])
+    on_interrupt => fun(InterruptState, _Meta) ->
+        io:format("Agent interrupted, awaiting approval: ~p~n", [InterruptState])
     end,
-    on_tool_start => fun(ToolName, Args, _Meta) ->
-        io:format("~n>>> Executing tool: ~ts~n", [ToolName]),
-        io:format("    Parameters: ~p~n", [Args])
-    end,
-    on_tool_end => fun(ToolName, Result, _Meta) ->
-        io:format("<<< Tool completed: ~ts~n", [ToolName]),
-        io:format("    Result: ~ts~n", [truncate(Result, 100)])
+    on_resume => fun(_InterruptState, _Meta) ->
+        io:format("Agent resumed execution~n")
     end
 }.
-
-truncate(Bin, MaxLen) when byte_size(Bin) > MaxLen ->
-    <<(binary:part(Bin, 0, MaxLen))/binary, "...">>;
-truncate(Bin, _) -> Bin.
 ```
 
-### Example 5: Async Event Handling
+### Example 5: WebSocket Notifications
 
 ```erlang
-%% Use process messages for async handling
-Self = self(),
-
-AsyncCallbacks = #{
-    on_llm_end => fun(Response, Meta) ->
-        Self ! {llm_complete, maps:get(run_id, Meta), Response}
+%% Push events to WebSocket clients
+WsCallbacks = #{
+    on_turn_start => fun(Meta) ->
+        ws_send(Meta, #{type => <<"turn_start">>})
     end,
-    on_tool_end => fun(ToolName, Result, Meta) ->
-        Self ! {tool_complete, maps:get(run_id, Meta), ToolName, Result}
+    on_token => fun(TokenText, Meta) ->
+        ws_send(Meta, #{type => <<"token">>, content => TokenText})
     end,
-    on_chain_end => fun(Output, Meta) ->
-        Self ! {agent_complete, maps:get(run_id, Meta), Output}
+    on_tool_call => fun(FuncName, Args) ->
+        ws_send(#{}, #{type => <<"tool_call">>, tool => FuncName, args => Args}),
+        ok
+    end,
+    on_turn_end => fun(Meta) ->
+        ws_send(Meta, #{type => <<"turn_end">>})
+    end,
+    on_turn_error => fun(Error, Meta) ->
+        ws_send(Meta, #{type => <<"error">>, error => Error})
     end
 }.
 
-%% Receive events asynchronously
-receive
-    {llm_complete, RunId, Response} ->
-        handle_llm_response(RunId, Response);
-    {tool_complete, RunId, ToolName, Result} ->
-        handle_tool_result(RunId, ToolName, Result);
-    {agent_complete, RunId, Output} ->
-        handle_agent_output(RunId, Output)
-after 30000 ->
-    timeout
-end.
+ws_send(Meta, Message) ->
+    AgentId = maps:get(agent_id, Meta, <<"unknown">>),
+    websocket_handler:send(AgentId, jsx:encode(Message)).
 ```
 
 ---
@@ -577,147 +405,63 @@ Callbacks should execute quickly to avoid blocking the Agent main flow:
 
 ```erlang
 %% Recommended: Async handling
-on_llm_end => fun(Response, Meta) ->
-    spawn(fun() -> process_response(Response, Meta) end)
+on_llm_call => fun(Messages, Meta) ->
+    spawn(fun() -> log_to_external_service(Messages, Meta) end)
 end
 
 %% Avoid: Synchronous blocking operations
-on_llm_end => fun(Response, Meta) ->
+on_llm_call => fun(Messages, Meta) ->
     %% This will block the Agent
     httpc:request(post, {Url, [], "application/json", Body}, [], [])
 end
 ```
 
-### 2. Handle Callback Exceptions
+### 2. Exception Safety
 
 Exceptions within callbacks won't affect Agent execution, but it's recommended to add error handling:
 
 ```erlang
-on_llm_end => fun(Response, Meta) ->
+on_turn_end => fun(Meta) ->
     try
-        process_response(Response)
+        process_turn_result(Meta)
     catch
         Class:Reason:Stack ->
-            logger:warning("Callback handling failed: ~p:~p~n~p",
-                [Class, Reason, Stack])
+            logger:warning("Callback handling failed: ~p:~p", [Class, Reason])
     end
 end
 ```
 
-### 3. Use Metadata to Correlate Events
+### 3. Use on_tool_call Interrupt Wisely
 
-Use `run_id` to correlate all events from the same execution:
+`on_tool_call` is the only callback that can affect execution flow:
 
 ```erlang
-%% Use ETS to store execution context
-on_chain_start => fun(Input, Meta) ->
-    RunId = maps:get(run_id, Meta),
-    ets:insert(run_context, {RunId, #{
-        start_time => erlang:system_time(millisecond),
-        input => Input
-    }})
-end,
-
-on_chain_end => fun(Output, Meta) ->
-    RunId = maps:get(run_id, Meta),
-    [{_, Context}] = ets:lookup(run_context, RunId),
-    Duration = erlang:system_time(millisecond) - maps:get(start_time, Context),
-    %% Log complete execution information
-    log_execution(RunId, Context, Output, Duration),
-    ets:delete(run_context, RunId)
+%% Only use interrupt for dangerous operations
+on_tool_call => fun(FuncName, Args) ->
+    case requires_approval(FuncName, Args) of
+        true -> {interrupt, #{tool => FuncName}};
+        false -> ok  %% Most cases should return ok
+    end
 end
 ```
 
-### 4. Dynamically Enable/Disable Callbacks
+### 4. Use Metadata to Correlate Events
+
+Use `turn_count` and `agent_id` to correlate events from the same Agent:
 
 ```erlang
-%% Decide whether to enable callbacks based on configuration
-Callbacks = case os:getenv("DEBUG") of
-    "true" -> debug_callbacks();
-    _ -> #{}
-end,
-
-{ok, Agent} = beamai_agent:start_link(<<"agent">>, #{
-    callbacks => Callbacks
-}).
-```
-
-### 5. Combine Multiple Callback Handlers
-
-```erlang
-%% Merge multiple callback configurations
-merge_callbacks(Callbacks1, Callbacks2) ->
-    maps:fold(fun(Key, Handler2, Acc) ->
-        case maps:get(Key, Acc, undefined) of
-            undefined ->
-                maps:put(Key, Handler2, Acc);
-            Handler1 ->
-                %% Create combined handler
-                Combined = fun(Args...) ->
-                    Handler1(Args...),
-                    Handler2(Args...)
-                end,
-                maps:put(Key, Combined, Acc)
-        end
-    end, Callbacks1, Callbacks2).
-
-%% Usage
-AllCallbacks = merge_callbacks(
-    merge_callbacks(LogCallbacks, PerfCallbacks),
-    NotifyCallbacks
-).
-```
-
----
-
-## Extension Development
-
-### Creating Custom Callback Handler Module
-
-```erlang
--module(my_callback_handler).
--export([callbacks/0, callbacks/1]).
-
-%% Default callback configuration
-callbacks() ->
-    callbacks(#{}).
-
-%% Callback configuration with options
-callbacks(Opts) ->
-    LogLevel = maps:get(log_level, Opts, info),
-    #{
-        on_llm_start => fun(Prompts, Meta) ->
-            log(LogLevel, "LLM started: ~p messages", [length(Prompts)])
-        end,
-        on_llm_end => fun(Response, Meta) ->
-            log(LogLevel, "LLM ended", [])
-        end,
-        on_tool_start => fun(ToolName, Args, Meta) ->
-            log(LogLevel, "Tool ~ts started", [ToolName])
-        end,
-        on_tool_end => fun(ToolName, Result, Meta) ->
-            log(LogLevel, "Tool ~ts ended", [ToolName])
-        end
-    }.
-
-log(debug, Fmt, Args) -> logger:debug(Fmt, Args);
-log(info, Fmt, Args) -> logger:info(Fmt, Args);
-log(warning, Fmt, Args) -> logger:warning(Fmt, Args).
-```
-
-### Using Custom Handler
-
-```erlang
-{ok, Agent} = beamai_agent:start_link(<<"agent">>, #{
-    callbacks => my_callback_handler:callbacks(#{log_level => debug})
-}).
+on_turn_start => fun(Meta) ->
+    ets:insert(agent_events, {
+        {maps:get(agent_id, Meta), maps:get(turn_count, Meta)},
+        #{start_time => erlang:system_time(millisecond)}
+    })
+end
 ```
 
 ---
 
 ## More Resources
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - Architecture design documentation
+- [beamai_agent README](../apps/beamai_agent/README.md) - Agent module documentation
 - [MIDDLEWARE.md](MIDDLEWARE.md) - Middleware system documentation
 - [API_REFERENCE.md](API_REFERENCE.md) - API reference documentation
-- [beamai_agent README](../apps/beamai_agent/README.md) - Agent module documentation
