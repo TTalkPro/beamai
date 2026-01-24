@@ -215,24 +215,23 @@ save_snapshot(#{context_store := Store}, Config, State, MetadataMap) ->
         timestamp = erlang:system_time(millisecond)
     },
 
-    %% 构建元数据（扁平化结构）
-    %% 所有执行上下文字段从 MetadataMap 获取（State 现在只包含 global_state）
+    %% 构建元数据（面向 Process Framework）
     Metadata = #snapshot_metadata{
-        %% 执行阶段信息
+        %% 快照类型与流程信息
         snapshot_type = determine_snapshot_type(State, MetadataMap),
-        step = maps:get(superstep, MetadataMap, maps:get(step, MetadataMap, 0)),
+        process_name = maps:get(process_name, MetadataMap, undefined),
+        process_state = maps:get(process_state, MetadataMap, undefined),
 
-        %% 图顶点状态
-        active_vertices = maps:get(active_vertices, MetadataMap, []),
-        completed_vertices = maps:get(completed_vertices, MetadataMap, []),
+        %% 步骤执行信息
+        step_id = maps:get(step_id, MetadataMap, undefined),
+        step_activations = maps:get(step_activations, MetadataMap, #{}),
 
         %% 执行标识
         run_id = maps:get(run_id, Config, undefined),
         agent_id = maps:get(agent_id, Config, undefined),
         agent_name = maps:get(agent_name, Config, undefined),
-        iteration = maps:get(iteration, MetadataMap, 0),
 
-        %% 用户自定义元数据（包含执行上下文用于恢复）
+        %% 用户自定义元数据
         metadata = maps:get(metadata, MetadataMap, #{})
     },
 
@@ -906,17 +905,17 @@ snapshot_to_map(Checkpoint, Metadata, ParentConfig) ->
             timestamp => Checkpoint#snapshot.timestamp
         },
         metadata => #{
-            %% 执行阶段信息
+            %% 快照类型与流程信息
             snapshot_type => Metadata#snapshot_metadata.snapshot_type,
-            step => Metadata#snapshot_metadata.step,
-            %% 图顶点状态
-            active_vertices => Metadata#snapshot_metadata.active_vertices,
-            completed_vertices => Metadata#snapshot_metadata.completed_vertices,
+            process_name => Metadata#snapshot_metadata.process_name,
+            process_state => Metadata#snapshot_metadata.process_state,
+            %% 步骤执行信息
+            step_id => Metadata#snapshot_metadata.step_id,
+            step_activations => Metadata#snapshot_metadata.step_activations,
             %% 执行标识
             run_id => Metadata#snapshot_metadata.run_id,
             agent_id => Metadata#snapshot_metadata.agent_id,
             agent_name => Metadata#snapshot_metadata.agent_name,
-            iteration => Metadata#snapshot_metadata.iteration,
             %% 用户自定义元数据
             metadata => Metadata#snapshot_metadata.metadata
         },
@@ -947,17 +946,17 @@ map_to_snapshot_tuple(Map) when is_map(Map) ->
                 timestamp = get_flex(timestamp, CpMap, 0)
             },
             Metadata = #snapshot_metadata{
-                %% 执行阶段信息
+                %% 快照类型与流程信息
                 snapshot_type = get_flex(snapshot_type, MetaMap, undefined),
-                step = get_flex(step, MetaMap, 0),
-                %% 图顶点状态
-                active_vertices = get_flex(active_vertices, MetaMap, []),
-                completed_vertices = get_flex(completed_vertices, MetaMap, []),
+                process_name = get_flex(process_name, MetaMap, undefined),
+                process_state = get_flex(process_state, MetaMap, undefined),
+                %% 步骤执行信息
+                step_id = get_flex(step_id, MetaMap, undefined),
+                step_activations = get_flex(step_activations, MetaMap, #{}),
                 %% 执行标识
                 run_id = get_flex(run_id, MetaMap, undefined),
                 agent_id = get_flex(agent_id, MetaMap, undefined),
                 agent_name = get_flex(agent_name, MetaMap, undefined),
-                iteration = get_flex(iteration, MetaMap, 0),
                 %% 用户自定义元数据
                 metadata = get_flex(metadata, MetaMap, #{})
             },

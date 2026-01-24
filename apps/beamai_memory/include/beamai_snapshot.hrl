@@ -1,14 +1,22 @@
 %%%-------------------------------------------------------------------
-%%% @doc Agent Snapshot 记录和常量定义
+%%% @doc Snapshot 记录和常量定义
 %%%
 %%% 定义 Snapshot（短期记忆）相关的记录和常量。
-%%% 类型定义在 beamai_snapshot 模块中。
+%%% 面向 Process Framework 设计，支持流程快照的持久化和恢复。
 %%%
 %%% == 核心概念 ==
 %%%
-%%% - Thread: 单个对话会话，由 thread_id 标识
-%%% - Snapshot: 某一时刻的状态快照
-%%% - Values: 状态数据（messages, context 等）
+%%% - Thread: 单个执行会话，由 thread_id 标识
+%%% - Snapshot: 某一时刻的状态快照（包含 values 数据）
+%%% - Metadata: 快照的执行上下文元信息（流程状态、步骤信息等）
+%%%
+%%% == snapshot_metadata 设计 ==
+%%%
+%%% 面向 Process Framework 的元数据结构，记录：
+%%% - 流程信息：process_name、process_state（FSM 状态）
+%%% - 步骤信息：step_id（触发步骤）、step_activations（激活计数）
+%%% - 执行标识：run_id、agent_id、agent_name
+%%% - 扩展元数据：metadata map（用于存储业务自定义数据）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -41,128 +49,109 @@
 
 %% 快照元数据
 %%
-%% 记录快照的执行上下文和图状态信息。
+%% 记录快照的执行上下文，面向 Process Framework 设计。
 %% 与 snapshot 记录配合使用，snapshot 存储状态数据，
 %% snapshot_metadata 存储执行过程的元信息。
 %%
 %% == 字段说明 ==
 %%
-%% 1. 执行阶段信息：
-%%    - snapshot_type: 快照类型（initial/step/error/interrupt/final 等）
-%%    - step: Pregel 超步编号，表示图计算的迭代次数
+%% 1. 快照类型与流程信息：
+%%    - snapshot_type: 快照产生阶段（initial/step_completed/paused/completed/error/manual/branch）
+%%    - process_name: 流程名称
+%%    - process_state: 流程状态机状态（idle/running/paused/completed/failed）
 %%
-%% 2. 图顶点状态：
-%%    - active_vertices: 当前活跃的顶点列表（正在执行或待执行）
-%%    - completed_vertices: 已完成执行的顶点列表
+%% 2. 步骤执行信息：
+%%    - step_id: 触发快照的步骤 ID
+%%    - step_activations: 各步骤激活计数 Map
 %%
 %% 3. 执行标识：
-%%    - run_id: 单次图执行的唯一标识，用于区分不同的执行实例
-%%    - agent_id: 执行此图的 Agent 标识
-%%    - iteration: Graph 层的迭代次数（区别于 Pregel 层的 step）
+%%    - run_id: 单次流程执行的唯一标识
+%%    - agent_id: 执行此流程的 Agent 标识
+%%    - agent_name: Agent 人类可读名称
 %%
 %% 4. 扩展信息：
-%%    - metadata: 用户自定义的元数据，可存储任意键值对
-%%
-%% == 与 snapshot 记录的关系 ==
-%%
-%% snapshot_metadata 中不重复存储以下信息（已在 snapshot 中）：
-%% - thread_id: 使用 snapshot.thread_id
-%% - timestamp: 使用 snapshot.timestamp
-%% - superstep: 使用 step 字段
+%%    - metadata: 用户自定义的元数据
 %%
 -record(snapshot_metadata, {
     %%--------------------------------------------------------------------
-    %% 执行阶段信息
+    %% 快照类型与流程信息
     %%--------------------------------------------------------------------
 
     %% 快照类型
     %%
-    %% 标识快照在图执行过程中的产生阶段：
-    %% - initial: 图执行开始前的初始状态
-    %% - input: 接收到新输入时
-    %% - step: 正常超步执行后
-    %% - loop: 循环迭代中
-    %% - update: 状态更新时
-    %% - interrupt: 执行被中断时（如需要人工介入）
+    %% 标识快照在流程执行过程中的产生阶段：
+    %% - initial: 流程启动时的初始状态
+    %% - step_completed: 步骤执行完成后
+    %% - paused: 流程暂停时
+    %% - completed: 流程执行完成后的最终状态
     %% - error: 执行出错时
-    %% - final: 图执行完成后的最终状态
+    %% - manual: 手动触发的快照
     %% - branch: 从其他快照分支创建
     %% - undefined: 未指定
-    snapshot_type :: initial | input | step | loop | update | interrupt | error | final | branch | undefined,
+    snapshot_type :: initial | step_completed | paused | completed | error | manual | branch | undefined,
 
-    %% Pregel 超步编号
+    %% 流程名称
     %%
-    %% 表示当前处于 Pregel 计算的第几个超步。
-    %% 超步是 Pregel 模型中的基本计算单元，每个超步中：
-    %% 1. 所有活跃顶点并行执行计算
-    %% 2. 顶点之间通过消息传递通信
-    %% 3. 超步结束时同步状态
-    step = 0 :: non_neg_integer(),
+    %% 产生此快照的流程定义名称（process_spec 中的 name 字段）。
+    %% 用于按流程类型分类和查询快照。
+    process_name :: atom() | undefined,
+
+    %% 流程状态机状态
+    %%
+    %% 快照创建时流程所处的 FSM 状态：
+    %% - idle: 空闲，等待事件
+    %% - running: 正在处理事件队列
+    %% - paused: 已暂停，等待恢复
+    %% - completed: 已完成
+    %% - failed: 已失败
+    process_state :: idle | running | paused | completed | failed | undefined,
 
     %%--------------------------------------------------------------------
-    %% 图顶点状态
+    %% 步骤执行信息
     %%--------------------------------------------------------------------
 
-    %% 活跃顶点列表
+    %% 触发快照的步骤 ID
     %%
-    %% 记录快照创建时正在执行或等待执行的顶点。
-    %% 用于：
-    %% - 从快照恢复时确定需要继续执行的顶点
-    %% - 调试和监控图执行进度
-    %% - 分析图的执行路径
-    active_vertices = [] :: [atom()],
+    %% 记录导致此快照产生的步骤标识。
+    %% 对于 step_completed 和 paused 类型的快照尤为重要。
+    %% 其他类型快照此字段可能为 undefined。
+    step_id :: atom() | undefined,
 
-    %% 已完成顶点列表
+    %% 各步骤激活计数
     %%
-    %% 记录快照创建时已完成执行的顶点。
+    %% 记录快照创建时各步骤已被激活的次数。
     %% 用于：
-    %% - 从快照恢复时跳过已完成的顶点
-    %% - 追踪图的执行历史
-    %% - 计算执行进度百分比
-    completed_vertices = [] :: [atom()],
+    %% - 恢复时还原步骤执行进度
+    %% - 监控步骤执行频率
+    %% - 调试循环和重复激活问题
+    %%
+    %% 格式：#{步骤ID => 激活次数}
+    step_activations = #{} :: #{atom() => non_neg_integer()},
 
     %%--------------------------------------------------------------------
     %% 执行标识
     %%--------------------------------------------------------------------
 
-    %% 图执行唯一标识（Run ID）
+    %% 流程执行唯一标识（Run ID）
     %%
-    %% 每次调用 graph:run/3 时生成的唯一标识。
+    %% 每次流程启动时生成的唯一标识。
     %% 用于：
-    %% - 区分同一线程中的不同执行实例
+    %% - 区分同一流程定义的不同执行实例
     %% - 关联同一次执行产生的多个快照
     %% - 日志追踪和调试
-    %%
-    %% 格式：UUID v4，如 "550e8400-e29b-41d4-a716-446655440000"
     run_id :: binary() | undefined,
 
     %% Agent 标识
     %%
-    %% 执行此图的 Agent 的唯一标识。
-    %% 用于：
-    %% - 多 Agent 系统中追踪执行来源
-    %% - 权限控制和审计
-    %% - 关联 Agent 配置和状态
+    %% 执行此流程的 Agent 的唯一标识。
+    %% 用于多 Agent 系统中追踪执行来源。
     agent_id :: binary() | undefined,
 
     %% Agent 名称
     %%
-    %% 执行此图的 Agent 的人类可读名称。
-    %% 用于：
-    %% - 日志和调试时的可读性
-    %% - UI 展示
-    %% - 多 Agent 系统中的标识
+    %% 执行此流程的 Agent 的人类可读名称。
+    %% 用于日志、调试和 UI 展示。
     agent_name :: binary() | undefined,
-
-    %% Graph 层迭代次数
-    %%
-    %% 区别于 Pregel 层的 step（超步）：
-    %% - step: Pregel 内部的超步计数
-    %% - iteration: Graph 层的外部迭代计数
-    %%
-    %% 当图包含循环结构时，iteration 记录循环执行的次数。
-    %% 例如：ReAct 模式中，每次"思考-行动-观察"循环 iteration 加 1。
-    iteration = 0 :: non_neg_integer(),
 
     %%--------------------------------------------------------------------
     %% 扩展信息
@@ -174,13 +163,6 @@
     %% - 业务相关的标签和分类
     %% - 调试信息
     %% - 与外部系统集成的数据
-    %%
-    %% 示例：
-    %% #{
-    %%   <<"user_id">> => <<"u123">>,
-    %%   <<"request_id">> => <<"req-456">>,
-    %%   <<"tags">> => [<<"important">>, <<"reviewed">>]
-    %% }
     metadata = #{} :: map()
 }).
 

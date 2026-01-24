@@ -4,6 +4,16 @@
 %%% 构建可序列化、可检视的 process_spec() 流程定义。
 %%% 在编译时验证步骤模块和绑定引用的合法性。
 %%%
+%%% == 核心类型 ==
+%%%
+%%% - step_spec(): 步骤规格，包含模块、配置和必需输入定义
+%%% - process_spec(): 编译后的流程定义，包含步骤、绑定和事件
+%%% - builder(): 构建中的可变流程定义
+%%%
+%%% == 使用流程 ==
+%%%
+%%% new/1 -> add_step/3,4 -> add_binding/2 -> compile/1
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_process_builder).
@@ -19,10 +29,10 @@
     compile/1
 ]).
 
--export_type([builder/0, process_spec/0, step_def/0]).
+-export_type([builder/0, process_spec/0, step_spec/0]).
 
--type step_def() :: #{
-    '__step_def__' := true,
+-type step_spec() :: #{
+    '__step_spec__' := true,
     id := atom(),
     module := module(),
     config := map(),
@@ -37,7 +47,7 @@
 -type builder() :: #{
     '__process_builder__' := true,
     name := atom(),
-    steps := #{atom() => step_def()},
+    steps := #{atom() => step_spec()},
     bindings := [beamai_process_event:event_binding()],
     initial_events := [beamai_process_event:event()],
     error_handler := error_handler_def() | undefined,
@@ -47,7 +57,7 @@
 -type process_spec() :: #{
     '__process_spec__' := true,
     name := atom(),
-    steps := #{atom() => step_def()},
+    steps := #{atom() => step_spec()},
     bindings := [beamai_process_event:event_binding()],
     initial_events := [beamai_process_event:event()],
     error_handler := error_handler_def() | undefined,
@@ -93,14 +103,14 @@ add_step(Builder, StepId, Module) ->
 %% @returns 更新后的构建器
 -spec add_step(builder(), atom(), module(), map()) -> builder().
 add_step(#{steps := Steps} = Builder, StepId, Module, Config) when is_atom(StepId), is_atom(Module) ->
-    StepDef = #{
-        '__step_def__' => true,
+    StepSpec = #{
+        '__step_spec__' => true,
         id => StepId,
         module => Module,
         config => Config,
         required_inputs => maps:get(required_inputs, Config, [input])
     },
-    Builder#{steps => Steps#{StepId => StepDef}}.
+    Builder#{steps => Steps#{StepId => StepSpec}}.
 
 %% @doc 添加事件绑定
 %%

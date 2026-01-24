@@ -687,17 +687,17 @@ snapshot_to_map(Checkpoint) ->
             <<"timestamp">> => Checkpoint#snapshot.timestamp
         },
         <<"metadata">> => #{
-            %% 执行阶段信息
+            %% 快照类型与流程信息
             <<"snapshot_type">> => undefined,
-            <<"step">> => 0,
-            %% 图顶点状态
-            <<"active_vertices">> => [],
-            <<"completed_vertices">> => [],
+            <<"process_name">> => undefined,
+            <<"process_state">> => undefined,
+            %% 步骤执行信息
+            <<"step_id">> => undefined,
+            <<"step_activations">> => #{},
             %% 执行标识
             <<"run_id">> => undefined,
             <<"agent_id">> => undefined,
             <<"agent_name">> => undefined,
-            <<"iteration">> => 0,
             %% 用户自定义元数据
             <<"metadata">> => #{}
         },
@@ -720,17 +720,17 @@ map_to_snapshot_tuple(Map) when is_map(Map) ->
                 timestamp = get_flex(<<"timestamp">>, CpMap, 0)
             },
             Metadata = #snapshot_metadata{
-                %% 执行阶段信息
+                %% 快照类型与流程信息
                 snapshot_type = undefined,
-                step = 0,
-                %% 图顶点状态
-                active_vertices = [],
-                completed_vertices = [],
+                process_name = undefined,
+                process_state = undefined,
+                %% 步骤执行信息
+                step_id = undefined,
+                step_activations = #{},
                 %% 执行标识
                 run_id = undefined,
                 agent_id = undefined,
                 agent_name = undefined,
-                iteration = 0,
                 %% 用户自定义元数据
                 metadata = #{}
             },

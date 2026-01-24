@@ -2,7 +2,20 @@
 %%% @doc 流程状态快照与恢复
 %%%
 %%% 通过序列化/反序列化运行时状态实现流程持久化。
-%%% 快照包含完整的流程规格、步骤状态和事件队列。
+%%% 快照包含完整的流程规格（process_spec）、步骤状态和事件队列。
+%%%
+%%% == 快照流程 ==
+%%%
+%%% take_snapshot/1：将运行时状态精简为可序列化格式
+%%% - 步骤状态去除 step_spec 引用（减少存储体积）
+%%% - 保留 state、collected_inputs、activation_count
+%%%
+%%% == 恢复流程 ==
+%%%
+%%% restore_from_snapshot/1：从快照重建运行时状态
+%%% - 将快照中的步骤状态与 process_spec 中的 step_spec 重新关联
+%%% - 恢复完整的 step_runtime_state 结构
+%%% - 恢复的状态通过 Opts 传入 runtime，避免 init_steps 覆盖
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -40,7 +53,7 @@
 %%
 %% 将完整的运行时状态序列化为可持久化的 Map。
 %% 步骤状态仅保留 state、collected_inputs 和 activation_count，
-%% 去除 step_def 引用（恢复时从 process_spec 重建）。
+%% 去除 step_spec 引用（恢复时从 process_spec 重建）。
 %%
 %% @param RuntimeState 运行时状态 Map（包含 process_spec、steps_state 等字段）
 %% @returns 快照 Map
@@ -89,7 +102,7 @@ restore_from_snapshot(#{process_spec := ProcessSpec, current_state := CurrentSta
 %% 内部函数
 %%====================================================================
 
-%% @private 将步骤运行时状态精简为快照格式（去除 step_def 引用）
+%% @private 将步骤运行时状态精简为快照格式（去除 step_spec 引用）
 snapshot_steps(StepsState) ->
     maps:map(
         fun(_StepId, #{state := State, collected_inputs := Inputs,
@@ -103,16 +116,16 @@ snapshot_steps(StepsState) ->
         StepsState
     ).
 
-%% @private 从快照恢复步骤运行时状态（重建 step_def 引用）
-restore_steps(StepsSnapshots, StepDefs) ->
+%% @private 从快照恢复步骤运行时状态（重建 step_spec 引用）
+restore_steps(StepsSnapshots, StepSpecs) ->
     try
         Restored = maps:map(
             fun(StepId, #{state := State, collected_inputs := Inputs,
                          activation_count := Count}) ->
-                StepDef = maps:get(StepId, StepDefs),
+                StepSpec = maps:get(StepId, StepSpecs),
                 #{
                     '__step_runtime__' => true,
-                    step_def => StepDef,
+                    step_spec => StepSpec,
                     state => State,
                     collected_inputs => Inputs,
                     activation_count => Count

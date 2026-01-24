@@ -10,17 +10,15 @@
 %%% - Info: #{type => snapshot_type(), superstep => integer(), ...}
 %%% - SnapshotData: #{type, pregel_snapshot, iteration, run_id, ...}
 %%%
-%%% == 回调类型 ==
+%%% == 元数据适配 ==
 %%%
-%%% - initial: 初始化完成
-%%% - step: 超步完成
-%%% - final: 最终结果
-%%% - error: 执行出错
-%%% - interrupt: 用户中断
+%%% 图执行层的上下文信息（iteration、superstep、active_vertices、
+%%% completed_vertices）存储在 metadata 扩展字段中，
+%%% 适配 Process Framework 的 snapshot_metadata 结构。
 %%%
-%%% == 与 beamai_agent 的区别 ==
+%%% == Deep Agent 特有状态 ==
 %%%
-%%% - 保存 Deep Agent 特有状态（plan、trace、subtasks 等）
+%%% 保存 plan、trace、subtasks、depth 等 Deep Agent 特有字段。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -72,15 +70,7 @@ create_callback(Config, Memory) ->
             depth => get_state_value(GraphState, depth, 0),
             max_depth => get_state_value(GraphState, max_depth, 3),
             pending_tools => get_state_value(GraphState, pending_tools, []),
-            tool_results => get_state_value(GraphState, tool_results, []),
-
-            %% 执行上下文信息
-            snapshot_type => SnapshotType,
-            run_id => maps:get(run_id, SnapshotData, undefined),
-            iteration => maps:get(iteration, SnapshotData, 0),
-            superstep => maps:get(superstep, SnapshotData, maps:get(superstep, Info, 0)),
-            active_vertices => maps:get(active_vertices, SnapshotData, []),
-            completed_vertices => maps:get(completed_vertices, SnapshotData, [])
+            tool_results => get_state_value(GraphState, tool_results, [])
         },
 
         %% 构建配置
@@ -91,13 +81,19 @@ create_callback(Config, Memory) ->
             agent_name => AgentName
         },
 
-        %% 构建元数据
+        %% 构建元数据（适配 Process Framework 的 snapshot_metadata 格式）
         MetadataMap = #{
             snapshot_type => SnapshotType,
-            iteration => maps:get(iteration, SnapshotData, 0),
-            superstep => maps:get(superstep, SnapshotData, maps:get(superstep, Info, 0)),
-            active_vertices => maps:get(active_vertices, SnapshotData, []),
-            completed_vertices => maps:get(completed_vertices, SnapshotData, [])
+            process_name => deepagent,
+            step_id => undefined,
+            step_activations => #{},
+            %% 将图执行的上下文信息放入 metadata 扩展字段
+            metadata => #{
+                iteration => maps:get(iteration, SnapshotData, 0),
+                superstep => maps:get(superstep, SnapshotData, maps:get(superstep, Info, 0)),
+                active_vertices => maps:get(active_vertices, SnapshotData, []),
+                completed_vertices => maps:get(completed_vertices, SnapshotData, [])
+            }
         },
 
         %% 保存 snapshot

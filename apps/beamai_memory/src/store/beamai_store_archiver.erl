@@ -340,17 +340,17 @@ snapshot_tuple_to_map({Snapshot, Metadata, ParentConfig}) ->
             <<"timestamp">> => Snapshot#snapshot.timestamp
         },
         <<"metadata">> => #{
-            %% 执行阶段信息
+            %% 快照类型与流程信息
             <<"snapshot_type">> => Metadata#snapshot_metadata.snapshot_type,
-            <<"step">> => Metadata#snapshot_metadata.step,
-            %% 图顶点状态
-            <<"active_vertices">> => Metadata#snapshot_metadata.active_vertices,
-            <<"completed_vertices">> => Metadata#snapshot_metadata.completed_vertices,
+            <<"process_name">> => Metadata#snapshot_metadata.process_name,
+            <<"process_state">> => Metadata#snapshot_metadata.process_state,
+            %% 步骤执行信息
+            <<"step_id">> => Metadata#snapshot_metadata.step_id,
+            <<"step_activations">> => Metadata#snapshot_metadata.step_activations,
             %% 执行标识
             <<"run_id">> => Metadata#snapshot_metadata.run_id,
             <<"agent_id">> => Metadata#snapshot_metadata.agent_id,
             <<"agent_name">> => Metadata#snapshot_metadata.agent_name,
-            <<"iteration">> => Metadata#snapshot_metadata.iteration,
             %% 用户自定义元数据
             <<"metadata">> => Metadata#snapshot_metadata.metadata
         },
@@ -376,17 +376,17 @@ map_to_snapshot_tuple(Map) when is_map(Map) ->
                 timestamp = maps_get(<<"timestamp">>, CpMap, 0)
             },
             Metadata = #snapshot_metadata{
-                %% 执行阶段信息
+                %% 快照类型与流程信息
                 snapshot_type = maps_get(<<"snapshot_type">>, MetaMap, undefined),
-                step = maps_get(<<"step">>, MetaMap, 0),
-                %% 图顶点状态
-                active_vertices = maps_get(<<"active_vertices">>, MetaMap, []),
-                completed_vertices = maps_get(<<"completed_vertices">>, MetaMap, []),
+                process_name = maps_get(<<"process_name">>, MetaMap, undefined),
+                process_state = maps_get(<<"process_state">>, MetaMap, undefined),
+                %% 步骤执行信息
+                step_id = maps_get(<<"step_id">>, MetaMap, undefined),
+                step_activations = maps_get(<<"step_activations">>, MetaMap, #{}),
                 %% 执行标识
                 run_id = maps_get(<<"run_id">>, MetaMap, undefined),
                 agent_id = maps_get(<<"agent_id">>, MetaMap, undefined),
                 agent_name = maps_get(<<"agent_name">>, MetaMap, undefined),
-                iteration = maps_get(<<"iteration">>, MetaMap, 0),
                 %% 用户自定义元数据
                 metadata = maps_get(<<"metadata">>, MetaMap, #{})
             },

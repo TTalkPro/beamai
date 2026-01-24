@@ -4,6 +4,18 @@
 %%% 管理输入收集、激活条件检查和步骤执行。
 %%% 每个步骤维护独立的运行时状态（输入缓冲、内部状态、激活计数）。
 %%%
+%%% == 运行时状态结构 ==
+%%%
+%%% step_runtime_state() 包含：
+%%% - step_spec: 步骤规格定义（模块、配置、必需输入）
+%%% - state: 步骤模块 init/1 返回的内部状态
+%%% - collected_inputs: 已收集的输入值 Map
+%%% - activation_count: 步骤被激活的累计次数
+%%%
+%%% == 执行流程 ==
+%%%
+%%% init_step/1 -> collect_input/4 -> check_activation/2 -> execute/3
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_process_step).
@@ -22,7 +34,7 @@
 
 -type step_runtime_state() :: #{
     '__step_runtime__' := true,
-    step_def := beamai_process_builder:step_def(),
+    step_spec := beamai_process_builder:step_spec(),
     state := term(),
     collected_inputs := #{atom() => term()},
     activation_count := non_neg_integer()
@@ -32,26 +44,26 @@
 %% API
 %%====================================================================
 
-%% @doc 从步骤定义初始化运行时状态
+%% @doc 从步骤规格初始化运行时状态
 %%
 %% 调用步骤模块的 init/1 回调，传入配置。
 %%
-%% @param StepDef 步骤定义 Map
+%% @param StepSpec 步骤规格 Map
 %% @returns {ok, 运行时状态} | {error, 原因}
--spec init_step(beamai_process_builder:step_def()) ->
+-spec init_step(beamai_process_builder:step_spec()) ->
     {ok, step_runtime_state()} | {error, term()}.
-init_step(#{module := Module, config := Config} = StepDef) ->
+init_step(#{module := Module, config := Config} = StepSpec) ->
     case Module:init(Config) of
         {ok, State} ->
             {ok, #{
                 '__step_runtime__' => true,
-                step_def => StepDef,
+                step_spec => StepSpec,
                 state => State,
                 collected_inputs => #{},
                 activation_count => 0
             }};
         {error, Reason} ->
-            {error, {step_init_failed, maps:get(id, StepDef), Reason}}
+            {error, {step_init_failed, maps:get(id, StepSpec), Reason}}
     end.
 
 %% @doc 收集步骤的一个输入值
@@ -82,11 +94,11 @@ collect_input(StepId, InputName, Value, StepsState) ->
 %% 再调用步骤模块的 can_activate/2 回调进行自定义判断。
 %%
 %% @param StepState 步骤运行时状态
-%% @param StepDef 步骤定义（未使用，保持接口一致）
+%% @param StepSpec 步骤规格（未使用，保持接口一致）
 %% @returns 是否可激活
--spec check_activation(step_runtime_state(), beamai_process_builder:step_def()) -> boolean().
+-spec check_activation(step_runtime_state(), beamai_process_builder:step_spec()) -> boolean().
 check_activation(#{collected_inputs := Inputs, state := State,
-                   step_def := #{module := Module, required_inputs := Required}}, _StepDef) ->
+                   step_spec := #{module := Module, required_inputs := Required}}, _StepSpec) ->
     AllPresent = lists:all(
         fun(InputName) -> maps:is_key(InputName, Inputs) end,
         Required
@@ -112,7 +124,7 @@ check_activation(#{collected_inputs := Inputs, state := State,
     {events, [beamai_process_event:event()], step_runtime_state()} |
     {pause, term(), step_runtime_state()} |
     {error, term()}.
-execute(#{step_def := #{module := Module, id := StepId},
+execute(#{step_spec := #{module := Module, id := StepId},
           state := State, activation_count := Count} = StepRuntimeState,
         Inputs, Context) ->
     try Module:on_activate(Inputs, State, Context) of

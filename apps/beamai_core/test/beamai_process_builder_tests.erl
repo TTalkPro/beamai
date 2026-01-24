@@ -21,7 +21,7 @@ add_step_test() ->
     Steps = maps:get(steps, B1),
     ?assert(maps:is_key(step_a, Steps)),
     #{step_a := StepDef} = Steps,
-    ?assert(maps:get('__step_def__', StepDef)),
+    ?assert(maps:get('__step_spec__', StepDef)),
     ?assertEqual(step_a, maps:get(id, StepDef)),
     ?assertEqual(test_steps, maps:get(module, StepDef)),
     ?assertEqual(#{}, maps:get(config, StepDef)),

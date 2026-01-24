@@ -33,6 +33,6 @@
 %% Optional callbacks
 -callback on_resume(Data :: term(), State :: state(), Context :: context()) ->
     resume_result().
--callback terminate(Reason :: term(), State :: state()) -> ok.
+-callback on_terminate(Reason :: term(), State :: state()) -> ok.
 
--optional_callbacks([on_resume/3, terminate/2]).
+-optional_callbacks([on_resume/3, on_terminate/2]).

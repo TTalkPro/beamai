@@ -4,6 +4,16 @@
 %%% 提供统一的流程构建和运行接口。
 %%% 作为 facade 模式实现，委托到具体的 builder/runtime 模块。
 %%%
+%%% == Builder API ==
+%%% 创建构建器 -> 添加步骤和绑定 -> 编译为 process_spec
+%%%
+%%% == Runtime API ==
+%%% 启动/停止流程、发送事件、恢复暂停、获取状态/快照
+%%%
+%%% == 快照恢复 ==
+%%% restore/1,2 从快照恢复流程，将恢复的步骤状态通过 Opts 传入
+%%% runtime 的 init_from_restored 路径，避免 init_steps 覆盖已恢复状态。
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_process).
@@ -108,6 +118,15 @@ start(ProcessSpec) ->
     start(ProcessSpec, #{}).
 
 %% @doc 从编译后的流程定义启动流程（带选项）
+%%
+%% Opts 支持的选项：
+%% - context: beamai_context:t()，共享上下文
+%% - caller: pid()，完成/失败时通知的进程
+%% - store: {Module, Ref}，存储后端（用于自动 checkpoint）
+%% - checkpoint_policy: map()，checkpoint 策略配置
+%% - on_quiescent: fun(QuiescentInfo :: map()) -> ok
+%%   静止点回调，当所有并发步骤执行完毕时触发。
+%%   QuiescentInfo 包含 process_name、reason、status、step_states 等字段。
 -spec start(beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
 start(ProcessSpec, Opts) ->
@@ -145,17 +164,25 @@ restore(Snapshot) ->
     restore(Snapshot, #{}).
 
 %% @doc 从快照恢复流程（自定义选项）
+%%
+%% 将恢复的步骤状态、流程状态、暂停信息通过 Opts 传入 runtime，
+%% 避免 init_steps 重新初始化覆盖已恢复的状态。
 -spec restore(beamai_process_state:snapshot(), map()) ->
     {ok, pid()} | {error, term()}.
 restore(Snapshot, Opts) ->
     case beamai_process_state:restore_from_snapshot(Snapshot) of
         {ok, #{process_spec := ProcessSpec, event_queue := EventQueue,
-               current_state := _CurrentState} = _Restored} ->
-            RestoreOpts = Opts#{restored => true},
-            ProcessSpecWithQueue = ProcessSpec#{
-                initial_events => EventQueue
+               current_state := CurrentState, steps_state := StepsState,
+               paused_step := PausedStep, pause_reason := PauseReason}} ->
+            RestoreOpts = Opts#{
+                restored => true,
+                restored_steps_state => StepsState,
+                restored_current_state => CurrentState,
+                restored_paused_step => PausedStep,
+                restored_pause_reason => PauseReason,
+                restored_event_queue => EventQueue
             },
-            start(ProcessSpecWithQueue, RestoreOpts);
+            start(ProcessSpec, RestoreOpts);
         {error, _} = Error ->
             Error
     end.
