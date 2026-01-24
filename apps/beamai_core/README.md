@@ -1,198 +1,204 @@
-# Agent Core
+# BeamAI Core
 
 [English](README_EN.md) | 中文
 
-Agent Framework 的核心模块，提供 Agent 行为定义、数据类型、图计算和通用工具。
+BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP 客户端和行为定义。
 
 ## 模块概览
 
-### Agent 行为与类型
+### Kernel 子系统
 
-- **beamai_behaviour** - Agent 行为定义（behaviour）
-- **beamai_message** - 消息类型和转换
-- **beamai_result** - 结果类型定义
-- **beamai_tool** - 工具定义和管理
-- **beamai_types** - 通用类型定义
+基于 Semantic Kernel 理念的核心抽象，管理 Plugin 和 Function 的注册与调用：
 
-### 协议支持
+- **beamai_kernel** - Kernel 核心，管理 Plugin/Function 注册和调用
+- **beamai_function** - 函数定义，封装可调用的工具函数
+- **beamai_context** - 上下文管理，传递执行环境信息
+- **beamai_filter** - 过滤器，用于函数调用前后的拦截
+- **beamai_plugin** - 插件定义（Kernel 内部使用）
+- **beamai_prompt** - 提示词模板管理
+- **beamai_result** - 函数调用结果类型
 
-- **agent_jsonrpc** - JSON-RPC 2.0 编解码
+### Process Framework 子系统
+
+可编排的流程引擎，支持步骤定义、条件分支、并行执行和时间旅行：
+
+- **beamai_process** - 流程定义和核心数据结构
+- **beamai_process_builder** - 流程构建器（Builder 模式）
+- **beamai_process_runtime** - 流程运行时
+- **beamai_process_step** - 步骤定义
+- **beamai_process_step_transform** - 步骤转换
+- **beamai_process_executor** - 流程执行器
+- **beamai_process_event** - 事件系统
+- **beamai_process_state** - 流程状态管理
+- **beamai_process_memory_store** - 流程状态持久化
+- **beamai_process_worker** - 流程工作进程
+- **beamai_process_sup** - 流程监督树
+
+### HTTP 子系统
+
+可插拔的 HTTP 客户端，支持 Gun 和 Hackney 后端：
+
+- **beamai_http** - HTTP 客户端统一接口
+- **beamai_http_gun** - Gun HTTP/2 后端实现
+- **beamai_http_hackney** - Hackney HTTP/1.1 后端实现
+- **beamai_http_pool** - HTTP 连接池管理
+
+### Behaviour 定义
+
+框架的行为接口定义：
+
+- **beamai_llm_behaviour** - LLM 提供者行为接口
+- **beamai_http_behaviour** - HTTP 后端行为接口
+- **beamai_step_behaviour** - 流程步骤行为接口
+- **beamai_process_store_behaviour** - 流程存储行为接口
+
+### 工具与协议
+
+- **beamai_id** - 唯一 ID 生成（UUID）
+- **beamai_jsonrpc** - JSON-RPC 2.0 编解码
 - **beamai_sse** - Server-Sent Events (SSE) 支持
-
-### 工具函数
-
 - **beamai_utils** - 通用工具函数
-- **beamai_http** - HTTP 客户端封装
 
-### 图计算（Graph）
+### 应用入口
 
-基于 LangGraph 理念的图计算引擎：
-
-- **graph** - 图结构核心
-- **graph_builder** - 图构建器
-- **graph_dsl** - 图 DSL
-- **graph_node** - 节点定义
-- **graph_edge** - 边定义
-- **graph_runner** - 图执行器
-- **graph_state** - 状态管理
-- **graph_state_reducer** - 状态合并策略
-- **graph_send** - 消息发送
-
-### Pregel 计算模型
-
-分布式图计算 Pregel 模型实现：
-
-- **pregel** - Pregel 核心
-- **pregel_master** - 主控节点
-- **pregel_worker** - 工作节点
-- **pregel_vertex** - 顶点定义
-- **pregel_graph** - Pregel 图
-- **pregel_partition** - 分区管理
-- **pregel_barrier** - 同步屏障
-
-### 图计算模式
-
-- **graph_parallel_experts** - 并行专家模式
-- **graph_compute** - 图计算工具
+- **beamai** - 主入口模块
+- **beamai_core_app** - OTP 应用回调
+- **beamai_core_sup** - 顶级监督树
 
 ## API 文档
 
-### beamai_behaviour
+### beamai_kernel
 
 ```erlang
-%% 定义 Agent 行为
--callback init(Config :: map()) -> {ok, State :: term()} | {error, Reason :: term()}.
--callback handle_message(Message :: map(), State :: term()) ->
-    {reply, Response :: term(), NewState :: term()} | {error, Reason :: term()}.
+%% 创建 Kernel 实例
+beamai_kernel:new() -> kernel().
+beamai_kernel:new(Opts) -> kernel().
+
+%% 添加 Plugin
+beamai_kernel:add_plugin(Kernel, Name, Functions) -> kernel().
+beamai_kernel:add_plugin(Kernel, Name, Functions, Opts) -> kernel().
+beamai_kernel:add_plugin_from_module(Kernel, Module) -> kernel().
+
+%% 添加服务和过滤器
+beamai_kernel:add_service(Kernel, Service) -> kernel().
+beamai_kernel:add_filter(Kernel, Filter) -> kernel().
+
+%% 调用函数
+beamai_kernel:invoke(Kernel, FunctionName, Args) -> {ok, Result} | {error, Reason}.
+beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result} | {error, Reason}.
+beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response} | {error, Reason}.
+
+%% 查询函数
+beamai_kernel:get_function(Kernel, Name) -> {ok, Function} | error.
+beamai_kernel:list_functions(Kernel) -> [Function].
+beamai_kernel:get_tool_specs(Kernel) -> [ToolSpec].
+beamai_kernel:get_tool_schemas(Kernel) -> [Schema].
 ```
 
-### agent_jsonrpc
+### beamai_function
 
 ```erlang
-%% 编码请求
-agent_jsonrpc:encode_request(Id, Method, Params) -> binary().
+%% 创建函数
+beamai_function:new(Name, Description, Handler, Opts) -> function().
 
-%% 编码响应
-agent_jsonrpc:encode_response(Id, Result) -> binary().
-
-%% 编码错误
-agent_jsonrpc:encode_error(Id, Code, Message) -> binary().
-
-%% 解码消息
-agent_jsonrpc:decode(JsonBin) -> {ok, map()} | {error, term()}.
+%% Name: 函数名（binary）
+%% Description: 函数描述（binary）
+%% Handler: fun(Args, Context) -> {ok, Result} | {error, Reason}
+%% Opts: #{parameters => Schema, ...}
 ```
 
-### graph_builder
+### beamai_process_builder
 
 ```erlang
-%% 创建新图
-graph_builder:new() -> builder().
+%% 创建流程构建器
+beamai_process_builder:new(Name) -> builder().
 
-%% 添加节点
-graph_builder:add_node(Builder, Name, NodeFun) -> builder().
+%% 添加步骤
+beamai_process_builder:add_step(Builder, StepName, StepOpts) -> builder().
 
-%% 添加边
-graph_builder:add_edge(Builder, From, To) -> builder().
-graph_builder:add_conditional_edges(Builder, From, CondFun, Edges) -> builder().
-
-%% 设置入口和终点
-graph_builder:set_entry_point(Builder, NodeName) -> builder().
-graph_builder:set_finish_point(Builder, NodeName) -> builder().
-
-%% 编译图
-graph_builder:compile(Builder) -> {ok, graph()} | {error, term()}.
+%% 构建流程
+beamai_process_builder:build(Builder) -> {ok, Process} | {error, Reason}.
 ```
 
-### graph_state_reducer
-
-字段级 Reducer，用于合并节点返回的 delta 到全局状态。
+### beamai_process_executor
 
 ```erlang
-%% 应用单个 delta
-graph_state_reducer:apply_delta(State, Delta, FieldReducers) -> NewState.
-
-%% 应用多个 delta
-graph_state_reducer:apply_deltas(State, [Delta], FieldReducers) -> NewState.
-
-%% 内置 Reducer
-graph_state_reducer:append_reducer(Old, New) -> Old ++ New.
-graph_state_reducer:merge_reducer(Old, New) -> maps:merge(Old, New).
-graph_state_reducer:increment_reducer(Old, Delta) -> Old + Delta.
-graph_state_reducer:last_write_win_reducer(Old, New) -> New.
-```
-
-**Reducer 类型：**
-
-| 类型 | 格式 | 行为 |
-|------|------|------|
-| 普通 Reducer | `fun(Old, New) -> Merged` | 同键合并 |
-| 转换型 Reducer | `{transform, TargetKey, ReducerFun}` | 从源键读取，写入目标键，源键不保留 |
-
-**转换型 Reducer 示例：**
-
-```erlang
-FieldReducers = #{
-    %% counter_incr 的值会累加到 counter，counter_incr 不保留
-    <<"counter_incr">> => {transform, <<"counter">>, fun graph_state_reducer:increment_reducer/2}
-}.
+%% 执行流程
+beamai_process_executor:run(Process, Input) -> {ok, Result} | {error, Reason}.
+beamai_process_executor:run(Process, Input, Opts) -> {ok, Result} | {error, Reason}.
 ```
 
 ## 使用示例
 
-### 创建简单图
+### Kernel + Function
 
 ```erlang
-%% 创建图构建器
-Builder = graph_builder:new(),
+%% 创建 Kernel
+Kernel = beamai_kernel:new(),
 
-%% 添加节点
-Builder1 = graph_builder:add_node(Builder, start, fun(State) ->
-    io:format("Start node~n"),
-    {ok, State#{step => 1}}
-end),
+%% 定义函数
+ReadFile = beamai_function:new(
+    <<"read_file">>,
+    <<"读取文件内容"/utf8>>,
+    fun(#{<<"path">> := Path}, _Ctx) ->
+        case file:read_file(Path) of
+            {ok, Content} -> {ok, Content};
+            {error, Reason} -> {error, Reason}
+        end
+    end,
+    #{parameters => #{
+        type => object,
+        properties => #{
+            <<"path">> => #{type => string, description => <<"文件路径"/utf8>>}
+        },
+        required => [<<"path">>]
+    }}
+),
 
-Builder2 = graph_builder:add_node(Builder1, process, fun(State) ->
-    io:format("Process node~n"),
-    {ok, State#{step => 2}}
-end),
+%% 注册到 Kernel
+Kernel1 = beamai_kernel:add_plugin(Kernel, <<"file_ops">>, [ReadFile]),
 
-Builder3 = graph_builder:add_node(Builder2, finish, fun(State) ->
-    io:format("Finish node~n"),
-    {ok, State}
-end),
-
-%% 添加边
-Builder4 = graph_builder:add_edge(Builder3, start, process),
-Builder5 = graph_builder:add_edge(Builder4, process, finish),
-
-%% 设置入口和终点
-Builder6 = graph_builder:set_entry_point(Builder5, start),
-Builder7 = graph_builder:set_finish_point(Builder6, finish),
-
-%% 编译并运行
-{ok, Graph} = graph_builder:compile(Builder7),
-{ok, Result} = graph_runner:run(Graph, #{}).
+%% 调用
+{ok, Content} = beamai_kernel:invoke(Kernel1, <<"file_ops-read_file">>, #{
+    <<"path">> => <<"/tmp/test.txt">>
+}).
 ```
 
-### 使用 JSON-RPC
+### Process Framework
 
 ```erlang
-%% 编码请求
-Request = agent_jsonrpc:encode_request(1, <<"tools/call">>, #{
-    <<"name">> => <<"calculator">>,
-    <<"arguments">> => #{<<"expression">> => <<"1 + 1">>}
+%% 构建多步流程
+Builder = beamai_process_builder:new(<<"data_pipeline">>),
+
+Builder1 = beamai_process_builder:add_step(Builder, <<"fetch">>, #{
+    handler => fun(Input, _Ctx) ->
+        {ok, Input#{data => fetch_data()}}
+    end
 }),
 
-%% 解码响应
-{ok, Response} = agent_jsonrpc:decode(ResponseBin),
-Result = maps:get(<<"result">>, Response).
+Builder2 = beamai_process_builder:add_step(Builder1, <<"transform">>, #{
+    handler => fun(#{data := Data} = Input, _Ctx) ->
+        {ok, Input#{data => transform(Data)}}
+    end
+}),
+
+Builder3 = beamai_process_builder:add_step(Builder2, <<"save">>, #{
+    handler => fun(#{data := Data} = Input, _Ctx) ->
+        ok = save_data(Data),
+        {ok, Input#{saved => true}}
+    end
+}),
+
+{ok, Process} = beamai_process_builder:build(Builder3),
+{ok, Result} = beamai_process_executor:run(Process, #{}).
 ```
 
 ## 依赖
 
 - jsx - JSON 编解码
 - uuid - UUID 生成
-- hackney - HTTP 客户端
+- gun - HTTP/2 客户端
+- hackney - HTTP/1.1 客户端
 
 ## 许可证
 

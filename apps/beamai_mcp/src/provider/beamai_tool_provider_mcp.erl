@@ -48,11 +48,20 @@
 %%%-------------------------------------------------------------------
 -module(beamai_tool_provider_mcp).
 
--behaviour(beamai_tool_provider).
+%% Tool 定义类型（兼容 beamai_function 格式）
+-type tool_def() :: #{
+    name := binary(),
+    description := binary(),
+    parameters => map(),
+    handler := function(),
+    category => atom(),
+    permissions => [atom()],
+    metadata => map()
+}.
 
--include_lib("beamai_tools/include/beamai_tools.hrl").
+-export_type([tool_def/0]).
 
-%% Behaviour 回调
+%% Provider API
 -export([list_tools/1, find_tool/2, info/0, available/0]).
 
 %% 辅助函数

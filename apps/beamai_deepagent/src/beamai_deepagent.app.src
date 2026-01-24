@@ -1,41 +1,33 @@
 {application, beamai_deepagent, [
-    {description, "Deep Agent with Planning and Parallel Execution"},
-    {vsn, "0.1.0"},
+    {description, "BeamAI Deep Agent - Sub-agent Orchestrator"},
+    {vsn, "2.0.0"},
     {registered, []},
     {applications, [
         kernel,
         stdlib,
         jsx,
         beamai_core,
-        beamai_llm,
-        beamai_memory,
-        beamai_tools
+        beamai_agent,
+        beamai_plugin
     ]},
+    {optional_applications, [beamai_llm]},
     {env, [
         {default_max_depth, 3},
-        {default_max_iterations, 10},
+        {default_max_parallel, 5},
         {enable_reflection, true}
     ]},
     {modules, [
         beamai_deepagent,
-        beamai_deepagent_dependencies,
-        beamai_deepagent_fs_backend,
-        beamai_deepagent_fs_handlers,
-        beamai_deepagent_fs_tools,
-        beamai_deepagent_llm_node,
-        beamai_deepagent_messages,
-        beamai_deepagent_nodes,
-        beamai_deepagent_plan,
-        beamai_deepagent_result_analyzer,
-        beamai_deepagent_router,
-        beamai_deepagent_todo_handlers,
-        beamai_deepagent_todo_tools,
-        beamai_deepagent_tool_executor,
-        beamai_deepagent_tool_handlers,
-        beamai_deepagent_tools,
-        beamai_deepagent_trace,
+        beamai_deepagent_coordinator,
+        beamai_deepagent_planner,
+        beamai_deepagent_executor,
+        beamai_deepagent_reflector,
+        beamai_deepagent_parallel,
+        beamai_deepagent_plan_plugin,
         beamai_deepagent_utils,
-        beamai_deepagent_tool_provider
+        beamai_deepagent_plan,
+        beamai_deepagent_trace,
+        beamai_deepagent_dependencies
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

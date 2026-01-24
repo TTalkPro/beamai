@@ -26,11 +26,11 @@
 %%% 使用方式:
 %%% ```
 %%% ApiKey = os:getenv("BAILIAN_API_KEY"),
-%%% Config = llm_client:create(bailian, #{
+%%% Config = beamai_chat_completion:create(bailian, #{
 %%%     api_key => list_to_binary(ApiKey),
 %%%     model => <<"qwen-plus">>
 %%% }),
-%%% {ok, Response} = llm_client:simple_chat(Config, <<"你好">>).
+%%% {ok, Response} = beamai_chat_completion:chat(Config, [#{role => user, content => <<"你好">>}]).
 %%% ```
 %%%
 %%% @end
@@ -122,8 +122,9 @@ is_multimodal_model(_) ->
     false.
 
 %% @private 构建请求 URL
-build_url(Config, Endpoint) ->
+build_url(Config, DefaultEndpoint) ->
     BaseUrl = maps:get(base_url, Config, ?DASHSCOPE_BASE_URL),
+    Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
     <<BaseUrl/binary, Endpoint/binary>>.
 
 %% @private 构建请求头

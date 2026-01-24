@@ -1,0 +1,53 @@
+{application, beamai_graph, [
+    {description, "BeamAI Graph Execution Engine"},
+    {vsn, "0.1.0"},
+    {registered, [beamai_graph_sup, beamai_dispatch_pool]},
+    {mod, {beamai_graph_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        beamai_core
+    ]},
+    {optional_applications, [poolboy]},
+    {env, [
+        %% Dispatch pool configuration
+        %% {dispatch_pool_enabled, true},
+        %% {dispatch_pool, #{size => 20, max_overflow => 40}},
+        %% {dispatch_timeout, 30000}
+    ]},
+    {modules, [
+        %% Application
+        beamai_graph_app,
+        beamai_graph_sup,
+        %% Graph Core
+        graph,
+        graph_node,
+        graph_edge,
+        %% Builder
+        graph_builder,
+        graph_dsl,
+        %% State
+        graph_state,
+        graph_state_reducer,
+        graph_command,
+        graph_dispatch,
+        %% Runner
+        graph_runner,
+        graph_snapshot,
+        %% Pregel
+        pregel,
+        pregel_master,
+        pregel_worker,
+        pregel_barrier,
+        pregel_graph,
+        pregel_vertex,
+        pregel_partition,
+        pregel_superstep,
+        pregel_dispatch_worker,
+        pregel_retry,
+        pregel_utils,
+        graph_compute
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

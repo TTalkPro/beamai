@@ -1,198 +1,204 @@
-# Agent Core
+# BeamAI Core
 
 English | [中文](README.md)
 
-The core module of Agent Framework, providing Agent behavior definitions, data types, graph computation, and general utilities.
+The core module of the BeamAI framework, providing Kernel architecture, Process Framework, HTTP client, and behavior definitions.
 
 ## Module Overview
 
-### Agent Behavior and Types
+### Kernel Subsystem
 
-- **beamai_behaviour** - Agent behavior definitions (behaviour)
-- **beamai_message** - Message types and conversions
-- **beamai_result** - Result type definitions
-- **beamai_tool** - Tool definitions and management
-- **beamai_types** - General type definitions
+Core abstraction based on Semantic Kernel concepts, managing Plugin and Function registration and invocation:
 
-### Protocol Support
+- **beamai_kernel** - Kernel core, manages Plugin/Function registration and invocation
+- **beamai_function** - Function definitions, wraps callable tool functions
+- **beamai_context** - Context management, passes execution environment info
+- **beamai_filter** - Filters for pre/post function call interception
+- **beamai_plugin** - Plugin definitions (internal to Kernel)
+- **beamai_prompt** - Prompt template management
+- **beamai_result** - Function call result types
 
-- **agent_jsonrpc** - JSON-RPC 2.0 encoding/decoding
+### Process Framework Subsystem
+
+Orchestratable process engine supporting step definitions, conditional branching, parallel execution, and time travel:
+
+- **beamai_process** - Process definitions and core data structures
+- **beamai_process_builder** - Process builder (Builder pattern)
+- **beamai_process_runtime** - Process runtime
+- **beamai_process_step** - Step definitions
+- **beamai_process_step_transform** - Step transformations
+- **beamai_process_executor** - Process executor
+- **beamai_process_event** - Event system
+- **beamai_process_state** - Process state management
+- **beamai_process_memory_store** - Process state persistence
+- **beamai_process_worker** - Process worker
+- **beamai_process_sup** - Process supervisor tree
+
+### HTTP Subsystem
+
+Pluggable HTTP client supporting Gun and Hackney backends:
+
+- **beamai_http** - Unified HTTP client interface
+- **beamai_http_gun** - Gun HTTP/2 backend implementation
+- **beamai_http_hackney** - Hackney HTTP/1.1 backend implementation
+- **beamai_http_pool** - HTTP connection pool management
+
+### Behaviour Definitions
+
+Framework behavior interface definitions:
+
+- **beamai_llm_behaviour** - LLM provider behavior interface
+- **beamai_http_behaviour** - HTTP backend behavior interface
+- **beamai_step_behaviour** - Process step behavior interface
+- **beamai_process_store_behaviour** - Process store behavior interface
+
+### Utilities and Protocols
+
+- **beamai_id** - Unique ID generation (UUID)
+- **beamai_jsonrpc** - JSON-RPC 2.0 encoding/decoding
 - **beamai_sse** - Server-Sent Events (SSE) support
-
-### Utility Functions
-
 - **beamai_utils** - General utility functions
-- **beamai_http** - HTTP client wrapper
 
-### Graph Computation
+### Application Entry
 
-Graph computation engine based on LangGraph concepts:
-
-- **graph** - Graph structure core
-- **graph_builder** - Graph builder
-- **graph_dsl** - Graph DSL
-- **graph_node** - Node definitions
-- **graph_edge** - Edge definitions
-- **graph_runner** - Graph executor
-- **graph_state** - State management
-- **graph_state_reducer** - State merge strategies
-- **graph_send** - Message sending
-
-### Pregel Computation Model
-
-Distributed graph computation Pregel model implementation:
-
-- **pregel** - Pregel core
-- **pregel_master** - Master node
-- **pregel_worker** - Worker node
-- **pregel_vertex** - Vertex definitions
-- **pregel_graph** - Pregel graph
-- **pregel_partition** - Partition management
-- **pregel_barrier** - Synchronization barrier
-
-### Graph Computation Patterns
-
-- **graph_parallel_experts** - Parallel experts pattern
-- **graph_compute** - Graph computation utilities
+- **beamai** - Main entry module
+- **beamai_core_app** - OTP application callback
+- **beamai_core_sup** - Top-level supervisor tree
 
 ## API Documentation
 
-### beamai_behaviour
+### beamai_kernel
 
 ```erlang
-%% Define Agent behavior
--callback init(Config :: map()) -> {ok, State :: term()} | {error, Reason :: term()}.
--callback handle_message(Message :: map(), State :: term()) ->
-    {reply, Response :: term(), NewState :: term()} | {error, Reason :: term()}.
+%% Create Kernel instance
+beamai_kernel:new() -> kernel().
+beamai_kernel:new(Opts) -> kernel().
+
+%% Add Plugin
+beamai_kernel:add_plugin(Kernel, Name, Functions) -> kernel().
+beamai_kernel:add_plugin(Kernel, Name, Functions, Opts) -> kernel().
+beamai_kernel:add_plugin_from_module(Kernel, Module) -> kernel().
+
+%% Add services and filters
+beamai_kernel:add_service(Kernel, Service) -> kernel().
+beamai_kernel:add_filter(Kernel, Filter) -> kernel().
+
+%% Invoke functions
+beamai_kernel:invoke(Kernel, FunctionName, Args) -> {ok, Result} | {error, Reason}.
+beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result} | {error, Reason}.
+beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response} | {error, Reason}.
+
+%% Query functions
+beamai_kernel:get_function(Kernel, Name) -> {ok, Function} | error.
+beamai_kernel:list_functions(Kernel) -> [Function].
+beamai_kernel:get_tool_specs(Kernel) -> [ToolSpec].
+beamai_kernel:get_tool_schemas(Kernel) -> [Schema].
 ```
 
-### agent_jsonrpc
+### beamai_function
 
 ```erlang
-%% Encode request
-agent_jsonrpc:encode_request(Id, Method, Params) -> binary().
+%% Create function
+beamai_function:new(Name, Description, Handler, Opts) -> function().
 
-%% Encode response
-agent_jsonrpc:encode_response(Id, Result) -> binary().
-
-%% Encode error
-agent_jsonrpc:encode_error(Id, Code, Message) -> binary().
-
-%% Decode message
-agent_jsonrpc:decode(JsonBin) -> {ok, map()} | {error, term()}.
+%% Name: Function name (binary)
+%% Description: Function description (binary)
+%% Handler: fun(Args, Context) -> {ok, Result} | {error, Reason}
+%% Opts: #{parameters => Schema, ...}
 ```
 
-### graph_builder
+### beamai_process_builder
 
 ```erlang
-%% Create new graph
-graph_builder:new() -> builder().
+%% Create process builder
+beamai_process_builder:new(Name) -> builder().
 
-%% Add node
-graph_builder:add_node(Builder, Name, NodeFun) -> builder().
+%% Add step
+beamai_process_builder:add_step(Builder, StepName, StepOpts) -> builder().
 
-%% Add edge
-graph_builder:add_edge(Builder, From, To) -> builder().
-graph_builder:add_conditional_edges(Builder, From, CondFun, Edges) -> builder().
-
-%% Set entry and finish points
-graph_builder:set_entry_point(Builder, NodeName) -> builder().
-graph_builder:set_finish_point(Builder, NodeName) -> builder().
-
-%% Compile graph
-graph_builder:compile(Builder) -> {ok, graph()} | {error, term()}.
+%% Build process
+beamai_process_builder:build(Builder) -> {ok, Process} | {error, Reason}.
 ```
 
-### graph_state_reducer
-
-Field-level reducers for merging node-returned deltas into global state.
+### beamai_process_executor
 
 ```erlang
-%% Apply single delta
-graph_state_reducer:apply_delta(State, Delta, FieldReducers) -> NewState.
-
-%% Apply multiple deltas
-graph_state_reducer:apply_deltas(State, [Delta], FieldReducers) -> NewState.
-
-%% Built-in Reducers
-graph_state_reducer:append_reducer(Old, New) -> Old ++ New.
-graph_state_reducer:merge_reducer(Old, New) -> maps:merge(Old, New).
-graph_state_reducer:increment_reducer(Old, Delta) -> Old + Delta.
-graph_state_reducer:last_write_win_reducer(Old, New) -> New.
-```
-
-**Reducer Types:**
-
-| Type | Format | Behavior |
-|------|--------|----------|
-| Normal Reducer | `fun(Old, New) -> Merged` | Same-key merge |
-| Transform Reducer | `{transform, TargetKey, ReducerFun}` | Read from source key, write to target key, source key not retained |
-
-**Transform Reducer Example:**
-
-```erlang
-FieldReducers = #{
-    %% counter_incr value accumulates to counter, counter_incr not retained
-    <<"counter_incr">> => {transform, <<"counter">>, fun graph_state_reducer:increment_reducer/2}
-}.
+%% Execute process
+beamai_process_executor:run(Process, Input) -> {ok, Result} | {error, Reason}.
+beamai_process_executor:run(Process, Input, Opts) -> {ok, Result} | {error, Reason}.
 ```
 
 ## Usage Examples
 
-### Creating a Simple Graph
+### Kernel + Function
 
 ```erlang
-%% Create graph builder
-Builder = graph_builder:new(),
+%% Create Kernel
+Kernel = beamai_kernel:new(),
 
-%% Add nodes
-Builder1 = graph_builder:add_node(Builder, start, fun(State) ->
-    io:format("Start node~n"),
-    {ok, State#{step => 1}}
-end),
+%% Define function
+ReadFile = beamai_function:new(
+    <<"read_file">>,
+    <<"Read file contents">>,
+    fun(#{<<"path">> := Path}, _Ctx) ->
+        case file:read_file(Path) of
+            {ok, Content} -> {ok, Content};
+            {error, Reason} -> {error, Reason}
+        end
+    end,
+    #{parameters => #{
+        type => object,
+        properties => #{
+            <<"path">> => #{type => string, description => <<"File path">>}
+        },
+        required => [<<"path">>]
+    }}
+),
 
-Builder2 = graph_builder:add_node(Builder1, process, fun(State) ->
-    io:format("Process node~n"),
-    {ok, State#{step => 2}}
-end),
+%% Register to Kernel
+Kernel1 = beamai_kernel:add_plugin(Kernel, <<"file_ops">>, [ReadFile]),
 
-Builder3 = graph_builder:add_node(Builder2, finish, fun(State) ->
-    io:format("Finish node~n"),
-    {ok, State}
-end),
-
-%% Add edges
-Builder4 = graph_builder:add_edge(Builder3, start, process),
-Builder5 = graph_builder:add_edge(Builder4, process, finish),
-
-%% Set entry and finish points
-Builder6 = graph_builder:set_entry_point(Builder5, start),
-Builder7 = graph_builder:set_finish_point(Builder6, finish),
-
-%% Compile and run
-{ok, Graph} = graph_builder:compile(Builder7),
-{ok, Result} = graph_runner:run(Graph, #{}).
+%% Invoke
+{ok, Content} = beamai_kernel:invoke(Kernel1, <<"file_ops-read_file">>, #{
+    <<"path">> => <<"/tmp/test.txt">>
+}).
 ```
 
-### Using JSON-RPC
+### Process Framework
 
 ```erlang
-%% Encode request
-Request = agent_jsonrpc:encode_request(1, <<"tools/call">>, #{
-    <<"name">> => <<"calculator">>,
-    <<"arguments">> => #{<<"expression">> => <<"1 + 1">>}
+%% Build multi-step process
+Builder = beamai_process_builder:new(<<"data_pipeline">>),
+
+Builder1 = beamai_process_builder:add_step(Builder, <<"fetch">>, #{
+    handler => fun(Input, _Ctx) ->
+        {ok, Input#{data => fetch_data()}}
+    end
 }),
 
-%% Decode response
-{ok, Response} = agent_jsonrpc:decode(ResponseBin),
-Result = maps:get(<<"result">>, Response).
+Builder2 = beamai_process_builder:add_step(Builder1, <<"transform">>, #{
+    handler => fun(#{data := Data} = Input, _Ctx) ->
+        {ok, Input#{data => transform(Data)}}
+    end
+}),
+
+Builder3 = beamai_process_builder:add_step(Builder2, <<"save">>, #{
+    handler => fun(#{data := Data} = Input, _Ctx) ->
+        ok = save_data(Data),
+        {ok, Input#{saved => true}}
+    end
+}),
+
+{ok, Process} = beamai_process_builder:build(Builder3),
+{ok, Result} = beamai_process_executor:run(Process, #{}).
 ```
 
 ## Dependencies
 
 - jsx - JSON encoding/decoding
 - uuid - UUID generation
-- hackney - HTTP client
+- gun - HTTP/2 client
+- hackney - HTTP/1.1 client
 
 ## License
 

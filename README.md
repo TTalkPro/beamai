@@ -1,4 +1,4 @@
-# Erlang Agent Framework
+# BeamAI - Erlang Agent Framework
 
 [English](README_EN.md) | 中文
 
@@ -6,24 +6,43 @@
 
 ## 特性
 
-- **🤖 Simple Agent**: 基于 Graph 引擎的 ReAct Agent
+- **Kernel/Plugin 架构**: 语义化的函数注册和调用系统
+  - 基于 Semantic Kernel 理念的 Kernel 核心
+  - 插件化工具管理和 Middleware 管道
+  - 安全验证和权限控制
+
+- **Process Framework**: 可编排的流程引擎
+  - 支持步骤定义、条件分支、并行执行
+  - 时间旅行和分支回溯
+  - 事件驱动和状态快照
+
+- **Simple Agent**: 基于工具循环的 ReAct Agent
   - 支持自定义工具和系统提示词
-  - 内置 Scratchpad 执行历史
-  - 支持 Checkpoint 持久化
+  - 内置 Memory 持久化
   - 完整的回调系统
+  - 中断和恢复支持
 
-- **🔄 协调器模式**: 统一的多 Agent 协调
-  - **Pipeline 模式**: 顺序协调（研究员 → 写作者 → 审核员）
-  - **Orchestrator 模式**: 编排协调（委托、路由、并行调用多个 workers）
+- **Deep Agent**: 基于 SubAgent 架构的递归规划 Agent
+  - Planner（规划器）→ Executor（执行器）→ Reflector（反思器）
+  - 支持并行子任务执行
+  - Coordinator 多 Agent 协调
 
-- **🧠 Deep Agent**: 递归规划 Agent
-  - 支持任务规划（Planning）
-  - 支持自我反思（Reflection）
-  - 支持子任务分发
+- **Graph 引擎**: 基于 LangGraph 的图计算
+  - Graph Builder/DSL 构建器
+  - Pregel 分布式计算模型
+  - 状态快照和条件边
 
-- **📦 Output Parser**: 结构化输出
-  - JSON Schema 解析
+- **Output Parser**: 结构化输出
+  - JSON/XML/CSV 解析
   - 自动重试机制
+
+- **协议支持**: A2A 和 MCP
+  - Agent-to-Agent 通信协议
+  - Model Context Protocol 集成
+
+- **RAG**: 检索增强生成
+  - 向量嵌入和相似度搜索
+  - 文本分割
 
 ## 快速开始
 
@@ -37,8 +56,8 @@ rebar3 shell
 ### 2. Simple Agent（基本用法）
 
 ```erlang
-%% 创建 LLM 配置（必须使用 llm_client:create/2）
-LLM = llm_client:create(anthropic, #{
+%% 创建 LLM 配置（使用 beamai_chat_completion:create/2）
+LLM = beamai_chat_completion:create(anthropic, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     base_url => <<"https://open.bigmodel.cn/api/anthropic">>
@@ -70,30 +89,32 @@ Response = maps:get(final_response, Result).
 %% Result 中 Agent 会记得用户叫张三
 ```
 
-### 4. Simple Agent（带工具）
+### 4. Simple Agent（使用 Kernel + Plugin 注册工具）
 
 ```erlang
-%% 定义工具
-SearchTool = #{
-    name => <<"search">>,
-    description => <<"搜索信息"/utf8>>,
-    parameters => #{
+%% 创建 Kernel
+Kernel = beamai_kernel:new(),
+
+%% 通过 Plugin 模块注册工具
+Kernel1 = beamai_kernel:add_plugin_from_module(Kernel, beamai_plugin_shell),
+
+%% 或手动定义工具函数
+SearchFn = beamai_function:new(<<"search">>, <<"搜索信息"/utf8>>,
+    fun(#{<<"query">> := Query}, _Context) ->
+        {ok, <<"搜索结果: ", Query/binary>>}
+    end,
+    #{parameters => #{
         type => object,
         properties => #{
             <<"query">> => #{type => string, description => <<"搜索关键词"/utf8>>}
         },
         required => [<<"query">>]
-    },
-    handler => fun(#{<<"query">> := Query}) ->
-        {ok, <<"搜索结果: ", Query/binary>>}
-    end
-},
+    }}),
 
-%% 使用 Registry 构建工具列表
-Tools = beamai_tool_registry:from_config(#{
-    tools => [SearchTool],
-    providers => [beamai_tool_provider_builtin]
-}),
+Kernel2 = beamai_kernel:add_plugin(Kernel1, <<"search_plugin">>, [SearchFn]),
+
+%% 获取工具规格供 Agent 使用
+Tools = beamai_kernel:get_tool_specs(Kernel2),
 
 %% 创建带工具的 Agent
 {ok, State} = beamai_agent:new(#{
@@ -129,60 +150,21 @@ Tools = beamai_tool_registry:from_config(#{
 %% Agent 会记得密码是 12345
 ```
 
-### 6. Pipeline 协调器（顺序协调）
+### 6. Deep Agent（SubAgent 编排）
 
 ```erlang
-%% 创建研究团队（研究员 → 写作者 → 审核员）
-{ok, Coord} = beamai_coordinator:new_pipeline(#{
-    agents => [
-        #{name => <<"researcher">>, system_prompt => <<"你是研究员，负责收集资料。"/utf8>>},
-        #{name => <<"writer">>, system_prompt => <<"你是写作者，负责撰写文章。"/utf8>>},
-        #{name => <<"reviewer">>, system_prompt => <<"你是审核员，负责质量检查。"/utf8>>}
-    ],
-    llm => LLM
-}),
-
-%% 运行任务（协调器自动在 workers 间传递）
-{ok, Result, _NewCoord} = beamai_coordinator:run(Coord,
-    <<"研究并撰写一篇关于 Erlang 并发模型的 100 字介绍。"/utf8>>).
-```
-
-### 7. Orchestrator 协调器（编排协调）
-
-```erlang
-%% 创建专家团队
-{ok, Coord} = beamai_coordinator:new_orchestrator(#{
-    agents => [
-        #{name => <<"tech_expert">>, system_prompt => <<"你是技术专家。"/utf8>>},
-        #{name => <<"business_expert">>, system_prompt => <<"你是商业专家。"/utf8>>}
-    ],
-    llm => LLM
-}),
-
-%% 方式一：运行任务（协调器智能分配）
-{ok, Result, _NewCoord} = beamai_coordinator:run(Coord,
-    <<"从技术和商业角度分析 AI 的影响。"/utf8>>),
-
-%% 方式二：并行委托给多个 workers
-{ok, Results} = beamai_coordinator:delegate_parallel(Coord,
-    [<<"tech_expert">>, <<"business_expert">>],
-    <<"分析 AI 的影响"/utf8>>).
-%% Results = #{<<"tech_expert">> => {ok, "..."}, <<"business_expert">> => {ok, "..."}}
-```
-
-### 8. Deep Agent（规划 + 反思）
-
-```erlang
-%% 创建 Deep Agent 配置
-{ok, Config} = beamai_deepagent:new(#{
+%% 创建 Deep Agent 配置（new/1 直接返回 config map）
+Config = beamai_deepagent:new(#{
+    llm => LLM,
     max_depth => 3,
     planning_enabled => true,
     reflection_enabled => true,
     system_prompt => <<"你是一个研究专家。"/utf8>>,
-    llm => LLM
+    %% 使用 Plugin 模块提供工具
+    plugins => [beamai_plugin_file, beamai_plugin_shell]
 }),
 
-%% 运行复杂任务
+%% 运行复杂任务（Planner → Executor → Reflector）
 {ok, Result} = beamai_deepagent:run(Config,
     <<"分析这个代码库的架构并给出优化建议。"/utf8>>),
 
@@ -191,118 +173,206 @@ Plan = beamai_deepagent:get_plan(Result),
 Trace = beamai_deepagent:get_trace(Result).
 ```
 
+### 7. Process Framework（流程编排）
+
+```erlang
+%% 使用 Process Builder 构建流程
+{ok, Process} = beamai_process_builder:new(<<"research_pipeline">>)
+    |> beamai_process_builder:add_step(<<"research">>, #{
+        handler => fun(Input, _Ctx) -> {ok, do_research(Input)} end
+    })
+    |> beamai_process_builder:add_step(<<"write">>, #{
+        handler => fun(Input, _Ctx) -> {ok, do_write(Input)} end
+    })
+    |> beamai_process_builder:add_step(<<"review">>, #{
+        handler => fun(Input, _Ctx) -> {ok, do_review(Input)} end
+    })
+    |> beamai_process_builder:build(),
+
+%% 执行流程
+{ok, Result} = beamai_process_executor:run(Process, #{
+    task => <<"研究 Erlang 并发模型"/utf8>>
+}).
+```
+
+### 8. Output Parser（结构化输出）
+
+```erlang
+%% 创建 JSON 解析器
+Parser = beamai_output_parser:json(#{
+    schema => #{
+        type => object,
+        properties => #{
+            <<"title">> => #{type => string},
+            <<"count">> => #{type => integer},
+            <<"items">> => #{type => array, items => #{type => string}}
+        },
+        required => [<<"title">>, <<"count">>]
+    }
+}),
+
+%% 解析 LLM 响应
+{ok, Parsed} = beamai_output_parser:parse(Parser, LLMResponse).
+
+%% 带重试的解析
+{ok, Parsed} = beamai_output_parser:parse_with_retry(Parser, LLMResponse, #{
+    max_retries => 3
+}).
+```
+
 ## 架构
 
 ### 应用结构
 
 ```
 apps/
-├── beamai_core/      # 核心功能 + Persistence
-│   ├── Behaviours   # beamai_behaviour, agent_persistence_behaviour
-│   ├── HTTP         # beamai_http (Gun/Hackney 客户端, 默认 Gun)
-│   ├── Graph        # Graph 执行引擎
-│   ├── Pregel       # Pregel 分布式计算
-│   └── Persistence      # agent_storage_ets, agent_storage_sup
+├── beamai_core/        # 核心框架
+│   ├── Kernel         # beamai_kernel, beamai_function, beamai_context,
+│   │                  # beamai_filter, beamai_prompt, beamai_result
+│   ├── Process        # beamai_process, beamai_process_builder,
+│   │                  # beamai_process_runtime, beamai_process_step,
+│   │                  # beamai_process_executor, beamai_process_event
+│   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_hackney,
+│   │                  # beamai_http_pool
+│   ├── Behaviours     # beamai_llm_behaviour, beamai_http_behaviour,
+│   │                  # beamai_step_behaviour, beamai_process_store_behaviour
+│   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
-├── beamai_llm/       # LLM 客户端
-│   └── Providers    # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
+├── beamai_graph/       # Graph 计算引擎
+│   ├── Core           # graph, graph_node, graph_edge
+│   ├── Builder        # graph_builder, graph_dsl
+│   ├── Runner         # graph_runner, graph_snapshot
+│   ├── State          # graph_state, graph_state_reducer, graph_command
+│   └── Pregel         # pregel, pregel_master, pregel_worker, pregel_vertex
 │
-├── beamai_rag/       # RAG 功能
-│   ├── Embeddings   # 向量嵌入
-│   └── Vector Store # 向量存储
+├── beamai_plugin/      # 插件系统
+│   ├── Core           # beamai_plugins, beamai_plugin_behaviour, beamai_tool
+│   ├── Middleware     # beamai_middleware, beamai_middleware_runner,
+│   │                  # middleware_call_limit, middleware_tool_retry
+│   ├── Security       # beamai_tool_security
+│   └── Plugins        # beamai_plugin_file, beamai_plugin_shell,
+│                      # beamai_plugin_human, beamai_plugin_todo
 │
-├── beamai_memory/    # 内存和上下文存储
-│   ├── Context      # 上下文管理
-│   └── Store        # ETS/SQLite 存储后端
+├── beamai_llm/         # LLM 客户端
+│   ├── Chat           # beamai_chat_completion
+│   ├── Parser         # beamai_output_parser, beamai_parser_json
+│   ├── Adapters       # llm_message_adapter, llm_response_adapter, llm_tool_adapter
+│   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
-├── beamai_a2a/       # A2A 协议实现
-│   ├── Server       # A2A 服务端
-│   └── Client       # A2A 客户端
+├── beamai_agent/       # Agent 实现
+│   ├── Core           # beamai_agent, beamai_agent_state, beamai_agent_callbacks
+│   ├── Memory         # beamai_agent_memory
+│   ├── Execution      # beamai_agent_tool_loop, beamai_agent_interrupt
+│   └── Process Agent  # beamai_process_agent, beamai_process_agent_llm_step,
+│                      # beamai_process_agent_tool_step
 │
-├── beamai_mcp/       # MCP 协议实现
-│   ├── Server       # MCP 服务端
-│   └── Client       # MCP 客户端
+├── beamai_deepagent/   # Deep Agent（SubAgent 架构）
+│   ├── Core           # beamai_deepagent, beamai_deepagent_plan,
+│   │                  # beamai_deepagent_dependencies, beamai_deepagent_trace
+│   └── SubAgents      # beamai_deepagent_planner, beamai_deepagent_executor,
+│                      # beamai_deepagent_reflector, beamai_deepagent_parallel,
+│                      # beamai_deepagent_coordinator
 │
-├── beamai_tools/    # 公共工具库 + 中间件系统
-│   ├── Tools        # 工具注册和执行
-│   ├── Providers    # 工具来源 (内置、MCP)
-│   └── Middleware   # 执行中间件（拦截、增强）
+├── beamai_memory/      # 内存和上下文存储
+│   ├── Context        # 上下文管理
+│   ├── Store          # ETS/SQLite 存储后端
+│   └── Snapshot       # 快照、分支、时间旅行
 │
-├── beamai_agent/    # Simple Agent + 协调器
-│   ├── Graph Engine # 基于 Graph 的执行
-│   ├── Scratchpad   # 执行历史
-│   ├── Checkpoint   # 状态持久化
-│   ├── Callbacks    # 回调系统
-│   └── Coordinator  # Multi/Supervisor 协调器
+├── beamai_a2a/         # A2A 协议实现
+│   ├── Server         # A2A 服务端
+│   └── Client         # A2A 客户端
 │
-└── beamai_deepagent/      # Deep Agent
-    ├── Planning     # 任务规划
-    ├── Reflection   # 自我反思
-    └── Router      # 智能路由
+├── beamai_mcp/         # MCP 协议实现
+│   ├── Server         # MCP 服务端
+│   └── Client         # MCP 客户端
+│
+└── beamai_rag/         # RAG 功能
+    ├── Embeddings     # 向量嵌入
+    └── Vector Store   # 向量存储
 ```
 
 ### 依赖关系
 
 ```
-┌─────────────────────────────────┐
-│   Agent 实现                     │
-│  (beamai_agent, beamai_deepagent)     │
-└────────────┬────────────────────┘
-             │
-┌────────────┴────────────────────┐
-│   工具与服务层                    │
-│  (beamai_tools, beamai_llm,       │
-│   beamai_rag, beamai_a2a, beamai_mcp) │
-└────────────┬────────────────────┘
-             │
-┌────────────┴────────────────────┐
-│   核心层                         │
-│  (beamai_core, beamai_memory)     │
-└─────────────────────────────────┘
+┌─────────────────────────────────────┐
+│   Agent 实现层                       │
+│  (beamai_agent, beamai_deepagent)   │
+└────────────────┬────────────────────┘
+                 │
+┌────────────────┴────────────────────┐
+│   服务层                             │
+│  (beamai_llm, beamai_plugin,        │
+│   beamai_rag, beamai_a2a, beamai_mcp)│
+└────────────────┬────────────────────┘
+                 │
+┌────────────────┴────────────────────┐
+│   核心层                             │
+│  (beamai_core, beamai_graph,        │
+│   beamai_memory)                     │
+└─────────────────────────────────────┘
 ```
 
 详见 [DEPENDENCIES.md](doc/DEPENDENCIES.md)
 
 ## 核心概念
 
-### 1. Graph 执行引擎
+### 1. Kernel 架构
 
-beamai_agent 使用 Graph 引擎执行 Agent：
-
-```erlang
-%% Graph 定义
-Graph = #{
-    nodes => #{
-        llm => {beamai_llm_node, #{}},
-        tools => {beamai_tools_node, #{}}
-    },
-    edges => [
-        {llm, tools, {condition, fun should_use_tools/1}}
-    ]
-}
-
-%% 执行 Graph
-{ok, Result} = graph_runner:run(Graph, Input).
-```
-
-### 2. Scratchpad（执行历史）
-
-Scratchpad 记录每一步的执行过程：
+Kernel 是 BeamAI 的核心抽象，管理 Plugin 和 Function 的注册与调用：
 
 ```erlang
-%% 获取 Scratchpad（从状态中获取）
-Steps = beamai_agent:get_scratchpad(State).
+%% 创建 Kernel 实例
+Kernel = beamai_kernel:new(),
 
-%% 每一步包含：
-%% - step_id: 步骤 ID
-%% - type: 步骤类型 (llm_call, tool_use, tool_result)
-%% - content: 内容
-%% - timestamp: 时间戳
+%% 从模块加载插件
+Kernel1 = beamai_kernel:add_plugin_from_module(Kernel, beamai_plugin_file),
+
+%% 调用注册的函数
+{ok, Result} = beamai_kernel:invoke(Kernel1, <<"file-read_file">>, #{
+    <<"path">> => <<"/tmp/test.txt">>
+}).
 ```
 
-### 3. Memory 持久化
+### 2. Process Framework
 
-使用 beamai_memory 实现会话持久化：
+可编排的流程引擎，支持步骤定义、分支、并行和时间旅行：
+
+```erlang
+%% 构建流程
+Process = beamai_process_builder:new(<<"my_process">>),
+Process1 = beamai_process_builder:add_step(Process, <<"step1">>, #{
+    handler => fun(Input, Ctx) -> {ok, transform(Input)} end
+}),
+{ok, Built} = beamai_process_builder:build(Process1),
+
+%% 执行
+{ok, Result} = beamai_process_executor:run(Built, InitialInput).
+```
+
+### 3. Graph 执行引擎
+
+基于 LangGraph 理念的图计算引擎（位于 beamai_graph 应用）：
+
+```erlang
+%% 创建图
+Builder = graph_builder:new(),
+Builder1 = graph_builder:add_node(Builder, start, fun(State) ->
+    {ok, State#{step => 1}}
+end),
+Builder2 = graph_builder:add_node(Builder1, finish, fun(State) ->
+    {ok, State}
+end),
+Builder3 = graph_builder:add_edge(Builder2, start, finish),
+Builder4 = graph_builder:set_entry_point(Builder3, start),
+Builder5 = graph_builder:set_finish_point(Builder4, finish),
+
+{ok, Graph} = graph_builder:compile(Builder5),
+{ok, Result} = graph_runner:run(Graph, #{}).
+```
+
+### 4. Memory 持久化
+
+使用 beamai_memory 实现会话持久化和时间旅行：
 
 ```erlang
 %% 创建 Memory
@@ -310,64 +380,44 @@ Steps = beamai_agent:get_scratchpad(State).
 {ok, Memory} = beamai_memory:new(#{context_store => {beamai_store_ets, my_store}}),
 
 %% 创建带 storage 的 Agent（checkpoint 自动保存）
-{ok, State} = beamai_agent:new(#{
-    llm => LLM,
-    storage => Memory
-}),
-
-%% 对话后 checkpoint 自动保存
+{ok, State} = beamai_agent:new(#{llm => LLM, storage => Memory}),
 {ok, _, NewState} = beamai_agent:run(State, <<"你好"/utf8>>),
 
 %% 从 Memory 恢复会话
 {ok, RestoredState} = beamai_agent:restore_from_memory(#{llm => LLM}, Memory).
 ```
 
-### 4. Callbacks（回调系统）
+### 5. Callbacks（回调系统）
 
-监听 Agent 执行事件，支持 18 种回调类型：
+监听 Agent 执行事件：
 
 ```erlang
-%% 在创建 Agent 时配置回调
 {ok, State} = beamai_agent:new(#{
     llm => LLM,
     system_prompt => <<"你是助手"/utf8>>,
     callbacks => #{
-        %% LLM 回调
         on_llm_start => fun(Prompts, Meta) ->
-            io:format("LLM 调用开始，消息数: ~p~n", [length(Prompts)])
+            io:format("LLM 调用开始~n")
         end,
-        on_llm_end => fun(Response, Meta) ->
-            io:format("LLM 响应收到~n")
-        end,
-        %% 工具回调
         on_tool_start => fun(ToolName, Args, Meta) ->
             io:format("执行工具: ~ts~n", [ToolName])
         end,
-        on_tool_end => fun(ToolName, Result, Meta) ->
-            io:format("工具完成: ~ts~n", [ToolName])
-        end,
-        %% Agent 回调
         on_agent_finish => fun(Result, Meta) ->
             io:format("Agent 完成~n")
         end
     }
-}),
-
-%% 运行 Agent，回调会在执行过程中自动触发
-{ok, Result, _NewState} = beamai_agent:run(State, <<"你好"/utf8>>).
+}).
 ```
-
-详见 [doc/CALLBACKS.md](doc/CALLBACKS.md)
 
 ## 配置
 
 ### LLM 配置
 
-LLM 配置必须使用 `llm_client:create/2` 创建，可在多个 Agent 间复用：
+LLM 配置使用 `beamai_chat_completion:create/2` 创建：
 
 ```erlang
-%% 创建 LLM 配置（必须使用 llm_client:create/2）
-LLM = llm_client:create(anthropic, #{
+%% 创建 LLM 配置
+LLM = beamai_chat_completion:create(anthropic, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
@@ -375,20 +425,8 @@ LLM = llm_client:create(anthropic, #{
 }),
 
 %% 配置可在多个 Agent 间复用
-{ok, State1} = beamai_agent:new(#{
-    llm => LLM,
-    tools => Tools1,
-    system_prompt => <<"你是研究助手。"/utf8>>
-}),
-
-{ok, State2} = beamai_agent:new(#{
-    llm => LLM,
-    tools => Tools2,
-    system_prompt => <<"你是写作助手。"/utf8>>
-}).
-
-%% 基于现有配置创建新配置
-HighTempLLM = llm_client:merge_config(LLM, #{temperature => 0.9}).
+{ok, State1} = beamai_agent:new(#{llm => LLM, system_prompt => <<"研究助手"/utf8>>}),
+{ok, State2} = beamai_agent:new(#{llm => LLM, system_prompt => <<"写作助手"/utf8>>}).
 ```
 
 **支持的 Provider：**
@@ -397,37 +435,10 @@ HighTempLLM = llm_client:merge_config(LLM, #{temperature => 0.9}).
 |----------|------|----------|------|
 | `anthropic` | llm_provider_anthropic | Anthropic | Anthropic Claude API |
 | `openai` | llm_provider_openai | OpenAI | OpenAI API |
-| `deepseek` | llm_provider_deepseek | OpenAI 兼容 | DeepSeek API (deepseek-chat, deepseek-reasoner) |
+| `deepseek` | llm_provider_deepseek | OpenAI 兼容 | DeepSeek API |
 | `zhipu` | llm_provider_zhipu | OpenAI 兼容 | 智谱 AI (GLM 系列) |
 | `bailian` | llm_provider_bailian | DashScope 原生 | 阿里云百炼 (通义千问系列) |
 | `ollama` | llm_provider_ollama | OpenAI 兼容 | Ollama 本地模型 |
-
-### Agent 配置选项
-
-```erlang
-Opts = #{
-    %% 基础配置
-    id => <<"agent_id">>,
-    system_prompt => Prompt,
-    tools => [Tool1, Tool2],
-
-    %% LLM 配置
-    llm => LLMConfig,
-
-    %% 执行配置
-    max_iterations => 10,       %% 最大迭代次数
-    timeout => 300000,          %% 超时时间
-
-    %% Checkpoint 配置
-    enable_storage => true,     %% 启用存储
-    auto_save => true,          %% 自动保存检查点
-
-    %% 回调配置
-    callbacks => #{
-        on_llm_start => fun(...), ...
-    }
-}.
-```
 
 ### HTTP 后端配置
 
@@ -436,18 +447,13 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 ```erlang
 %% 在 sys.config 中配置（可选）
 {beamai_core, [
-    %% HTTP 后端选择：beamai_http_gun（默认）或 beamai_http_hackney
     {http_backend, beamai_http_gun},
-
-    %% Gun 连接池配置（仅当使用 Gun 后端时）
     {http_pool, #{
-        max_connections => 100,        %% 最大连接数
-        connection_timeout => 30000    %% 连接超时（毫秒）
+        max_connections => 100,
+        connection_timeout => 30000
     }}
 ]}.
 ```
-
-**后端对比：**
 
 | 特性 | Gun（默认） | Hackney |
 |------|-------------|---------|
@@ -455,62 +461,6 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 | 连接池 | 内置 beamai_http_pool | 依赖 hackney 池 |
 | TLS | 自动使用系统 CA 证书 | hackney 默认配置 |
 | 适用场景 | 推荐生产环境 | 兼容旧系统 |
-
-## 高级功能
-
-### 自定义工具
-
-```erlang
-%% 工具定义（使用 parameters 字段）
-#{name => <<"my_tool">>,
-  description => <<"工具描述"/utf8>>,
-  parameters => #{
-      type => object,
-      properties => #{
-          <<"param1">> => #{type => string},
-          <<"param2">> => #{type => integer}
-      },
-      required => [<<"param1">>]
-  },
-  handler => fun(Args, Context) ->
-      %% 工具逻辑
-      {ok, Result}
-  end}
-
-%% 使用 Registry 注册多个工具
-Tools = beamai_tool_registry:from_config(#{
-    tools => [MyTool1, MyTool2],
-    providers => [
-        beamai_tool_provider_builtin,     %% 内置工具
-        {beamai_tool_provider_mcp, #{}}   %% MCP 工具
-    ]
-}).
-```
-
-### Output Parser
-
-```erlang
-%% 定义输出 schema
-Schema = #{
-    type => object,
-    properties => #{
-        <<"title">> => #{type => string},
-        <<"count">> => #{type => integer},
-        <<"items">> => #{
-            type => array,
-            items => #{type => string}
-        }
-    },
-    required => [<<"title">>, <<"count">>]
-}.
-
-%% 使用 Parser
-{ok, Parsed} = agent_output_parser:parse(
-    LLMResponse,
-    Schema,
-    #{max_retries => 3}
-).
-```
 
 ## 文档
 
@@ -526,21 +476,16 @@ Schema = #{
 
 | 模块 | 说明 | 文档 |
 |------|------|------|
-| **beamai_core** | 核心框架：Graph 引擎、Pregel 分布式计算、行为定义 | [README](apps/beamai_core/README.md) |
+| **beamai_core** | 核心框架：Kernel、Process Framework、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
+| **beamai_graph** | Graph 引擎：图构建、执行、Pregel 分布式计算 | [README](apps/beamai_graph/README.md) |
+| **beamai_plugin** | 插件系统：工具管理、Middleware、安全验证 | [README](apps/beamai_plugin/README.md) |
 | **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
-| **beamai_agent** | Simple Agent：ReAct 模式、回调系统、Checkpoint | [README](apps/beamai_agent/README.md) |
-| **beamai_deepagent** | Deep Agent：任务规划、并行执行、自我反思 | [README](apps/beamai_deepagent/README.md) |
-| **beamai_memory** | 记忆管理：Checkpoint、Store、时间旅行 | [README](apps/beamai_memory/README.md) |
-| **beamai_tools** | 工具库 + 中间件：Provider 机制、工具注册、Middleware 系统 | [README](apps/beamai_tools/README.md) |
+| **beamai_agent** | Agent 实现：ReAct 模式、回调系统、Process Agent | [README](apps/beamai_agent/README.md) |
+| **beamai_deepagent** | Deep Agent：SubAgent 编排、任务规划、并行执行、自我反思 | [README](apps/beamai_deepagent/README.md) |
+| **beamai_memory** | 记忆管理：Checkpoint、Store、时间旅行、分支 | [README](apps/beamai_memory/README.md) |
 | **beamai_a2a** | A2A 协议：Agent 间通信、服务端/客户端 | [README](apps/beamai_a2a/README.md) |
 | **beamai_mcp** | MCP 协议：Model Context Protocol 实现 | [README](apps/beamai_mcp/README.md) |
 | **beamai_rag** | RAG 功能：向量嵌入、相似度搜索 | [README](apps/beamai_rag/README.md) |
-
-### 设计与实现文档
-
-- **[doc/DESIGN_PATTERNS.md](doc/DESIGN_PATTERNS.md)** - 设计模式
-- **[doc/OUTPUT_PARSER.md](doc/OUTPUT_PARSER.md)** - Output Parser 指南
-- **[REFACTORING_REPORT.md](REFACTORING_REPORT.md)** - 重构总结报告
 
 ## 运行示例
 
@@ -550,25 +495,22 @@ rebar3 compile
 
 # 启动 Shell
 rebar3 shell
-
-# 运行交互式 Deep Agent
-examples/interactive_deep_agent.erl
 ```
 
 ## 项目统计
 
-- **应用数量**: 8 个
-- **代码行数**: ~15,000 行
+- **应用数量**: 10 个
+- **源代码文件**: ~180 个模块
+- **代码行数**: ~62,000 行
 - **测试覆盖**: 持续改进中
-- **文档**: 完整的 API 和架构文档
 
 ## 性能
 
-- ✅ 基于 Erlang/OTP 轻量级进程
-- ✅ Graph 引擎优化执行路径
-- ✅ 并发工具调用
-- ✅ HTTP 连接池（Gun，支持 HTTP/2）
-- ✅ ETS 高速存储
+- 基于 Erlang/OTP 轻量级进程
+- Graph 引擎优化执行路径
+- 并发工具调用
+- HTTP 连接池（Gun，支持 HTTP/2）
+- ETS 高速存储
 
 ## 设计原则
 
@@ -585,7 +527,3 @@ Apache-2.0
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request！
-
----
-
-**开始构建你的 AI Agent 应用！** 🚀

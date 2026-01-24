@@ -370,15 +370,15 @@ build_rag_prompt(Question, Context) ->
 -spec call_llm(rag_pipeline(), binary()) -> {ok, binary()} | {error, term()}.
 call_llm(#{llm := Config}, Prompt) ->
     try
-        %% 如果已经是有效配置，直接使用；否则创建
-        LLMConfig = case llm_client:is_valid_config(Config) of
+        %% 如果已经是有效配置（beamai_chat_completion 格式），直接使用；否则创建
+        LLMConfig = case maps:get('__llm_config__', Config, false) of
             true -> Config;
             false ->
                 Provider = maps:get(provider, Config, openai),
-                llm_client:create(Provider, Config)
+                beamai_chat_completion:create(Provider, Config)
         end,
         Messages = [#{role => user, content => Prompt}],
-        case llm_client:chat(LLMConfig, Messages) of
+        case beamai_chat_completion:chat(LLMConfig, Messages) of
             {ok, Response} -> {ok, extract_llm_content(Response)};
             {error, Reason} -> {error, {llm_error, Reason}}
         end
@@ -387,7 +387,7 @@ call_llm(#{llm := Config}, Prompt) ->
     end.
 
 %% @private 提取 LLM 响应内容
-%% llm_client:chat/2 返回标准化响应，content 是 null | binary
+%% beamai_chat_completion:chat/2 返回标准化响应，content 是 null | binary
 -spec extract_llm_content(map()) -> binary().
 extract_llm_content(#{content := null}) -> <<>>;
 extract_llm_content(#{content := C}) when is_binary(C) -> C.

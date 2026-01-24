@@ -1,0 +1,6 @@
+Programming Haiku
+==================
+
+Type and compile code,
+Errors show on the screen bright,
+Success feels so good.

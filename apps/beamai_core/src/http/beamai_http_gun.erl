@@ -88,7 +88,7 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
 -spec request_async(atom(), binary() | string(), [{binary(), binary()}],
                     binary(), map()) -> {ok, pid(), reference()} | {error, term()}.
 request_async(Method, Url, Headers, Body, _Opts) ->
-    UrlBin = to_binary(Url),
+    UrlBin = beamai_utils:to_binary(Url),
 
     case beamai_http_pool:get_connection(UrlBin) of
         {ok, ConnPid} ->
@@ -110,11 +110,11 @@ request_async(Method, Url, Headers, Body, _Opts) ->
                 delete ->
                     gun:delete(ConnPid, FullPath, ReqHeaders);
                 post ->
-                    gun:post(ConnPid, FullPath, ReqHeaders, encode_body(Body));
+                    gun:post(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
                 put ->
-                    gun:put(ConnPid, FullPath, ReqHeaders, encode_body(Body));
+                    gun:put(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
                 patch ->
-                    gun:patch(ConnPid, FullPath, ReqHeaders, encode_body(Body));
+                    gun:patch(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
                 options ->
                     gun:options(ConnPid, FullPath, ReqHeaders)
             end,
@@ -134,18 +134,23 @@ await_response(ConnPid, StreamRef, Timeout) ->
 %% 内部函数
 %%====================================================================
 
-%% @private 接收响应
+%% @private 接收 HTTP 响应（递归收集 body 数据）
+%%
+%% 处理 gun 的异步消息：
+%% - gun_response: 响应头（fin 表示无 body，nofin 表示有后续数据）
+%% - gun_data: 响应体数据块
+%% - gun_error: 连接或流错误
 receive_response(ConnPid, StreamRef, Acc, Timeout) ->
     receive
         {gun_response, ConnPid, StreamRef, fin, Status, _Headers}
           when Status >= 200, Status < 300 ->
             %% 无 body 的成功响应
-            {ok, maybe_decode_json(Acc)};
+            {ok, beamai_utils:decode_json_response(Acc)};
         {gun_response, ConnPid, StreamRef, fin, Status, _Headers}
           when Status >= 400 ->
             {error, {http_error, Status, Acc}};
         {gun_response, ConnPid, StreamRef, fin, _Status, _Headers} ->
-            {ok, maybe_decode_json(Acc)};
+            {ok, beamai_utils:decode_json_response(Acc)};
 
         {gun_response, ConnPid, StreamRef, nofin, Status, _Headers}
           when Status >= 200, Status < 300 ->
@@ -160,7 +165,7 @@ receive_response(ConnPid, StreamRef, Acc, Timeout) ->
 
         {gun_data, ConnPid, StreamRef, fin, Data} ->
             FinalBody = <<Acc/binary, Data/binary>>,
-            {ok, maybe_decode_json(FinalBody)};
+            {ok, beamai_utils:decode_json_response(FinalBody)};
         {gun_data, ConnPid, StreamRef, nofin, Data} ->
             receive_response(ConnPid, StreamRef, <<Acc/binary, Data/binary>>, Timeout);
 
@@ -173,7 +178,9 @@ receive_response(ConnPid, StreamRef, Acc, Timeout) ->
         {error, timeout}
     end.
 
-%% @private 接收错误响应 body
+%% @private 接收错误响应的 body 数据
+%%
+%% HTTP 状态码 >= 400 时，收集完整错误 body 后返回 {error, {http_error, Status, Body}}。
 receive_error_body(ConnPid, StreamRef, Status, Acc, Timeout) ->
     receive
         {gun_data, ConnPid, StreamRef, fin, Data} ->
@@ -187,6 +194,10 @@ receive_error_body(ConnPid, StreamRef, Status, Acc, Timeout) ->
     end.
 
 %% @private 流式接收循环
+%%
+%% 每收到一个数据块调用 Handler(Data, Acc)：
+%% - 返回 {continue, NewAcc}：继续接收
+%% - 返回 {done, FinalAcc}：取消流并返回结果
 stream_receive_loop(ConnPid, StreamRef, Acc, Handler, Timeout) ->
     receive
         {gun_response, ConnPid, StreamRef, fin, Status, _Headers}
@@ -223,21 +234,23 @@ stream_receive_loop(ConnPid, StreamRef, Acc, Handler, Timeout) ->
         {error, timeout}
     end.
 
-%% @private 解析路径和查询字符串
+%% @private 从 URL 中提取路径和查询字符串
+%%
+%% 使用 uri_string:parse/1 解析 URL，空路径默认为 "/"。
 parse_path_and_query(Url) ->
     case uri_string:parse(Url) of
         #{path := Path} = Parsed ->
             Query = maps:get(query, Parsed, <<>>),
             PathBin = case Path of
                 <<>> -> <<"/">>;
-                P -> to_binary(P)
+                P -> beamai_utils:to_binary(P)
             end,
-            {PathBin, to_binary(Query)};
+            {PathBin, beamai_utils:to_binary(Query)};
         _ ->
             {<<"/">>, <<>>}
     end.
 
-%% @private 准备请求头
+%% @private 准备请求头（确保包含 User-Agent）
 prepare_headers(Headers) ->
     %% 确保有 User-Agent
     HasUA = lists:any(fun({K, _}) ->
@@ -248,27 +261,3 @@ prepare_headers(Headers) ->
         false -> [{<<"user-agent">>, <<"BeamAI/1.0 Gun/2.1">>} | Headers]
     end.
 
-%% @private 尝试解析 JSON 响应
-maybe_decode_json(Body) when is_binary(Body), byte_size(Body) > 0 ->
-    case jsx:is_json(Body) of
-        true ->
-            try jsx:decode(Body, [return_maps])
-            catch _:_ -> Body
-            end;
-        false -> Body
-    end;
-maybe_decode_json(Body) ->
-    Body.
-
-%% @private 编码请求体
-encode_body(Body) when is_binary(Body) -> Body;
-encode_body(Body) when is_map(Body) -> jsx:encode(Body);
-encode_body(Body) when is_list(Body) -> jsx:encode(Body);
-encode_body(Body) -> to_binary(Body).
-
-%% @private 转换为二进制
-to_binary(V) when is_binary(V) -> V;
-to_binary(V) when is_list(V) -> list_to_binary(V);
-to_binary(V) when is_atom(V) -> atom_to_binary(V);
-to_binary(V) when is_integer(V) -> integer_to_binary(V);
-to_binary(V) when is_map(V) -> jsx:encode(V).

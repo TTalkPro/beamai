@@ -5,7 +5,7 @@
 %%%
 %%% == 双 Store 架构 ==
 %%%
-%%% - context_store: 存储 Checkpointer 数据和当前对话（快速，内存）
+%%% - context_store: 存储 Snapshot 数据和当前对话（快速，内存）
 %%% - persistent_store: 存储长期记忆和归档（持久化，可选）
 %%%
 %%% Store 由外部创建和管理，Memory 只持有引用。
@@ -13,9 +13,9 @@
 %%%
 %%% == 命名空间设计 ==
 %%%
-%%% Checkpointer 数据：
-%%% - [<<"checkpoints">>, ThreadId, CheckpointId] - 检查点数据
-%%% - [<<"checkpoints">>, <<"_index">>, ThreadId] - 线程索引
+%%% Snapshot 数据：
+%%% - [<<"snapshots">>, ThreadId, SnapshotId] - 快照数据
+%%% - [<<"snapshots">>, <<"_index">>, ThreadId] - 线程索引
 %%%
 %%% 长期记忆：
 %%% - [<<"semantic">>, UserId, ...] - 语义记忆
@@ -37,15 +37,15 @@
 %%%
 %%% %% 3. 使用 Memory API
 %%% Config = #{thread_id => <<"thread-1">>},
-%%% ok = beamai_memory:save_checkpoint(Mem, Config, #{messages => []}),
-%%% {ok, State} = beamai_memory:load_checkpoint(Mem, Config).
+%%% ok = beamai_memory:save_snapshot(Mem, Config, #{messages => []}),
+%%% {ok, State} = beamai_memory:load_snapshot(Mem, Config).
 %%% '''
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_memory).
 
--include_lib("beamai_memory/include/beamai_checkpointer.hrl").
+-include_lib("beamai_memory/include/beamai_snapshot.hrl").
 -include_lib("beamai_memory/include/beamai_store.hrl").
 
 %% 类型导出
@@ -54,24 +54,24 @@
 %% 构造函数
 -export([new/1]).
 
-%% 短期记忆 (Checkpointer) API
+%% 短期记忆 (Snapshot) API
 -export([
-    %% 检查点操作
-    save_checkpoint/3,
-    save_checkpoint/4,
-    load_checkpoint/2,
-    load_checkpoint_tuple/2,
-    load_latest_checkpoint/2,
-    list_checkpoints/2,
-    delete_checkpoint/2,
-    checkpoint_count/2,
+    %% 快照操作
+    save_snapshot/3,
+    save_snapshot/4,
+    load_snapshot/2,
+    load_snapshot_tuple/2,
+    load_latest_snapshot/2,
+    list_snapshots/2,
+    delete_snapshot/2,
+    snapshot_count/2,
 
     %% 分支管理
     branch/3,
     branch/4,
     get_lineage/2,
     get_branches/2,
-    diff_checkpoints/3,
+    diff_snapshots/3,
 
     %% 便捷函数
     get_messages/2,
@@ -100,11 +100,17 @@
 
 %% 工具函数
 -export([
-    checkpoint_to_state/1,
-    state_to_checkpoint/2,
+    snapshot_to_state/1,
+    state_to_snapshot/2,
     get_context_store/1,
     get_persistent_store/1,
     get_thread_id/1
+]).
+
+%% Agent 中断查询 API
+-export([
+    has_pending_interrupt/2,
+    get_interrupt_context/2
 ]).
 
 %%====================================================================
@@ -118,13 +124,13 @@
     thread_id := binary()
 }.
 
-%% 从 beamai_checkpointer 导入类型别名
+%% 从 beamai_snapshot 导入类型别名
 -type thread_id() :: binary().
--type checkpoint_id() :: binary().
+-type snapshot_id() :: binary().
 -type config() :: map().
--type checkpoint() :: #checkpoint{}.
--type checkpoint_metadata() :: #checkpoint_metadata{}.
--type checkpoint_tuple() :: {checkpoint(), checkpoint_metadata(), config() | undefined}.
+-type snapshot() :: #snapshot{}.
+-type snapshot_metadata() :: #snapshot_metadata{}.
+-type snapshot_tuple() :: {snapshot(), snapshot_metadata(), config() | undefined}.
 
 %% 从 beamai_store 导入类型别名
 -type namespace() :: beamai_store:namespace().
@@ -134,7 +140,7 @@
 %% 命名空间常量
 %%====================================================================
 
--define(NS_CHECKPOINTS, <<"checkpoints">>).
+-define(NS_CHECKPOINTS, <<"snapshots">>).
 -define(NS_INDEX, <<"_index">>).
 -define(KEY_LATEST, <<"latest">>).
 -define(KEY_INDEX, <<"index">>).
@@ -184,63 +190,62 @@ new(Opts) ->
     end.
 
 %%====================================================================
-%% 短期记忆 API - 检查点操作
+%% 短期记忆 API - 快照操作
 %%====================================================================
 
-%% @doc 保存检查点
+%% @doc 保存快照
 %%
-%% 从图状态创建检查点并保存到 context_store。
--spec save_checkpoint(memory(), config(), map()) -> ok | {error, term()}.
-save_checkpoint(Memory, Config, State) ->
-    save_checkpoint(Memory, Config, State, #{}).
+%% 从图状态创建快照并保存到 context_store。
+-spec save_snapshot(memory(), config(), map()) -> ok | {error, term()}.
+save_snapshot(Memory, Config, State) ->
+    save_snapshot(Memory, Config, State, #{}).
 
-%% @doc 保存检查点（带元数据）
--spec save_checkpoint(memory(), config(), map(), map()) -> ok | {error, term()}.
-save_checkpoint(#{context_store := Store}, Config, State, MetadataMap) ->
+%% @doc 保存快照（带元数据）
+-spec save_snapshot(memory(), config(), map(), map()) -> ok | {error, term()}.
+save_snapshot(#{context_store := Store}, Config, State, MetadataMap) ->
     ThreadId = get_thread_id_from_config(Config),
-    ParentCpId = maps:get(checkpoint_id, Config, undefined),
+    ParentCpId = maps:get(snapshot_id, Config, undefined),
 
-    %% 构建检查点
-    Checkpoint = #checkpoint{
-        id = generate_checkpoint_id(),
+    %% 构建快照
+    Checkpoint = #snapshot{
+        id = generate_snapshot_id(),
         thread_id = ThreadId,
         parent_id = ParentCpId,
         values = State,
         timestamp = erlang:system_time(millisecond)
     },
 
-    %% 构建元数据（扁平化结构）
-    %% 所有执行上下文字段从 MetadataMap 获取（State 现在只包含 global_state）
-    Metadata = #checkpoint_metadata{
-        %% 执行阶段信息
-        checkpoint_type = determine_checkpoint_type(State, MetadataMap),
-        step = maps:get(superstep, MetadataMap, maps:get(step, MetadataMap, 0)),
+    %% 构建元数据（面向 Process Framework）
+    Metadata = #snapshot_metadata{
+        %% 快照类型与流程信息
+        snapshot_type = determine_snapshot_type(State, MetadataMap),
+        process_name = maps:get(process_name, MetadataMap, undefined),
+        process_state = maps:get(process_state, MetadataMap, undefined),
 
-        %% 图顶点状态
-        active_vertices = maps:get(active_vertices, MetadataMap, []),
-        completed_vertices = maps:get(completed_vertices, MetadataMap, []),
+        %% 步骤执行信息
+        step_id = maps:get(step_id, MetadataMap, undefined),
+        step_activations = maps:get(step_activations, MetadataMap, #{}),
 
         %% 执行标识
         run_id = maps:get(run_id, Config, undefined),
         agent_id = maps:get(agent_id, Config, undefined),
         agent_name = maps:get(agent_name, Config, undefined),
-        iteration = maps:get(iteration, MetadataMap, 0),
 
-        %% 用户自定义元数据（包含执行上下文用于恢复）
+        %% 用户自定义元数据
         metadata = maps:get(metadata, MetadataMap, #{})
     },
 
     %% 构建父配置
     ParentConfig = case ParentCpId of
         undefined -> undefined;
-        _ -> #{thread_id => ThreadId, checkpoint_id => ParentCpId}
+        _ -> #{thread_id => ThreadId, snapshot_id => ParentCpId}
     end,
 
     %% 序列化并存储到 context_store
-    CpNs = checkpoint_namespace(ThreadId),
-    CpValue = checkpoint_to_map(Checkpoint, Metadata, ParentConfig),
+    CpNs = snapshot_namespace(ThreadId),
+    CpValue = snapshot_to_map(Checkpoint, Metadata, ParentConfig),
 
-    case beamai_store:put(Store, CpNs, Checkpoint#checkpoint.id, CpValue) of
+    case beamai_store:put(Store, CpNs, Checkpoint#snapshot.id, CpValue) of
         ok ->
             %% 更新线程索引
             update_thread_index(Store, ThreadId, Checkpoint);
@@ -248,78 +253,78 @@ save_checkpoint(#{context_store := Store}, Config, State, MetadataMap) ->
             Error
     end.
 
-%% @doc 加载检查点
+%% @doc 加载快照
 %%
 %% 返回图状态格式的数据。
--spec load_checkpoint(memory(), config()) ->
+-spec load_snapshot(memory(), config()) ->
     {ok, map()} | {error, not_found | term()}.
-load_checkpoint(Memory, Config) ->
-    case load_checkpoint_tuple(Memory, Config) of
+load_snapshot(Memory, Config) ->
+    case load_snapshot_tuple(Memory, Config) of
         {ok, {Checkpoint, _, _}} ->
-            {ok, checkpoint_to_state(Checkpoint)};
+            {ok, snapshot_to_state(Checkpoint)};
         {error, _} = Error ->
             Error
     end.
 
-%% @doc 加载检查点元组
+%% @doc 加载快照元组
 %%
-%% 返回 {Checkpoint, Metadata, ParentConfig}。
--spec load_checkpoint_tuple(memory(), config()) ->
-    {ok, checkpoint_tuple()} | {error, not_found | term()}.
-load_checkpoint_tuple(#{context_store := Store}, Config) ->
+%% 返回 {Snapshot, Metadata, ParentConfig}。
+-spec load_snapshot_tuple(memory(), config()) ->
+    {ok, snapshot_tuple()} | {error, not_found | term()}.
+load_snapshot_tuple(#{context_store := Store}, Config) ->
     ThreadId = get_thread_id_from_config(Config),
-    CheckpointId = maps:get(checkpoint_id, Config, undefined),
+    CheckpointId = maps:get(snapshot_id, Config, undefined),
 
     case CheckpointId of
         undefined ->
-            %% 获取最新检查点
-            get_latest_checkpoint(Store, ThreadId);
+            %% 获取最新快照
+            get_latest_snapshot(Store, ThreadId);
         CpId ->
-            %% 获取指定检查点
-            get_checkpoint_by_id(Store, ThreadId, CpId)
+            %% 获取指定快照
+            get_snapshot_by_id(Store, ThreadId, CpId)
     end.
 
-%% @doc 加载最新检查点
--spec load_latest_checkpoint(memory(), config()) ->
+%% @doc 加载最新快照
+-spec load_latest_snapshot(memory(), config()) ->
     {ok, map()} | {error, not_found | term()}.
-load_latest_checkpoint(Memory, Config) ->
-    ConfigWithoutCpId = maps:remove(checkpoint_id, Config),
-    load_checkpoint(Memory, ConfigWithoutCpId).
+load_latest_snapshot(Memory, Config) ->
+    ConfigWithoutCpId = maps:remove(snapshot_id, Config),
+    load_snapshot(Memory, ConfigWithoutCpId).
 
-%% @doc 列出检查点
--spec list_checkpoints(memory(), config() | map()) ->
-    {ok, [checkpoint_tuple()]} | {error, term()}.
-list_checkpoints(#{context_store := Store}, Config) ->
+%% @doc 列出快照
+-spec list_snapshots(memory(), config() | map()) ->
+    {ok, [snapshot_tuple()]} | {error, term()}.
+list_snapshots(#{context_store := Store}, Config) ->
     ThreadId = maps:get(thread_id, Config, undefined),
     Limit = maps:get(limit, Config, 100),
 
     case ThreadId of
         undefined ->
-            %% 列出所有检查点
-            list_all_checkpoints(Store, Limit);
+            %% 列出所有快照
+            list_all_snapshots(Store, Limit);
         TId ->
-            %% 列出指定线程的检查点
-            list_thread_checkpoints(Store, TId, Limit)
+            %% 列出指定线程的快照
+            list_thread_snapshots(Store, TId, Limit)
     end.
 
-%% @doc 删除检查点
--spec delete_checkpoint(memory(), config()) -> ok | {error, term()}.
-delete_checkpoint(#{context_store := Store}, Config) ->
+%% @doc 删除快照
+-spec delete_snapshot(memory(), config()) -> ok | {error, term()}.
+delete_snapshot(#{context_store := Store}, Config) ->
     ThreadId = get_thread_id_from_config(Config),
-    CheckpointId = maps:get(checkpoint_id, Config, undefined),
+    CheckpointId = maps:get(snapshot_id, Config, undefined),
 
     case CheckpointId of
         undefined ->
-            {error, checkpoint_id_required};
+            {error, snapshot_id_required};
         CpId ->
-            CpNs = checkpoint_namespace(ThreadId),
+            CpNs = snapshot_namespace(ThreadId),
             beamai_store:delete(Store, CpNs, CpId)
     end.
 
-%% @doc 获取检查点数量
--spec checkpoint_count(memory(), config()) -> non_neg_integer().
-checkpoint_count(Memory, Config) ->
-    case list_checkpoints(Memory, Config) of
+%% @doc 获取快照数量
+-spec snapshot_count(memory(), config()) -> non_neg_integer().
+snapshot_count(Memory, Config) ->
+    case list_snapshots(Memory, Config) of
         {ok, List} -> length(List);
         {error, _} -> 0
     end.
@@ -328,35 +333,35 @@ checkpoint_count(Memory, Config) ->
 %% 短期记忆 API - 分支管理
 %%====================================================================
 
-%% @doc 从检查点创建分支
+%% @doc 从快照创建分支
 -spec branch(memory(), config(), map()) ->
-    {ok, checkpoint_id()} | {error, term()}.
+    {ok, snapshot_id()} | {error, term()}.
 branch(Memory, Config, BranchOpts) ->
     branch(Memory, Config, BranchOpts, #{}).
 
 -spec branch(memory(), config(), map(), map()) ->
-    {ok, checkpoint_id()} | {error, term()}.
+    {ok, snapshot_id()} | {error, term()}.
 branch(Memory, Config, BranchOpts, MetadataMap) ->
-    case load_checkpoint_tuple(Memory, Config) of
+    case load_snapshot_tuple(Memory, Config) of
         {ok, {SourceCp, _SourceMeta, _ParentConfig}} ->
             %% 创建新分支
-            NewCheckpointId = generate_checkpoint_id(),
-            SourceCpId = SourceCp#checkpoint.id,
+            NewCheckpointId = generate_snapshot_id(),
+            SourceCpId = SourceCp#snapshot.id,
 
             NewThreadId = maps:get(thread_id, BranchOpts,
                 maps:get(branch_name, BranchOpts,
-                    generate_branch_thread_id(SourceCp#checkpoint.thread_id))),
+                    generate_branch_thread_id(SourceCp#snapshot.thread_id))),
 
-            %% 复制源检查点到新分支
-            BranchState = SourceCp#checkpoint.values,
-            BranchConfig = #{thread_id => NewThreadId, checkpoint_id => SourceCpId},
+            %% 复制源快照到新分支
+            BranchState = SourceCp#snapshot.values,
+            BranchConfig = #{thread_id => NewThreadId, snapshot_id => SourceCpId},
             BranchMetadata = MetadataMap#{
-                checkpoint_type => branch,
+                snapshot_type => branch,
                 branch_from => SourceCpId,
                 branch_name => maps:get(branch_name, BranchOpts, undefined)
             },
 
-            case save_checkpoint(Memory, BranchConfig, BranchState, BranchMetadata) of
+            case save_snapshot(Memory, BranchConfig, BranchState, BranchMetadata) of
                 ok ->
                     {ok, NewCheckpointId};
                 {error, _} = Error ->
@@ -366,18 +371,18 @@ branch(Memory, Config, BranchOpts, MetadataMap) ->
             Error
     end.
 
-%% @doc 获取检查点的祖先链
+%% @doc 获取快照的祖先链
 -spec get_lineage(memory(), config()) ->
-    {ok, [checkpoint_tuple()]} | {error, term()}.
+    {ok, [snapshot_tuple()]} | {error, term()}.
 get_lineage(#{context_store := Store}, Config) ->
     ThreadId = get_thread_id_from_config(Config),
-    CheckpointId = maps:get(checkpoint_id, Config, undefined),
+    CheckpointId = maps:get(snapshot_id, Config, undefined),
 
     case CheckpointId of
         undefined ->
-            case get_latest_checkpoint(Store, ThreadId) of
+            case get_latest_snapshot(Store, ThreadId) of
                 {ok, {Cp, _, _}} ->
-                    get_lineage_recursive(Store, Cp#checkpoint.id, ThreadId, []);
+                    get_lineage_recursive(Store, Cp#snapshot.id, ThreadId, []);
                 {error, _} = Error ->
                     Error
             end;
@@ -385,22 +390,22 @@ get_lineage(#{context_store := Store}, Config) ->
             get_lineage_recursive(Store, CpId, ThreadId, [])
     end.
 
-%% @doc 获取检查点的子分支
+%% @doc 获取快照的子分支
 -spec get_branches(memory(), config()) ->
-    {ok, [checkpoint_tuple()]} | {error, term()}.
+    {ok, [snapshot_tuple()]} | {error, term()}.
 get_branches(#{context_store := Store}, Config) ->
-    ParentCpId = maps:get(checkpoint_id, Config, undefined),
+    ParentCpId = maps:get(snapshot_id, Config, undefined),
 
     case ParentCpId of
         undefined ->
-            {error, checkpoint_id_required};
+            {error, snapshot_id_required};
         _ ->
-            %% 搜索所有以 ParentCpId 为父节点的检查点
+            %% 搜索所有以 ParentCpId 为父节点的快照
             case beamai_store:search(Store, [?NS_CHECKPOINTS], #{}) of
                 {ok, Results} ->
                     Branches = lists:filtermap(fun(#search_result{item = Item}) ->
-                        case map_to_checkpoint_tuple(Item#store_item.value) of
-                            {ok, {Cp, _, _} = Tuple} when Cp#checkpoint.parent_id =:= ParentCpId ->
+                        case map_to_snapshot_tuple(Item#store_item.value) of
+                            {ok, {Cp, _, _} = Tuple} when Cp#snapshot.parent_id =:= ParentCpId ->
                                 {true, Tuple};
                             _ ->
                                 false
@@ -412,14 +417,14 @@ get_branches(#{context_store := Store}, Config) ->
             end
     end.
 
-%% @doc 比较两个检查点的差异
--spec diff_checkpoints(memory(), config(), config()) ->
+%% @doc 比较两个快照的差异
+-spec diff_snapshots(memory(), config(), config()) ->
     {ok, map()} | {error, term()}.
-diff_checkpoints(Memory, Config1, Config2) ->
-    case {load_checkpoint_tuple(Memory, Config1), load_checkpoint_tuple(Memory, Config2)} of
+diff_snapshots(Memory, Config1, Config2) ->
+    case {load_snapshot_tuple(Memory, Config1), load_snapshot_tuple(Memory, Config2)} of
         {{ok, {Cp1, _, _}}, {ok, {Cp2, _, _}}} ->
-            Values1 = Cp1#checkpoint.values,
-            Values2 = Cp2#checkpoint.values,
+            Values1 = Cp1#snapshot.values,
+            Values2 = Cp2#snapshot.values,
 
             Keys1 = maps:keys(Values1),
             Keys2 = maps:keys(Values2),
@@ -437,15 +442,15 @@ diff_checkpoints(Memory, Config1, Config2) ->
                     old => maps:get(K, Values1),
                     new => maps:get(K, Values2)
                 }} || K <- Changed],
-                checkpoint1 => #{
-                    id => Cp1#checkpoint.id,
-                    thread_id => Cp1#checkpoint.thread_id,
-                    timestamp => Cp1#checkpoint.timestamp
+                snapshot1 => #{
+                    id => Cp1#snapshot.id,
+                    thread_id => Cp1#snapshot.thread_id,
+                    timestamp => Cp1#snapshot.timestamp
                 },
-                checkpoint2 => #{
-                    id => Cp2#checkpoint.id,
-                    thread_id => Cp2#checkpoint.thread_id,
-                    timestamp => Cp2#checkpoint.timestamp
+                snapshot2 => #{
+                    id => Cp2#snapshot.id,
+                    thread_id => Cp2#snapshot.thread_id,
+                    timestamp => Cp2#snapshot.timestamp
                 }
             },
             {ok, DiffResult};
@@ -462,7 +467,7 @@ diff_checkpoints(Memory, Config1, Config2) ->
 %% @doc 获取消息历史
 -spec get_messages(memory(), config()) -> {ok, [map()]} | {error, not_found}.
 get_messages(Memory, Config) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             Messages = maps:get(messages, State, []),
             {ok, Messages};
@@ -473,14 +478,14 @@ get_messages(Memory, Config) ->
 %% @doc 添加消息
 -spec add_message(memory(), config(), map()) -> ok | {error, term()}.
 add_message(Memory, Config, Message) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             Messages = maps:get(messages, State, []),
             NewState = State#{messages => Messages ++ [Message]},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, not_found} ->
             NewState = #{messages => [Message]},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, _} = Error ->
             Error
     end.
@@ -489,7 +494,7 @@ add_message(Memory, Config, Message) ->
 -spec get_channel(memory(), config(), atom() | binary()) ->
     {ok, term()} | {error, not_found}.
 get_channel(Memory, Config, Channel) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             case maps:get(Channel, State, undefined) of
                 undefined -> {error, not_found};
@@ -503,13 +508,13 @@ get_channel(Memory, Config, Channel) ->
 -spec set_channel(memory(), config(), atom() | binary(), term()) ->
     ok | {error, term()}.
 set_channel(Memory, Config, Channel, Value) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             NewState = State#{Channel => Value},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, not_found} ->
             NewState = #{Channel => Value},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, _} = Error ->
             Error
     end.
@@ -575,39 +580,39 @@ list_namespaces(Memory, Prefix, Opts) ->
 archive_session(#{persistent_store := undefined}, _ThreadId) ->
     {error, persistent_store_not_configured};
 archive_session(#{context_store := ContextStore, persistent_store := PersistentStore}, ThreadId) ->
-    %% 获取线程的所有检查点
-    case list_thread_checkpoints(ContextStore, ThreadId, 1000) of
-        {ok, Checkpoints} when Checkpoints =/= [] ->
+    %% 获取线程的所有快照
+    case list_thread_snapshots(ContextStore, ThreadId, 1000) of
+        {ok, Snapshots} when Snapshots =/= [] ->
             %% 迁移到 persistent_store
             ArchiveNs = [<<"archives">>, <<"sessions">>, ThreadId],
             ArchiveValue = #{
                 thread_id => ThreadId,
-                checkpoints => [checkpoint_tuple_to_map(Tuple) || Tuple <- Checkpoints],
+                snapshots => [snapshot_tuple_to_map(Tuple) || Tuple <- Snapshots],
                 archived_at => erlang:system_time(millisecond)
             },
             beamai_store:put(PersistentStore, ArchiveNs, ThreadId, ArchiveValue);
         {ok, []} ->
-            {error, no_checkpoints_to_archive};
+            {error, no_snapshots_to_archive};
         {error, _} = Error ->
             Error
     end.
 
 %% @doc 加载归档的会话
 -spec load_archived_session(memory(), thread_id()) ->
-    {ok, [checkpoint_tuple()]} | {error, term()}.
+    {ok, [snapshot_tuple()]} | {error, term()}.
 load_archived_session(#{persistent_store := undefined}, _ThreadId) ->
     {error, persistent_store_not_configured};
 load_archived_session(#{persistent_store := PersistentStore}, ThreadId) ->
     ArchiveNs = [<<"archives">>, <<"sessions">>, ThreadId],
     case beamai_store:get(PersistentStore, ArchiveNs, ThreadId) of
-        {ok, #store_item{value = #{checkpoints := CheckpointMaps}}} ->
-            Checkpoints = lists:filtermap(fun(CpMap) ->
-                case map_to_checkpoint_tuple(CpMap) of
+        {ok, #store_item{value = #{snapshots := SnapshotMaps}}} ->
+            Snapshots = lists:filtermap(fun(CpMap) ->
+                case map_to_snapshot_tuple(CpMap) of
                     {ok, Tuple} -> {true, Tuple};
                     _ -> false
                 end
-            end, CheckpointMaps),
-            {ok, Checkpoints};
+            end, SnapshotMaps),
+            {ok, Snapshots};
         {error, _} = Error ->
             Error
     end.
@@ -631,19 +636,19 @@ list_archived_sessions(#{persistent_store := PersistentStore}, Opts) ->
 %% 工具函数
 %%====================================================================
 
-%% @doc 将检查点转换为图状态
--spec checkpoint_to_state(checkpoint()) -> map().
-checkpoint_to_state(#checkpoint{values = Values}) ->
+%% @doc 将快照转换为图状态
+-spec snapshot_to_state(snapshot()) -> map().
+snapshot_to_state(#snapshot{values = Values}) ->
     Values.
 
-%% @doc 将图状态转换为检查点
--spec state_to_checkpoint(config(), map()) -> checkpoint().
-state_to_checkpoint(Config, State) when is_map(State) ->
+%% @doc 将图状态转换为快照
+-spec state_to_snapshot(config(), map()) -> snapshot().
+state_to_snapshot(Config, State) when is_map(State) ->
     ThreadId = get_thread_id_from_config(Config),
-    ParentCpId = maps:get(checkpoint_id, Config, undefined),
+    ParentCpId = maps:get(snapshot_id, Config, undefined),
 
-    #checkpoint{
-        id = generate_checkpoint_id(),
+    #snapshot{
+        id = generate_snapshot_id(),
         thread_id = ThreadId,
         parent_id = ParentCpId,
         values = State,
@@ -663,18 +668,69 @@ get_persistent_store(#{persistent_store := Store}) ->
 %% @doc 获取 Memory 的 thread_id
 %%
 %% thread_id 在 Memory 创建时设置（或自动生成），之后不可更改。
-%% 使用此函数获取 Memory 实例的 thread_id 用于 checkpoint 操作。
+%% 使用此函数获取 Memory 实例的 thread_id 用于 snapshot 操作。
 -spec get_thread_id(memory()) -> binary().
 get_thread_id(#{thread_id := ThreadId}) ->
     ThreadId.
 
 %%====================================================================
+%% Agent 中断查询 API
+%%====================================================================
+
+%% @doc 查询是否有未完成的中断
+%%
+%% 加载最新 snapshot，检查其中是否包含 interrupt_state。
+%% 用于快速判断某个 thread 是否有待恢复的中断。
+%%
+%% @param Memory memory 实例
+%% @param Config 配置 map（需包含 thread_id）
+%% @returns boolean()
+-spec has_pending_interrupt(memory(), config()) -> boolean().
+has_pending_interrupt(Memory, Config) ->
+    case load_latest_snapshot(Memory, Config) of
+        {ok, Data} ->
+            case get_flex(interrupt_state, Data) of
+                undefined -> false;
+                null -> false;
+                _ -> true
+            end;
+        _ -> false
+    end.
+
+%% @doc 获取中断上下文（不加载完整状态）
+%%
+%% 从最新 snapshot 中提取中断的原因信息，
+%% 用于在恢复前展示给用户。
+%%
+%% @param Memory memory 实例
+%% @param Config 配置 map（需包含 thread_id）
+%% @returns {ok, map()} | {error, term()}
+-spec get_interrupt_context(memory(), config()) -> {ok, map()} | {error, term()}.
+get_interrupt_context(Memory, Config) ->
+    case load_latest_snapshot(Memory, Config) of
+        {ok, Data} ->
+            case get_flex(interrupt_state, Data) of
+                undefined -> {error, not_interrupted};
+                null -> {error, not_interrupted};
+                IntState when is_map(IntState) ->
+                    {ok, #{
+                        reason => get_flex(reason, IntState),
+                        interrupt_type => get_flex(interrupt_type, IntState),
+                        interrupted_tool_call => get_flex(interrupted_tool_call, IntState),
+                        created_at => get_flex(created_at, IntState)
+                    }}
+            end;
+        {error, not_found} -> {error, not_interrupted};
+        {error, _} = Err -> Err
+    end.
+
+%%====================================================================
 %% 内部函数 - 命名空间
 %%====================================================================
 
-%% @private 检查点命名空间
--spec checkpoint_namespace(thread_id()) -> namespace().
-checkpoint_namespace(ThreadId) ->
+%% @private 快照命名空间
+-spec snapshot_namespace(thread_id()) -> namespace().
+snapshot_namespace(ThreadId) ->
     [?NS_CHECKPOINTS, ThreadId].
 
 %% @private 索引命名空间
@@ -683,56 +739,56 @@ index_namespace(ThreadId) ->
     [?NS_CHECKPOINTS, ?NS_INDEX, ThreadId].
 
 %%====================================================================
-%% 内部函数 - 检查点操作
+%% 内部函数 - 快照操作
 %%====================================================================
 
-%% @private 获取指定检查点
--spec get_checkpoint_by_id(beamai_store:store(), thread_id(), checkpoint_id()) ->
-    {ok, checkpoint_tuple()} | {error, not_found}.
-get_checkpoint_by_id(Store, ThreadId, CheckpointId) ->
-    CpNs = checkpoint_namespace(ThreadId),
+%% @private 获取指定快照
+-spec get_snapshot_by_id(beamai_store:store(), thread_id(), snapshot_id()) ->
+    {ok, snapshot_tuple()} | {error, not_found}.
+get_snapshot_by_id(Store, ThreadId, CheckpointId) ->
+    CpNs = snapshot_namespace(ThreadId),
     case beamai_store:get(Store, CpNs, CheckpointId) of
         {ok, #store_item{value = Value}} ->
-            map_to_checkpoint_tuple(Value);
+            map_to_snapshot_tuple(Value);
         {error, not_found} ->
             %% 尝试在所有线程中查找
-            find_checkpoint_in_all_threads(Store, CheckpointId);
+            find_snapshot_in_all_threads(Store, CheckpointId);
         {error, _} = Error ->
             Error
     end.
 
-%% @private 获取最新检查点
--spec get_latest_checkpoint(beamai_store:store(), thread_id()) ->
-    {ok, checkpoint_tuple()} | {error, not_found}.
-get_latest_checkpoint(Store, ThreadId) ->
+%% @private 获取最新快照
+-spec get_latest_snapshot(beamai_store:store(), thread_id()) ->
+    {ok, snapshot_tuple()} | {error, not_found}.
+get_latest_snapshot(Store, ThreadId) ->
     IdxNs = index_namespace(ThreadId),
     case beamai_store:get(Store, IdxNs, ?KEY_LATEST) of
         {ok, #store_item{value = Value}} ->
-            case get_flex(checkpoint_id, Value) of
+            case get_flex(snapshot_id, Value) of
                 undefined -> {error, not_found};
-                LatestCpId -> get_checkpoint_by_id(Store, ThreadId, LatestCpId)
+                LatestCpId -> get_snapshot_by_id(Store, ThreadId, LatestCpId)
             end;
         {error, not_found} ->
             {error, not_found}
     end.
 
 %% @private 更新线程索引
--spec update_thread_index(beamai_store:store(), thread_id(), checkpoint()) ->
+-spec update_thread_index(beamai_store:store(), thread_id(), snapshot()) ->
     ok | {error, term()}.
 update_thread_index(Store, ThreadId, Checkpoint) ->
     IdxNs = index_namespace(ThreadId),
 
     %% 更新 latest 指针
     LatestValue = #{
-        checkpoint_id => Checkpoint#checkpoint.id,
-        timestamp => Checkpoint#checkpoint.timestamp
+        snapshot_id => Checkpoint#snapshot.id,
+        timestamp => Checkpoint#snapshot.timestamp
     },
     case beamai_store:put(Store, IdxNs, ?KEY_LATEST, LatestValue) of
         ok ->
             %% 更新索引列表
             NewEntry = #{
-                checkpoint_id => Checkpoint#checkpoint.id,
-                timestamp => Checkpoint#checkpoint.timestamp
+                snapshot_id => Checkpoint#snapshot.id,
+                timestamp => Checkpoint#snapshot.timestamp
             },
             case beamai_store:get(Store, IdxNs, ?KEY_INDEX) of
                 {ok, #store_item{value = Value}} ->
@@ -746,54 +802,54 @@ update_thread_index(Store, ThreadId, Checkpoint) ->
             Error
     end.
 
-%% @private 列出所有检查点
--spec list_all_checkpoints(beamai_store:store(), pos_integer()) ->
-    {ok, [checkpoint_tuple()]} | {error, term()}.
-list_all_checkpoints(Store, Limit) ->
+%% @private 列出所有快照
+-spec list_all_snapshots(beamai_store:store(), pos_integer()) ->
+    {ok, [snapshot_tuple()]} | {error, term()}.
+list_all_snapshots(Store, Limit) ->
     case beamai_store:search(Store, [?NS_CHECKPOINTS], #{limit => Limit}) of
         {ok, Results} ->
-            Checkpoints = lists:filtermap(fun(#search_result{item = Item}) ->
+            Snapshots = lists:filtermap(fun(#search_result{item = Item}) ->
                 %% 排除索引项
                 case Item#store_item.namespace of
                     [?NS_CHECKPOINTS, ?NS_INDEX | _] -> false;
                     _ ->
-                        case map_to_checkpoint_tuple(Item#store_item.value) of
+                        case map_to_snapshot_tuple(Item#store_item.value) of
                             {ok, Tuple} -> {true, Tuple};
                             _ -> false
                         end
                 end
             end, Results),
-            {ok, Checkpoints};
+            {ok, Snapshots};
         {error, _} = Error ->
             Error
     end.
 
-%% @private 列出线程检查点
--spec list_thread_checkpoints(beamai_store:store(), thread_id(), pos_integer()) ->
-    {ok, [checkpoint_tuple()]} | {error, term()}.
-list_thread_checkpoints(Store, ThreadId, Limit) ->
-    CpNs = checkpoint_namespace(ThreadId),
+%% @private 列出线程快照
+-spec list_thread_snapshots(beamai_store:store(), thread_id(), pos_integer()) ->
+    {ok, [snapshot_tuple()]} | {error, term()}.
+list_thread_snapshots(Store, ThreadId, Limit) ->
+    CpNs = snapshot_namespace(ThreadId),
     case beamai_store:search(Store, CpNs, #{limit => Limit}) of
         {ok, Results} ->
-            Checkpoints = lists:filtermap(fun(#search_result{item = Item}) ->
-                case map_to_checkpoint_tuple(Item#store_item.value) of
+            Snapshots = lists:filtermap(fun(#search_result{item = Item}) ->
+                case map_to_snapshot_tuple(Item#store_item.value) of
                     {ok, Tuple} -> {true, Tuple};
                     _ -> false
                 end
             end, Results),
             %% 按时间戳降序排序
             Sorted = lists:sort(fun({Cp1, _, _}, {Cp2, _, _}) ->
-                Cp1#checkpoint.timestamp > Cp2#checkpoint.timestamp
-            end, Checkpoints),
+                Cp1#snapshot.timestamp > Cp2#snapshot.timestamp
+            end, Snapshots),
             {ok, Sorted};
         {error, _} = Error ->
             Error
     end.
 
-%% @private 在所有线程中查找检查点
--spec find_checkpoint_in_all_threads(beamai_store:store(), checkpoint_id()) ->
-    {ok, checkpoint_tuple()} | {error, not_found}.
-find_checkpoint_in_all_threads(Store, CheckpointId) ->
+%% @private 在所有线程中查找快照
+-spec find_snapshot_in_all_threads(beamai_store:store(), snapshot_id()) ->
+    {ok, snapshot_tuple()} | {error, not_found}.
+find_snapshot_in_all_threads(Store, CheckpointId) ->
     case beamai_store:search(Store, [?NS_CHECKPOINTS], #{}) of
         {ok, Results} ->
             find_in_results(Results, CheckpointId);
@@ -802,26 +858,26 @@ find_checkpoint_in_all_threads(Store, CheckpointId) ->
     end.
 
 %% @private 在搜索结果中查找
--spec find_in_results([beamai_store:search_result()], checkpoint_id()) ->
-    {ok, checkpoint_tuple()} | {error, not_found}.
+-spec find_in_results([beamai_store:search_result()], snapshot_id()) ->
+    {ok, snapshot_tuple()} | {error, not_found}.
 find_in_results([], _CheckpointId) ->
     {error, not_found};
 find_in_results([#search_result{item = Item} | Rest], CheckpointId) ->
     case Item#store_item.key of
         CheckpointId ->
-            map_to_checkpoint_tuple(Item#store_item.value);
+            map_to_snapshot_tuple(Item#store_item.value);
         _ ->
             find_in_results(Rest, CheckpointId)
     end.
 
 %% @private 递归获取祖先链
--spec get_lineage_recursive(beamai_store:store(), checkpoint_id(), thread_id(), [checkpoint_tuple()]) ->
-    {ok, [checkpoint_tuple()]} | {error, term()}.
+-spec get_lineage_recursive(beamai_store:store(), snapshot_id(), thread_id(), [snapshot_tuple()]) ->
+    {ok, [snapshot_tuple()]} | {error, term()}.
 get_lineage_recursive(Store, CheckpointId, ThreadId, Acc) ->
-    case get_checkpoint_by_id(Store, ThreadId, CheckpointId) of
+    case get_snapshot_by_id(Store, ThreadId, CheckpointId) of
         {ok, {Checkpoint, _, _} = Tuple} ->
             NewAcc = [Tuple | Acc],
-            case Checkpoint#checkpoint.parent_id of
+            case Checkpoint#snapshot.parent_id of
                 undefined ->
                     {ok, lists:reverse(NewAcc)};
                 ParentId ->
@@ -837,76 +893,76 @@ get_lineage_recursive(Store, CheckpointId, ThreadId, Acc) ->
 %% 内部函数 - 序列化/反序列化
 %%====================================================================
 
-%% @private 检查点转 Map
--spec checkpoint_to_map(checkpoint(), checkpoint_metadata(), config() | undefined) -> map().
-checkpoint_to_map(Checkpoint, Metadata, ParentConfig) ->
+%% @private 快照转 Map
+-spec snapshot_to_map(snapshot(), snapshot_metadata(), config() | undefined) -> map().
+snapshot_to_map(Checkpoint, Metadata, ParentConfig) ->
     #{
-        checkpoint => #{
-            id => Checkpoint#checkpoint.id,
-            thread_id => Checkpoint#checkpoint.thread_id,
-            parent_id => Checkpoint#checkpoint.parent_id,
-            values => Checkpoint#checkpoint.values,
-            timestamp => Checkpoint#checkpoint.timestamp
+        snapshot => #{
+            id => Checkpoint#snapshot.id,
+            thread_id => Checkpoint#snapshot.thread_id,
+            parent_id => Checkpoint#snapshot.parent_id,
+            values => Checkpoint#snapshot.values,
+            timestamp => Checkpoint#snapshot.timestamp
         },
         metadata => #{
-            %% 执行阶段信息
-            checkpoint_type => Metadata#checkpoint_metadata.checkpoint_type,
-            step => Metadata#checkpoint_metadata.step,
-            %% 图顶点状态
-            active_vertices => Metadata#checkpoint_metadata.active_vertices,
-            completed_vertices => Metadata#checkpoint_metadata.completed_vertices,
+            %% 快照类型与流程信息
+            snapshot_type => Metadata#snapshot_metadata.snapshot_type,
+            process_name => Metadata#snapshot_metadata.process_name,
+            process_state => Metadata#snapshot_metadata.process_state,
+            %% 步骤执行信息
+            step_id => Metadata#snapshot_metadata.step_id,
+            step_activations => Metadata#snapshot_metadata.step_activations,
             %% 执行标识
-            run_id => Metadata#checkpoint_metadata.run_id,
-            agent_id => Metadata#checkpoint_metadata.agent_id,
-            agent_name => Metadata#checkpoint_metadata.agent_name,
-            iteration => Metadata#checkpoint_metadata.iteration,
+            run_id => Metadata#snapshot_metadata.run_id,
+            agent_id => Metadata#snapshot_metadata.agent_id,
+            agent_name => Metadata#snapshot_metadata.agent_name,
             %% 用户自定义元数据
-            metadata => Metadata#checkpoint_metadata.metadata
+            metadata => Metadata#snapshot_metadata.metadata
         },
         parent_config => ParentConfig
     }.
 
-%% @private checkpoint_tuple 转 Map（用于归档）
--spec checkpoint_tuple_to_map(checkpoint_tuple()) -> map().
-checkpoint_tuple_to_map({Checkpoint, Metadata, ParentConfig}) ->
-    checkpoint_to_map(Checkpoint, Metadata, ParentConfig).
+%% @private snapshot_tuple 转 Map（用于归档）
+-spec snapshot_tuple_to_map(snapshot_tuple()) -> map().
+snapshot_tuple_to_map({Checkpoint, Metadata, ParentConfig}) ->
+    snapshot_to_map(Checkpoint, Metadata, ParentConfig).
 
-%% @private Map 转检查点元组
+%% @private Map 转快照元组
 %% 支持 atom 和 binary 键（JSON 序列化后键变成 binary）
--spec map_to_checkpoint_tuple(map()) -> {ok, checkpoint_tuple()} | {error, invalid_format}.
-map_to_checkpoint_tuple(Map) when is_map(Map) ->
-    CpMap = get_flex(checkpoint, Map),
+-spec map_to_snapshot_tuple(map()) -> {ok, snapshot_tuple()} | {error, invalid_format}.
+map_to_snapshot_tuple(Map) when is_map(Map) ->
+    CpMap = get_flex(snapshot, Map),
     MetaMap = get_flex(metadata, Map),
     ParentConfig = get_flex(parent_config, Map),
     case {CpMap, MetaMap} of
         {undefined, _} -> {error, invalid_format};
         {_, undefined} -> {error, invalid_format};
         _ ->
-            Checkpoint = #checkpoint{
+            Checkpoint = #snapshot{
                 id = get_flex(id, CpMap),
                 thread_id = get_flex(thread_id, CpMap),
                 parent_id = get_flex(parent_id, CpMap, undefined),
                 values = get_flex(values, CpMap, #{}),
                 timestamp = get_flex(timestamp, CpMap, 0)
             },
-            Metadata = #checkpoint_metadata{
-                %% 执行阶段信息
-                checkpoint_type = get_flex(checkpoint_type, MetaMap, undefined),
-                step = get_flex(step, MetaMap, 0),
-                %% 图顶点状态
-                active_vertices = get_flex(active_vertices, MetaMap, []),
-                completed_vertices = get_flex(completed_vertices, MetaMap, []),
+            Metadata = #snapshot_metadata{
+                %% 快照类型与流程信息
+                snapshot_type = get_flex(snapshot_type, MetaMap, undefined),
+                process_name = get_flex(process_name, MetaMap, undefined),
+                process_state = get_flex(process_state, MetaMap, undefined),
+                %% 步骤执行信息
+                step_id = get_flex(step_id, MetaMap, undefined),
+                step_activations = get_flex(step_activations, MetaMap, #{}),
                 %% 执行标识
                 run_id = get_flex(run_id, MetaMap, undefined),
                 agent_id = get_flex(agent_id, MetaMap, undefined),
                 agent_name = get_flex(agent_name, MetaMap, undefined),
-                iteration = get_flex(iteration, MetaMap, 0),
                 %% 用户自定义元数据
                 metadata = get_flex(metadata, MetaMap, #{})
             },
             {ok, {Checkpoint, Metadata, ParentConfig}}
     end;
-map_to_checkpoint_tuple(_) ->
+map_to_snapshot_tuple(_) ->
     {error, invalid_format}.
 
 %%====================================================================
@@ -925,9 +981,9 @@ get_long_term_store(#{persistent_store := PersistentStore}) ->
 get_thread_id_from_config(Config) when is_map(Config) ->
     maps:get(thread_id, Config, maps:get(<<"thread_id">>, Config, undefined)).
 
-%% @private 生成检查点 ID
--spec generate_checkpoint_id() -> checkpoint_id().
-generate_checkpoint_id() ->
+%% @private 生成快照 ID
+-spec generate_snapshot_id() -> snapshot_id().
+generate_snapshot_id() ->
     Ts = erlang:system_time(microsecond),
     Rand = rand:uniform(16#FFFF),
     list_to_binary(io_lib:format("cp_~16.16.0b_~4.16.0b", [Ts, Rand])).
@@ -968,9 +1024,9 @@ get_flex(Key, Map, Default) when is_atom(Key), is_map(Map) ->
 %% 内部函数 - 元数据处理
 %%====================================================================
 
-%% @private 确定检查点类型
+%% @private 确定快照类型
 %%
-%% checkpoint_type 从 MetadataMap 获取（State 现在只包含 global_state）
--spec determine_checkpoint_type(map(), map()) -> atom() | undefined.
-determine_checkpoint_type(_State, MetadataMap) ->
-    maps:get(checkpoint_type, MetadataMap, undefined).
+%% snapshot_type 从 MetadataMap 获取（State 现在只包含 global_state）
+-spec determine_snapshot_type(map(), map()) -> atom() | undefined.
+determine_snapshot_type(_State, MetadataMap) ->
+    maps:get(snapshot_type, MetadataMap, undefined).

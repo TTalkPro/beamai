@@ -51,7 +51,7 @@ get_task_id_test() ->
 
     {ok, TaskId} = beamai_a2a_task:get_id(Pid),
     ?assert(is_binary(TaskId)),
-    ?assertMatch(<<"task-", _/binary>>, TaskId),
+    ?assertMatch(<<"task_", _/binary>>, TaskId),
 
     beamai_a2a_task:stop(Pid).
 

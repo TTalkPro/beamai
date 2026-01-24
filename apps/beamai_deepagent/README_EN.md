@@ -1,102 +1,132 @@
-# Agent Deep
+# BeamAI Deep Agent
 
 English | [中文](README.md)
 
-Deep Agent implementation supporting complex task planning, parallel execution, and reflection mechanisms.
+Deep Agent implementation based on SubAgent architecture, supporting complex task planning, parallel execution, and reflection mechanisms.
 
 ## Features
 
+- SubAgent orchestration architecture (Planner → Executor → Reflector)
 - Task planning and decomposition
-- Parallel execution
+- Parallel subtask execution
 - Dependency management
 - Reflection and self-correction
-- Tool integration (file system, TODO management, etc.)
-- Checkpoint and recovery
+- Coordinator multi-Agent orchestration
+- Plugin tool integration
+
+## Architecture
+
+```
+beamai_deepagent
+├── beamai_deepagent          # Main API (new/1, run/2, run/3)
+├── beamai_deepagent_planner  # Planner SubAgent
+├── beamai_deepagent_executor # Executor SubAgent
+├── beamai_deepagent_reflector # Reflector SubAgent
+├── beamai_deepagent_parallel # Parallel execution management
+├── beamai_deepagent_coordinator # Multi-Agent coordination
+├── beamai_deepagent_plan_plugin # Planning tool plugin
+├── beamai_deepagent_utils    # Utility functions
+└── core/
+    ├── beamai_deepagent_plan          # Plan data structures
+    ├── beamai_deepagent_dependencies  # Dependency management
+    └── beamai_deepagent_trace         # Execution tracing
+```
 
 ## Module Overview
 
-### Core Modules
+### Core API
 
-- **beamai_deepagent** - Main module
-- **beamai_deepagent_plan** - Task planning
-- **beamai_deepagent_router** - Routing decisions
-- **beamai_deepagent_dependencies** - Dependency management
-- **beamai_deepbeamai_result_analyzer** - Result analysis
+- **beamai_deepagent** - Main module, provides `new/1`, `run/2`, `run/3`, `get_plan/1`, `get_trace/1`
 
-### Execution Modules
+### SubAgent Modules
 
-- **beamai_deepagent_nodes** - Node definitions
-- **beamai_deepbeamai_llm_node** - LLM node
-- **beamai_deepagent_tool_executor** - Tool executor
-- **beamai_deepagent_trace** - Execution tracing
+- **beamai_deepagent_planner** - Planner: analyzes tasks, generates execution plans
+- **beamai_deepagent_executor** - Executor: executes individual steps in the plan
+- **beamai_deepagent_reflector** - Reflector: evaluates execution results, provides improvement suggestions
+- **beamai_deepagent_parallel** - Parallel manager: manages parallel execution of multiple subtasks
+- **beamai_deepagent_coordinator** - Coordinator: task distribution and coordination between Agents
 
 ### Tool Modules
 
-- **beamai_deepagent_tool_provider** - Tool provider (implements beamai_tool_provider behavior)
-- **beamai_deepagent_fs_tools** - File system tools
-- **beamai_deepagent_fs_handlers** - File handlers
-- **beamai_deepagent_fs_backend** - File backend
-- **beamai_deepagent_todo_tools** - TODO management tools
-- **beamai_deepagent_todo_handlers** - TODO handlers
-- **beamai_deepagent_human_tools** - Human-in-the-loop tools
-- **beamai_deepagent_base_tools** - Base tools (checkpoint, get_trace)
-- **beamai_deepagent_plan_tools** - Planning and subtask tools
+- **beamai_deepagent_plan_plugin** - Planning tool plugin (implements beamai_plugin_behaviour)
+
+### Core Data Structures
+
+- **beamai_deepagent_plan** - Plan data structures and operations
+- **beamai_deepagent_dependencies** - Task dependency graph management
+- **beamai_deepagent_trace** - Execution trace recording
 
 ### Utility Modules
 
-- **beamai_deepbeamai_messages** - Message handling
-- **beamai_deepbeamai_utils** - Utility functions
+- **beamai_deepagent_utils** - General utility functions
 
 ## API Documentation
 
 ### beamai_deepagent
 
 ```erlang
-%% Start Deep Agent
-beamai_deepagent:start_link(Config) -> {ok, Pid} | {error, Reason}.
+%% Create configuration (returns config map directly, NOT {ok, Config})
+-spec new(map()) -> config().
+beamai_deepagent:new(Opts) -> Config.
+
+%% Also create empty configuration
+beamai_deepagent:new() -> Config.
 
 %% Execute task
-beamai_deepagent:run(Pid, Task) -> {ok, Result} | {error, Reason}.
-beamai_deepagent:run(Pid, Task, Options) -> {ok, Result} | {error, Reason}.
+beamai_deepagent:run(Config, Task) -> {ok, Result} | {error, Reason}.
+beamai_deepagent:run(Config, Task, Opts) -> {ok, Result} | {error, Reason}.
 
-%% Stream execution
-beamai_deepagent:run_stream(Pid, Task, Callback) -> {ok, Result} | {error, Reason}.
-
-%% Stop
-beamai_deepagent:stop(Pid) -> ok.
+%% Get plan and trace
+beamai_deepagent:get_plan(Result) -> Plan.
+beamai_deepagent:get_trace(Result) -> Trace.
 ```
 
-### Configuration Structure
+### Configuration Options
 
 ```erlang
-%% First create LLM configuration (must use llm_client:create/2)
-LLM = llm_client:create(openai, #{
-    model => <<"gpt-4">>,
-    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
-}),
-
-%% DeepAgent configuration
 Config = beamai_deepagent:new(#{
-    %% LLM configuration (must be created using llm_client:create/2)
+    %% LLM configuration (required, created with beamai_chat_completion:create/2)
     llm => LLM,
 
-    %% Tool configuration (optional)
-    tools => [
-        beamai_deepagent_fs_tools,      %% File system tools
-        beamai_deepagent_todo_tools     %% TODO management tools
-    ],
+    %% Plugin list (optional, modules implementing beamai_plugin_behaviour)
+    plugins => [beamai_plugin_file, beamai_plugin_shell],
 
-    %% Working directory (optional)
-    workspace => <<"/tmp/agent_workspace">>,
+    %% Custom tools (optional, list of tool maps)
+    custom_tools => [#{name => ..., handler => ...}],
 
-    %% Maximum depth (optional)
+    %% Maximum recursion depth (default 3)
     max_depth => 3,
 
-    %% Maximum iterations (optional)
-    max_iterations => 10,
+    %% Maximum parallelism (default 5)
+    max_parallel => 5,
 
-    %% Enable reflection (optional)
-    enable_reflection => true
+    %% Enable planning (default true)
+    planning_enabled => true,
+
+    %% Enable reflection (default true)
+    reflection_enabled => true,
+
+    %% Maximum tool iterations per sub-agent (default 10)
+    max_tool_iterations => 10,
+
+    %% Timeout per step in milliseconds (default 300000)
+    timeout => 300000,
+
+    %% System prompt
+    system_prompt => <<"You are an expert">>,
+
+    %% SubAgent-specific prompts
+    planner_prompt => <<"...">>,
+    executor_prompt => <<"...">>,
+    reflector_prompt => <<"...">>,
+
+    %% Event callbacks
+    callbacks => #{
+        on_plan_created => fun(Plan) -> ... end,
+        on_step_start => fun(Step) -> ... end,
+        on_step_end => fun(Step, Result) -> ... end,
+        on_reflection => fun(Reflection) -> ... end
+    }
 }).
 ```
 
@@ -106,7 +136,7 @@ Config = beamai_deepagent:new(#{
 
 ```erlang
 %% Create LLM configuration
-LLM = llm_client:create(openai, #{
+LLM = beamai_chat_completion:create(openai, #{
     model => <<"gpt-4">>,
     api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
 }),
@@ -115,67 +145,53 @@ LLM = llm_client:create(openai, #{
 Config = beamai_deepagent:new(#{llm => LLM}),
 
 %% Execute complex task
-Task = <<"Analyze the Erlang code in the current directory, find all exported functions, and generate documentation.">>,
-{ok, Result} = beamai_deepagent:run(Config, Task).
+{ok, Result} = beamai_deepagent:run(Config,
+    <<"Analyze the Erlang code in the current directory, find all exported functions, and generate documentation.">>),
+
+%% View plan
+Plan = beamai_deepagent:get_plan(Result),
+Trace = beamai_deepagent:get_trace(Result).
 ```
 
-### Using File System Tools
+### Using Plugin Tools
 
 ```erlang
-%% Create LLM configuration
-LLM = llm_client:create(openai, #{
-    model => <<"gpt-4">>,
-    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
-}),
-
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    tools => [beamai_deepagent_fs_tools],
-    workspace => <<"/tmp/my_workspace">>
+    plugins => [beamai_plugin_file, beamai_plugin_shell],
+    max_depth => 2
 }),
 
-%% Agent can read and write files
-Task = <<"Create a file named hello.txt with the content 'Hello, World!'">>,
-{ok, Result} = beamai_deepagent:run(Config, Task).
+{ok, Result} = beamai_deepagent:run(Config,
+    <<"Read all .erl files in src/ directory and count lines of code">>).
 ```
 
-### Using TODO Management
+### Execution with Callbacks
 
 ```erlang
 Config = beamai_deepagent:new(#{
-    llm => LLM,  %% Reuse previously created LLM configuration
-    tools => [beamai_deepagent_todo_tools]
+    llm => LLM,
+    plugins => [beamai_plugin_file],
+    callbacks => #{
+        on_plan_created => fun(Plan) ->
+            io:format("Plan created: ~p~n", [Plan])
+        end,
+        on_step_start => fun(Step) ->
+            io:format("Starting step: ~p~n", [Step])
+        end,
+        on_reflection => fun(Reflection) ->
+            io:format("Reflection: ~ts~n", [Reflection])
+        end
+    }
 }),
 
-%% Agent can manage task lists
-Task = <<"Create a project plan with the following tasks: 1. Design architecture 2. Implement core functionality 3. Write tests">>,
-{ok, Result} = beamai_deepagent:run(Config, Task).
-```
-
-### Stream Execution
-
-```erlang
-Callback = fun
-    ({step, Step}) ->
-        io:format("Executing step: ~p~n", [Step]);
-    ({tool_call, Tool, Args}) ->
-        io:format("Calling tool: ~s~n", [Tool]);
-    ({tool_result, Tool, Result}) ->
-        io:format("Tool result: ~p~n", [Result]);
-    ({thinking, Thought}) ->
-        io:format("Thinking: ~s~n", [Thought]);
-    ({done, Result}) ->
-        io:format("Done: ~p~n", [Result])
-end,
-
-beamai_deepagent:run_stream(Agent, Task, Callback).
+{ok, Result} = beamai_deepagent:run(Config, <<"Analyze project architecture">>).
 ```
 
 ### Using Zhipu AI
 
 ```erlang
-%% Create Zhipu AI configuration (using Anthropic-compatible interface)
-LLM = llm_client:create(anthropic, #{
+LLM = beamai_chat_completion:create(anthropic, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     base_url => <<"https://open.bigmodel.cn/api/anthropic">>
@@ -183,106 +199,38 @@ LLM = llm_client:create(anthropic, #{
 
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    tools => [beamai_deepagent_fs_tools]
+    plugins => [beamai_plugin_file]
 }),
 
 {ok, Result} = beamai_deepagent:run(Config, <<"Analyze project structure and generate report">>).
 ```
 
-## Tool Management
+## Execution Flow
 
-DeepAgent uses the `beamai_tool_provider` mechanism to manage tools, providing tools through the `beamai_deepagent_tool_provider` module.
-
-### Using Tool Provider
-
-```erlang
-%% Get tools through beamai_tool_registry
-Config = #{depth => 0, planning_mode => full},
-Tools = beamai_tool_registry:from_config(#{
-    providers => [{beamai_deepagent_tool_provider, Config}]
-}).
-
-%% Direct access to tool collections
-BaseTools = beamai_deepagent_tool_provider:base_tools().
-PlanTools = beamai_deepagent_tool_provider:plan_tools().
-FsTools = beamai_deepagent_tool_provider:filesystem_tools().
 ```
-
-### Tool Condition Checking
-
-Tool availability is dynamically determined based on configuration:
-
-| Tool Set | Condition |
-|----------|-----------|
-| Base tools | Always available |
-| Planning tools | `planning_mode=full` and `depth=0` |
-| TodoList tools | `planning_mode=simple` |
-| Subtask tools | `depth < max_depth` |
-| Reflection tools | `reflection_enabled=true` |
-| File system tools | `filesystem_enabled=true` or has `filesystem` config |
-| Human tools | `human_in_loop.enabled=true` (enabled by default) |
-
-### Combining with Other Providers
-
-```erlang
-%% Combine DeepAgent tools with MCP tools
-Tools = beamai_tool_registry:from_config(#{
-    providers => [
-        {beamai_deepagent_tool_provider, Config},
-        {beamai_tool_provider_mcp, #{server => my_mcp_server}}
-    ]
-}).
+1. Receive task
+   ↓
+2. Planner analyzes task, generates execution plan
+   ↓
+3. Sort steps by dependencies
+   ↓
+4. For each step:
+   a. Executor executes step (using Plugin tools)
+   b. Supports parallel execution of independent steps
+   ↓
+5. Reflector evaluates execution results
+   ↓
+6. If improvements needed, update plan and re-execute
+   ↓
+7. Return final result
 ```
-
-## Tool List
-
-### File System Tools (beamai_deepagent_fs_tools)
-
-| Tool Name | Description |
-|-----------|-------------|
-| `read_file` | Read file content |
-| `write_file` | Write to file |
-| `list_directory` | List directory contents |
-| `create_directory` | Create directory |
-| `delete_file` | Delete file |
-| `file_exists` | Check if file exists |
-
-### TODO Management Tools (beamai_deepagent_todo_tools)
-
-| Tool Name | Description |
-|-----------|-------------|
-| `write_todos` | Write todo list |
-| `read_todos` | Read todo list |
-
-### Base Tools (beamai_deepagent_base_tools)
-
-| Tool Name | Description |
-|-----------|-------------|
-| `checkpoint` | Create execution checkpoint |
-| `get_trace` | Get execution trace |
-
-### Planning Tools (beamai_deepagent_plan_tools)
-
-| Tool Name | Description |
-|-----------|-------------|
-| `create_plan` | Create task plan |
-| `update_plan` | Update task plan |
-| `spawn_subtask` | Create subtask |
-| `reflect` | Reflect on current progress |
-
-### Human Interaction Tools (beamai_deepagent_human_tools)
-
-| Tool Name | Description |
-|-----------|-------------|
-| `ask_human` | Ask user a question |
-| `confirm_action` | Request user confirmation |
 
 ## Dependencies
 
-- beamai_core
-- beamai_llm
-- beamai_memory
-- beamai_tools
+- beamai_core (Kernel, Process Framework)
+- beamai_llm (LLM calls)
+- beamai_plugin (Plugin system)
+- beamai_memory (State persistence)
 
 ## License
 

@@ -15,23 +15,42 @@
 
 beamai_mcp_transport_test_() ->
     [
-     {"传输创建测试", fun transport_create_test/0},
      {"传输配置错误测试", fun transport_config_error_test/0},
-     {"HTTP 传输状态测试", fun http_transport_state_test/0}
+     {"传输类型路由测试", fun transport_routing_test/0}
     ].
 
+%% 需要 gun 应用运行的测试
+gun_transport_test_() ->
+    {setup,
+     fun() ->
+         case application:ensure_all_started(gun) of
+             {ok, _} -> gun_started;
+             {error, _} -> gun_unavailable
+         end
+     end,
+     fun(gun_started) -> application:stop(gun);
+        (_) -> ok
+     end,
+     fun(gun_started) ->
+         [{"HTTP 传输连接错误测试", fun() ->
+             %% 连接到不存在的服务器应返回错误
+             Config = #{
+                 transport => http,
+                 url => <<"http://localhost:19999/mcp">>,
+                 timeout => 1000
+             },
+             Result = beamai_mcp_transport:create(Config),
+             ?assertMatch({error, _}, Result)
+         end}];
+        (gun_unavailable) ->
+         []
+     end}.
+
 %%====================================================================
-%% 传输创建测试
+%% 传输路由测试（不需要实际连接）
 %%====================================================================
 
-transport_create_test() ->
-    %% 测试 HTTP 传输创建
-    HttpConfig = #{
-        transport => http,
-        url => <<"http://localhost:8080/mcp">>
-    },
-    {ok, {beamai_mcp_transport_http, _State}} = beamai_mcp_transport:create(HttpConfig),
-
+transport_routing_test() ->
     %% 测试不支持的传输类型
     {error, {unsupported_transport, unknown}} = beamai_mcp_transport:create(#{transport => unknown}),
 
@@ -53,29 +72,6 @@ transport_config_error_test() ->
     ok.
 
 %%====================================================================
-%% HTTP 传输状态测试
-%%====================================================================
-
-http_transport_state_test() ->
-    %% 创建 HTTP 传输
-    Config = #{
-        transport => http,
-        url => <<"http://localhost:8080/mcp">>,
-        timeout => 5000,
-        session_id => <<"test-session-123">>
-    },
-
-    {ok, {Mod, State}} = beamai_mcp_transport:create(Config),
-
-    %% 验证初始状态
-    ?assertEqual(beamai_mcp_transport_http, Mod),
-    ?assertEqual(true, Mod:is_connected(State)),
-
-    %% 关闭连接
-    ok = Mod:close(State),
-
-    ok.
-
 %%====================================================================
 %% Stdio 传输测试（需要实际可执行文件）
 %%====================================================================

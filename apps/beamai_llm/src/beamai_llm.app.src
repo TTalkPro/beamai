@@ -16,7 +16,7 @@
     ]},
     {modules, [
         %% Client
-        llm_client,
+        beamai_chat_completion,
         llm_http_client,
         llm_helper,
         %% Behaviour

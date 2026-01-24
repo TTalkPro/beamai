@@ -1,69 +1,56 @@
 {application, beamai_core, [
-    {description, "Agent Framework Core - Behaviours and Pure Functions"},
+    {description, "BeamAI Core - Kernel 框架"},
     {vsn, "0.1.0"},
-    {registered, [beamai_core_sup, beamai_http_pool, beamai_dispatch_pool]},
+    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup]},
     {mod, {beamai_core_app, []}},
-    {applications, [
-        kernel,
-        stdlib,
-        jsx,
-        uuid,
-        hackney
-    ]},
-    %% Gun 作为可选依赖，用于 HTTP/2 支持
-    {optional_applications, [gun, poolboy]},
+    {applications, [kernel, stdlib, jsx, uuid, hackney, poolboy]},
+    {optional_applications, [gun, beamai_llm, beamai_memory]},
     {env, [
-        %% HTTP 后端配置（可选：beamai_http_hackney | beamai_http_gun）
-        %% {http_backend, beamai_http_hackney}
+        {process_pool_size, 10},
+        {process_pool_max_overflow, 20}
     ]},
     {modules, [
-        %% Application
+        %% OTP 应用
         beamai_core_app,
         beamai_core_sup,
-        %% Behaviours
-        beamai_behaviour,
-        beamai_llm_behaviour,
-        beamai_buffer_behaviour,
-        beamai_http_behaviour,
-        %% Data Types
-        beamai_message,
+        %% Facade 入口
+        beamai,
+        %% Kernel 核心
+        beamai_kernel,
+        beamai_function,
+        beamai_plugin,
+        beamai_context,
+        beamai_filter,
         beamai_result,
-        beamai_tool,
-        beamai_types,
-        %% Protocol (JSON-RPC, SSE)
-        beamai_jsonrpc,
-        beamai_sse,
-        %% Utils
-        beamai_id,
-        beamai_utils,
-        %% HTTP Client
+        beamai_prompt,
+        %% 行为接口
+        beamai_llm_behaviour,
+        beamai_http_behaviour,
+        beamai_step_behaviour,
+        %% HTTP 客户端
         beamai_http,
         beamai_http_hackney,
         beamai_http_gun,
         beamai_http_pool,
-        %% Graph Core
-        graph,
-        graph_builder,
-        graph_dsl,
-        graph_edge,
-        graph_node,
-        graph_runner,
-        graph_dispatch,
-        graph_command,
-        graph_state,
-        %% Pregel
-        pregel,
-        pregel_barrier,
-        pregel_graph,
-        pregel_master,
-        pregel_partition,
-        pregel_utils,
-        pregel_vertex,
-        pregel_worker,
-        pregel_dispatch_worker,
-        graph_compute,
-        %% Graph Patterns
-        graph_parallel_experts
+        %% Process Framework
+        beamai_process,
+        beamai_process_builder,
+        beamai_process_event,
+        beamai_process_runtime,
+        beamai_process_step,
+        beamai_process_step_transform,
+        beamai_process_worker,
+        beamai_process_state,
+        beamai_process_memory_store,
+        beamai_process_store_behaviour,
+        beamai_process_sup,
+        %% JSON-RPC
+        beamai_jsonrpc,
+        %% SSE
+        beamai_sse,
+        %% 工具
+        beamai_id,
+        beamai_utils
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

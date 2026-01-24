@@ -12,8 +12,7 @@
         stdlib,
         jsx,
         hackney,
-        beamai_core,
-        beamai_tools
+        beamai_core
     ]},
     %% 可选依赖：
     %% - cowboy: 仅在使用 beamai_mcp_cowboy_handler 时需要
@@ -43,11 +42,17 @@
         %% Client
         beamai_mcp_client,
         beamai_mcp_client_sup,
+        beamai_mcp_client_registry,
         %% Server
         beamai_mcp_server,
         beamai_mcp_server_sup,
         beamai_mcp_handler,
-        beamai_mcp_cowboy_handler
+        beamai_mcp_cowboy_handler,
+        %% Adapter
+        beamai_mcp_adapter,
+        beamai_mcp_tool_proxy,
+        %% Provider
+        beamai_tool_provider_mcp
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

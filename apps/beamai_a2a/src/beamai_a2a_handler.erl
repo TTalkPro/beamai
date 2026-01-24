@@ -501,17 +501,23 @@ extract_text_from_parts([_ | Rest]) -> extract_text_from_parts(Rest).
 
 %% @private 使用 Agent 执行任务
 execute_with_agent(Input, AgentConfig) ->
-    case beamai_agent:run_once(AgentConfig, Input) of
-        {ok, #{final_response := Response}} ->
-            {ok, Response};
-        {ok, Result} when is_map(Result) ->
-            %% 尝试其他字段
-            case maps:get(response, Result, undefined) of
-                undefined -> {ok, jsx:encode(Result, [])};
-                Resp -> {ok, Resp}
+    case beamai_agent:new(AgentConfig) of
+        {ok, Agent} ->
+            case beamai_agent:run(Agent, Input) of
+                {ok, #{content := Content}, _NewAgent} ->
+                    {ok, Content};
+                {ok, Result, _NewAgent} when is_map(Result) ->
+                    case maps:get(content, Result, undefined) of
+                        undefined -> {ok, jsx:encode(Result, [])};
+                        Resp -> {ok, Resp}
+                    end;
+                {interrupt, _InterruptInfo, _NewAgent} ->
+                    {ok, <<"Agent execution interrupted, awaiting input.">>};
+                {error, Reason} ->
+                    {error, Reason}
             end;
         {error, Reason} ->
-            {error, Reason}
+            {error, {agent_create_failed, Reason}}
     end.
 
 %% @private 发送任务状态通知

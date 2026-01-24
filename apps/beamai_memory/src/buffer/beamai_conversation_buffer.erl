@@ -250,7 +250,7 @@ build_context(Config, Messages, ExtraOpts) ->
 -spec load_context(buffer_config(), beamai_memory:memory(), map()) ->
     {ok, context()} | {error, term()}.
 load_context(Config, Memory, ThreadConfig) ->
-    case beamai_memory:load_checkpoint(Memory, ThreadConfig) of
+    case beamai_memory:load_snapshot(Memory, ThreadConfig) of
         {ok, State} ->
             Messages = maps:get(messages, State, []),
             build_context(Config, Messages);

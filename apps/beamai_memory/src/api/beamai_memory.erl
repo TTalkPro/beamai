@@ -2,7 +2,7 @@
 %%% @doc Agent Memory 统一 API - 分层架构 v4.0
 %%%
 %%% 重构后的统一 API，职责清晰：
-%%% - 协调 Checkpointer Manager 和 Store Manager
+%%% - 协调 Snapshot Manager 和 Store Manager
 %%% - 提供便捷的高级接口
 %%% - 核心逻辑委托给专门的管理器
 %%%
@@ -11,9 +11,9 @@
 %%% ```
 %%% beamai_memory (统一 API - 协调层)
 %%%   │
-%%%   ├── checkpoint_manager (检查点管理器)
-%%%   │   ├── beamai_checkpoint_time_travel  (时间旅行扩展)
-%%%   │   └── beamai_checkpoint_branch      (分支管理扩展)
+%%%   ├── snapshot_manager (快照管理器)
+%%%   │   ├── beamai_snapshot_time_travel  (时间旅行扩展)
+%%%   │   └── beamai_snapshot_branch      (分支管理扩展)
 %%%   │
 %%%   └── store_manager (存储管理器)
 %%%       ├── context_store  (内存，快速)
@@ -23,7 +23,7 @@
 %%%
 %%% == 双 Store 架构 ==
 %%%
-%%% - context_store: 存储 Checkpointer 数据和当前对话（快速，内存）
+%%% - context_store: 存储 Snapshot Manager 数据和当前对话（快速，内存）
 %%% - persistent_store: 存储长期记忆和归档（持久化，可选）
 %%%
 %%% == 使用示例 ==
@@ -39,10 +39,10 @@
 %%%     persistent_store => {beamai_store_sqlite, my_persist}
 %%% }),
 %%%
-%%% %% 使用 Checkpointer API
+%%% %% 使用 Snapshot Manager API
 %%% Config = #{thread_id => <<"thread-1">>},
-%%% {ok, CpId} = beamai_memory:save_checkpoint(Memory, Config, #{messages => []}),
-%%% {ok, State} = beamai_memory:load_checkpoint(Memory, Config).
+%%% {ok, CpId} = beamai_memory:save_snapshot(Memory, Config, #{messages => []}),
+%%% {ok, State} = beamai_memory:load_snapshot(Memory, Config).
 %%%
 %%% %% 使用时间旅行
 %%% {ok, State} = beamai_memory:go_back(Memory, Config, 1).
@@ -58,7 +58,7 @@
 %%%-------------------------------------------------------------------
 -module(beamai_memory).
 
--include_lib("beamai_memory/include/beamai_checkpointer.hrl").
+-include_lib("beamai_memory/include/beamai_snapshot.hrl").
 -include_lib("beamai_memory/include/beamai_store.hrl").
 
 %% 类型导出
@@ -68,11 +68,11 @@
 -export([new/1]).
 
 %%====================================================================
-%% Checkpointer 便捷 API
+%% Snapshot Manager 便捷 API
 %%====================================================================
 
 %% 基本操作
--export([save_checkpoint/3, load_checkpoint/2, delete_checkpoint/2, list_checkpoints/2]).
+-export([save_snapshot/3, load_snapshot/2, delete_snapshot/2, list_snapshots/2]).
 
 %% 时间旅行
 -export([go_back/3, go_forward/3, goto/3, undo/2, redo/2]).
@@ -105,19 +105,19 @@
 %% 工具函数
 %%====================================================================
 
--export([checkpoint_to_state/1, state_to_checkpoint/2,
-         get_checkpointer/1, get_store_manager/1]).
+-export([snapshot_to_state/1, state_to_snapshot/2,
+         get_snapshot_manager/1, get_store_manager/1]).
 
 %%====================================================================
 %% 统计和清理 API
 %%====================================================================
 
 -export([
-    get_checkpoint_stats/1,
-    get_checkpoint_count/2,
-    get_total_checkpoint_count/1,
-    prune_checkpoints/3,
-    prune_all_checkpoints/2
+    get_snapshot_stats/1,
+    get_snapshot_count/2,
+    get_total_snapshot_count/1,
+    prune_snapshots/3,
+    prune_all_snapshots/2
 ]).
 
 %%====================================================================
@@ -125,20 +125,20 @@
 %%====================================================================
 
 -record(memory, {
-    checkpointer :: beamai_checkpoint_manager:manager(),
+    snapshot_manager :: beamai_snapshot_manager:manager(),
     store_manager :: beamai_store_manager:store_manager()
 }).
 
 -type memory() :: #memory{}.
 
-%% 从 beamai_checkpointer 导入类型别名
+%% 从 beamai_snapshot 导入类型别名
 -type thread_id() :: binary().
--type checkpoint_id() :: binary().
+-type snapshot_id() :: binary().
 -type config() :: map().
--type checkpoint() :: #checkpoint{}.
+-type snapshot() :: #snapshot{}.
 %% 记录类型别名
--type checkpoint_metadata() :: #checkpoint_metadata{}.
--type checkpoint_tuple() :: {checkpoint(), checkpoint_metadata(), config() | undefined}.
+-type snapshot_metadata() :: #snapshot_metadata{}.
+-type snapshot_tuple() :: {snapshot(), snapshot_metadata(), config() | undefined}.
 
 %% 从 beamai_store 导入类型别名
 -type namespace() :: beamai_store:namespace().
@@ -168,14 +168,14 @@ new(Opts) ->
         {_Module, _Ref} = ContextStore ->
             PersistentStore = maps:get(persistent_store, Opts, undefined),
 
-            %% 创建 Checkpointer 管理器（使用 context_store）
-            Checkpointer = beamai_checkpoint_manager:new(ContextStore),
+            %% 创建 Snapshot Manager（使用 context_store）
+            SnapshotManager = beamai_snapshot_manager:new(ContextStore),
 
             %% 创建 Store 管理器
             StoreManager = beamai_store_manager:new(ContextStore, PersistentStore),
 
             Memory = #memory{
-                checkpointer = Checkpointer,
+                snapshot_manager = SnapshotManager,
                 store_manager = StoreManager
             },
             {ok, Memory};
@@ -184,38 +184,38 @@ new(Opts) ->
     end.
 
 %%====================================================================
-%% Checkpointer 便捷 API
+%% Snapshot Manager 便捷 API
 %%====================================================================
 
-%% @doc 保存检查点
--spec save_checkpoint(memory(), config(), map()) -> {ok, checkpoint_id()} | {error, term()}.
-save_checkpoint(#memory{checkpointer = Checkpointer}, Config, State) ->
-    Checkpoint = #checkpoint{
+%% @doc 保存快照
+-spec save_snapshot(memory(), config(), map()) -> {ok, snapshot_id()} | {error, term()}.
+save_snapshot(#memory{snapshot_manager = SnapshotManager}, Config, State) ->
+    Snapshot = #snapshot{
         values = State
     },
-    beamai_checkpoint_manager:save(Checkpointer, Checkpoint, Config).
+    beamai_snapshot_manager:save(SnapshotManager, Snapshot, Config).
 
-%% @doc 加载检查点
--spec load_checkpoint(memory(), config()) -> {ok, map()} | {error, term()}.
-load_checkpoint(#memory{checkpointer = Checkpointer}, Config) ->
-    case beamai_checkpoint_manager:load(Checkpointer, latest, Config) of
+%% @doc 加载快照
+-spec load_snapshot(memory(), config()) -> {ok, map()} | {error, term()}.
+load_snapshot(#memory{snapshot_manager = SnapshotManager}, Config) ->
+    case beamai_snapshot_manager:load(SnapshotManager, latest, Config) of
         {ok, {Cp, _, _}} ->
-            {ok, checkpoint_to_state(Cp)};
+            {ok, snapshot_to_state(Cp)};
         {error, _} = Error ->
             Error
     end.
 
-%% @doc 删除检查点
--spec delete_checkpoint(memory(), config()) -> ok | {error, term()}.
-delete_checkpoint(#memory{checkpointer = Checkpointer}, Config) ->
-    beamai_checkpoint_manager:delete(Checkpointer, Config).
+%% @doc 删除快照
+-spec delete_snapshot(memory(), config()) -> ok | {error, term()}.
+delete_snapshot(#memory{snapshot_manager = SnapshotManager}, Config) ->
+    beamai_snapshot_manager:delete(SnapshotManager, Config).
 
-%% @doc 列出检查点
--spec list_checkpoints(memory(), config()) -> {ok, [map()]} | {error, term()}.
-list_checkpoints(#memory{checkpointer = Checkpointer}, Config) ->
-    case beamai_checkpoint_manager:list(Checkpointer, Config) of
-        {ok, Checkpoints} ->
-            Summaries = [checkpoint_tuple_to_summary(CpTuple) || CpTuple <- Checkpoints],
+%% @doc 列出快照
+-spec list_snapshots(memory(), config()) -> {ok, [map()]} | {error, term()}.
+list_snapshots(#memory{snapshot_manager = SnapshotManager}, Config) ->
+    case beamai_snapshot_manager:list(SnapshotManager, Config) of
+        {ok, Snapshots} ->
+            Summaries = [snapshot_tuple_to_summary(CpTuple) || CpTuple <- Snapshots],
             {ok, Summaries};
         {error, _} = Error ->
             Error
@@ -227,25 +227,25 @@ list_checkpoints(#memory{checkpointer = Checkpointer}, Config) ->
 
 %% @doc 回退 N 步
 -spec go_back(memory(), config(), pos_integer()) -> {ok, map()} | {error, term()}.
-go_back(#memory{checkpointer = Checkpointer}, Config, Steps) ->
-    case beamai_checkpoint_time_travel:go_back(Checkpointer, Config, Steps) of
-        {ok, Cp} -> {ok, checkpoint_to_state(Cp)};
+go_back(#memory{snapshot_manager = SnapshotManager}, Config, Steps) ->
+    case beamai_snapshot_time_travel:go_back(SnapshotManager, Config, Steps) of
+        {ok, Cp} -> {ok, snapshot_to_state(Cp)};
         {error, _} = Error -> Error
     end.
 
 %% @doc 前进 N 步
 -spec go_forward(memory(), config(), pos_integer()) -> {ok, map()} | {error, term()}.
-go_forward(#memory{checkpointer = Checkpointer}, Config, Steps) ->
-    case beamai_checkpoint_time_travel:go_forward(Checkpointer, Config, Steps) of
-        {ok, Cp} -> {ok, checkpoint_to_state(Cp)};
+go_forward(#memory{snapshot_manager = SnapshotManager}, Config, Steps) ->
+    case beamai_snapshot_time_travel:go_forward(SnapshotManager, Config, Steps) of
+        {ok, Cp} -> {ok, snapshot_to_state(Cp)};
         {error, _} = Error -> Error
     end.
 
-%% @doc 跳转到指定检查点
--spec goto(memory(), config(), checkpoint_id()) -> {ok, map()} | {error, term()}.
-goto(#memory{checkpointer = Checkpointer}, Config, CheckpointId) ->
-    case beamai_checkpoint_time_travel:goto(Checkpointer, Config, CheckpointId) of
-        {ok, Cp} -> {ok, checkpoint_to_state(Cp)};
+%% @doc 跳转到指定快照
+-spec goto(memory(), config(), snapshot_id()) -> {ok, map()} | {error, term()}.
+goto(#memory{snapshot_manager = SnapshotManager}, Config, SnapshotId) ->
+    case beamai_snapshot_time_travel:goto(SnapshotManager, Config, SnapshotId) of
+        {ok, Cp} -> {ok, snapshot_to_state(Cp)};
         {error, _} = Error -> Error
     end.
 
@@ -265,26 +265,26 @@ redo(Memory, Config) ->
 
 %% @doc 创建分支
 -spec create_branch(memory(), config(), binary(), map()) -> {ok, binary()} | {error, term()}.
-create_branch(#memory{checkpointer = Checkpointer}, Config, BranchName, Opts) ->
-    beamai_checkpoint_branch:create_branch(Checkpointer, Config, BranchName, Opts).
+create_branch(#memory{snapshot_manager = SnapshotManager}, Config, BranchName, Opts) ->
+    beamai_snapshot_branch:create_branch(SnapshotManager, Config, BranchName, Opts).
 
 %% @doc 切换分支
 -spec switch_branch(memory(), config(), binary()) -> {ok, map()} | {error, term()}.
-switch_branch(#memory{checkpointer = Checkpointer}, Config, BranchId) ->
-    case beamai_checkpoint_branch:switch_branch(Checkpointer, Config, BranchId) of
-        {ok, Cp} -> {ok, checkpoint_to_state(Cp)};
+switch_branch(#memory{snapshot_manager = SnapshotManager}, Config, BranchId) ->
+    case beamai_snapshot_branch:switch_branch(SnapshotManager, Config, BranchId) of
+        {ok, Cp} -> {ok, snapshot_to_state(Cp)};
         {error, _} = Error -> Error
     end.
 
 %% @doc 列出所有分支
 -spec list_branches(memory()) -> {ok, [map()]} | {error, term()}.
-list_branches(#memory{checkpointer = Checkpointer}) ->
-    beamai_checkpoint_branch:list_branches(Checkpointer).
+list_branches(#memory{snapshot_manager = SnapshotManager}) ->
+    beamai_snapshot_branch:list_branches(SnapshotManager).
 
 %% @doc 比较两个分支
 -spec compare_branches(memory(), binary(), binary()) -> {ok, map()} | {error, term()}.
-compare_branches(#memory{checkpointer = Checkpointer}, BranchId1, BranchId2) ->
-    beamai_checkpoint_branch:compare_branches(Checkpointer, BranchId1, BranchId2).
+compare_branches(#memory{snapshot_manager = SnapshotManager}, BranchId1, BranchId2) ->
+    beamai_snapshot_branch:compare_branches(SnapshotManager, BranchId1, BranchId2).
 
 %%====================================================================
 %% 历史查询
@@ -292,15 +292,15 @@ compare_branches(#memory{checkpointer = Checkpointer}, BranchId1, BranchId2) ->
 
 %% @doc 列出历史记录
 -spec list_history(memory(), config()) -> {ok, [map()]} | {error, term()}.
-list_history(#memory{checkpointer = Checkpointer}, Config) ->
-    beamai_checkpoint_time_travel:list_history(Checkpointer, Config).
+list_history(#memory{snapshot_manager = SnapshotManager}, Config) ->
+    beamai_snapshot_time_travel:list_history(SnapshotManager, Config).
 
 %% @doc 获取祖先链
 -spec get_lineage(memory(), config()) -> {ok, [map()]} | {error, term()}.
-get_lineage(#memory{checkpointer = Checkpointer}, Config) ->
-    case beamai_checkpoint_manager:get_lineage(Checkpointer, Config) of
+get_lineage(#memory{snapshot_manager = SnapshotManager}, Config) ->
+    case beamai_snapshot_manager:get_lineage(SnapshotManager, Config) of
         {ok, Lineage} ->
-            States = [checkpoint_to_state(Cp) || {Cp, _, _} <- Lineage],
+            States = [snapshot_to_state(Cp) || {Cp, _, _} <- Lineage],
             {ok, States};
         {error, _} = Error ->
             Error
@@ -313,7 +313,7 @@ get_lineage(#memory{checkpointer = Checkpointer}, Config) ->
 %% @doc 获取消息历史
 -spec get_messages(memory(), config()) -> {ok, [map()]} | {error, term()}.
 get_messages(Memory, Config) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             Messages = maps:get(messages, State, []),
             {ok, Messages};
@@ -324,14 +324,14 @@ get_messages(Memory, Config) ->
 %% @doc 添加消息
 -spec add_message(memory(), config(), map()) -> ok | {error, term()}.
 add_message(Memory, Config, Message) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             Messages = maps:get(messages, State, []),
             NewState = State#{messages => Messages ++ [Message]},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, not_found} ->
             NewState = #{messages => [Message]},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, _} = Error ->
             Error
     end.
@@ -339,7 +339,7 @@ add_message(Memory, Config, Message) ->
 %% @doc 获取通道值
 -spec get_channel(memory(), config(), atom() | binary()) -> {ok, term()} | {error, term()}.
 get_channel(Memory, Config, Channel) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             case maps:get(Channel, State, undefined) of
                 undefined -> {error, not_found};
@@ -352,13 +352,13 @@ get_channel(Memory, Config, Channel) ->
 %% @doc 设置通道值
 -spec set_channel(memory(), config(), atom() | binary(), term()) -> ok | {error, term()}.
 set_channel(Memory, Config, Channel, Value) ->
-    case load_checkpoint(Memory, Config) of
+    case load_snapshot(Memory, Config) of
         {ok, State} ->
             NewState = State#{Channel => Value},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, not_found} ->
             NewState = #{Channel => Value},
-            save_checkpoint(Memory, Config, NewState);
+            save_snapshot(Memory, Config, NewState);
         {error, _} = Error ->
             Error
     end.
@@ -403,19 +403,19 @@ archive_session(#memory{} = Memory, ThreadId) ->
 
 %% @doc 归档会话（带选项）
 -spec archive_session(memory(), thread_id(), map()) -> {ok, binary()} | {error, term()}.
-archive_session(#memory{checkpointer = Checkpointer, store_manager = StoreManager},
+archive_session(#memory{snapshot_manager = SnapshotManager, store_manager = StoreManager},
                ThreadId, Opts) ->
-    beamai_store_archiver:archive_session(StoreManager, Checkpointer, ThreadId, Opts).
+    beamai_store_archiver:archive_session(StoreManager, SnapshotManager, ThreadId, Opts).
 
 %% @doc 加载已归档的会话（只读）
--spec load_archived(memory(), binary()) -> {ok, [checkpoint_tuple()]} | {error, term()}.
-load_archived(#memory{checkpointer = Checkpointer, store_manager = StoreManager}, SessionId) ->
-    beamai_store_archiver:load_archived(StoreManager, Checkpointer, SessionId).
+-spec load_archived(memory(), binary()) -> {ok, [snapshot_tuple()]} | {error, term()}.
+load_archived(#memory{snapshot_manager = SnapshotManager, store_manager = StoreManager}, SessionId) ->
+    beamai_store_archiver:load_archived(StoreManager, SnapshotManager, SessionId).
 
-%% @doc 恢复已归档的会话到 Checkpointer
+%% @doc 恢复已归档的会话到 Snapshot Manager
 -spec restore_archived(memory(), binary()) -> {ok, thread_id()} | {error, term()}.
-restore_archived(#memory{checkpointer = Checkpointer, store_manager = StoreManager}, SessionId) ->
-    beamai_store_archiver:restore_archived(StoreManager, Checkpointer, SessionId).
+restore_archived(#memory{snapshot_manager = SnapshotManager, store_manager = StoreManager}, SessionId) ->
+    beamai_store_archiver:restore_archived(StoreManager, SnapshotManager, SessionId).
 
 %% @doc 列出已归档的会话
 -spec list_archived(memory()) -> {ok, [map()]} | {error, term()}.
@@ -436,22 +436,22 @@ delete_archived(#memory{store_manager = StoreManager}, SessionId) ->
 %% 工具函数
 %%====================================================================
 
-%% @doc 将检查点转换为图状态
--spec checkpoint_to_state(checkpoint()) -> map().
-checkpoint_to_state(#checkpoint{values = Values}) ->
+%% @doc 将快照转换为图状态
+-spec snapshot_to_state(snapshot()) -> map().
+snapshot_to_state(#snapshot{values = Values}) ->
     Values.
 
-%% @doc 将图状态转换为检查点
--spec state_to_checkpoint(config(), map()) -> checkpoint().
-state_to_checkpoint(_Config, State) when is_map(State) ->
-    #checkpoint{
+%% @doc 将图状态转换为快照
+-spec state_to_snapshot(config(), map()) -> snapshot().
+state_to_snapshot(_Config, State) when is_map(State) ->
+    #snapshot{
         values = State
     }.
 
-%% @doc 获取 Checkpointer 管理器（高级用法）
--spec get_checkpointer(memory()) -> beamai_checkpoint_manager:manager().
-get_checkpointer(#memory{checkpointer = Checkpointer}) ->
-    Checkpointer.
+%% @doc 获取 Snapshot Manager（高级用法）
+-spec get_snapshot_manager(memory()) -> beamai_snapshot_manager:manager().
+get_snapshot_manager(#memory{snapshot_manager = SnapshotManager}) ->
+    SnapshotManager.
 
 %% @doc 获取 Store 管理器（高级用法）
 -spec get_store_manager(memory()) -> beamai_store_manager:store_manager().
@@ -462,60 +462,60 @@ get_store_manager(#memory{store_manager = StoreManager}) ->
 %% 内部函数
 %%====================================================================
 
-%% @private 检查点元组转摘要
--spec checkpoint_tuple_to_summary(checkpoint_tuple()) -> map().
-checkpoint_tuple_to_summary({Checkpoint, _Metadata, _ParentConfig}) ->
+%% @private 快照元组转摘要
+-spec snapshot_tuple_to_summary(snapshot_tuple()) -> map().
+snapshot_tuple_to_summary({Snapshot, _Metadata, _ParentConfig}) ->
     #{
-        checkpoint_id => Checkpoint#checkpoint.id,
-        thread_id => Checkpoint#checkpoint.thread_id,
-        parent_id => Checkpoint#checkpoint.parent_id,
-        timestamp => Checkpoint#checkpoint.timestamp,
-        channel_count => maps:size(Checkpoint#checkpoint.values)
+        snapshot_id => Snapshot#snapshot.id,
+        thread_id => Snapshot#snapshot.thread_id,
+        parent_id => Snapshot#snapshot.parent_id,
+        timestamp => Snapshot#snapshot.timestamp,
+        channel_count => maps:size(Snapshot#snapshot.values)
     }.
 
 %%====================================================================
 %% 统计和清理 API
 %%====================================================================
 
-%% @doc 获取检查点统计信息
--spec get_checkpoint_stats(memory()) -> map().
-get_checkpoint_stats(#memory{checkpointer = Checkpointer}) ->
-    beamai_checkpoint_manager:get_checkpoint_stats(Checkpointer).
+%% @doc 获取快照统计信息
+-spec get_snapshot_stats(memory()) -> map().
+get_snapshot_stats(#memory{snapshot_manager = SnapshotManager}) ->
+    beamai_snapshot_manager:get_snapshot_stats(SnapshotManager).
 
-%% @doc 获取线程的检查点数量
--spec get_checkpoint_count(memory(), thread_id()) -> non_neg_integer().
-get_checkpoint_count(#memory{checkpointer = Checkpointer}, ThreadId) ->
-    beamai_checkpoint_manager:get_checkpoint_count(Checkpointer, ThreadId).
+%% @doc 获取线程的快照数量
+-spec get_snapshot_count(memory(), thread_id()) -> non_neg_integer().
+get_snapshot_count(#memory{snapshot_manager = SnapshotManager}, ThreadId) ->
+    beamai_snapshot_manager:get_snapshot_count(SnapshotManager, ThreadId).
 
-%% @doc 获取总检查点数量（所有线程和分支）
--spec get_total_checkpoint_count(memory()) -> non_neg_integer().
-get_total_checkpoint_count(#memory{checkpointer = Checkpointer}) ->
-    beamai_checkpoint_manager:get_total_count(Checkpointer).
+%% @doc 获取总快照数量（所有线程和分支）
+-spec get_total_snapshot_count(memory()) -> non_neg_integer().
+get_total_snapshot_count(#memory{snapshot_manager = SnapshotManager}) ->
+    beamai_snapshot_manager:get_total_count(SnapshotManager).
 
-%% @doc 清理线程的检查点
+%% @doc 清理线程的快照
 %%
-%% 保留最新的 KeepCount 个检查点，删除其余的。
--spec prune_checkpoints(memory(), thread_id(), pos_integer()) ->
+%% 保留最新的 KeepCount 个快照，删除其余的。
+-spec prune_snapshots(memory(), thread_id(), pos_integer()) ->
     {ok, non_neg_integer()} | {error, term()}.
-prune_checkpoints(#memory{checkpointer = Checkpointer}, ThreadId, KeepCount) ->
-    beamai_checkpoint_manager:prune_checkpoints(Checkpointer, ThreadId, KeepCount).
+prune_snapshots(#memory{snapshot_manager = SnapshotManager}, ThreadId, KeepCount) ->
+    beamai_snapshot_manager:prune_snapshots(SnapshotManager, ThreadId, KeepCount).
 
-%% @doc 清理所有线程的检查点
+%% @doc 清理所有线程的快照
 %%
-%% 对所有线程执行清理，每个线程保留指定数量的检查点。
--spec prune_all_checkpoints(memory(), pos_integer()) -> {ok, map()}.
-prune_all_checkpoints(#memory{checkpointer = Checkpointer}, KeepCount) ->
+%% 对所有线程执行清理，每个线程保留指定数量的快照。
+-spec prune_all_snapshots(memory(), pos_integer()) -> {ok, map()}.
+prune_all_snapshots(#memory{snapshot_manager = SnapshotManager}, KeepCount) ->
     %% 获取所有线程
-    case beamai_checkpoint_manager:list(Checkpointer, #{}) of
-        {ok, AllCheckpoints} ->
+    case beamai_snapshot_manager:list(SnapshotManager, #{}) of
+        {ok, AllSnapshots} ->
             %% 按线程分组
             ThreadIds = lists:usort([
-                Cp#checkpoint.thread_id
-             || {Cp, _, _} <- AllCheckpoints]),
+                Cp#snapshot.thread_id
+             || {Cp, _, _} <- AllSnapshots]),
 
             %% 清理每个线程
             Results = lists:map(fun(ThreadId) ->
-                case beamai_checkpoint_manager:prune_checkpoints(Checkpointer, ThreadId, KeepCount) of
+                case beamai_snapshot_manager:prune_snapshots(SnapshotManager, ThreadId, KeepCount) of
                     {ok, Count} -> {ThreadId, Count};
                     {error, Reason} -> {ThreadId, {error, Reason}}
                 end

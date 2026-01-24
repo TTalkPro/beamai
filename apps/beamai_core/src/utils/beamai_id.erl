@@ -162,7 +162,7 @@ split_id(Id) ->
         Parts when length(Parts) >= 3 ->
             %% 前缀可能包含下划线，所以取最后两部分作为时间戳和随机数
             {PrefixParts, [TimestampHex, RandomHex]} = lists:split(length(Parts) - 2, Parts),
-            Prefix = binary_join(PrefixParts, <<"_">>),
+            Prefix = beamai_utils:binary_join(<<"_">>, PrefixParts),
             {ok, Prefix, TimestampHex, RandomHex};
         _ ->
             {error, invalid_format}
@@ -215,13 +215,3 @@ is_hex_string(Bin) ->
         _:_ -> false
     end.
 
-%% @private 连接二进制列表
--spec binary_join([binary()], binary()) -> binary().
-binary_join([], _Sep) ->
-    <<>>;
-binary_join([Single], _Sep) ->
-    Single;
-binary_join([H | T], Sep) ->
-    lists:foldl(fun(Part, Acc) ->
-        <<Acc/binary, Sep/binary, Part/binary>>
-    end, H, T).

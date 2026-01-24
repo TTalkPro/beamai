@@ -18,6 +18,7 @@
 -export([update_step/3, next_step/1, is_complete/1]).
 -export([to_map/1, from_map/1]).
 -export([format_status/1]).
+-export([steps_to_maps/1]).
 
 %% 计划记录
 -record(plan, {
@@ -98,11 +99,19 @@ format_status(#plan{steps = Steps, current = Current}) ->
     Header = <<"Plan (step ", (integer_to_binary(Current))/binary, "):\n">>,
     iolist_to_binary([Header | lists:join(<<"\n">>, Lines)]).
 
+%% @doc 将计划步骤转换为 map 列表（供 dependencies:analyze 使用）
+-spec steps_to_maps(t()) -> [map()].
+steps_to_maps(#plan{steps = Steps}) ->
+    [#{id => S#step.id,
+       description => S#step.desc,
+       dependencies => S#step.deps,
+       is_deep => S#step.is_deep} || S <- Steps].
+
 %%====================================================================
 %% 内部函数 - 步骤创建
 %%====================================================================
 
-%% @private 创建步骤（二进制键）
+%% @private 创建步骤（binary keys from LLM JSON）
 -spec make_step(pos_integer(), map()) -> step().
 make_step(Id, #{<<"description">> := Desc} = M) ->
     #step{
@@ -112,16 +121,6 @@ make_step(Id, #{<<"description">> := Desc} = M) ->
         status = pending,
         result = undefined,
         is_deep = maps:get(<<"requires_deep">>, M, false)
-    };
-%% @private 创建步骤（原子键）
-make_step(Id, #{description := Desc} = M) ->
-    #step{
-        id = Id,
-        desc = Desc,
-        deps = maps:get(dependencies, M, []),
-        status = pending,
-        result = undefined,
-        is_deep = maps:get(requires_deep, M, false)
     }.
 
 %%====================================================================
@@ -131,18 +130,10 @@ make_step(Id, #{description := Desc} = M) ->
 %% @private 更新单个步骤
 -spec update_single_step(step(), pos_integer(), map()) -> step().
 update_single_step(#step{id = Id} = S, Id, Updates) ->
-    Status = get_status(Updates),
-    Result = maps:get(result, Updates, maps:get(<<"result">>, Updates, S#step.result)),
+    Status = maps:get(status, Updates, S#step.status),
+    Result = maps:get(result, Updates, S#step.result),
     S#step{status = Status, result = Result};
 update_single_step(S, _Id, _Updates) -> S.
-
-%% @private 解析状态
--spec get_status(map()) -> step_status().
-get_status(#{status := S}) -> S;
-get_status(#{<<"status">> := <<"completed">>}) -> completed;
-get_status(#{<<"status">> := <<"failed">>}) -> failed;
-get_status(#{<<"status">> := <<"skipped">>}) -> skipped;
-get_status(_) -> pending.
 
 %% @private 检查计划是否全部完成
 -spec check_completion(t()) -> t().
@@ -173,11 +164,11 @@ step_to_map(#step{id = I, desc = D, deps = Deps, status = S, result = R, is_deep
 step_from_map(Id, M) ->
     #step{
         id = Id,
-        desc = maps:get(description, M, maps:get(<<"description">>, M, <<>>)),
-        deps = maps:get(dependencies, M, maps:get(<<"dependencies">>, M, [])),
+        desc = maps:get(description, M, <<>>),
+        deps = maps:get(dependencies, M, []),
         status = maps:get(status, M, pending),
         result = maps:get(result, M, undefined),
-        is_deep = maps:get(is_deep, M, maps:get(<<"is_deep">>, M, false))
+        is_deep = maps:get(is_deep, M, false)
     }.
 
 %%====================================================================

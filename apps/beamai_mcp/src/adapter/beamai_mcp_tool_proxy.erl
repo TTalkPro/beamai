@@ -330,9 +330,8 @@ wait_for_connection(Client, Retries) ->
 
 %% @private 获取服务器信息
 -spec get_client_server_info(pid()) -> map() | undefined.
-get_client_server_info(Client) ->
-    %% 这里暂时返回 undefined，实际需要从客户端获取
-    %% beamai_mcp_client 可能需要添加 get_server_info/1 API
+get_client_server_info(_Client) ->
+    %% 预留：实际需要从客户端获取 server_info
     undefined.
 
 %% @private 获取服务器能力

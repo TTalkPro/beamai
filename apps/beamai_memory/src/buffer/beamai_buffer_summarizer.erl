@@ -210,17 +210,16 @@ build_summary_prompt(Template, ConversationText, MsgCount) ->
 -spec call_llm(atom(), [message()], map()) -> {ok, map()} | {error, term()}.
 call_llm(Provider, Messages, Opts) ->
     %% 检查 agent_llm 是否可用
-    case code:ensure_loaded(llm_client) of
-        {module, llm_client} ->
+    case code:ensure_loaded(beamai_chat_completion) of
+        {module, beamai_chat_completion} ->
             try
-                llm_client:chat(Provider, Messages, Opts)
+                beamai_chat_completion:chat(Provider, Messages, Opts)
             catch
                 _:Reason ->
                     {error, {llm_call_failed, Reason}}
             end;
         {error, _} ->
-            %% agent_llm 不可用，返回错误
-            {error, {module_not_available, llm_client}}
+            {error, {module_not_available, beamai_chat_completion}}
     end.
 
 %% @private 从 LLM 响应中提取摘要

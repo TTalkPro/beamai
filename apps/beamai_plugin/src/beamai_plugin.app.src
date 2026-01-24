@@ -1,0 +1,8 @@
+{application, beamai_plugin, [
+    {description, "BeamAI Plugin System - Tools, Middleware, and Plugin Modules"},
+    {vsn, "1.0.0"},
+    {registered, []},
+    {applications, [kernel, stdlib, jsx, beamai_core]},
+    {env, []},
+    {modules, []}
+]}.

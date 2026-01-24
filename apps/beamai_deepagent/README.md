@@ -1,102 +1,132 @@
-# Agent Deep
+# BeamAI Deep Agent
 
 [English](README_EN.md) | 中文
 
-深度 Agent 实现，支持复杂任务规划、并行执行和反思机制。
+基于 SubAgent 架构的深度 Agent 实现，支持复杂任务规划、并行执行和反思机制。
 
 ## 特性
 
+- SubAgent 编排架构（Planner → Executor → Reflector）
 - 任务规划与分解
-- 并行执行
+- 并行子任务执行
 - 依赖关系管理
 - 反思与自我纠正
-- 工具集成（文件系统、TODO 管理等）
-- 检查点与恢复
+- Coordinator 多 Agent 协调
+- Plugin 工具集成
+
+## 架构
+
+```
+beamai_deepagent
+├── beamai_deepagent          # 主 API（new/1, run/2, run/3）
+├── beamai_deepagent_planner  # 规划器 SubAgent
+├── beamai_deepagent_executor # 执行器 SubAgent
+├── beamai_deepagent_reflector # 反思器 SubAgent
+├── beamai_deepagent_parallel # 并行执行管理
+├── beamai_deepagent_coordinator # 多 Agent 协调
+├── beamai_deepagent_plan_plugin # 规划工具插件
+├── beamai_deepagent_utils    # 工具函数
+└── core/
+    ├── beamai_deepagent_plan          # 计划数据结构
+    ├── beamai_deepagent_dependencies  # 依赖管理
+    └── beamai_deepagent_trace         # 执行追踪
+```
 
 ## 模块概览
 
-### 核心模块
+### 核心 API
 
-- **beamai_deepagent** - 主模块
-- **beamai_deepagent_plan** - 任务规划
-- **beamai_deepagent_router** - 路由决策
-- **beamai_deepagent_dependencies** - 依赖管理
-- **beamai_deepbeamai_result_analyzer** - 结果分析
+- **beamai_deepagent** - 主模块，提供 `new/1`、`run/2`、`run/3`、`get_plan/1`、`get_trace/1`
 
-### 执行模块
+### SubAgent 模块
 
-- **beamai_deepagent_nodes** - 节点定义
-- **beamai_deepbeamai_llm_node** - LLM 节点
-- **beamai_deepagent_tool_executor** - 工具执行器
-- **beamai_deepagent_trace** - 执行追踪
+- **beamai_deepagent_planner** - 规划器：分析任务，生成执行计划
+- **beamai_deepagent_executor** - 执行器：执行计划中的各个步骤
+- **beamai_deepagent_reflector** - 反思器：评估执行结果，提供改进建议
+- **beamai_deepagent_parallel** - 并行管理：管理多个子任务的并行执行
+- **beamai_deepagent_coordinator** - 协调器：多 Agent 间的任务分配和协调
 
 ### 工具模块
 
-- **beamai_deepagent_tool_provider** - 工具提供者（实现 beamai_tool_provider 行为）
-- **beamai_deepagent_fs_tools** - 文件系统工具
-- **beamai_deepagent_fs_handlers** - 文件处理器
-- **beamai_deepagent_fs_backend** - 文件后端
-- **beamai_deepagent_todo_tools** - TODO 管理工具
-- **beamai_deepagent_todo_handlers** - TODO 处理器
-- **beamai_deepagent_human_tools** - Human-in-the-loop 工具
-- **beamai_deepagent_base_tools** - 基础工具（checkpoint, get_trace）
-- **beamai_deepagent_plan_tools** - 计划和子任务工具
+- **beamai_deepagent_plan_plugin** - 规划工具插件（实现 beamai_plugin_behaviour）
+
+### 核心数据结构
+
+- **beamai_deepagent_plan** - 计划数据结构和操作
+- **beamai_deepagent_dependencies** - 任务依赖图管理
+- **beamai_deepagent_trace** - 执行轨迹记录
 
 ### 辅助模块
 
-- **beamai_deepbeamai_messages** - 消息处理
-- **beamai_deepbeamai_utils** - 工具函数
+- **beamai_deepagent_utils** - 通用工具函数
 
 ## API 文档
 
 ### beamai_deepagent
 
 ```erlang
-%% 启动 Deep Agent
-beamai_deepagent:start_link(Config) -> {ok, Pid} | {error, Reason}.
+%% 创建配置（直接返回 config map，不是 {ok, Config}）
+-spec new(map()) -> config().
+beamai_deepagent:new(Opts) -> Config.
+
+%% 也可以创建空配置
+beamai_deepagent:new() -> Config.
 
 %% 执行任务
-beamai_deepagent:run(Pid, Task) -> {ok, Result} | {error, Reason}.
-beamai_deepagent:run(Pid, Task, Options) -> {ok, Result} | {error, Reason}.
+beamai_deepagent:run(Config, Task) -> {ok, Result} | {error, Reason}.
+beamai_deepagent:run(Config, Task, Opts) -> {ok, Result} | {error, Reason}.
 
-%% 流式执行
-beamai_deepagent:run_stream(Pid, Task, Callback) -> {ok, Result} | {error, Reason}.
-
-%% 停止
-beamai_deepagent:stop(Pid) -> ok.
+%% 获取计划和轨迹
+beamai_deepagent:get_plan(Result) -> Plan.
+beamai_deepagent:get_trace(Result) -> Trace.
 ```
 
-### 配置结构
+### 配置选项
 
 ```erlang
-%% 首先创建 LLM 配置（必须使用 llm_client:create/2）
-LLM = llm_client:create(openai, #{
-    model => <<"gpt-4">>,
-    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
-}),
-
-%% DeepAgent 配置
 Config = beamai_deepagent:new(#{
-    %% LLM 配置（必须使用 llm_client:create/2 创建）
+    %% LLM 配置（必填，使用 beamai_chat_completion:create/2 创建）
     llm => LLM,
 
-    %% 工具配置（可选）
-    tools => [
-        beamai_deepagent_fs_tools,      %% 文件系统工具
-        beamai_deepagent_todo_tools     %% TODO 管理工具
-    ],
+    %% Plugin 列表（可选，实现 beamai_plugin_behaviour 的模块）
+    plugins => [beamai_plugin_file, beamai_plugin_shell],
 
-    %% 工作目录（可选）
-    workspace => <<"/tmp/agent_workspace">>,
+    %% 自定义工具（可选，工具 map 列表）
+    custom_tools => [#{name => ..., handler => ...}],
 
-    %% 最大深度（可选）
+    %% 最大递归深度（默认 3）
     max_depth => 3,
 
-    %% 最大迭代次数（可选）
-    max_iterations => 10,
+    %% 最大并行数（默认 5）
+    max_parallel => 5,
 
-    %% 启用反思（可选）
-    enable_reflection => true
+    %% 是否启用规划（默认 true）
+    planning_enabled => true,
+
+    %% 是否启用反思（默认 true）
+    reflection_enabled => true,
+
+    %% 每个子代理最大工具迭代次数（默认 10）
+    max_tool_iterations => 10,
+
+    %% 每步超时毫秒数（默认 300000）
+    timeout => 300000,
+
+    %% 系统提示词
+    system_prompt => <<"你是专家"/utf8>>,
+
+    %% 各 SubAgent 专用提示词
+    planner_prompt => <<"...">>,
+    executor_prompt => <<"...">>,
+    reflector_prompt => <<"...">>,
+
+    %% 事件回调
+    callbacks => #{
+        on_plan_created => fun(Plan) -> ... end,
+        on_step_start => fun(Step) -> ... end,
+        on_step_end => fun(Step, Result) -> ... end,
+        on_reflection => fun(Reflection) -> ... end
+    }
 }).
 ```
 
@@ -106,7 +136,7 @@ Config = beamai_deepagent:new(#{
 
 ```erlang
 %% 创建 LLM 配置
-LLM = llm_client:create(openai, #{
+LLM = beamai_chat_completion:create(openai, #{
     model => <<"gpt-4">>,
     api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
 }),
@@ -115,67 +145,53 @@ LLM = llm_client:create(openai, #{
 Config = beamai_deepagent:new(#{llm => LLM}),
 
 %% 执行复杂任务
-Task = <<"分析当前目录下的 Erlang 代码，找出所有导出的函数，并生成文档。">>,
-{ok, Result} = beamai_deepagent:run(Config, Task).
+{ok, Result} = beamai_deepagent:run(Config,
+    <<"分析当前目录下的 Erlang 代码，找出所有导出的函数，并生成文档。"/utf8>>),
+
+%% 查看计划
+Plan = beamai_deepagent:get_plan(Result),
+Trace = beamai_deepagent:get_trace(Result).
 ```
 
-### 使用文件系统工具
+### 使用 Plugin 工具
 
 ```erlang
-%% 创建 LLM 配置
-LLM = llm_client:create(openai, #{
-    model => <<"gpt-4">>,
-    api_key => list_to_binary(os:getenv("OPENAI_API_KEY"))
-}),
-
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    tools => [beamai_deepagent_fs_tools],
-    workspace => <<"/tmp/my_workspace">>
+    plugins => [beamai_plugin_file, beamai_plugin_shell],
+    max_depth => 2
 }),
 
-%% Agent 可以读写文件
-Task = <<"创建一个名为 hello.txt 的文件，内容是 'Hello, World!'">>,
-{ok, Result} = beamai_deepagent:run(Config, Task).
+{ok, Result} = beamai_deepagent:run(Config,
+    <<"读取 src/ 目录下的所有 .erl 文件并统计代码行数"/utf8>>).
 ```
 
-### 使用 TODO 管理
+### 带回调的执行
 
 ```erlang
 Config = beamai_deepagent:new(#{
-    llm => LLM,  %% 复用之前创建的 LLM 配置
-    tools => [beamai_deepagent_todo_tools]
+    llm => LLM,
+    plugins => [beamai_plugin_file],
+    callbacks => #{
+        on_plan_created => fun(Plan) ->
+            io:format("计划创建: ~p~n", [Plan])
+        end,
+        on_step_start => fun(Step) ->
+            io:format("开始步骤: ~p~n", [Step])
+        end,
+        on_reflection => fun(Reflection) ->
+            io:format("反思: ~ts~n", [Reflection])
+        end
+    }
 }),
 
-%% Agent 可以管理任务列表
-Task = <<"创建一个项目计划，包含以下任务：1. 设计架构 2. 实现核心功能 3. 编写测试">>,
-{ok, Result} = beamai_deepagent:run(Config, Task).
-```
-
-### 流式执行
-
-```erlang
-Callback = fun
-    ({step, Step}) ->
-        io:format("执行步骤: ~p~n", [Step]);
-    ({tool_call, Tool, Args}) ->
-        io:format("调用工具: ~s~n", [Tool]);
-    ({tool_result, Tool, Result}) ->
-        io:format("工具结果: ~p~n", [Result]);
-    ({thinking, Thought}) ->
-        io:format("思考: ~s~n", [Thought]);
-    ({done, Result}) ->
-        io:format("完成: ~p~n", [Result])
-end,
-
-beamai_deepagent:run_stream(Agent, Task, Callback).
+{ok, Result} = beamai_deepagent:run(Config, <<"分析项目架构"/utf8>>).
 ```
 
 ### 使用智谱 AI
 
 ```erlang
-%% 创建智谱 AI 配置（使用 Anthropic 兼容接口）
-LLM = llm_client:create(anthropic, #{
+LLM = beamai_chat_completion:create(anthropic, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     base_url => <<"https://open.bigmodel.cn/api/anthropic">>
@@ -183,106 +199,38 @@ LLM = llm_client:create(anthropic, #{
 
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    tools => [beamai_deepagent_fs_tools]
+    plugins => [beamai_plugin_file]
 }),
 
-{ok, Result} = beamai_deepagent:run(Config, <<"分析项目结构并生成报告">>).
+{ok, Result} = beamai_deepagent:run(Config, <<"分析项目结构并生成报告"/utf8>>).
 ```
 
-## 工具管理
+## 执行流程
 
-DeepAgent 使用 `beamai_tool_provider` 机制管理工具，通过 `beamai_deepagent_tool_provider` 模块提供工具。
-
-### 使用 Tool Provider
-
-```erlang
-%% 通过 beamai_tool_registry 获取工具
-Config = #{depth => 0, planning_mode => full},
-Tools = beamai_tool_registry:from_config(#{
-    providers => [{beamai_deepagent_tool_provider, Config}]
-}).
-
-%% 直接访问工具集合
-BaseTools = beamai_deepagent_tool_provider:base_tools().
-PlanTools = beamai_deepagent_tool_provider:plan_tools().
-FsTools = beamai_deepagent_tool_provider:filesystem_tools().
 ```
-
-### 工具条件判断
-
-工具的可用性根据配置动态决定：
-
-| 工具集 | 条件 |
-|--------|------|
-| 基础工具 | 始终可用 |
-| 计划工具 | `planning_mode=full` 且 `depth=0` |
-| TodoList 工具 | `planning_mode=simple` |
-| 子任务工具 | `depth < max_depth` |
-| 反思工具 | `reflection_enabled=true` |
-| 文件系统工具 | `filesystem_enabled=true` 或有 `filesystem` 配置 |
-| Human 工具 | `human_in_loop.enabled=true`（默认启用） |
-
-### 与其他 Provider 组合
-
-```erlang
-%% 组合 DeepAgent 工具和 MCP 工具
-Tools = beamai_tool_registry:from_config(#{
-    providers => [
-        {beamai_deepagent_tool_provider, Config},
-        {beamai_tool_provider_mcp, #{server => my_mcp_server}}
-    ]
-}).
+1. 接收任务
+   ↓
+2. Planner 分析任务，生成执行计划
+   ↓
+3. 按依赖关系排序步骤
+   ↓
+4. 对于每个步骤：
+   a. Executor 执行步骤（使用 Plugin 工具）
+   b. 支持并行执行无依赖的步骤
+   ↓
+5. Reflector 评估执行结果
+   ↓
+6. 如需改进，更新计划并重新执行
+   ↓
+7. 返回最终结果
 ```
-
-## 工具列表
-
-### 文件系统工具 (beamai_deepagent_fs_tools)
-
-| 工具名 | 说明 |
-|--------|------|
-| `read_file` | 读取文件内容 |
-| `write_file` | 写入文件 |
-| `list_directory` | 列出目录内容 |
-| `create_directory` | 创建目录 |
-| `delete_file` | 删除文件 |
-| `file_exists` | 检查文件是否存在 |
-
-### TODO 管理工具 (beamai_deepagent_todo_tools)
-
-| 工具名 | 说明 |
-|--------|------|
-| `write_todos` | 写入待办事项列表 |
-| `read_todos` | 读取待办事项列表 |
-
-### 基础工具 (beamai_deepagent_base_tools)
-
-| 工具名 | 说明 |
-|--------|------|
-| `checkpoint` | 创建执行检查点 |
-| `get_trace` | 获取执行轨迹 |
-
-### 计划工具 (beamai_deepagent_plan_tools)
-
-| 工具名 | 说明 |
-|--------|------|
-| `create_plan` | 创建任务计划 |
-| `update_plan` | 更新任务计划 |
-| `spawn_subtask` | 创建子任务 |
-| `reflect` | 反思当前进度 |
-
-### Human 交互工具 (beamai_deepagent_human_tools)
-
-| 工具名 | 说明 |
-|--------|------|
-| `ask_human` | 向用户提问 |
-| `confirm_action` | 请求用户确认 |
 
 ## 依赖
 
-- beamai_core
-- beamai_llm
-- beamai_memory
-- beamai_tools
+- beamai_core（Kernel、Process Framework）
+- beamai_llm（LLM 调用）
+- beamai_plugin（Plugin 系统）
+- beamai_memory（状态持久化）
 
 ## 许可证
 
