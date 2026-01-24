@@ -73,8 +73,9 @@ stream_chat(Config, Request, Callback) ->
 %% @private 构建请求 URL
 %% base_url 为纯域名，endpoint 包含完整路径（含版本号）
 %% 这样设计便于第三方 API 代理兼容（如 one-api、new-api 等）
-build_url(Config, Endpoint) ->
+build_url(Config, DefaultEndpoint) ->
     BaseUrl = maps:get(base_url, Config, ?ANTHROPIC_BASE_URL),
+    Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
     <<BaseUrl/binary, Endpoint/binary>>.
 
 %% @private 构建请求头（Anthropic 特有的 x-api-key 和 anthropic-version）

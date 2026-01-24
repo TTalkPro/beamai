@@ -16,7 +16,8 @@
 
 -export([run_all/0, run_all/1]).
 
--define(BASE_URL, <<"https://open.bigmodel.cn/api/anthropic">>).
+-define(BASE_URL, <<"https://open.bigmodel.cn/api/coding/paas/v4">>).
+-define(ENDPOINT, <<"/chat/completions">>).
 -define(DEFAULT_MODEL, <<"glm-4.7">>).
 -define(MAX_TOKENS, 2048).
 
@@ -42,8 +43,8 @@ test_single_agent(Model) ->
     io:format("~nTest 1: Single agent~n"),
 
     Config = #{
-        llm => {anthropic, #{model => Model, api_key => get_api_key(),
-                             base_url => ?BASE_URL, max_tokens => ?MAX_TOKENS}},
+        llm => {openai, #{model => Model, api_key => get_api_key(),
+                             base_url => ?BASE_URL, endpoint => ?ENDPOINT, max_tokens => ?MAX_TOKENS}},
         system_prompt => <<"You are a helpful assistant. Reply concisely in English.">>
     },
 
@@ -79,9 +80,9 @@ test_agent_pipeline(Model) ->
     },
 
     %% 构建 Kernel
-    LlmCfg = beamai_chat_completion:create(anthropic, #{
+    LlmCfg = beamai_chat_completion:create(openai, #{
         model => Model, api_key => ApiKey,
-        base_url => ?BASE_URL, max_tokens => ?MAX_TOKENS}),
+        base_url => ?BASE_URL, endpoint => ?ENDPOINT, max_tokens => ?MAX_TOKENS}),
     Kernel = beamai_kernel:add_service(beamai_kernel:new(), LlmCfg),
     Context = beamai_context:with_kernel(beamai_context:new(), Kernel),
 
@@ -95,7 +96,7 @@ test_agent_pipeline(Model) ->
     B3 = beamai_process:on_event(B2, user_message, translate_step, user_message),
     %% translate 完成后（agent_done）-> summarize 的 user_message
     B4 = beamai_process:on_event(B3, agent_done, summarize_step, user_message,
-        fun(#{data := Data}) -> maps:get(response, Data, <<>>) end),
+        fun(Data) -> maps:get(response, Data, <<>>) end),
 
     {ok, ProcessDef} = beamai_process:build(B4),
     InitEvent = beamai_process_event:new(user_message, <<"Erlang是一门并发函数式编程语言"/utf8>>),
@@ -124,9 +125,9 @@ test_parallel_agents(Model) ->
     io:format("~nTest 3: Parallel agents (fan-out -> fan-in)~n"),
 
     ApiKey = get_api_key(),
-    LlmCfg = beamai_chat_completion:create(anthropic, #{
+    LlmCfg = beamai_chat_completion:create(openai, #{
         model => Model, api_key => ApiKey,
-        base_url => ?BASE_URL, max_tokens => ?MAX_TOKENS}),
+        base_url => ?BASE_URL, endpoint => ?ENDPOINT, max_tokens => ?MAX_TOKENS}),
     Kernel = beamai_kernel:add_service(beamai_kernel:new(), LlmCfg),
     Context = beamai_context:with_kernel(beamai_context:new(), Kernel),
 
@@ -159,7 +160,7 @@ test_parallel_agents(Model) ->
     B7 = beamai_process:on_event(B6, user_message, agent3, user_message),
 
     %% 三个 agent 完成后路由到 merge
-    ExtractResponse = fun(#{data := D}) -> maps:get(response, D, <<>>) end,
+    ExtractResponse = fun(D) -> maps:get(response, D, <<>>) end,
     B8 = beamai_process:on_event(B7, a1_done, merge, a1, ExtractResponse),
     B9 = beamai_process:on_event(B8, a2_done, merge, a2, ExtractResponse),
     B10 = beamai_process:on_event(B9, a3_done, merge, a3, ExtractResponse),
@@ -193,9 +194,9 @@ test_shared_kernel(Model) ->
     io:format("~nTest 4: Shared kernel from process context~n"),
 
     ApiKey = get_api_key(),
-    LlmCfg = beamai_chat_completion:create(anthropic, #{
+    LlmCfg = beamai_chat_completion:create(openai, #{
         model => Model, api_key => ApiKey,
-        base_url => ?BASE_URL, max_tokens => ?MAX_TOKENS}),
+        base_url => ?BASE_URL, endpoint => ?ENDPOINT, max_tokens => ?MAX_TOKENS}),
     Kernel = beamai_kernel:add_service(beamai_kernel:new(), LlmCfg),
 
     %% beamai_process_agent 自动从 Config 获取 Kernel
@@ -221,8 +222,8 @@ test_multi_turn(Model) ->
 
     ApiKey = get_api_key(),
     Config = #{
-        llm => {anthropic, #{model => Model, api_key => ApiKey,
-                             base_url => ?BASE_URL, max_tokens => ?MAX_TOKENS}},
+        llm => {openai, #{model => Model, api_key => ApiKey,
+                             base_url => ?BASE_URL, endpoint => ?ENDPOINT, max_tokens => ?MAX_TOKENS}},
         system_prompt => <<"You are a helpful assistant. Remember what the user tells you.">>
     },
 
@@ -263,9 +264,9 @@ test_with_tools(Model) ->
         #{description => <<"Get weather for a city">>,
           parameters => #{city => #{type => string, description => <<"City name">>}}}),
     K1 = beamai_kernel:add_plugin(K0, <<"tools">>, [WeatherFunc]),
-    LlmCfg = beamai_chat_completion:create(anthropic, #{
+    LlmCfg = beamai_chat_completion:create(openai, #{
         model => Model, api_key => ApiKey,
-        base_url => ?BASE_URL, max_tokens => ?MAX_TOKENS}),
+        base_url => ?BASE_URL, endpoint => ?ENDPOINT, max_tokens => ?MAX_TOKENS}),
     K2 = beamai_kernel:add_service(K1, LlmCfg),
 
     Config = #{
