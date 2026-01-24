@@ -207,7 +207,7 @@ invoke(Kernel, Messages, Opts) ->
     ExistingMsgs = beamai_context:get_messages(Context0),
     ConvMsgs = ExistingMsgs ++ Messages,
     %% 记录新输入消息到 messages 和 history（system_prompts 不记录）
-    Context = record_messages(Context0, Messages),
+    Context = track_new_messages(Context0, Messages),
     case get_service(Kernel) of
         {ok, LlmConfig} ->
             MaxIter = maps:get(max_tool_iterations, Opts,
@@ -239,7 +239,7 @@ get_function(#{plugins := Plugins}, FuncName) ->
                 error -> error
             end;
         [_Name] ->
-            search_all_plugins(Plugins, FuncName)
+            find_in_all_plugins(Plugins, FuncName)
     end.
 
 %% @doc 列出 Kernel 中所有注册的函数
@@ -337,17 +337,17 @@ track_message(Context, Msg) ->
     Ctx1 = beamai_context:append_message(Context, Msg),
     beamai_context:add_history(Ctx1, Msg).
 
-%% @private 批量追加消息到 messages 和 history
-record_messages(Context, Messages) ->
+%% @private 追踪记录新输入消息到 messages 和 history
+track_new_messages(Context, Messages) ->
     lists:foldl(fun(Msg, Ctx) ->
         track_message(Ctx, Msg)
     end, Context, Messages).
 
-%% @private 遍历所有插件搜索函数（短名查找）
+%% @private 在所有插件中查找函数（短名查找）
 %%
-%% 当函数名不含 "." 时调用，依次在每个插件中搜索。
+%% 当函数名不含 "." 时调用，依次在每个插件中查找。
 %% 若多个插件包含同名函数，返回第一个找到的。
-search_all_plugins(Plugins, FuncName) ->
+find_in_all_plugins(Plugins, FuncName) ->
     Results = maps:fold(fun(_PName, Plugin, Acc) ->
         case beamai_plugin:get_function(Plugin, FuncName) of
             {ok, F} -> [F | Acc];
@@ -363,20 +363,20 @@ search_all_plugins(Plugins, FuncName) ->
 run_invoke_pipeline(Filters, FuncDef, Args, Context) ->
     case beamai_filter:apply_pre_filters(Filters, FuncDef, Args, Context) of
         {ok, FilteredArgs, FilteredCtx} ->
-            invoke_and_post_filter(Filters, FuncDef, FilteredArgs, FilteredCtx);
+            execute_and_post_filter(Filters, FuncDef, FilteredArgs, FilteredCtx);
         {skip, Value} ->
             {ok, Value, Context};
         {error, _} = Err ->
             Err
     end.
 
-%% @private 调用函数并执行后置过滤器
-invoke_and_post_filter(Filters, FuncDef, Args, Context) ->
+%% @private 执行函数并应用后置过滤器
+execute_and_post_filter(Filters, FuncDef, Args, Context) ->
     case beamai_function:invoke(FuncDef, Args, Context) of
         {ok, Value} ->
-            beamai_filter:apply_post_filters_result(Filters, FuncDef, Value, Context);
+            beamai_filter:apply_post_filters(Filters, FuncDef, Value, Context);
         {ok, Value, NewCtx} ->
-            beamai_filter:apply_post_filters_result(Filters, FuncDef, Value, NewCtx);
+            beamai_filter:apply_post_filters(Filters, FuncDef, Value, NewCtx);
         {error, _} = Err ->
             Err
     end.
@@ -385,13 +385,13 @@ invoke_and_post_filter(Filters, FuncDef, Args, Context) ->
 run_chat_pipeline(LlmConfig, Filters, Messages, Opts, Context) ->
     case beamai_filter:apply_pre_chat_filters(Filters, Messages, Context) of
         {ok, FilteredMsgs, FilteredCtx} ->
-            call_llm_and_post_filter(LlmConfig, Filters, FilteredMsgs, Opts, FilteredCtx);
+            execute_llm_and_post_filter(LlmConfig, Filters, FilteredMsgs, Opts, FilteredCtx);
         {error, _} = Err ->
             Err
     end.
 
-%% @private 调用 LLM 并执行后置过滤器
-call_llm_and_post_filter(LlmConfig, Filters, Messages, Opts, Context) ->
+%% @private 执行 LLM 请求并应用后置过滤器
+execute_llm_and_post_filter(LlmConfig, Filters, Messages, Opts, Context) ->
     case beamai_chat_completion:chat(LlmConfig, Messages, Opts) of
         {ok, Response} ->
             case beamai_filter:apply_post_chat_filters(Filters, Response, Context) of

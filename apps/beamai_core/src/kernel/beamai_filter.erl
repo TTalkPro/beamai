@@ -15,7 +15,6 @@
 -export([new/3, new/4]).
 -export([apply_pre_filters/4]).
 -export([apply_post_filters/4]).
--export([apply_post_filters_result/4]).
 -export([apply_pre_chat_filters/3]).
 -export([apply_post_chat_filters/3]).
 -export([sort_filters/1]).
@@ -144,19 +143,6 @@ apply_post_filters(Filters, FuncDef, Result, Context) ->
             {ok, Value, Context};
         {error, Reason} ->
             {error, Reason}
-    end.
-
-%% @doc 执行后置过滤器并返回最终结果
-%%
-%% 将 filter 内部格式 {ok, Value, Ctx} 转为调用者需要的 {ok, Value}。
-%%
--spec apply_post_filters_result([filter_def()], beamai_function:function_def(),
-                                 term(), beamai_context:t()) ->
-    {ok, term(), beamai_context:t()} | {error, term()}.
-apply_post_filters_result(Filters, FuncDef, Value, Context) ->
-    case apply_post_filters(Filters, FuncDef, Value, Context) of
-        {ok, FinalValue, FinalCtx} -> {ok, FinalValue, FinalCtx};
-        {error, _} = Err -> Err
     end.
 
 %% @doc 执行前置 Chat 过滤器管道

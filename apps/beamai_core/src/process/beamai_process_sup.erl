@@ -1,8 +1,9 @@
 %%%-------------------------------------------------------------------
-%%% @doc Dynamic supervisor for process runtimes
+%%% @doc 流程运行时动态 Supervisor
 %%%
-%%% Manages beamai_process_runtime gen_statem processes as temporary
-%%% children via simple_one_for_one strategy.
+%%% 使用 simple_one_for_one 策略管理 beamai_process_runtime
+%%% gen_statem 进程，每个流程实例作为临时子进程启动。
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_process_sup).
@@ -12,32 +13,43 @@
 %% API
 -export([start_link/0, start_runtime/1, start_runtime/2]).
 
-%% Supervisor callbacks
+%% Supervisor 回调
 -export([init/1]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
+%% @doc 启动 Supervisor 进程（注册为本地名称）
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-%% @doc Start a new process runtime under this supervisor
+%% @doc 在 Supervisor 下启动新的流程运行时（默认选项）
+%%
+%% @param ProcessDef 编译后的流程定义
+%% @returns {ok, Pid} | {error, Reason}
 -spec start_runtime(beamai_process_builder:process_def()) ->
     {ok, pid()} | {error, term()}.
 start_runtime(ProcessDef) ->
     start_runtime(ProcessDef, #{}).
 
+%% @doc 在 Supervisor 下启动新的流程运行时（自定义选项）
+%%
+%% @param ProcessDef 编译后的流程定义
+%% @param Opts 启动选项
+%% @returns {ok, Pid} | {error, Reason}
 -spec start_runtime(beamai_process_builder:process_def(), map()) ->
     {ok, pid()} | {error, term()}.
 start_runtime(ProcessDef, Opts) ->
     supervisor:start_child(?MODULE, [ProcessDef, Opts]).
 
 %%====================================================================
-%% Supervisor callbacks
+%% Supervisor 回调
 %%====================================================================
 
+%% @private 初始化 Supervisor 配置
+%% 使用 simple_one_for_one 策略，子进程为临时进程（崩溃不重启）
 init([]) ->
     SupFlags = #{
         strategy => simple_one_for_one,

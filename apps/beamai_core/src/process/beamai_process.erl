@@ -1,7 +1,9 @@
 %%%-------------------------------------------------------------------
-%%% @doc Public API facade for the Process Framework
+%%% @doc 流程框架公共 API 门面
 %%%
-%%% Provides a unified interface for building and running processes.
+%%% 提供统一的流程构建和运行接口。
+%%% 作为 facade 模式实现，委托到具体的 builder/runtime 模块。
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_process).
@@ -38,31 +40,31 @@
 %% Builder API
 %%====================================================================
 
-%% @doc Create a new process builder
+%% @doc 创建新的流程构建器
 -spec builder(atom()) -> beamai_process_builder:builder().
 builder(Name) ->
     beamai_process_builder:new(Name).
 
-%% @doc Add a step with default config
+%% @doc 添加步骤（使用默认配置）
 -spec add_step(beamai_process_builder:builder(), atom(), module()) ->
     beamai_process_builder:builder().
 add_step(Builder, StepId, Module) ->
     beamai_process_builder:add_step(Builder, StepId, Module).
 
-%% @doc Add a step with config
+%% @doc 添加步骤（使用自定义配置）
 -spec add_step(beamai_process_builder:builder(), atom(), module(), map()) ->
     beamai_process_builder:builder().
 add_step(Builder, StepId, Module, Config) ->
     beamai_process_builder:add_step(Builder, StepId, Module, Config).
 
-%% @doc Bind an event to a step input
+%% @doc 绑定事件到步骤输入
 -spec on_event(beamai_process_builder:builder(), atom(), atom(), atom()) ->
     beamai_process_builder:builder().
 on_event(Builder, EventName, TargetStep, TargetInput) ->
     Binding = beamai_process_event:binding(EventName, TargetStep, TargetInput),
     beamai_process_builder:add_binding(Builder, Binding).
 
-%% @doc Bind an event to a step input with transform
+%% @doc 绑定事件到步骤输入（带转换函数）
 -spec on_event(beamai_process_builder:builder(), atom(), atom(), atom(),
                beamai_process_event:transform_fun()) ->
     beamai_process_builder:builder().
@@ -70,25 +72,26 @@ on_event(Builder, EventName, TargetStep, TargetInput, Transform) ->
     Binding = beamai_process_event:binding(EventName, TargetStep, TargetInput, Transform),
     beamai_process_builder:add_binding(Builder, Binding).
 
-%% @doc Set an initial event (with name and data)
+%% @doc 设置初始事件（仅指定事件名）
 -spec set_initial_event(beamai_process_builder:builder(), atom()) ->
     beamai_process_builder:builder().
 set_initial_event(Builder, EventName) ->
     set_initial_event(Builder, EventName, #{}).
 
+%% @doc 设置初始事件（指定事件名和数据）
 -spec set_initial_event(beamai_process_builder:builder(), atom(), term()) ->
     beamai_process_builder:builder().
 set_initial_event(Builder, EventName, Data) ->
     Event = beamai_process_event:new(EventName, Data),
     beamai_process_builder:add_initial_event(Builder, Event).
 
-%% @doc Set execution mode (concurrent | sequential)
+%% @doc 设置执行模式（concurrent 并发 | sequential 顺序）
 -spec set_execution_mode(beamai_process_builder:builder(), concurrent | sequential) ->
     beamai_process_builder:builder().
 set_execution_mode(Builder, Mode) ->
     beamai_process_builder:set_execution_mode(Builder, Mode).
 
-%% @doc Compile the builder into a process definition
+%% @doc 编译构建器为流程定义
 -spec build(beamai_process_builder:builder()) ->
     {ok, beamai_process_builder:process_def()} | {error, [term()]}.
 build(Builder) ->
@@ -98,55 +101,56 @@ build(Builder) ->
 %% Runtime API
 %%====================================================================
 
-%% @doc Start a process from a compiled definition
+%% @doc 从编译后的流程定义启动流程
 -spec start(beamai_process_builder:process_def()) ->
     {ok, pid()} | {error, term()}.
 start(ProcessDef) ->
     start(ProcessDef, #{}).
 
+%% @doc 从编译后的流程定义启动流程（带选项）
 -spec start(beamai_process_builder:process_def(), map()) ->
     {ok, pid()} | {error, term()}.
 start(ProcessDef, Opts) ->
     beamai_process_sup:start_runtime(ProcessDef, Opts).
 
-%% @doc Send an event to a running process
+%% @doc 向运行中的流程发送事件
 -spec send_event(pid(), beamai_process_event:event()) -> ok.
 send_event(Pid, Event) ->
     beamai_process_runtime:send_event(Pid, Event).
 
-%% @doc Resume a paused process with data
+%% @doc 恢复已暂停的流程
 -spec resume(pid(), term()) -> ok | {error, term()}.
 resume(Pid, Data) ->
     beamai_process_runtime:resume(Pid, Data).
 
-%% @doc Stop a running process
+%% @doc 停止运行中的流程
 -spec stop(pid()) -> ok.
 stop(Pid) ->
     beamai_process_runtime:stop(Pid).
 
-%% @doc Get process status
+%% @doc 获取流程状态
 -spec get_status(pid()) -> {ok, map()}.
 get_status(Pid) ->
     beamai_process_runtime:get_status(Pid).
 
-%% @doc Take a snapshot of the process state
+%% @doc 获取流程状态快照
 -spec snapshot(pid()) -> {ok, beamai_process_state:snapshot()}.
 snapshot(Pid) ->
     beamai_process_runtime:snapshot(Pid).
 
-%% @doc Restore a process from a snapshot
+%% @doc 从快照恢复流程（默认选项）
 -spec restore(beamai_process_state:snapshot()) ->
     {ok, pid()} | {error, term()}.
 restore(Snapshot) ->
     restore(Snapshot, #{}).
 
+%% @doc 从快照恢复流程（自定义选项）
 -spec restore(beamai_process_state:snapshot(), map()) ->
     {ok, pid()} | {error, term()}.
 restore(Snapshot, Opts) ->
     case beamai_process_state:restore_from_snapshot(Snapshot) of
         {ok, #{process_def := ProcessDef, event_queue := EventQueue,
                current_state := _CurrentState} = _Restored} ->
-            %% Start fresh runtime with restored events
             RestoreOpts = Opts#{restored => true},
             ProcessDefWithQueue = ProcessDef#{
                 initial_events => EventQueue
@@ -160,12 +164,13 @@ restore(Snapshot, Opts) ->
 %% Sync API
 %%====================================================================
 
-%% @doc Start a process and wait for completion
+%% @doc 启动流程并同步等待完成
 -spec run_sync(beamai_process_builder:process_def()) ->
     {ok, map()} | {error, term()}.
 run_sync(ProcessDef) ->
     run_sync(ProcessDef, #{}).
 
+%% @doc 启动流程并同步等待完成（带选项，可设置超时）
 -spec run_sync(beamai_process_builder:process_def(), map()) ->
     {ok, map()} | {error, term()}.
 run_sync(ProcessDef, Opts) ->

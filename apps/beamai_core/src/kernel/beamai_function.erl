@@ -340,28 +340,24 @@ build_json_schema(Params) ->
     #{type => object, properties => Properties, required => Required}.
 
 %% @private 将单个参数 spec 转换为 JSON Schema 属性
-%% 递归处理 items（数组元素）和 properties（嵌套对象）
+%% 使用管道模式逐步添加可选字段，避免级联嵌套
 param_to_json_schema(#{type := Type} = Spec) ->
-    S0 = #{type => type_to_schema(Type)},
-    S1 = case maps:find(description, Spec) of
-        {ok, D} -> S0#{description => D};
-        error -> S0
-    end,
-    S2 = case maps:find(enum, Spec) of
-        {ok, E} -> S1#{enum => E};
-        error -> S1
-    end,
-    S3 = case maps:find(items, Spec) of
-        {ok, Items} -> S2#{items => param_to_json_schema(Items)};
-        error -> S2
-    end,
-    case maps:find(properties, Spec) of
-        {ok, Props} ->
-            SubSchema = build_json_schema(Props),
-            S3#{properties => maps:get(properties, SubSchema)};
-        error ->
-            S3
-    end.
+    Base = #{type => type_to_schema(Type)},
+    OptionalFields = [
+        {description, fun(V) -> #{description => V} end},
+        {enum, fun(V) -> #{enum => V} end},
+        {items, fun(V) -> #{items => param_to_json_schema(V)} end},
+        {properties, fun(V) ->
+            SubSchema = build_json_schema(V),
+            #{properties => maps:get(properties, SubSchema)}
+        end}
+    ],
+    lists:foldl(fun({Key, Transform}, Acc) ->
+        case maps:find(Key, Spec) of
+            {ok, Val} -> maps:merge(Acc, Transform(Val));
+            error -> Acc
+        end
+    end, Base, OptionalFields).
 
 %% @private 内部类型到 JSON Schema 类型的映射
 %% float 映射为 number，其余同名
@@ -391,10 +387,11 @@ extract_args(#{arguments := A}) -> parse_args(A);
 extract_args(_) -> #{}.
 
 %% @private 解析参数（JSON 字符串或已解码的 map）
+%% 使用 binary 标签避免动态创建 atom，防止 atom 表溢出攻击
 parse_args(Args) when is_map(Args) -> Args;
 parse_args(Args) when is_binary(Args) ->
-    try jsx:decode(Args, [return_maps, {labels, attempt_atom}])
-    catch _:_ -> #{raw => Args}
+    try jsx:decode(Args, [return_maps])
+    catch _:_ -> #{<<"raw">> => Args}
     end;
 parse_args(_) -> #{}.
 

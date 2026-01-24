@@ -1,7 +1,9 @@
 %%%-------------------------------------------------------------------
-%%% @doc Process state snapshot and restore
+%%% @doc 流程状态快照与恢复
 %%%
-%%% Supports persistence by serializing/deserializing runtime state.
+%%% 通过序列化/反序列化运行时状态实现流程持久化。
+%%% 快照包含完整的流程定义、步骤状态和事件队列。
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_process_state).
@@ -34,7 +36,14 @@
 %% API
 %%====================================================================
 
-%% @doc Take a snapshot of runtime state
+%% @doc 生成运行时状态快照
+%%
+%% 将完整的运行时状态序列化为可持久化的 Map。
+%% 步骤状态仅保留 state、collected_inputs 和 activation_count，
+%% 去除 step_def 引用（恢复时从 process_def 重建）。
+%%
+%% @param RuntimeState 运行时状态 Map（包含 process_def、steps_state 等字段）
+%% @returns 快照 Map
 -spec take_snapshot(map()) -> snapshot().
 take_snapshot(#{process_def := ProcessDef, current_state := CurrentState,
                steps_state := StepsState, event_queue := EventQueue,
@@ -50,7 +59,13 @@ take_snapshot(#{process_def := ProcessDef, current_state := CurrentState,
         timestamp => erlang:system_time(millisecond)
     }.
 
-%% @doc Restore runtime state from a snapshot
+%% @doc 从快照恢复运行时状态
+%%
+%% 将快照中的步骤状态与 process_def 中的步骤定义重新关联，
+%% 重建完整的运行时状态。
+%%
+%% @param Snapshot 快照 Map
+%% @returns {ok, 恢复后的运行时状态} | {error, 原因}
 -spec restore_from_snapshot(snapshot()) ->
     {ok, map()} | {error, term()}.
 restore_from_snapshot(#{process_def := ProcessDef, current_state := CurrentState,
@@ -71,9 +86,10 @@ restore_from_snapshot(#{process_def := ProcessDef, current_state := CurrentState
     end.
 
 %%====================================================================
-%% Internal
+%% 内部函数
 %%====================================================================
 
+%% @private 将步骤运行时状态精简为快照格式（去除 step_def 引用）
 snapshot_steps(StepsState) ->
     maps:map(
         fun(_StepId, #{state := State, collected_inputs := Inputs,
@@ -87,6 +103,7 @@ snapshot_steps(StepsState) ->
         StepsState
     ).
 
+%% @private 从快照恢复步骤运行时状态（重建 step_def 引用）
 restore_steps(StepsSnapshots, StepDefs) ->
     try
         Restored = maps:map(
