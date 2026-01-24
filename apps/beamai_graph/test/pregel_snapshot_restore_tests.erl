@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
-%%% @doc Pregel Checkpoint 恢复单元测试
+%%% @doc Pregel Snapshot 恢复单元测试
 %%%
-%%% 测试从 checkpoint 恢复执行的功能（无 inbox 版本）：
+%%% 测试从 snapshot 恢复执行的功能（无 inbox 版本）：
 %%% - 从指定超步恢复
 %%% - 顶点状态恢复
 %%% - 激活注入（替代消息注入）
@@ -9,7 +9,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(pregel_checkpoint_restore_tests).
+-module(pregel_snapshot_restore_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 %%====================================================================
@@ -271,7 +271,7 @@ no_activations_field_restore_test() ->
 %% 5.5 完整保存-恢复流程测试
 %%====================================================================
 
-%% 测试：使用步进式 API 保存 checkpoint 后恢复
+%% 测试：使用步进式 API 保存 snapshot 后恢复
 save_and_restore_with_step_api_test() ->
     Graph = make_test_graph(),
 
@@ -288,7 +288,7 @@ save_and_restore_with_step_api_test() ->
         end
     end,
 
-    %% 第一阶段：执行一步并保存 checkpoint
+    %% 第一阶段：执行一步并保存 snapshot
     {ok, Master1} = pregel_master:start_link(Graph, ComputeFn, #{
         num_workers => 1,
         global_state => #{counter => 0}
@@ -297,22 +297,22 @@ save_and_restore_with_step_api_test() ->
         %% 执行第一步
         {continue, _Info1} = pregel_master:step(Master1),
 
-        %% 保存 checkpoint 数据
-        CheckpointData = pregel_master:get_checkpoint_data(Master1),
-        ?assert(maps:is_key(superstep, CheckpointData)),
-        ?assert(maps:is_key(vertices, CheckpointData)),
-        ?assert(maps:is_key(pending_activations, CheckpointData)),
+        %% 保存 snapshot 数据
+        SnapshotData = pregel_master:get_snapshot_data(Master1),
+        ?assert(maps:is_key(superstep, SnapshotData)),
+        ?assert(maps:is_key(vertices, SnapshotData)),
+        ?assert(maps:is_key(pending_activations, SnapshotData)),
 
         %% 停止第一个执行
         pregel_master:stop(Master1),
 
-        %% 第二阶段：从 checkpoint 恢复
-        #{superstep := S, vertices := V} = CheckpointData,
-        PendingActivations = maps:get(pending_activations, CheckpointData, []),
+        %% 第二阶段：从 snapshot 恢复
+        #{superstep := S, vertices := V} = SnapshotData,
+        PendingActivations = maps:get(pending_activations, SnapshotData, []),
         RestoreOpts = make_restore_opts(S, V, PendingActivations),
 
         %% 获取当前全局状态
-        CurrentGlobalState = maps:get(global_state, CheckpointData, #{counter => 0}),
+        CurrentGlobalState = maps:get(global_state, SnapshotData, #{counter => 0}),
 
         Opts2 = #{
             num_workers => 1,
@@ -445,8 +445,8 @@ no_restore_option_test() ->
 %% pending_activations 测试（无 inbox 版本）
 %%====================================================================
 
-%% 测试：checkpoint_data 包含 pending_activations（使用步进式 API）
-checkpoint_contains_pending_activations_test() ->
+%% 测试：snapshot_data 包含 pending_activations（使用步进式 API）
+snapshot_contains_pending_activations_test() ->
     Graph = make_test_graph(),
 
     %% 计算函数：v1 激活 v2
@@ -473,18 +473,18 @@ checkpoint_contains_pending_activations_test() ->
         %% 执行第二步（超步 0）
         {continue, _Info2} = pregel_master:step(Master),
 
-        %% 获取 checkpoint 数据
-        CheckpointData1 = pregel_master:get_checkpoint_data(Master),
+        %% 获取 snapshot 数据
+        SnapshotData1 = pregel_master:get_snapshot_data(Master),
 
-        %% 验证 checkpoint 结构包含 pending_activations 字段
-        ?assert(maps:is_key(pending_activations, CheckpointData1)),
+        %% 验证 snapshot 结构包含 pending_activations 字段
+        ?assert(maps:is_key(pending_activations, SnapshotData1)),
 
         %% 执行第三步
         _Step3Result = pregel_master:step(Master),
 
-        %% 获取第三步后的 checkpoint 数据
-        CheckpointData2 = pregel_master:get_checkpoint_data(Master),
-        ?assert(maps:is_key(pending_activations, CheckpointData2))
+        %% 获取第三步后的 snapshot 数据
+        SnapshotData2 = pregel_master:get_snapshot_data(Master),
+        ?assert(maps:is_key(pending_activations, SnapshotData2))
     after
         pregel_master:stop(Master)
     end.
@@ -519,9 +519,9 @@ pending_activations_for_restore_test() ->
         %% 执行第二步（超步 0）
         {continue, _Info2} = pregel_master:step(Master),
 
-        %% 获取 checkpoint 数据（包含 pending_activations）
-        CheckpointData = pregel_master:get_checkpoint_data(Master),
-        ?assert(maps:is_key(pending_activations, CheckpointData)),
+        %% 获取 snapshot 数据（包含 pending_activations）
+        SnapshotData = pregel_master:get_snapshot_data(Master),
+        ?assert(maps:is_key(pending_activations, SnapshotData)),
 
         %% 执行第三步（超步 1）
         _Step3 = pregel_master:step(Master),

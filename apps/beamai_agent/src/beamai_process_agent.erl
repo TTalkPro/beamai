@@ -78,8 +78,8 @@
 %%   extra_bindings — 额外的 event bindings
 %%
 %% @param Config 配置 map
-%% @returns {ok, {ProcessDef, Context}} | {error, Reason}
--spec build(map()) -> {ok, {beamai_process_builder:process_def(), beamai_context:t()}} | {error, term()}.
+%% @returns {ok, {ProcessSpec, Context}} | {error, Reason}
+-spec build(map()) -> {ok, {beamai_process_builder:process_spec(), beamai_context:t()}} | {error, term()}.
 build(Config) ->
     try
         %% 1. 构建 Kernel
@@ -121,8 +121,8 @@ build(Config) ->
 
         %% 7. 编译
         case beamai_process:build(B7) of
-            {ok, ProcessDef} ->
-                {ok, {ProcessDef, Context}};
+            {ok, ProcessSpec} ->
+                {ok, {ProcessSpec, Context}};
             {error, Errors} ->
                 {error, {build_failed, Errors}}
         end
@@ -146,9 +146,9 @@ start(Config) ->
 -spec start(map(), map()) -> {ok, pid()} | {error, term()}.
 start(Config, Opts) ->
     case build(Config) of
-        {ok, {ProcessDef, Context}} ->
+        {ok, {ProcessSpec, Context}} ->
             RuntimeOpts = Opts#{context => Context},
-            beamai_process:start(ProcessDef, RuntimeOpts);
+            beamai_process:start(ProcessSpec, RuntimeOpts);
         {error, _} = Error ->
             Error
     end.
@@ -175,14 +175,14 @@ run_sync(Config, UserMessage) ->
 run_sync(Config, UserMessage, Opts) ->
     Timeout = maps:get(timeout, Opts, 60000),
     case build(Config) of
-        {ok, {ProcessDef, Context}} ->
+        {ok, {ProcessSpec, Context}} ->
             %% 设置初始事件为 user_message
             InitEvent = beamai_process_event:new(user_message, UserMessage),
-            ProcessDefWithInit = ProcessDef#{
+            ProcessSpecWithInit = ProcessSpec#{
                 initial_events => [InitEvent]
             },
             RuntimeOpts = #{context => Context, caller => self()},
-            case beamai_process:start(ProcessDefWithInit, RuntimeOpts) of
+            case beamai_process:start(ProcessSpecWithInit, RuntimeOpts) of
                 {ok, Pid} ->
                     MonRef = monitor(process, Pid),
                     receive

@@ -2,7 +2,7 @@
 %%% @doc 基础工具处理器模块
 %%%
 %%% 实现基础工具的处理器函数：
-%%% - handle_checkpoint: 创建检查点
+%%% - handle_snapshot: 创建快照
 %%% - handle_get_trace: 获取执行轨迹
 %%%
 %%% @end
@@ -14,7 +14,7 @@
 %%====================================================================
 
 -export([
-    handle_checkpoint/2,
+    handle_snapshot/2,
     handle_get_trace/2
 ]).
 
@@ -22,12 +22,12 @@
 %% 处理器实现
 %%====================================================================
 
-%% @doc 处理 checkpoint 工具调用
+%% @doc 处理 snapshot 工具调用
 %%
-%% 创建检查点记录，包含时间戳信息。
+%% 创建快照记录，包含时间戳信息。
 %% 如果启用了存储，会持久化当前状态。
--spec handle_checkpoint(map(), graph_state:state()) -> map().
-handle_checkpoint(Args, State) ->
+-spec handle_snapshot(map(), graph_state:state()) -> map().
+handle_snapshot(Args, State) ->
     Label = maps:get(<<"label">>, Args),
     Notes = maps:get(<<"notes">>, Args, <<>>),
     Timestamp = erlang:system_time(millisecond),
@@ -43,21 +43,21 @@ handle_checkpoint(Args, State) ->
                 timestamp => Timestamp,
                 source => tool
             },
-            beamai_deepagent_checkpoint:save(Meta, State)
+            beamai_deepagent_snapshot:save(Meta, State)
     end,
 
     %% 构建响应
     Response = #{
-        action => checkpoint,
+        action => snapshot,
         label => Label,
         notes => Notes,
         timestamp => Timestamp
     },
 
-    %% 如果保存成功，添加 checkpoint_id
+    %% 如果保存成功，添加 snapshot_id
     case SaveResult of
         {ok, CpId} ->
-            Response#{checkpoint_id => CpId, saved => true};
+            Response#{snapshot_id => CpId, saved => true};
         {error, _Reason} ->
             Response#{saved => false, note => <<"Storage not enabled">>}
     end.

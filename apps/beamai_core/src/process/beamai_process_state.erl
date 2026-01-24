@@ -2,7 +2,7 @@
 %%% @doc 流程状态快照与恢复
 %%%
 %%% 通过序列化/反序列化运行时状态实现流程持久化。
-%%% 快照包含完整的流程定义、步骤状态和事件队列。
+%%% 快照包含完整的流程规格、步骤状态和事件队列。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -17,7 +17,7 @@
 
 -type snapshot() :: #{
     '__process_snapshot__' := true,
-    process_def := beamai_process_builder:process_def(),
+    process_spec := beamai_process_builder:process_spec(),
     current_state := atom(),
     steps_state := #{atom() => step_snapshot()},
     event_queue := [beamai_process_event:event()],
@@ -40,17 +40,17 @@
 %%
 %% 将完整的运行时状态序列化为可持久化的 Map。
 %% 步骤状态仅保留 state、collected_inputs 和 activation_count，
-%% 去除 step_def 引用（恢复时从 process_def 重建）。
+%% 去除 step_def 引用（恢复时从 process_spec 重建）。
 %%
-%% @param RuntimeState 运行时状态 Map（包含 process_def、steps_state 等字段）
+%% @param RuntimeState 运行时状态 Map（包含 process_spec、steps_state 等字段）
 %% @returns 快照 Map
 -spec take_snapshot(map()) -> snapshot().
-take_snapshot(#{process_def := ProcessDef, current_state := CurrentState,
+take_snapshot(#{process_spec := ProcessSpec, current_state := CurrentState,
                steps_state := StepsState, event_queue := EventQueue,
                paused_step := PausedStep, pause_reason := PauseReason}) ->
     #{
         '__process_snapshot__' => true,
-        process_def => ProcessDef,
+        process_spec => ProcessSpec,
         current_state => CurrentState,
         steps_state => snapshot_steps(StepsState),
         event_queue => EventQueue,
@@ -61,20 +61,20 @@ take_snapshot(#{process_def := ProcessDef, current_state := CurrentState,
 
 %% @doc 从快照恢复运行时状态
 %%
-%% 将快照中的步骤状态与 process_def 中的步骤定义重新关联，
+%% 将快照中的步骤状态与 process_spec 中的步骤定义重新关联，
 %% 重建完整的运行时状态。
 %%
 %% @param Snapshot 快照 Map
 %% @returns {ok, 恢复后的运行时状态} | {error, 原因}
 -spec restore_from_snapshot(snapshot()) ->
     {ok, map()} | {error, term()}.
-restore_from_snapshot(#{process_def := ProcessDef, current_state := CurrentState,
+restore_from_snapshot(#{process_spec := ProcessSpec, current_state := CurrentState,
                         steps_state := StepsSnapshots, event_queue := EventQueue,
                         paused_step := PausedStep, pause_reason := PauseReason}) ->
-    case restore_steps(StepsSnapshots, maps:get(steps, ProcessDef)) of
+    case restore_steps(StepsSnapshots, maps:get(steps, ProcessSpec)) of
         {ok, StepsState} ->
             {ok, #{
-                process_def => ProcessDef,
+                process_spec => ProcessSpec,
                 current_state => CurrentState,
                 steps_state => StepsState,
                 event_queue => EventQueue,

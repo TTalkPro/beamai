@@ -347,7 +347,7 @@ save(State) ->
 
 %% @doc 从 memory 恢复 agent 状态
 %%
-%% 使用原始 config 重建 agent，然后用 checkpoint 数据恢复运行时状态。
+%% 使用原始 config 重建 agent，然后用 snapshot 数据恢复运行时状态。
 %%
 %% @param Config agent 配置（用于重建 kernel 等）
 %% @param Memory memory 实例
@@ -418,7 +418,7 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
 
 %% @doc 从 memory 加载并恢复中断的 agent
 %%
-%% 加载最新的 checkpoint（含 interrupt_state），然后调用 resume/2。
+%% 加载最新的 snapshot（含 interrupt_state），然后调用 resume/2。
 %%
 %% @param Config agent 配置
 %% @param Memory memory 实例

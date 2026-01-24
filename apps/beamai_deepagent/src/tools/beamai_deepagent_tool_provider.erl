@@ -6,7 +6,7 @@
 %%%
 %%% == 工具类型 ==
 %%%
-%%% - 基础工具：checkpoint, get_trace（始终可用）
+%%% - 基础工具：snapshot, get_trace（始终可用）
 %%% - 计划工具：create_plan, update_plan（depth=0 且 planning_mode=full 时可用）
 %%% - 子任务工具：spawn_subtask（depth < max_depth 时可用）
 %%% - 反思工具：reflect（reflection_enabled 时可用）

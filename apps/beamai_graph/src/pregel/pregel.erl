@@ -52,7 +52,7 @@
 -export([from_edges/1, from_edges/2]).
 
 %% Pregel 执行 - 步进式 API
--export([start/3, step/1, retry/2, get_checkpoint_data/1, get_result/1, stop/1]).
+-export([start/3, step/1, retry/2, get_snapshot_data/1, get_result/1, stop/1]).
 -export([get_global_state/1]).
 %% Pregel 执行 - 简化 API（内部使用步进式）
 -export([run/2, run/3]).
@@ -73,7 +73,7 @@
 
 %% 类型导出
 -export_type([graph/0, vertex/0, compute_fn/0, context/0, opts/0, result/0]).
--export_type([step_result/0, superstep_info/0, checkpoint_data/0, checkpoint_type/0]).
+-export_type([step_result/0, superstep_info/0, snapshot_data/0, snapshot_type/0]).
 
 %%====================================================================
 %% 类型定义
@@ -95,8 +95,8 @@
 -type result() :: pregel_master:result().
 -type step_result() :: pregel_master:step_result().
 -type superstep_info() :: pregel_master:superstep_info().
--type checkpoint_data() :: pregel_master:checkpoint_data().
--type checkpoint_type() :: pregel_master:checkpoint_type().
+-type snapshot_data() :: pregel_master:snapshot_data().
+-type snapshot_type() :: pregel_master:snapshot_type().
 
 %%====================================================================
 %% 图构建 API
@@ -160,10 +160,10 @@ step(Master) ->
 retry(Master, VertexIds) ->
     pregel_master:retry(Master, VertexIds).
 
-%% @doc 获取当前 checkpoint 数据
--spec get_checkpoint_data(pid()) -> checkpoint_data().
-get_checkpoint_data(Master) ->
-    pregel_master:get_checkpoint_data(Master).
+%% @doc 获取当前 snapshot 数据
+-spec get_snapshot_data(pid()) -> snapshot_data().
+get_snapshot_data(Master) ->
+    pregel_master:get_snapshot_data(Master).
 
 %% @doc 获取最终结果（仅在终止后调用）
 -spec get_result(pid()) -> result() | {error, not_halted}.
@@ -205,7 +205,7 @@ run(Graph, ComputeFn, Opts) ->
 
 %% @private 内部执行循环
 %%
-%% 无 checkpoint 回调时，遇到 error 或 interrupt 也应停止执行。
+%% 无 snapshot 回调时，遇到 error 或 interrupt 也应停止执行。
 %% 调用方可通过结果中的 failed_vertices 字段获取详细信息。
 -spec run_loop(pid()) -> result().
 run_loop(Master) ->
@@ -225,11 +225,11 @@ run_loop(Master) ->
 %% @private 构建提前终止时的结果
 -spec build_early_termination_result(pid(), superstep_info(), error | interrupt) -> result().
 build_early_termination_result(Master, Info, _Reason) ->
-    CheckpointData = get_checkpoint_data(Master),
+    SnapshotData = get_snapshot_data(Master),
     #{
         superstep := Superstep,
         global_state := GlobalState
-    } = CheckpointData,
+    } = SnapshotData,
     #{
         status => completed,  %% 使用 completed 但携带 failed_vertices
         global_state => GlobalState,

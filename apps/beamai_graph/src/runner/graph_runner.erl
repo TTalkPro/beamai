@@ -23,49 +23,49 @@
 -export([step/2]).
 -export([stream/2, stream/3]).
 %% 内部函数导出（用于测试）
--export([needs_checkpoint_mode/1]).
+-export([needs_snapshot_mode/1]).
 
 %% 类型定义
 -type graph() :: graph_builder:graph().
 -type node_id() :: graph_node:node_id().
 -type state() :: graph_state:state().
 
-%% Checkpoint 数据类型（包含 pregel 层状态）
+%% Snapshot 数据类型（包含 pregel 层状态）
 %% 全局状态模式：状态在 global_state 中，不在顶点 value 中
 %%
-%% Checkpoint 类型说明：
+%% Snapshot 类型说明：
 %% - initial: 超步 0 执行前的初始状态
 %% - step: 正常超步完成
 %% - error: 超步完成但有失败的顶点
 %% - interrupt: 超步完成但有中断的顶点（human-in-the-loop）
 %% - final: 执行结束
--type checkpoint_data() :: #{
-    type := pregel:checkpoint_type(),              %% checkpoint 类型
-    pregel_checkpoint := pregel:checkpoint_data(), %% pregel 层 checkpoint
+-type snapshot_data() :: #{
+    type := pregel:snapshot_type(),              %% snapshot 类型
+    pregel_snapshot := pregel:snapshot_data(), %% pregel 层 snapshot
     global_state := state(),                       %% 当前全局状态
     iteration := non_neg_integer()                 %% 当前迭代次数
 }.
 
-%% Checkpoint 回调结果类型
+%% Snapshot 回调结果类型
 %% - continue: 继续执行下一超步
-%% - {stop, Reason}: 停止执行，保存 checkpoint 以便恢复
+%% - {stop, Reason}: 停止执行，保存 snapshot 以便恢复
 %% - {retry, VertexIds}: 重试指定顶点（仅 error 类型有效，同步操作）
--type checkpoint_callback_result() ::
+-type snapshot_callback_result() ::
     continue |
     {stop, term()} |
     {retry, [pregel:vertex_id()]}.
 
-%% Checkpoint 回调函数类型
-%% 输入：superstep_info 和 checkpoint_data
-%% 返回：checkpoint_callback_result()
--type checkpoint_callback() :: fun((pregel:superstep_info(), checkpoint_data()) ->
-    checkpoint_callback_result()).
+%% Snapshot 回调函数类型
+%% 输入：superstep_info 和 snapshot_data
+%% 返回：snapshot_callback_result()
+-type snapshot_callback() :: fun((pregel:superstep_info(), snapshot_data()) ->
+    snapshot_callback_result()).
 
-%% Checkpoint 恢复选项
+%% Snapshot 恢复选项
 %% 全局状态模式（无 inbox 版本）：状态从 global_state 恢复
 %% resume_data 中的数据会被合并到 global_state 中
 -type restore_options() :: #{
-    pregel_checkpoint := pregel:checkpoint_data(),  %% pregel checkpoint 数据
+    pregel_snapshot := pregel:snapshot_data(),  %% pregel snapshot 数据
     global_state => state(),                        %% 恢复时的全局状态
     iteration => non_neg_integer(),                 %% 迭代次数（可选）
     resume_data => #{pregel:vertex_id() => term()}  %% 恢复时注入的用户数据（合并到 global_state）
@@ -76,16 +76,16 @@
     trace => boolean(),              %% 启用执行追踪 (用于 stream/step)
     max_iterations => pos_integer(), %% 最大迭代次数
     timeout => pos_integer(),        %% 超时时间 (毫秒)
-    %% Checkpoint 相关选项
-    on_checkpoint => checkpoint_callback(),  %% 每个超步完成后的回调
-    restore_from => restore_options(),       %% 从 checkpoint 恢复
+    %% Snapshot 相关选项
+    on_snapshot => snapshot_callback(),  %% 每个超步完成后的回调
+    restore_from => restore_options(),       %% 从 snapshot 恢复
     run_id => binary(),                      %% 外部传入的执行 ID
     %% 全局状态选项
     global_state => state(),                 %% 初始全局状态
     field_reducers => pregel_master:field_reducers()   %% 字段级 Reducer 配置
 }.
 
--export_type([checkpoint_data/0, checkpoint_callback/0, checkpoint_callback_result/0, restore_options/0]).
+-export_type([snapshot_data/0, snapshot_callback/0, snapshot_callback_result/0, restore_options/0]).
 
 -type execution_context() :: #{
     graph := graph(),
@@ -110,7 +110,7 @@
     iterations := non_neg_integer(),
     trace => [trace_entry()],
     error => term(),
-    done_reason => pregel:done_reason()  %% checkpoint 模式下的完成原因
+    done_reason => pregel:done_reason()  %% snapshot 模式下的完成原因
 }.
 
 -export_type([run_options/0, run_result/0, execution_context/0, trace_entry/0]).
@@ -133,15 +133,15 @@ run(Graph, InitialState) ->
 %% - field_reducers: 字段级 Reducer 配置
 %%
 %% 执行模式:
-%% - 简单模式: 不提供 checkpoint 选项时，直接使用 pregel:run
-%% - Checkpoint 模式: 提供 on_checkpoint 或 restore_from 时，使用步进式 API
+%% - 简单模式: 不提供 snapshot 选项时，直接使用 pregel:run
+%% - Snapshot 模式: 提供 on_snapshot 或 restore_from 时，使用步进式 API
 -spec run(graph(), state(), run_options()) -> run_result().
 run(Graph, InitialState, Options) ->
     %% 如果未提供 global_state，使用 InitialState
     OptionsWithState = ensure_global_state(Options, InitialState),
-    case needs_checkpoint_mode(OptionsWithState) of
+    case needs_snapshot_mode(OptionsWithState) of
         true ->
-            run_with_checkpoint(Graph, InitialState, OptionsWithState);
+            run_with_snapshot(Graph, InitialState, OptionsWithState);
         false ->
             run_simple(Graph, InitialState, OptionsWithState)
     end.
@@ -154,12 +154,12 @@ ensure_global_state(Options, InitialState) ->
         false -> Options#{global_state => InitialState}
     end.
 
-%% @private 检查是否需要 checkpoint 模式
--spec needs_checkpoint_mode(run_options()) -> boolean().
-needs_checkpoint_mode(Options) ->
-    maps:is_key(on_checkpoint, Options) orelse maps:is_key(restore_from, Options).
+%% @private 检查是否需要 snapshot 模式
+-spec needs_snapshot_mode(run_options()) -> boolean().
+needs_snapshot_mode(Options) ->
+    maps:is_key(on_snapshot, Options) orelse maps:is_key(restore_from, Options).
 
-%% @private 简单执行模式（无 checkpoint）
+%% @private 简单执行模式（无 snapshot）
 %%
 %% 节点计算逻辑和路由边已存储在顶点中（扁平化结构），无需额外配置
 -spec run_simple(graph(), state(), run_options()) -> run_result().
@@ -186,15 +186,15 @@ run_simple(Graph, InitialState, Options) ->
     PregelResult = graph_compute:from_pregel_result(Result),
     handle_pregel_result(PregelResult, InitialState, Options).
 
-%% @private Checkpoint 执行模式（使用步进式 API）
+%% @private Snapshot 执行模式（使用步进式 API）
 %%
-%% 委托给 graph_checkpoint 模块处理
--spec run_with_checkpoint(graph(), state(), run_options()) -> run_result().
-run_with_checkpoint(Graph, InitialState, Options) ->
+%% 委托给 graph_snapshot 模块处理
+-spec run_with_snapshot(graph(), state(), run_options()) -> run_result().
+run_with_snapshot(Graph, InitialState, Options) ->
     ActualGlobalState = maps:get(global_state, Options, InitialState),
-    graph_checkpoint:run_with_checkpoint(Graph, InitialState, ActualGlobalState, Options).
+    graph_snapshot:run_with_snapshot(Graph, InitialState, ActualGlobalState, Options).
 
-%% Checkpoint 相关函数已移至 graph_checkpoint 模块
+%% Snapshot 相关函数已移至 graph_snapshot 模块
 
 %% @private 处理 Pregel 引擎执行结果
 -spec handle_pregel_result({ok, state()} | {error, term()}, state(), run_options()) -> run_result().
@@ -427,4 +427,4 @@ maybe_add_trace(Result, Trace, true) ->
 maybe_add_trace(Result, _Trace, false) ->
     Result.
 
-%% 顶点分类和 ID 生成已移至 graph_checkpoint 模块
+%% 顶点分类和 ID 生成已移至 graph_snapshot 模块

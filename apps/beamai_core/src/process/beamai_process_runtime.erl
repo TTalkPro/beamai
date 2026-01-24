@@ -29,7 +29,7 @@
 -define(POOL_NAME, beamai_process_pool).
 
 -record(data, {
-    process_def :: beamai_process_builder:process_def(),
+    process_spec :: beamai_process_builder:process_spec(),
     steps_state :: #{atom() => beamai_process_step:step_runtime_state()},
     event_queue :: queue:queue(beamai_process_event:event()),
     context :: beamai_context:t(),
@@ -48,13 +48,13 @@
 
 %% @doc 启动流程运行时进程
 %%
-%% @param ProcessDef 编译后的流程定义
+%% @param ProcessSpec 编译后的流程定义
 %% @param Opts 启动选项（可包含 context、caller、initial_events 等）
 %% @returns {ok, Pid} | {error, Reason}
--spec start_link(beamai_process_builder:process_def(), map()) ->
+-spec start_link(beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
-start_link(ProcessDef, Opts) ->
-    gen_statem:start_link(?MODULE, {ProcessDef, Opts}, []).
+start_link(ProcessSpec, Opts) ->
+    gen_statem:start_link(?MODULE, {ProcessSpec, Opts}, []).
 
 %% @doc 向运行中的流程发送事件
 %%
@@ -104,14 +104,14 @@ callback_mode() -> state_functions.
 
 %% @private 初始化流程运行时
 %% 初始化所有步骤状态，设置事件队列，根据是否有初始事件决定初始状态
-init({ProcessDef, Opts}) ->
-    case init_steps(ProcessDef) of
+init({ProcessSpec, Opts}) ->
+    case init_steps(ProcessSpec) of
         {ok, StepsState} ->
             Context = maps:get(context, Opts, beamai_context:new()),
-            InitialEvents = maps:get(initial_events, ProcessDef, []),
+            InitialEvents = maps:get(initial_events, ProcessSpec, []),
             Queue = queue:from_list(InitialEvents),
             Data = #data{
-                process_def = ProcessDef,
+                process_spec = ProcessSpec,
                 steps_state = StepsState,
                 event_queue = Queue,
                 context = Context,
@@ -284,7 +284,7 @@ process_event_queue(#data{event_queue = Queue} = Data) ->
 
 %% @private 路由事件并激活匹配的步骤
 %% 通过 bindings 将事件数据投递到目标步骤输入，然后检查激活条件
-route_and_activate(Event, #data{process_def = #{bindings := Bindings},
+route_and_activate(Event, #data{process_spec = #{bindings := Bindings},
                                 steps_state = StepsState} = Data) ->
     Deliveries = beamai_process_event:route(Event, Bindings),
     NewStepsState = deliver_inputs(Deliveries, StepsState),
@@ -323,7 +323,7 @@ find_activated_steps(StepsState) ->
 
 %% @private 委托执行器执行已激活步骤
 %% 根据返回结果类型（同步完成或异步启动）决定状态转换
-execute_steps(ActivatedSteps, #data{process_def = #{execution_mode := Mode},
+execute_steps(ActivatedSteps, #data{process_spec = #{execution_mode := Mode},
                                      steps_state = StepsState,
                                      context = Context} = Data) ->
     Opts = #{mode => Mode, context => Context},
@@ -439,9 +439,9 @@ transition_to_failed(Reason, #data{caller = Caller} = Data) ->
 
 %% @private 处理步骤执行错误
 %% 若配置了 error_handler 则尝试恢复，否则直接转入失败状态
-handle_error(Reason, #data{process_def = #{error_handler := undefined}} = Data) ->
+handle_error(Reason, #data{process_spec = #{error_handler := undefined}} = Data) ->
     transition_to_failed(Reason, Data);
-handle_error(Reason, #data{process_def = #{error_handler := Handler},
+handle_error(Reason, #data{process_spec = #{error_handler := Handler},
                            context = Context} = Data) ->
     #{module := Module} = Handler,
     ErrorEvent = beamai_process_event:error_event(runtime, Reason),
@@ -486,7 +486,7 @@ handle_resume(Module, ResumeData, StepState, StepId, From,
     end.
 
 %% @private 格式化运行时状态信息为可读 Map
-format_status(StateName, #data{process_def = #{name := Name},
+format_status(StateName, #data{process_spec = #{name := Name},
                                 paused_step = PausedStep,
                                 pause_reason = PauseReason,
                                 event_queue = Queue}) ->
@@ -499,13 +499,13 @@ format_status(StateName, #data{process_def = #{name := Name},
     }.
 
 %% @private 生成当前运行时的可序列化快照
-do_snapshot(StateName, #data{process_def = ProcessDef,
+do_snapshot(StateName, #data{process_spec = ProcessSpec,
                               steps_state = StepsState,
                               event_queue = Queue,
                               paused_step = PausedStep,
                               pause_reason = PauseReason}) ->
     beamai_process_state:take_snapshot(#{
-        process_def => ProcessDef,
+        process_spec => ProcessSpec,
         current_state => StateName,
         steps_state => StepsState,
         event_queue => queue:to_list(Queue),

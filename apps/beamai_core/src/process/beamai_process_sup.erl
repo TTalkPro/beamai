@@ -27,22 +27,22 @@ start_link() ->
 
 %% @doc 在 Supervisor 下启动新的流程运行时（默认选项）
 %%
-%% @param ProcessDef 编译后的流程定义
+%% @param ProcessSpec 编译后的流程定义
 %% @returns {ok, Pid} | {error, Reason}
--spec start_runtime(beamai_process_builder:process_def()) ->
+-spec start_runtime(beamai_process_builder:process_spec()) ->
     {ok, pid()} | {error, term()}.
-start_runtime(ProcessDef) ->
-    start_runtime(ProcessDef, #{}).
+start_runtime(ProcessSpec) ->
+    start_runtime(ProcessSpec, #{}).
 
 %% @doc 在 Supervisor 下启动新的流程运行时（自定义选项）
 %%
-%% @param ProcessDef 编译后的流程定义
+%% @param ProcessSpec 编译后的流程定义
 %% @param Opts 启动选项
 %% @returns {ok, Pid} | {error, Reason}
--spec start_runtime(beamai_process_builder:process_def(), map()) ->
+-spec start_runtime(beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
-start_runtime(ProcessDef, Opts) ->
-    supervisor:start_child(?MODULE, [ProcessDef, Opts]).
+start_runtime(ProcessSpec, Opts) ->
+    supervisor:start_child(?MODULE, [ProcessSpec, Opts]).
 
 %%====================================================================
 %% Supervisor 回调

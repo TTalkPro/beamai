@@ -359,7 +359,7 @@ memory_has_pending_interrupt_test() ->
             messages => [],
             interrupt_state => #{status => interrupted, reason => test}
         },
-        ok = beamai_memory:save_checkpoint(Memory, Config, StateData),
+        ok = beamai_memory:save_snapshot(Memory, Config, StateData),
         %% 现在有中断
         ?assert(beamai_memory:has_pending_interrupt(Memory, Config))
     after
@@ -389,7 +389,7 @@ memory_get_interrupt_context_test() ->
                 created_at => 99999
             }
         },
-        ok = beamai_memory:save_checkpoint(Memory, Config, StateData),
+        ok = beamai_memory:save_snapshot(Memory, Config, StateData),
         %% 获取上下文
         {ok, Ctx} = beamai_memory:get_interrupt_context(Memory, Config),
         ?assertEqual(#{question => <<"approve?">>}, maps:get(reason, Ctx)),

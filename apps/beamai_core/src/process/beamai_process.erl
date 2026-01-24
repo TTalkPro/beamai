@@ -93,7 +93,7 @@ set_execution_mode(Builder, Mode) ->
 
 %% @doc 编译构建器为流程定义
 -spec build(beamai_process_builder:builder()) ->
-    {ok, beamai_process_builder:process_def()} | {error, [term()]}.
+    {ok, beamai_process_builder:process_spec()} | {error, [term()]}.
 build(Builder) ->
     beamai_process_builder:compile(Builder).
 
@@ -102,16 +102,16 @@ build(Builder) ->
 %%====================================================================
 
 %% @doc 从编译后的流程定义启动流程
--spec start(beamai_process_builder:process_def()) ->
+-spec start(beamai_process_builder:process_spec()) ->
     {ok, pid()} | {error, term()}.
-start(ProcessDef) ->
-    start(ProcessDef, #{}).
+start(ProcessSpec) ->
+    start(ProcessSpec, #{}).
 
 %% @doc 从编译后的流程定义启动流程（带选项）
--spec start(beamai_process_builder:process_def(), map()) ->
+-spec start(beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
-start(ProcessDef, Opts) ->
-    beamai_process_sup:start_runtime(ProcessDef, Opts).
+start(ProcessSpec, Opts) ->
+    beamai_process_sup:start_runtime(ProcessSpec, Opts).
 
 %% @doc 向运行中的流程发送事件
 -spec send_event(pid(), beamai_process_event:event()) -> ok.
@@ -149,13 +149,13 @@ restore(Snapshot) ->
     {ok, pid()} | {error, term()}.
 restore(Snapshot, Opts) ->
     case beamai_process_state:restore_from_snapshot(Snapshot) of
-        {ok, #{process_def := ProcessDef, event_queue := EventQueue,
+        {ok, #{process_spec := ProcessSpec, event_queue := EventQueue,
                current_state := _CurrentState} = _Restored} ->
             RestoreOpts = Opts#{restored => true},
-            ProcessDefWithQueue = ProcessDef#{
+            ProcessSpecWithQueue = ProcessSpec#{
                 initial_events => EventQueue
             },
-            start(ProcessDefWithQueue, RestoreOpts);
+            start(ProcessSpecWithQueue, RestoreOpts);
         {error, _} = Error ->
             Error
     end.
@@ -165,18 +165,18 @@ restore(Snapshot, Opts) ->
 %%====================================================================
 
 %% @doc 启动流程并同步等待完成
--spec run_sync(beamai_process_builder:process_def()) ->
+-spec run_sync(beamai_process_builder:process_spec()) ->
     {ok, map()} | {error, term()}.
-run_sync(ProcessDef) ->
-    run_sync(ProcessDef, #{}).
+run_sync(ProcessSpec) ->
+    run_sync(ProcessSpec, #{}).
 
 %% @doc 启动流程并同步等待完成（带选项，可设置超时）
--spec run_sync(beamai_process_builder:process_def(), map()) ->
+-spec run_sync(beamai_process_builder:process_spec(), map()) ->
     {ok, map()} | {error, term()}.
-run_sync(ProcessDef, Opts) ->
+run_sync(ProcessSpec, Opts) ->
     Timeout = maps:get(timeout, Opts, 30000),
     OptsWithCaller = Opts#{caller => self()},
-    case start(ProcessDef, OptsWithCaller) of
+    case start(ProcessSpec, OptsWithCaller) of
         {ok, Pid} ->
             MonRef = monitor(process, Pid),
             receive

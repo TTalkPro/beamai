@@ -33,7 +33,7 @@
         graph_dispatch,
         %% Runner
         graph_runner,
-        graph_checkpoint,
+        graph_snapshot,
         %% Pregel
         pregel,
         pregel_master,

@@ -2,7 +2,7 @@
 %%% @doc Agent 持久化（Memory 集成）
 %%%
 %%% 提供 agent 状态的保存和恢复功能，通过 beamai_memory 的
-%%% checkpoint 机制实现持久化。
+%%% snapshot 机制实现持久化。
 %%%
 %%% 持久化内容包括：
 %%%   - 消息历史（messages）
@@ -32,7 +32,7 @@
 
 %% @doc 保存当前 agent 状态到 memory
 %%
-%% 将 agent 的运行时状态序列化为 checkpoint 数据并持久化。
+%% 将 agent 的运行时状态序列化为 snapshot 数据并持久化。
 %% 使用 agent_id 关联的 thread_id 作为存储键。
 %%
 %% 保存的数据字段：
@@ -65,36 +65,36 @@ save(#{memory := Memory, messages := Messages, id := AgentId,
         run_id => RunId
     },
     CheckpointType = case IntState of
-        undefined -> <<"agent_checkpoint">>;
+        undefined -> <<"agent_snapshot">>;
         _ -> <<"agent_interrupt">>
     end,
     Config = #{thread_id => ThreadId},
     Metadata = #{agent_id => AgentId, type => CheckpointType},
-    beamai_memory:save_checkpoint(Memory, Config, StateData, Metadata).
+    beamai_memory:save_snapshot(Memory, Config, StateData, Metadata).
 
 %% @doc 从 memory 恢复 agent 状态
 %%
-%% 加载指定 memory 中最新的 checkpoint，用其保存的数据恢复 agent 状态。
+%% 加载指定 memory 中最新的 snapshot，用其保存的数据恢复 agent 状态。
 %%
 %% 恢复流程：
-%%   1. 从 memory 加载最新 checkpoint 数据
+%%   1. 从 memory 加载最新 snapshot 数据
 %%   2. 使用原始 config 重建 agent（重建 kernel、注入 filters 等）
-%%   3. 将 checkpoint 中的消息历史、turn_count、metadata 覆盖到新 state
-%%   4. 恢复 system_prompt（如果 checkpoint 中有保存）
+%%   3. 将 snapshot 中的消息历史、turn_count、metadata 覆盖到新 state
+%%   4. 恢复 system_prompt（如果 snapshot 中有保存）
 %%
 %% @param Config agent 配置 map（用于重建 kernel、callbacks 等不可序列化部分）
-%% @param Memory memory 实例（用于加载 checkpoint）
+%% @param Memory memory 实例（用于加载 snapshot）
 %% @returns {ok, AgentState} 恢复成功，返回完整 agent 状态
-%% @returns {error, Reason} 恢复失败（checkpoint 不存在或重建失败）
+%% @returns {error, Reason} 恢复失败（snapshot 不存在或重建失败）
 -spec restore(map(), term()) -> {ok, map()} | {error, term()}.
 restore(Config, Memory) ->
     ThreadId = beamai_memory:get_thread_id(Memory),
-    case beamai_memory:load_latest_checkpoint(Memory, #{thread_id => ThreadId}) of
+    case beamai_memory:load_latest_snapshot(Memory, #{thread_id => ThreadId}) of
         {ok, SavedData} ->
             %% 用原始 config + memory 重建 agent
             case beamai_agent:new(Config#{memory => Memory}) of
                 {ok, State0} ->
-                    %% 用 checkpoint 数据覆盖运行时状态
+                    %% 用 snapshot 数据覆盖运行时状态
                     State1 = State0#{
                         messages => maps:get(messages, SavedData, []),
                         turn_count => maps:get(turn_count, SavedData, 0),
@@ -103,7 +103,7 @@ restore(Config, Memory) ->
                             maps:get(metadata, SavedData, #{})
                         )
                     },
-                    %% 恢复 system_prompt（如果 checkpoint 中有保存）
+                    %% 恢复 system_prompt（如果 snapshot 中有保存）
                     State2 = case maps:get(system_prompt, SavedData, undefined) of
                         undefined -> State1;
                         SP -> State1#{system_prompt => SP}

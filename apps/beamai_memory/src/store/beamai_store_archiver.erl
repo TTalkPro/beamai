@@ -14,12 +14,12 @@
 %%%
 %%% ```
 %%% StoreManager = beamai_store_manager:new(ContextStore, PersistStore),
-%%% Checkpointer = beamai_checkpoint_manager:new(ContextStore),
+%%% Snapshotter = beamai_snapshot_manager:new(ContextStore),
 %%%
 %%% %% 归档当前会话
 %%% {ok, SessionId} = beamai_store_archiver:archive_session(
 %%%     StoreManager,
-%%%     Checkpointer,
+%%%     Snapshotter,
 %%%     <<"thread-1">>
 %%% ).
 %%%
@@ -27,20 +27,20 @@
 %%% {ok, Sessions} = beamai_store_archiver:list_archived(StoreManager).
 %%%
 %%% %% 加载已归档的会话
-%%% {ok, Checkpoints} = beamai_store_archiver:load_archived(
+%%% {ok, Snapshots} = beamai_store_archiver:load_archived(
 %%%     StoreManager,
-%%%     Checkpointer,
+%%%     Snapshotter,
 %%%     <<"session-123">>
 %%% ).
 %%%
 %%% %% 归档并总结
-%%% SummarizeFn = fun(Checkpoints) ->
+%%% SummarizeFn = fun(Snapshots) ->
 %%%     %% 生成总结
 %%%     <<"会话包含 5 条消息">
 %%% end,
 %%% {ok, SessionId} = beamai_store_archiver:archive_session(
 %%%     StoreManager,
-%%%     Checkpointer,
+%%%     Snapshotter,
 %%%     <<"thread-1">>,
 %%%     #{summarize_fn => SummarizeFn}
 %%% ).
@@ -50,7 +50,7 @@
 %%%-------------------------------------------------------------------
 -module(beamai_store_archiver).
 
--include_lib("beamai_memory/include/beamai_checkpointer.hrl").
+-include_lib("beamai_memory/include/beamai_snapshot.hrl").
 -include_lib("beamai_memory/include/beamai_store.hrl").
 
 %% 归档操作
@@ -70,13 +70,13 @@
 %%====================================================================
 
 %% 基本类型别名
--type checkpoint() :: #checkpoint{}.
--type checkpoint_metadata() :: #checkpoint_metadata{}.
+-type snapshot() :: #snapshot{}.
+-type snapshot_metadata() :: #snapshot_metadata{}.
 -type config() :: map().
--type checkpoint_tuple() :: {checkpoint(), checkpoint_metadata(), config() | undefined}.
+-type snapshot_tuple() :: {snapshot(), snapshot_metadata(), config() | undefined}.
 
 -type archive_opts() :: #{
-    summarize_fn => fun(([checkpoint_tuple()]) -> binary()),
+    summarize_fn => fun(([snapshot_tuple()]) -> binary()),
     metadata => map(),
     tags => [binary()]
 }.
@@ -85,7 +85,7 @@
     session_id := binary(),
     thread_id := binary(),
     archived_at := integer(),
-    checkpoint_count := non_neg_integer(),
+    snapshot_count := non_neg_integer(),
     summary => binary(),
     metadata => map(),
     tags => [binary()]
@@ -106,32 +106,32 @@
 %% @doc 归档会话（默认选项）
 -spec archive_session(
     beamai_store_manager:store_manager(),
-    beamai_checkpoint_manager:manager(),
+    beamai_snapshot_manager:manager(),
     binary()
 ) -> {ok, binary()} | {error, term()}.
-archive_session(StoreManager, Checkpointer, ThreadId) ->
-    archive_session(StoreManager, Checkpointer, ThreadId, #{}).
+archive_session(StoreManager, Snapshotter, ThreadId) ->
+    archive_session(StoreManager, Snapshotter, ThreadId, #{}).
 
 %% @doc 归档会话（带选项）
 -spec archive_session(
     beamai_store_manager:store_manager(),
-    beamai_checkpoint_manager:manager(),
+    beamai_snapshot_manager:manager(),
     binary(),
     archive_opts()
 ) -> {ok, binary()} | {error, term()}.
-archive_session(StoreManager, Checkpointer, ThreadId, Opts) ->
+archive_session(StoreManager, Snapshotter, ThreadId, Opts) ->
     %% 检查是否有 persistent_store
     case beamai_store_manager:has_persistent(StoreManager) of
         false ->
             {error, persistent_store_not_configured};
         true ->
-            %% 获取线程的所有检查点
+            %% 获取线程的所有快照
             Config = #{thread_id => ThreadId},
-            case beamai_checkpoint_manager:list(Checkpointer, Config) of
-                {ok, Checkpoints} when Checkpoints =/= [] ->
-                    do_archive(StoreManager, ThreadId, Checkpoints, Opts);
+            case beamai_snapshot_manager:list(Snapshotter, Config) of
+                {ok, Snapshots} when Snapshots =/= [] ->
+                    do_archive(StoreManager, ThreadId, Snapshots, Opts);
                 {ok, []} ->
-                    {error, no_checkpoints_to_archive};
+                    {error, no_snapshots_to_archive};
                 {error, _} = Error ->
                     Error
             end
@@ -141,17 +141,17 @@ archive_session(StoreManager, Checkpointer, ThreadId, Opts) ->
 -spec do_archive(
     beamai_store_manager:store_manager(),
     binary(),
-    [checkpoint_tuple()],
+    [snapshot_tuple()],
     archive_opts()
 ) -> {ok, binary()}.
-do_archive(StoreManager, ThreadId, Checkpoints, Opts) ->
+do_archive(StoreManager, ThreadId, Snapshots, Opts) ->
     %% 生成会话 ID
     SessionId = generate_session_id(ThreadId),
 
     %% 调用总结函数（如果提供）
     Summary = case maps_get(summarize_fn, Opts) of
         undefined -> undefined;
-        SummarizeFn -> SummarizeFn(Checkpoints)
+        SummarizeFn -> SummarizeFn(Snapshots)
     end,
 
     %% 构建归档数据
@@ -159,8 +159,8 @@ do_archive(StoreManager, ThreadId, Checkpoints, Opts) ->
         session_id => SessionId,
         thread_id => ThreadId,
         archived_at => erlang:system_time(millisecond),
-        checkpoint_count => length(Checkpoints),
-        checkpoints => [checkpoint_tuple_to_map(CpTuple) || CpTuple <- Checkpoints],
+        snapshot_count => length(Snapshots),
+        snapshots => [snapshot_tuple_to_map(CpTuple) || CpTuple <- Snapshots],
         summary => Summary,
         metadata => maps_get(metadata, Opts, #{}),
         tags => maps_get(tags, Opts, [])
@@ -172,8 +172,8 @@ do_archive(StoreManager, ThreadId, Checkpoints, Opts) ->
 
     case beamai_store_manager:put(StoreManager, Namespace, Key, ArchiveData, #{persistent => true}) of
         ok ->
-            %% 清空 context_store 中的检查点
-            %% TODO: 需要从 Checkpointer 清空
+            %% 清空 context_store 中的快照
+            %% TODO: 需要从 Snapshotter 清空
             {ok, SessionId};
         {error, _} = Error ->
             Error
@@ -186,44 +186,44 @@ do_archive(StoreManager, ThreadId, Checkpoints, Opts) ->
 %% @doc 加载已归档的会话（只读）
 -spec load_archived(
     beamai_store_manager:store_manager(),
-    beamai_checkpoint_manager:manager(),
+    beamai_snapshot_manager:manager(),
     binary()
-) -> {ok, [checkpoint_tuple()]} | {error, term()}.
-load_archived(StoreManager, _Checkpointer, SessionId) ->
+) -> {ok, [snapshot_tuple()]} | {error, term()}.
+load_archived(StoreManager, _Snapshotter, SessionId) ->
     case beamai_store_manager:get(StoreManager, ?NS_ARCHIVES, SessionId) of
         {ok, #store_item{value = ArchiveData}} ->
-            CheckpointMaps = maps_get(checkpoints, ArchiveData, []),
-            Checkpoints = lists:filtermap(fun(CpMap) ->
-                map_to_checkpoint_tuple(CpMap)
-            end, CheckpointMaps),
-            {ok, Checkpoints};
+            SnapshotMaps = maps_get(snapshots, ArchiveData, []),
+            Snapshots = lists:filtermap(fun(CpMap) ->
+                map_to_snapshot_tuple(CpMap)
+            end, SnapshotMaps),
+            {ok, Snapshots};
         {error, _} = Error ->
             Error
     end.
 
-%% @doc 恢复已归档的会话到 Checkpointer
+%% @doc 恢复已归档的会话到 Snapshotter
 -spec restore_archived(
     beamai_store_manager:store_manager(),
-    beamai_checkpoint_manager:manager(),
+    beamai_snapshot_manager:manager(),
     binary()
 ) -> {ok, binary()} | {error, term()}.
-restore_archived(StoreManager, Checkpointer, SessionId) ->
-    case load_archived(StoreManager, Checkpointer, SessionId) of
-        {ok, Checkpoints} when Checkpoints =/= [] ->
+restore_archived(StoreManager, Snapshotter, SessionId) ->
+    case load_archived(StoreManager, Snapshotter, SessionId) of
+        {ok, Snapshots} when Snapshots =/= [] ->
             %% 恢复到 context_store
-            %% 使用第一个检查点的 thread_id
-            {FirstCp, _, _} = hd(Checkpoints),
-            ThreadId = FirstCp#checkpoint.thread_id,
+            %% 使用第一个快照的 thread_id
+            {FirstCp, _, _} = hd(Snapshots),
+            ThreadId = FirstCp#snapshot.thread_id,
 
-            %% 逐个保存检查点
+            %% 逐个保存快照
             lists:foreach(fun({Cp, _Meta, _ParentCfg}) ->
-                NewCp = Cp#checkpoint{
-                    id = generate_checkpoint_id(),  % 生成新 ID
+                NewCp = Cp#snapshot{
+                    id = generate_snapshot_id(),  % 生成新 ID
                     thread_id = ThreadId
                 },
                 Config = #{thread_id => ThreadId},
-                beamai_checkpoint_manager:save(Checkpointer, NewCp, Config)
-            end, Checkpoints),
+                beamai_snapshot_manager:save(Snapshotter, NewCp, Config)
+            end, Snapshots),
 
             {ok, ThreadId};
         {ok, []} ->
@@ -274,7 +274,7 @@ get_archive_info(StoreManager, SessionId) ->
                 session_id => maps_get(session_id, ArchiveData),
                 thread_id => maps_get(thread_id, ArchiveData),
                 archived_at => maps_get(archived_at, ArchiveData),
-                checkpoint_count => maps_get(checkpoint_count, ArchiveData),
+                snapshot_count => maps_get(snapshot_count, ArchiveData),
                 summary => maps_get(summary, ArchiveData, undefined),
                 metadata => maps_get(metadata, ArchiveData, #{}),
                 tags => maps_get(tags, ArchiveData, [])
@@ -321,46 +321,46 @@ generate_session_id(ThreadId) ->
     <<ThreadId/binary, "-", (integer_to_binary(Ts))/binary, "-",
       (integer_to_binary(Rand))/binary>>.
 
-%% @private 生成检查点 ID
--spec generate_checkpoint_id() -> binary().
-generate_checkpoint_id() ->
+%% @private 生成快照 ID
+-spec generate_snapshot_id() -> binary().
+generate_snapshot_id() ->
     Ts = erlang:system_time(microsecond),
     Rand = rand:uniform(16#FFFF),
     list_to_binary(io_lib:format("cp_~16.16.0b_~4.16.0b", [Ts, Rand])).
 
-%% @private 检查点元组转 Map
--spec checkpoint_tuple_to_map(checkpoint_tuple()) -> map().
-checkpoint_tuple_to_map({Checkpoint, Metadata, ParentConfig}) ->
+%% @private 快照元组转 Map
+-spec snapshot_tuple_to_map(snapshot_tuple()) -> map().
+snapshot_tuple_to_map({Snapshot, Metadata, ParentConfig}) ->
     #{
-        <<"checkpoint">> => #{
-            <<"id">> => Checkpoint#checkpoint.id,
-            <<"thread_id">> => Checkpoint#checkpoint.thread_id,
-            <<"parent_id">> => Checkpoint#checkpoint.parent_id,
-            <<"values">> => Checkpoint#checkpoint.values,
-            <<"timestamp">> => Checkpoint#checkpoint.timestamp
+        <<"snapshot">> => #{
+            <<"id">> => Snapshot#snapshot.id,
+            <<"thread_id">> => Snapshot#snapshot.thread_id,
+            <<"parent_id">> => Snapshot#snapshot.parent_id,
+            <<"values">> => Snapshot#snapshot.values,
+            <<"timestamp">> => Snapshot#snapshot.timestamp
         },
         <<"metadata">> => #{
             %% 执行阶段信息
-            <<"checkpoint_type">> => Metadata#checkpoint_metadata.checkpoint_type,
-            <<"step">> => Metadata#checkpoint_metadata.step,
+            <<"snapshot_type">> => Metadata#snapshot_metadata.snapshot_type,
+            <<"step">> => Metadata#snapshot_metadata.step,
             %% 图顶点状态
-            <<"active_vertices">> => Metadata#checkpoint_metadata.active_vertices,
-            <<"completed_vertices">> => Metadata#checkpoint_metadata.completed_vertices,
+            <<"active_vertices">> => Metadata#snapshot_metadata.active_vertices,
+            <<"completed_vertices">> => Metadata#snapshot_metadata.completed_vertices,
             %% 执行标识
-            <<"run_id">> => Metadata#checkpoint_metadata.run_id,
-            <<"agent_id">> => Metadata#checkpoint_metadata.agent_id,
-            <<"agent_name">> => Metadata#checkpoint_metadata.agent_name,
-            <<"iteration">> => Metadata#checkpoint_metadata.iteration,
+            <<"run_id">> => Metadata#snapshot_metadata.run_id,
+            <<"agent_id">> => Metadata#snapshot_metadata.agent_id,
+            <<"agent_name">> => Metadata#snapshot_metadata.agent_name,
+            <<"iteration">> => Metadata#snapshot_metadata.iteration,
             %% 用户自定义元数据
-            <<"metadata">> => Metadata#checkpoint_metadata.metadata
+            <<"metadata">> => Metadata#snapshot_metadata.metadata
         },
         <<"parent_config">> => ParentConfig
     }.
 
-%% @private Map 转检查点元组
--spec map_to_checkpoint_tuple(map()) -> {ok, checkpoint_tuple()} | {error, invalid_format}.
-map_to_checkpoint_tuple(Map) when is_map(Map) ->
-    CpMap = maps_get(<<"checkpoint">>, Map),
+%% @private Map 转快照元组
+-spec map_to_snapshot_tuple(map()) -> {ok, snapshot_tuple()} | {error, invalid_format}.
+map_to_snapshot_tuple(Map) when is_map(Map) ->
+    CpMap = maps_get(<<"snapshot">>, Map),
     MetaMap = maps_get(<<"metadata">>, Map),
     ParentConfig = maps_get(<<"parent_config">>, Map),
 
@@ -368,16 +368,16 @@ map_to_checkpoint_tuple(Map) when is_map(Map) ->
         {undefined, _} -> {error, invalid_format};
         {_, undefined} -> {error, invalid_format};
         _ ->
-            Checkpoint = #checkpoint{
+            Snapshot = #snapshot{
                 id = maps_get(<<"id">>, CpMap),
                 thread_id = maps_get(<<"thread_id">>, CpMap),
                 parent_id = maps_get(<<"parent_id">>, CpMap, undefined),
                 values = maps_get(<<"values">>, CpMap, #{}),
                 timestamp = maps_get(<<"timestamp">>, CpMap, 0)
             },
-            Metadata = #checkpoint_metadata{
+            Metadata = #snapshot_metadata{
                 %% 执行阶段信息
-                checkpoint_type = maps_get(<<"checkpoint_type">>, MetaMap, undefined),
+                snapshot_type = maps_get(<<"snapshot_type">>, MetaMap, undefined),
                 step = maps_get(<<"step">>, MetaMap, 0),
                 %% 图顶点状态
                 active_vertices = maps_get(<<"active_vertices">>, MetaMap, []),
@@ -390,9 +390,9 @@ map_to_checkpoint_tuple(Map) when is_map(Map) ->
                 %% 用户自定义元数据
                 metadata = maps_get(<<"metadata">>, MetaMap, #{})
             },
-            {ok, {Checkpoint, Metadata, ParentConfig}}
+            {ok, {Snapshot, Metadata, ParentConfig}}
     end;
-map_to_checkpoint_tuple(_) ->
+map_to_snapshot_tuple(_) ->
     {error, invalid_format}.
 
 %% @private 提取归档信息
@@ -402,7 +402,7 @@ extract_archive_info(#search_result{item = #store_item{value = ArchiveData}}) ->
         session_id => maps_get(session_id, ArchiveData),
         thread_id => maps_get(thread_id, ArchiveData),
         archived_at => maps_get(archived_at, ArchiveData),
-        checkpoint_count => maps_get(checkpoint_count, ArchiveData),
+        snapshot_count => maps_get(snapshot_count, ArchiveData),
         summary => maps_get(summary, ArchiveData, undefined),
         metadata => maps_get(metadata, ArchiveData, #{}),
         tags => maps_get(tags, ArchiveData, [])

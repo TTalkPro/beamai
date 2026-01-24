@@ -1,24 +1,24 @@
 %%%-------------------------------------------------------------------
-%%% @doc Deep Agent Checkpoint 管理模块（内部使用）
+%%% @doc Deep Agent Snapshot 管理模块（内部使用）
 %%%
 %%% 负责 beamai_deepagent 状态持久化的内部逻辑：
 %%% - 存储初始化
-%%% - 检查点恢复
+%%% - 快照恢复
 %%%
 %%% == 变更说明 ==
 %%%
-%%% 外部 Checkpoint API 已移除（save、load、list 等）。
-%%% Checkpoint 现在通过以下方式管理：
-%%% 1. 自动保存：通过 on_checkpoint 回调在图执行时自动保存
-%%% 2. 访问数据：用户通过 beamai_memory API 直接访问 checkpoints
+%%% 外部 Snapshot API 已移除（save、load、list 等）。
+%%% Snapshot 现在通过以下方式管理：
+%%% 1. 自动保存：通过 on_snapshot 回调在图执行时自动保存
+%%% 2. 访问数据：用户通过 beamai_memory API 直接访问 snapshots
 %%%
 %%% 保留的内部功能：
 %%% - init_storage/2: 从配置选项获取 Memory 实例
-%%% - maybe_restore/2: 根据配置恢复检查点
+%%% - maybe_restore/2: 根据配置恢复快照
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(beamai_deepagent_checkpoint).
+-module(beamai_deepagent_snapshot).
 
 %% 内部 API 导出
 -export([
@@ -45,11 +45,11 @@ init_storage(AgentId, Config) ->
             Memory
     end.
 
-%% @doc 根据配置恢复检查点
+%% @doc 根据配置恢复快照
 %%
 %% 支持两种恢复方式：
-%% 1. restore_checkpoint => CpId - 恢复指定检查点
-%% 2. restore_latest => true - 恢复最新检查点
+%% 1. restore_snapshot => SnapshotId - 恢复指定快照
+%% 2. restore_latest => true - 恢复最新快照
 -spec maybe_restore(map(), graph_state:state()) -> graph_state:state().
 maybe_restore(Config, State) ->
     Storage = graph_state:get(State, storage, undefined),
@@ -58,11 +58,11 @@ maybe_restore(Config, State) ->
             State;
         Memory when is_map(Memory) ->
             ThreadId = beamai_memory:get_thread_id(Memory),
-            case maps:get(restore_checkpoint, Config, undefined) of
+            case maps:get(restore_snapshot, Config, undefined) of
                 undefined ->
                     maybe_restore_latest(Config, Memory, ThreadId, State);
-                CpId when is_binary(CpId) ->
-                    restore_checkpoint_state(Memory, ThreadId, CpId, State)
+                SnapshotId when is_binary(SnapshotId) ->
+                    restore_snapshot_state(Memory, ThreadId, SnapshotId, State)
             end
     end.
 
@@ -98,7 +98,7 @@ maybe_create_storage(AgentId, Config) ->
             undefined
     end.
 
-%% @private 恢复最新检查点
+%% @private 恢复最新快照
 -spec maybe_restore_latest(map(), beamai_memory:memory(), binary(), graph_state:state()) -> graph_state:state().
 maybe_restore_latest(Config, Memory, ThreadId, State) ->
     case maps:get(restore_latest, Config, false) of
@@ -106,37 +106,37 @@ maybe_restore_latest(Config, Memory, ThreadId, State) ->
         false -> State
     end.
 
-%% @private 恢复最新检查点状态
+%% @private 恢复最新快照状态
 -spec restore_latest_state(beamai_memory:memory(), binary(), graph_state:state()) -> graph_state:state().
 restore_latest_state(Memory, ThreadId, State) ->
     Config = #{thread_id => ThreadId},
-    case beamai_memory:load_latest_checkpoint(Memory, Config) of
+    case beamai_memory:load_latest_snapshot(Memory, Config) of
         {ok, Data} ->
-            apply_checkpoint_data(Data, State);
+            apply_snapshot_data(Data, State);
         {error, not_found} ->
             State;
         {error, Reason} ->
-            logger:warning("恢复最新检查点失败: ~p", [Reason]),
+            logger:warning("恢复最新快照失败: ~p", [Reason]),
             State
     end.
 
-%% @private 恢复指定检查点状态
--spec restore_checkpoint_state(beamai_memory:memory(), binary(), binary(), graph_state:state()) -> graph_state:state().
-restore_checkpoint_state(Memory, ThreadId, CpId, State) ->
-    Config = #{thread_id => ThreadId, checkpoint_id => CpId},
-    case beamai_memory:load_checkpoint(Memory, Config) of
+%% @private 恢复指定快照状态
+-spec restore_snapshot_state(beamai_memory:memory(), binary(), binary(), graph_state:state()) -> graph_state:state().
+restore_snapshot_state(Memory, ThreadId, SnapshotId, State) ->
+    Config = #{thread_id => ThreadId, snapshot_id => SnapshotId},
+    case beamai_memory:load_snapshot(Memory, Config) of
         {ok, Data} ->
-            apply_checkpoint_data(Data, State);
+            apply_snapshot_data(Data, State);
         {error, Reason} ->
-            logger:warning("恢复检查点 ~s 失败: ~p", [CpId, Reason]),
+            logger:warning("恢复快照 ~s 失败: ~p", [SnapshotId, Reason]),
             State
     end.
 
-%% @private 应用检查点数据到状态
+%% @private 应用快照数据到状态
 %%
 %% 恢复 messages、plan、trace、subtasks 等到状态。
--spec apply_checkpoint_data(map(), graph_state:state()) -> graph_state:state().
-apply_checkpoint_data(Data, State) ->
+-spec apply_snapshot_data(map(), graph_state:state()) -> graph_state:state().
+apply_snapshot_data(Data, State) ->
     %% 恢复基础状态
     State1 = graph_state:set(State, messages, maps:get(messages, Data, [])),
     State2 = graph_state:set(State1, system_prompt, maps:get(system_prompt, Data, <<>>)),

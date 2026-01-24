@@ -17,7 +17,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/3, step/1, get_checkpoint_data/1, get_result/1, stop/1]).
+-export([start_link/3, step/1, get_snapshot_data/1, get_result/1, stop/1]).
 -export([get_global_state/1]).
 %% 重试 API
 -export([retry/2]).
@@ -26,8 +26,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 %% 类型导出
--export_type([opts/0, result/0, restore_opts/0, checkpoint_data/0]).
--export_type([step_result/0, superstep_info/0, checkpoint_type/0]).
+-export_type([opts/0, result/0, restore_opts/0, snapshot_data/0]).
+-export_type([step_result/0, superstep_info/0, snapshot_type/0]).
 -export_type([field_reducer/0, field_reducers/0, delta/0]).
 
 %%====================================================================
@@ -46,8 +46,8 @@
 -type field_reducer() :: fun((OldValue :: term(), NewValue :: term()) -> term()).
 -type field_reducers() :: #{atom() | binary() => field_reducer()}.
 
-%% Checkpoint 数据 (全局状态模式 - 无 inbox 版本)
--type checkpoint_data() :: #{
+%% Snapshot 数据 (全局状态模式 - 无 inbox 版本)
+-type snapshot_data() :: #{
     superstep := non_neg_integer(),
     global_state := graph_state:state(),
     pending_deltas := [delta()] | undefined,
@@ -55,17 +55,17 @@
     vertices := #{vertex_id() => vertex()}
 }.
 
-%% Checkpoint 类型
+%% Snapshot 类型
 %% - initial: 超步 0 执行前的初始状态
 %% - step: 正常超步完成
 %% - error: 超步完成但有失败的顶点
 %% - interrupt: 超步完成但有中断的顶点（human-in-the-loop）
 %% - final: 执行结束（completed 或 max_supersteps）
--type checkpoint_type() :: initial | step | error | interrupt | final.
+-type snapshot_type() :: initial | step | error | interrupt | final.
 
 %% 超步信息（step 返回给调用者）
 -type superstep_info() :: #{
-    type := checkpoint_type(),           %% checkpoint 类型
+    type := snapshot_type(),           %% snapshot 类型
     superstep := non_neg_integer(),
     active_count := non_neg_integer(),
     activation_count := non_neg_integer(),  %% 下一超步待激活的顶点数
@@ -82,7 +82,7 @@
 
 -type done_reason() :: completed | max_supersteps.
 
-%% Checkpoint 恢复选项 (无 inbox 版本)
+%% Snapshot 恢复选项 (无 inbox 版本)
 -type restore_opts() :: #{
     superstep := non_neg_integer(),
     global_state := graph_state:state(),
@@ -97,7 +97,7 @@
     num_workers => pos_integer(),
     global_state => graph_state:state(),        %% 初始全局状态
     field_reducers => field_reducers(),         %% 字段级 reducer 配置
-    restore_from => restore_opts()              %% 从 checkpoint 恢复
+    restore_from => restore_opts()              %% 从 snapshot 恢复
 }.
 
 %% Pregel 执行结果
@@ -126,13 +126,13 @@
     field_reducers   :: field_reducers(),           %% 字段级 reducer
     pending_deltas   :: [delta()] | undefined,      %% 延迟提交的 deltas
     pending_activations :: [vertex_id()] | undefined,  %% 延迟提交的 activations
-    %% 超步结果（用于 get_checkpoint_data 和重试）
+    %% 超步结果（用于 get_snapshot_data 和重试）
     last_results     :: pregel_barrier:superstep_results() | undefined,
     %% 累积失败（跨超步追踪）
     cumulative_failures :: [{vertex_id(), term()}],
     %% 状态标志
     initialized      :: boolean(),                  %% 是否已初始化 workers
-    initial_returned :: boolean(),                  %% 是否已返回 initial checkpoint
+    initial_returned :: boolean(),                  %% 是否已返回 initial snapshot
     halted           :: boolean()                   %% 是否已终止
 }).
 
@@ -156,10 +156,10 @@ step(Master) ->
 retry(Master, VertexIds) ->
     gen_server:call(Master, {retry, VertexIds}, infinity).
 
-%% @doc 获取当前 checkpoint 数据
--spec get_checkpoint_data(pid()) -> checkpoint_data().
-get_checkpoint_data(Master) ->
-    gen_server:call(Master, get_checkpoint_data, infinity).
+%% @doc 获取当前 snapshot 数据
+-spec get_snapshot_data(pid()) -> snapshot_data().
+get_snapshot_data(Master) ->
+    gen_server:call(Master, get_snapshot_data, infinity).
 
 %% @doc 获取当前全局状态
 -spec get_global_state(pid()) -> graph_state:state().
@@ -229,7 +229,7 @@ handle_call(step, _From, #state{halted = true} = State) ->
     {reply, {done, get_done_reason(State), Info}, State};
 
 handle_call(step, _From, #state{initialized = false} = State) ->
-    %% 首次 step：初始化 workers，返回 initial checkpoint
+    %% 首次 step：初始化 workers，返回 initial snapshot
     %% 不启动超步，让调用者有机会保存初始状态
     StateWithWorkers = start_workers(State),
     %% 注入恢复的 activations（如果有）
@@ -275,7 +275,7 @@ handle_call({retry, VertexIds}, From, #state{pending_deltas = _PendingDeltas} = 
     NewState = State#state{step_caller = From},
     execute_deferred_retry(VertexIds, NewState);
 
-handle_call(get_checkpoint_data, _From, #state{
+handle_call(get_snapshot_data, _From, #state{
     superstep = Superstep,
     global_state = GlobalState,
     pending_deltas = PendingDeltas,
@@ -564,8 +564,8 @@ execute_retry(VertexIds, #state{
         superstep => Superstep
     },
 
-    %% 5. 确定 checkpoint 类型并构建返回信息
-    Type = pregel_superstep:determine_checkpoint_type(UpdatedResults),
+    %% 5. 确定 snapshot 类型并构建返回信息
+    Type = pregel_superstep:determine_snapshot_type(UpdatedResults),
     Info = pregel_superstep:build_superstep_info(Type, UpdatedResults),
 
     %% 6. 更新状态
@@ -627,8 +627,8 @@ execute_deferred_retry(VertexIds, #state{
         active_count => 0
     },
 
-    %% 5. 确定 checkpoint 类型并构建返回信息
-    Type = pregel_superstep:determine_checkpoint_type(UpdatedResults),
+    %% 5. 确定 snapshot 类型并构建返回信息
+    Type = pregel_superstep:determine_snapshot_type(UpdatedResults),
     Info = pregel_superstep:build_superstep_info(Type, UpdatedResults),
 
     %% 6. 更新状态
@@ -692,7 +692,7 @@ collect_vertices_from_workers(Workers) ->
     ).
 
 %%====================================================================
-%% Checkpoint 恢复辅助函数
+%% Snapshot 恢复辅助函数
 %%====================================================================
 
 %% @private 获取恢复选项中的超步号

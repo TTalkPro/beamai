@@ -1,15 +1,15 @@
 %%%-------------------------------------------------------------------
-%%% @doc graph_runner checkpoint 功能单元测试
+%%% @doc graph_runner snapshot 功能单元测试
 %%%
-%%% 测试 graph_runner 的 checkpoint 保存和恢复功能：
-%%% - 简单模式（无 checkpoint）正常执行
-%%% - on_checkpoint 回调被正确调用
-%%% - 从 checkpoint 恢复执行
-%%% - checkpoint 回调可以停止执行
+%%% 测试 graph_runner 的 snapshot 保存和恢复功能：
+%%% - 简单模式（无 snapshot）正常执行
+%%% - on_snapshot 回调被正确调用
+%%% - 从 snapshot 恢复执行
+%%% - snapshot 回调可以停止执行
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_runner_checkpoint_tests).
+-module(graph_runner_snapshot_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 %%====================================================================
@@ -42,102 +42,102 @@ make_multi_step_graph() ->
 %% 模式检测测试
 %%====================================================================
 
-%% 测试：无 checkpoint 选项时 needs_checkpoint_mode 返回 false
-needs_checkpoint_mode_false_test() ->
-    ?assertEqual(false, graph_runner:needs_checkpoint_mode(#{})),
-    ?assertEqual(false, graph_runner:needs_checkpoint_mode(#{workers => 2})).
+%% 测试：无 snapshot 选项时 needs_snapshot_mode 返回 false
+needs_snapshot_mode_false_test() ->
+    ?assertEqual(false, graph_runner:needs_snapshot_mode(#{})),
+    ?assertEqual(false, graph_runner:needs_snapshot_mode(#{workers => 2})).
 
-%% 测试：有 checkpoint 选项时 needs_checkpoint_mode 返回 true
-needs_checkpoint_mode_true_test() ->
+%% 测试：有 snapshot 选项时 needs_snapshot_mode 返回 true
+needs_snapshot_mode_true_test() ->
     Callback = fun(_, _) -> continue end,
-    ?assertEqual(true, graph_runner:needs_checkpoint_mode(#{on_checkpoint => Callback})),
-    ?assertEqual(true, graph_runner:needs_checkpoint_mode(#{restore_from => #{}})),
-    ?assertEqual(true, graph_runner:needs_checkpoint_mode(#{
-        on_checkpoint => Callback,
+    ?assertEqual(true, graph_runner:needs_snapshot_mode(#{on_snapshot => Callback})),
+    ?assertEqual(true, graph_runner:needs_snapshot_mode(#{restore_from => #{}})),
+    ?assertEqual(true, graph_runner:needs_snapshot_mode(#{
+        on_snapshot => Callback,
         restore_from => #{}
     })).
 
 %%====================================================================
-%% Checkpoint 回调测试
+%% Snapshot 回调测试
 %%====================================================================
 
-%% 测试：on_checkpoint 回调被调用
-checkpoint_callback_called_test() ->
+%% 测试：on_snapshot 回调被调用
+snapshot_callback_called_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
     %% 使用进程字典记录回调调用次数
     Self = self(),
-    Callback = fun(Info, CheckpointData) ->
-        Self ! {checkpoint_called, Info, CheckpointData},
+    Callback = fun(Info, SnapshotData) ->
+        Self ! {snapshot_called, Info, SnapshotData},
         continue
     end,
 
-    Options = #{on_checkpoint => Callback},
+    Options = #{on_snapshot => Callback},
     _Result = graph:run(Graph, InitialState, Options),
 
     %% 收集回调调用
-    Calls = collect_checkpoint_calls([]),
+    Calls = collect_snapshot_calls([]),
 
     %% 验证回调被调用了（至少一次）
     ?assert(length(Calls) >= 1),
 
-    %% 验证 checkpoint 数据结构
-    %% 注意：graph_state 已移除，状态存储在 pregel_checkpoint.vertices 中
-    [{_Info, FirstCheckpoint} | _] = Calls,
-    ?assertNot(maps:is_key(graph_state, FirstCheckpoint)),  %% 不应包含 graph_state
-    ?assert(maps:is_key(pregel_checkpoint, FirstCheckpoint)),
-    ?assert(maps:is_key(iteration, FirstCheckpoint)).
+    %% 验证 snapshot 数据结构
+    %% 注意：graph_state 已移除，状态存储在 pregel_snapshot.vertices 中
+    [{_Info, FirstSnapshot} | _] = Calls,
+    ?assertNot(maps:is_key(graph_state, FirstSnapshot)),  %% 不应包含 graph_state
+    ?assert(maps:is_key(pregel_snapshot, FirstSnapshot)),
+    ?assert(maps:is_key(iteration, FirstSnapshot)).
 
-collect_checkpoint_calls(Acc) ->
+collect_snapshot_calls(Acc) ->
     receive
-        {checkpoint_called, Info, Data} ->
-            collect_checkpoint_calls([{Info, Data} | Acc])
+        {snapshot_called, Info, Data} ->
+            collect_snapshot_calls([{Info, Data} | Acc])
     after 100 ->
         lists:reverse(Acc)
     end.
 
-%% 测试：checkpoint 数据包含 pregel 层信息
-checkpoint_contains_pregel_data_test() ->
+%% 测试：snapshot 数据包含 pregel 层信息
+snapshot_contains_pregel_data_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
     Self = self(),
-    Callback = fun(_Info, CheckpointData) ->
-        Self ! {checkpoint, CheckpointData},
+    Callback = fun(_Info, SnapshotData) ->
+        Self ! {snapshot, SnapshotData},
         continue
     end,
 
-    Options = #{on_checkpoint => Callback},
+    Options = #{on_snapshot => Callback},
     _Result = graph:run(Graph, InitialState, Options),
 
-    %% 获取第一个 checkpoint
+    %% 获取第一个 snapshot
     receive
-        {checkpoint, Data} ->
-            PregelCheckpoint = maps:get(pregel_checkpoint, Data),
-            %% 验证 pregel checkpoint 结构（无 inbox 版本）
-            ?assert(maps:is_key(superstep, PregelCheckpoint)),
-            ?assert(maps:is_key(vertices, PregelCheckpoint)),
-            ?assert(maps:is_key(pending_activations, PregelCheckpoint))
+        {snapshot, Data} ->
+            PregelSnapshot = maps:get(pregel_snapshot, Data),
+            %% 验证 pregel snapshot 结构（无 inbox 版本）
+            ?assert(maps:is_key(superstep, PregelSnapshot)),
+            ?assert(maps:is_key(vertices, PregelSnapshot)),
+            ?assert(maps:is_key(pending_activations, PregelSnapshot))
     after 1000 ->
         ?assert(false)
     end.
 
 %%====================================================================
-%% Checkpoint 停止执行测试
+%% Snapshot 停止执行测试
 %%====================================================================
 
-%% 测试：checkpoint 回调返回 {stop, Reason} 时停止执行
-checkpoint_callback_can_stop_execution_test() ->
+%% 测试：snapshot 回调返回 {stop, Reason} 时停止执行
+snapshot_callback_can_stop_execution_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
     %% 回调在第一次调用时停止执行
-    Callback = fun(_Info, _CheckpointData) ->
+    Callback = fun(_Info, _SnapshotData) ->
         {stop, user_requested}
     end,
 
-    Options = #{on_checkpoint => Callback},
+    Options = #{on_snapshot => Callback},
     Result = graph:run(Graph, InitialState, Options),
 
     %% 验证执行被停止
@@ -145,44 +145,44 @@ checkpoint_callback_can_stop_execution_test() ->
     ?assertMatch({user_stopped, user_requested}, maps:get(error, Result)).
 
 %%====================================================================
-%% Checkpoint 恢复测试
+%% Snapshot 恢复测试
 %%====================================================================
 
-%% 测试：从 checkpoint 恢复执行
-restore_from_checkpoint_test() ->
+%% 测试：从 snapshot 恢复执行
+restore_from_snapshot_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    %% 第一次执行，保存 checkpoint 后停止
-    SavedCheckpoint = erlang:make_ref(),
+    %% 第一次执行，保存 snapshot 后停止
+    SavedSnapshot = erlang:make_ref(),
     Self = self(),
-    Callback = fun(_Info, CheckpointData) ->
-        %% 保存 checkpoint 数据
-        Self ! {save_checkpoint, SavedCheckpoint, CheckpointData},
-        {stop, checkpoint_saved}
+    Callback = fun(_Info, SnapshotData) ->
+        %% 保存 snapshot 数据
+        Self ! {save_snapshot, SavedSnapshot, SnapshotData},
+        {stop, snapshot_saved}
     end,
 
-    Options1 = #{on_checkpoint => Callback},
+    Options1 = #{on_snapshot => Callback},
     Result1 = graph:run(Graph, InitialState, Options1),
 
     %% 验证第一次执行被停止
     ?assertEqual(stopped, maps:get(status, Result1)),
 
-    %% 获取保存的 checkpoint
-    CheckpointData = receive
-        {save_checkpoint, SavedCheckpoint, Data} -> Data
+    %% 获取保存的 snapshot
+    SnapshotData = receive
+        {save_snapshot, SavedSnapshot, Data} -> Data
     after 1000 ->
-        error(no_checkpoint_saved)
+        error(no_snapshot_saved)
     end,
 
-    %% 验证 checkpoint 数据结构正确
-    ?assert(maps:is_key(pregel_checkpoint, CheckpointData)),
-    ?assert(maps:is_key(iteration, CheckpointData)),
+    %% 验证 snapshot 数据结构正确
+    ?assert(maps:is_key(pregel_snapshot, SnapshotData)),
+    ?assert(maps:is_key(iteration, SnapshotData)),
 
-    %% 从 checkpoint 恢复执行（使用回调继续执行）
-    #{pregel_checkpoint := PregelCheckpoint, iteration := Iteration} = CheckpointData,
+    %% 从 snapshot 恢复执行（使用回调继续执行）
+    #{pregel_snapshot := PregelSnapshot, iteration := Iteration} = SnapshotData,
     RestoreOpts = #{
-        pregel_checkpoint => PregelCheckpoint,
+        pregel_snapshot => PregelSnapshot,
         iteration => Iteration
     },
 
@@ -195,30 +195,30 @@ restore_from_checkpoint_test() ->
     ?assert(Status2 =:= completed orelse Status2 =:= error).
 
 %%====================================================================
-%% Checkpoint 类型测试
+%% Snapshot 类型测试
 %%====================================================================
 
-%% 测试：checkpoint 数据包含 type 字段
-checkpoint_contains_type_test() ->
+%% 测试：snapshot 数据包含 type 字段
+snapshot_contains_type_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
     Self = self(),
-    Callback = fun(Info, CheckpointData) ->
-        Self ! {checkpoint, Info, CheckpointData},
+    Callback = fun(Info, SnapshotData) ->
+        Self ! {snapshot, Info, SnapshotData},
         continue
     end,
 
-    Options = #{on_checkpoint => Callback},
+    Options = #{on_snapshot => Callback},
     _Result = graph:run(Graph, InitialState, Options),
 
-    %% 获取第一个 checkpoint，验证 type 字段
+    %% 获取第一个 snapshot，验证 type 字段
     receive
-        {checkpoint, Info, Data} ->
+        {snapshot, Info, Data} ->
             %% Info 和 Data 都应该包含 type
             ?assert(maps:is_key(type, Info)),
             ?assert(maps:is_key(type, Data)),
-            %% 第一个 checkpoint 应该是 initial 类型
+            %% 第一个 snapshot 应该是 initial 类型
             ?assertEqual(initial, maps:get(type, Info))
     after 1000 ->
         ?assert(false)
@@ -229,8 +229,8 @@ initial_type_retry_not_allowed_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    %% 在 initial checkpoint 时尝试 retry
-    Callback = fun(Info, _CheckpointData) ->
+    %% 在 initial snapshot 时尝试 retry
+    Callback = fun(Info, _SnapshotData) ->
         case maps:get(type, Info) of
             initial ->
                 %% 尝试在 initial 时 retry（应该导致错误）
@@ -240,7 +240,7 @@ initial_type_retry_not_allowed_test() ->
         end
     end,
 
-    Options = #{on_checkpoint => Callback},
+    Options = #{on_snapshot => Callback},
     Result = graph:run(Graph, InitialState, Options),
 
     %% 应该返回错误
@@ -252,8 +252,8 @@ step_type_retry_not_allowed_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    %% 在第一个 step checkpoint 时尝试 retry
-    Callback = fun(Info, _CheckpointData) ->
+    %% 在第一个 step snapshot 时尝试 retry
+    Callback = fun(Info, _SnapshotData) ->
         case maps:get(type, Info) of
             initial ->
                 continue;
@@ -265,7 +265,7 @@ step_type_retry_not_allowed_test() ->
         end
     end,
 
-    Options = #{on_checkpoint => Callback},
+    Options = #{on_snapshot => Callback},
     Result = graph:run(Graph, InitialState, Options),
 
     %% 应该返回错误
@@ -276,22 +276,22 @@ step_type_retry_not_allowed_test() ->
 %% resume_data 测试
 %%====================================================================
 
-%% 测试：执行完成时（done）也调用 checkpoint 回调
-final_checkpoint_callback_called_test() ->
+%% 测试：执行完成时（done）也调用 snapshot 回调
+final_snapshot_callback_called_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
     Self = self(),
-    Callback = fun(Info, CheckpointData) ->
-        Self ! {checkpoint, maps:get(type, Info), CheckpointData},
+    Callback = fun(Info, SnapshotData) ->
+        Self ! {snapshot, maps:get(type, Info), SnapshotData},
         continue
     end,
 
-    Options = #{on_checkpoint => Callback},
+    Options = #{on_snapshot => Callback},
     Result = graph:run(Graph, InitialState, Options),
 
-    %% 收集所有 checkpoint 类型
-    Types = collect_checkpoint_types([]),
+    %% 收集所有 snapshot 类型
+    Types = collect_snapshot_types([]),
 
     %% 验证包含 final 类型（不管执行是否成功，final 回调都应该被调用）
     ?assert(lists:member(final, Types)),
@@ -299,13 +299,13 @@ final_checkpoint_callback_called_test() ->
     %% 验证 done_reason 是 completed（pregel 层面完成）
     ?assertEqual(completed, maps:get(done_reason, Result)),
 
-    %% 验证结果中包含最终 checkpoint
-    ?assert(maps:is_key(checkpoint, Result)).
+    %% 验证结果中包含最终 snapshot
+    ?assert(maps:is_key(snapshot, Result)).
 
-collect_checkpoint_types(Acc) ->
+collect_snapshot_types(Acc) ->
     receive
-        {checkpoint, Type, _Data} ->
-            collect_checkpoint_types([Type | Acc])
+        {snapshot, Type, _Data} ->
+            collect_snapshot_types([Type | Acc])
     after 100 ->
         lists:reverse(Acc)
     end.
@@ -315,29 +315,29 @@ resume_data_injection_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    %% 第一次执行，保存 checkpoint 后停止
+    %% 第一次执行，保存 snapshot 后停止
     Self = self(),
-    Callback = fun(_Info, CheckpointData) ->
-        Self ! {save_checkpoint, CheckpointData},
+    Callback = fun(_Info, SnapshotData) ->
+        Self ! {save_snapshot, SnapshotData},
         {stop, waiting_for_input}
     end,
 
-    Options1 = #{on_checkpoint => Callback},
+    Options1 = #{on_snapshot => Callback},
     Result1 = graph:run(Graph, InitialState, Options1),
 
     ?assertEqual(stopped, maps:get(status, Result1)),
 
-    %% 获取保存的 checkpoint
-    CheckpointData = receive
-        {save_checkpoint, Data} -> Data
+    %% 获取保存的 snapshot
+    SnapshotData = receive
+        {save_snapshot, Data} -> Data
     after 1000 ->
-        error(no_checkpoint_saved)
+        error(no_snapshot_saved)
     end,
 
     %% 准备恢复选项，包含 resume_data
-    #{pregel_checkpoint := PregelCheckpoint, iteration := Iteration} = CheckpointData,
+    #{pregel_snapshot := PregelSnapshot, iteration := Iteration} = SnapshotData,
     RestoreOpts = #{
-        pregel_checkpoint => PregelCheckpoint,
+        pregel_snapshot => PregelSnapshot,
         iteration => Iteration,
         resume_data => #{process => {user_input, "hello"}}
     },

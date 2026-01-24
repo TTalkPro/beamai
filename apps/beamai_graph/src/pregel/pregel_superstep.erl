@@ -7,7 +7,7 @@
 %%% 核心职责:
 %%% - 完成超步处理：收集 Worker 结果、应用 deltas、更新全局状态
 %%% - 构建超步信息：为调用者提供超步执行的详细信息
-%%% - 确定 checkpoint 类型：根据执行结果判断是否有错误/中断
+%%% - 确定 snapshot 类型：根据执行结果判断是否有错误/中断
 %%% - 管理 activations：处理下一超步需要激活的顶点
 %%%
 %%% 延迟提交机制:
@@ -25,7 +25,7 @@
 -export([
     complete_superstep/7,
     build_superstep_info/2,
-    determine_checkpoint_type/1,
+    determine_snapshot_type/1,
     get_activations_for_superstep/2,
     group_activations_by_worker/2,
     separate_dispatches/1,
@@ -36,12 +36,12 @@
 %% === 类型定义 ===
 -type vertex_id() :: pregel_vertex:vertex_id().
 -type vertex_inputs() :: #{vertex_id() => [graph_dispatch:dispatch()]}.
--type checkpoint_type() :: initial | step | error | interrupt | final.
+-type snapshot_type() :: initial | step | error | interrupt | final.
 -type superstep_info() :: pregel_master:superstep_info().
 -type field_reducers() :: pregel_master:field_reducers().
 -type delta() :: pregel_master:delta().
 
--export_type([checkpoint_type/0, vertex_inputs/0]).
+-export_type([snapshot_type/0, vertex_inputs/0]).
 
 %%====================================================================
 %% API
@@ -127,10 +127,10 @@ complete_superstep(Barrier, Superstep, MaxSupersteps, GlobalState,
     MaxReached = Superstep >= MaxSupersteps - 1,
     IsDone = Halted orelse MaxReached,
 
-    %% ===== 第7步：确定 checkpoint 类型并构建信息 =====
+    %% ===== 第7步：确定 snapshot 类型并构建信息 =====
     Type = case IsDone of
         true -> final;
-        false -> determine_checkpoint_type(UpdatedResults)
+        false -> determine_snapshot_type(UpdatedResults)
     end,
     Info = build_superstep_info(Type, UpdatedResults),
 
@@ -152,18 +152,18 @@ complete_superstep(Barrier, Superstep, MaxSupersteps, GlobalState,
 %% @doc 构建超步信息
 %%
 %% 将超步执行结果打包成标准的 superstep_info 格式。
-%% Type 参数指定 checkpoint 类型（initial/step/error/interrupt/final）。
+%% Type 参数指定 snapshot 类型（initial/step/error/interrupt/final）。
 %%
 %% 返回的信息包含:
-%% - type: checkpoint 类型
+%% - type: snapshot 类型
 %% - superstep: 超步号
 %% - active_count: 活跃顶点数
 %% - activation_count: 下一步待激活顶点数
 %% - failed_count/failed_vertices: 失败顶点信息
 %% - interrupted_count/interrupted_vertices: 中断顶点信息
--spec build_superstep_info(checkpoint_type(), map() | undefined) -> superstep_info().
+-spec build_superstep_info(snapshot_type(), map() | undefined) -> superstep_info().
 build_superstep_info(Type, undefined) ->
-    %% 无结果时返回默认值（用于初始 checkpoint）
+    %% 无结果时返回默认值（用于初始 snapshot）
     #{
         type => Type,
         superstep => 0,
@@ -187,16 +187,16 @@ build_superstep_info(Type, Results) ->
         interrupted_vertices => maps:get(interrupted_vertices, Results, [])
     }.
 
-%% @doc 根据执行结果判断 checkpoint 类型
+%% @doc 根据执行结果判断 snapshot 类型
 %%
-%% Checkpoint 类型决定了调用者如何处理当前状态:
+%% Snapshot 类型决定了调用者如何处理当前状态:
 %% - interrupt: 有顶点请求中断（human-in-the-loop），优先级最高
 %% - error: 有顶点执行失败，需要决定是否重试
 %% - step: 正常超步完成，可以继续下一超步
 %%
 %% 注意: initial 和 final 类型由外层逻辑确定，不在此函数判断。
--spec determine_checkpoint_type(map()) -> checkpoint_type().
-determine_checkpoint_type(Results) ->
+-spec determine_snapshot_type(map()) -> snapshot_type().
+determine_snapshot_type(Results) ->
     InterruptedCount = maps:get(interrupted_count, Results, 0),
     FailedCount = maps:get(failed_count, Results, 0),
     if

@@ -65,7 +65,7 @@ compile_valid_test() ->
     Event = beamai_process_event:new(start, #{}),
     B3 = beamai_process_builder:add_initial_event(B2, Event),
     {ok, Def} = beamai_process_builder:compile(B3),
-    ?assert(maps:get('__process_def__', Def)),
+    ?assert(maps:get('__process_spec__', Def)),
     ?assertEqual(test, maps:get(name, Def)),
     ?assert(maps:is_key(step_a, maps:get(steps, Def))).
 

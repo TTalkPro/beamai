@@ -85,7 +85,7 @@ step_api_basic_test() ->
         global_state => InitialState
     }),
     try
-        %% 第一步返回 initial checkpoint（不执行超步）
+        %% 第一步返回 initial snapshot（不执行超步）
         Step1 = pregel_master:step(Master),
         ?assertMatch({continue, #{type := initial}}, Step1),
 
@@ -113,7 +113,7 @@ step_api_multi_step_test() ->
         global_state => InitialState
     }),
     try
-        %% 第一步返回 initial checkpoint（不执行超步）
+        %% 第一步返回 initial snapshot（不执行超步）
         Step1 = pregel_master:step(Master),
         ?assertMatch({continue, #{type := initial}}, Step1),
 
@@ -128,11 +128,11 @@ step_api_multi_step_test() ->
         pregel_master:stop(Master)
     end.
 
-%% 测试：get_checkpoint_data
-get_checkpoint_data_test() ->
+%% 测试：get_snapshot_data
+get_snapshot_data_test() ->
     Graph = make_chain_graph(),
     ComputeFn = make_halt_compute_fn(),
-    InitialState = #{checkpoint_test => true},
+    InitialState = #{snapshot_test => true},
 
     {ok, Master} = pregel_master:start_link(Graph, ComputeFn, #{
         num_workers => 1,
@@ -142,16 +142,16 @@ get_checkpoint_data_test() ->
         %% 执行一步
         _Step = pregel_master:step(Master),
 
-        %% 获取 checkpoint 数据
-        CheckpointData = pregel_master:get_checkpoint_data(Master),
+        %% 获取 snapshot 数据
+        SnapshotData = pregel_master:get_snapshot_data(Master),
 
-        ?assert(maps:is_key(superstep, CheckpointData)),
-        ?assert(maps:is_key(vertices, CheckpointData)),
+        ?assert(maps:is_key(superstep, SnapshotData)),
+        ?assert(maps:is_key(vertices, SnapshotData)),
         %% 无 inbox 版本使用 pending_activations
-        ?assert(maps:is_key(pending_activations, CheckpointData)),
-        ?assert(maps:is_key(pending_deltas, CheckpointData)),
+        ?assert(maps:is_key(pending_activations, SnapshotData)),
+        ?assert(maps:is_key(pending_deltas, SnapshotData)),
         %% 全局状态模式：检查 global_state
-        ?assert(maps:is_key(global_state, CheckpointData))
+        ?assert(maps:is_key(global_state, SnapshotData))
     after
         pregel_master:stop(Master)
     end.

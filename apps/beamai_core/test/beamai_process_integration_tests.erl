@@ -41,7 +41,7 @@ facade_builder_subtest() ->
     P5 = beamai_process:set_initial_event(P4, start, #{msg => <<"go">>}),
     P6 = beamai_process:set_execution_mode(P5, sequential),
     {ok, Def} = beamai_process:build(P6),
-    ?assert(maps:get('__process_def__', Def)),
+    ?assert(maps:get('__process_spec__', Def)),
     ?assertEqual(my_workflow, maps:get(name, Def)).
 
 %%====================================================================

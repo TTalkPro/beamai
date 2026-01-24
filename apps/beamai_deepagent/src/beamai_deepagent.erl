@@ -55,9 +55,9 @@
 %% 状态查询
 -export([get_plan/1, get_trace/1]).
 
-%% Checkpoint API 已移除
-%% Checkpoint 现在通过 on_checkpoint 回调自动保存
-%% 用户可通过 beamai_memory API 直接访问 checkpoints
+%% Snapshot API 已移除
+%% Snapshot 现在通过 on_snapshot 回调自动保存
+%% 用户可通过 beamai_memory API 直接访问 snapshots
 
 %% 状态导出/导入（用于外部持久化）
 -export([export_state/1, import_state/2]).
@@ -82,13 +82,13 @@
     buffer => buffer_config(),
     %% Middleware 配置
     middlewares => [middleware_spec()],
-    %% Checkpoint/存储相关
+    %% Snapshot/存储相关
     enable_storage => boolean(),
     storage => {module(), pid()} | undefined,
     storage_opts => map(),
-    auto_checkpoint => boolean(),
+    auto_snapshot => boolean(),
     restore_latest => boolean(),
-    restore_checkpoint => binary()
+    restore_snapshot => binary()
 }.
 
 -type middleware_spec() :: module() | {module(), map()} | {module(), map(), integer()}.
@@ -170,18 +170,18 @@ run(Config, Message) ->
 %% - trace: 是否记录轨迹（默认 true）
 %% - timeout: 超时时间毫秒（默认 300000）
 %% - enable_storage: 是否启用存储（默认 false）
-%% - auto_checkpoint: 是否自动保存 checkpoint（默认 false）
-%% - restore_checkpoint: 恢复指定的检查点
-%% - restore_latest: 恢复最新检查点
+%% - auto_snapshot: 是否自动保存 snapshot（默认 false）
+%% - restore_snapshot: 恢复指定的快照
+%% - restore_latest: 恢复最新快照
 %%
 %% 执行流程：
 %% 1. 验证 LLM 配置
 %% 2. 初始化存储（如果启用）
 %% 3. 构建核心执行图
 %% 4. 创建初始状态（包含用户消息）
-%% 5. 恢复检查点（如果配置）
+%% 5. 恢复快照（如果配置）
 %% 6. 启动图执行引擎
-%% 7. 自动保存 checkpoint（如果启用）
+%% 7. 自动保存 snapshot（如果启用）
 %% 8. 处理执行结果
 -spec run(config(), binary(), map()) -> {ok, run_result()} | {error, term()}.
 run(Config, Message, Opts) ->
@@ -197,7 +197,7 @@ run(Config, Message, Opts) ->
 -spec run_internal(config(), binary(), map()) -> {ok, run_result()} | {error, term()}.
 run_internal(Config, Message, Opts) ->
     %% 1. 初始化存储（如果启用）
-    Storage = beamai_deepagent_checkpoint:init_storage(<<"beamai_deepagent_temp">>, Config),
+    Storage = beamai_deepagent_snapshot:init_storage(<<"beamai_deepagent_temp">>, Config),
 
     %% 2. 构建图和创建初始状态
     {ok, Graph} = build_core_graph(Config),
@@ -206,10 +206,10 @@ run_internal(Config, Message, Opts) ->
     %% 3. 将存储添加到状态中
     StateWithStorage = maybe_add_storage(InitialState, Storage),
 
-    %% 4. 恢复检查点（如果配置）
-    RestoredState = beamai_deepagent_checkpoint:maybe_restore(Config, StateWithStorage),
+    %% 4. 恢复快照（如果配置）
+    RestoredState = beamai_deepagent_snapshot:maybe_restore(Config, StateWithStorage),
 
-    %% 5. 执行图（checkpoint 通过回调自动保存）
+    %% 5. 执行图（snapshot 通过回调自动保存）
     RunOpts = build_run_options(Config, Storage, Opts),
     execute_graph(Graph, RestoredState, RunOpts).
 
@@ -350,10 +350,10 @@ default_config() ->
 %% @private 构建运行选项
 %%
 %% 合并配置和用户选项，设置图执行参数
-%% 如果配置了 storage，自动创建 on_checkpoint 回调
+%% 如果配置了 storage，自动创建 on_snapshot 回调
 -spec build_run_options(config(), beamai_memory:memory() | undefined, map()) -> map().
 build_run_options(Config, undefined, Opts) ->
-    %% 无存储，不创建 checkpoint 回调
+    %% 无存储，不创建 snapshot 回调
     #{
         engine => maps:get(engine, Opts, pregel),
         trace => maps:get(trace, Opts, true),
@@ -361,14 +361,14 @@ build_run_options(Config, undefined, Opts) ->
         timeout => maps:get(timeout, Opts, 300000)
     };
 build_run_options(Config, Memory, Opts) ->
-    %% 有存储，创建 checkpoint 回调
-    OnCheckpoint = beamai_deepagent_checkpoint_callback:create_callback(Config, Memory),
+    %% 有存储，创建 snapshot 回调
+    OnSnapshot = beamai_deepagent_snapshot_callback:create_callback(Config, Memory),
     #{
         engine => maps:get(engine, Opts, pregel),
         trace => maps:get(trace, Opts, true),
         max_iterations => maps:get(max_iterations, Config, 50),
         timeout => maps:get(timeout, Opts, 300000),
-        on_checkpoint => OnCheckpoint
+        on_snapshot => OnSnapshot
     }.
 
 %%====================================================================

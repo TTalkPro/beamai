@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc 流程构建器 - 纯数据构造
 %%%
-%%% 构建可序列化、可检视的 process_def() 流程定义。
+%%% 构建可序列化、可检视的 process_spec() 流程定义。
 %%% 在编译时验证步骤模块和绑定引用的合法性。
 %%%
 %%% @end
@@ -19,7 +19,7 @@
     compile/1
 ]).
 
--export_type([builder/0, process_def/0, step_def/0]).
+-export_type([builder/0, process_spec/0, step_def/0]).
 
 -type step_def() :: #{
     '__step_def__' := true,
@@ -44,8 +44,8 @@
     execution_mode := concurrent | sequential
 }.
 
--type process_def() :: #{
-    '__process_def__' := true,
+-type process_spec() :: #{
+    '__process_spec__' := true,
     name := atom(),
     steps := #{atom() => step_def()},
     bindings := [beamai_process_event:event_binding()],
@@ -146,7 +146,7 @@ set_execution_mode(Builder, Mode) when Mode =:= concurrent; Mode =:= sequential 
 %%
 %% @param Builder 构建器
 %% @returns {ok, 流程定义} | {error, 错误列表}
--spec compile(builder()) -> {ok, process_def()} | {error, [term()]}.
+-spec compile(builder()) -> {ok, process_spec()} | {error, [term()]}.
 compile(#{name := Name, steps := Steps, bindings := Bindings,
           initial_events := InitEvents, error_handler := ErrorHandler,
           execution_mode := ExecMode}) ->
@@ -156,7 +156,7 @@ compile(#{name := Name, steps := Steps, bindings := Bindings,
     case Errors of
         [] ->
             {ok, #{
-                '__process_def__' => true,
+                '__process_spec__' => true,
                 name => Name,
                 steps => Steps,
                 bindings => Bindings,
