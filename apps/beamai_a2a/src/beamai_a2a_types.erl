@@ -60,7 +60,12 @@
 
     %% Part kind 转换
     binary_to_part_kind/1,
-    part_kind_to_binary/1
+    part_kind_to_binary/1,
+
+    %% Push 事件转换（安全版本）
+    binary_to_push_event/1,
+    push_event_to_binary/1,
+    is_valid_push_event/1
 ]).
 
 %%====================================================================
@@ -259,3 +264,63 @@ part_kind_to_binary(text) -> <<"text">>;
 part_kind_to_binary(file) -> <<"file">>;
 part_kind_to_binary(data) -> <<"data">>;
 part_kind_to_binary(_) -> <<"text">>.
+
+%%====================================================================
+%% Push 事件转换（安全版本，防止 atom 表耗尽攻击）
+%%====================================================================
+
+%% Push 事件白名单 - 仅允许这些预定义的事件类型
+%% 对应 task_state 的所有可能值
+-define(VALID_PUSH_EVENTS, #{
+    <<"submitted">> => submitted,
+    <<"working">> => working,
+    <<"input_required">> => input_required,
+    <<"input-required">> => input_required,
+    <<"auth_required">> => auth_required,
+    <<"auth-required">> => auth_required,
+    <<"completed">> => completed,
+    <<"failed">> => failed,
+    <<"canceled">> => canceled,
+    <<"rejected">> => rejected,
+    <<"all">> => all
+}).
+
+%% @doc 安全地将 binary 转换为 push 事件 atom
+%%
+%% 使用预定义白名单进行验证，防止恶意输入导致 atom 表耗尽攻击。
+%% 未知事件返回 undefined，调用方应过滤掉无效事件。
+%%
+%% @param Bin 事件名称的 binary 表示
+%% @returns 对应的 atom 或 undefined（未知事件）
+-spec binary_to_push_event(binary()) -> atom() | undefined.
+binary_to_push_event(Bin) when is_binary(Bin) ->
+    maps:get(Bin, ?VALID_PUSH_EVENTS, undefined);
+binary_to_push_event(_) ->
+    undefined.
+
+%% @doc 将 push 事件 atom 转换为 binary
+-spec push_event_to_binary(atom()) -> binary().
+push_event_to_binary(submitted) -> <<"submitted">>;
+push_event_to_binary(working) -> <<"working">>;
+push_event_to_binary(input_required) -> <<"input-required">>;
+push_event_to_binary(auth_required) -> <<"auth-required">>;
+push_event_to_binary(completed) -> <<"completed">>;
+push_event_to_binary(failed) -> <<"failed">>;
+push_event_to_binary(canceled) -> <<"canceled">>;
+push_event_to_binary(rejected) -> <<"rejected">>;
+push_event_to_binary(all) -> <<"all">>;
+push_event_to_binary(_) -> <<"unknown">>.
+
+%% @doc 检查是否为有效的 push 事件
+%%
+%% 用于验证事件名称是否在白名单中。
+%%
+%% @param Event 事件名称（binary 或 atom）
+%% @returns true | false
+-spec is_valid_push_event(binary() | atom()) -> boolean().
+is_valid_push_event(Event) when is_binary(Event) ->
+    maps:is_key(Event, ?VALID_PUSH_EVENTS);
+is_valid_push_event(Event) when is_atom(Event) ->
+    lists:member(Event, maps:values(?VALID_PUSH_EVENTS));
+is_valid_push_event(_) ->
+    false.

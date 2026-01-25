@@ -121,11 +121,9 @@ is_multimodal_model(Model) when is_binary(Model) ->
 is_multimodal_model(_) ->
     false.
 
-%% @private 构建请求 URL
+%% @private 构建请求 URL（使用公共模块）
 build_url(Config, DefaultEndpoint) ->
-    BaseUrl = maps:get(base_url, Config, ?DASHSCOPE_BASE_URL),
-    Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
-    <<BaseUrl/binary, Endpoint/binary>>.
+    llm_provider_common:build_url(Config, DefaultEndpoint, ?DASHSCOPE_BASE_URL).
 
 %% @private 构建请求头
 %% DashScope 原生 API 流式输出需要 X-DashScope-SSE 头
@@ -260,33 +258,9 @@ parse_output(#{<<"text">> := Text, <<"finish_reason">> := FinishReason}, Resp) -
 parse_output(Output, _Resp) ->
     {error, {invalid_output, Output}}.
 
-%% @private 解析工具调用
-parse_tool_calls(#{<<"tool_calls">> := Calls}) when is_list(Calls) ->
-    [parse_single_tool_call(C) || C <- Calls];
-parse_tool_calls(_) ->
-    [].
-
-%% @private 解析单个工具调用
-parse_single_tool_call(#{<<"id">> := Id, <<"function">> := Func}) ->
-    #{
-        id => Id,
-        name => maps:get(<<"name">>, Func, <<>>),
-        arguments => maps:get(<<"arguments">>, Func, <<>>)
-    };
-parse_single_tool_call(#{<<"function">> := Func}) ->
-    %% 某些情况下可能没有 id
-    #{
-        id => generate_tool_call_id(),
-        name => maps:get(<<"name">>, Func, <<>>),
-        arguments => maps:get(<<"arguments">>, Func, <<>>)
-    };
-parse_single_tool_call(_) ->
-    #{id => <<>>, name => <<>>, arguments => <<>>}.
-
-%% @private 生成工具调用 ID
-generate_tool_call_id() ->
-    Rand = integer_to_binary(rand:uniform(1000000000)),
-    <<"call_", Rand/binary>>.
+%% @private 解析工具调用（使用公共模块）
+parse_tool_calls(Message) ->
+    llm_provider_common:parse_tool_calls(Message).
 
 %% @private 解析使用统计 - DashScope 使用 input_tokens/output_tokens
 parse_usage(Usage) ->
@@ -362,20 +336,31 @@ merge_tool_calls(Existing, New) ->
     end, Existing, New).
 
 %% @private 合并单个工具调用
+%% 优化：将嵌套逻辑拆分为独立函数
 merge_single_tool_call(Calls, Index, NewCall) ->
     case Index < length(Calls) of
         true ->
-            %% 更新现有调用（累加 arguments）
-            lists:map(fun({I, C}) ->
-                case I of
-                    Index -> merge_call_data(C, NewCall);
-                    _ -> C
-                end
-            end, lists:zip(lists:seq(0, length(Calls) - 1), Calls));
+            update_call_at_index(Calls, Index, NewCall);
         false ->
-            %% 添加新调用
-            Calls ++ [parse_single_tool_call(NewCall)]
+            Calls ++ [llm_provider_common:parse_single_tool_call(NewCall)]
     end.
+
+%% @private 更新指定索引位置的工具调用
+%% 将 lists:map + lists:zip 的复杂逻辑提取为独立函数
+-spec update_call_at_index([map()], non_neg_integer(), map()) -> [map()].
+update_call_at_index(Calls, TargetIndex, NewCall) ->
+    {Updated, _} = lists:mapfoldl(
+        fun(Call, CurrentIndex) ->
+            NewValue = case CurrentIndex of
+                TargetIndex -> merge_call_data(Call, NewCall);
+                _ -> Call
+            end,
+            {NewValue, CurrentIndex + 1}
+        end,
+        0,
+        Calls
+    ),
+    Updated.
 
 %% @private 合并调用数据
 merge_call_data(Existing, New) ->

@@ -1,7 +1,42 @@
 %%%-------------------------------------------------------------------
-%%% @doc LLM 响应适配器
+%%% @doc LLM 响应适配器模块
 %%%
-%%% 提供统一的响应解析，支持不同 LLM Provider 的响应格式。
+%%% 提供统一的响应解析功能，将不同 LLM Provider 的响应格式
+%%% 转换为标准化的内部格式。
+%%%
+%%% == 支持的响应格式 ==
+%%%
+%%% - OpenAI 格式：GPT 系列、DeepSeek、智谱 GLM、Ollama（兼容模式）
+%%% - Anthropic 格式：Claude 系列
+%%%
+%%% == 标准化响应格式 ==
+%%%
+%%% ```erlang
+%%% #{
+%%%     id => binary(),           %% 请求 ID
+%%%     model => binary(),        %% 使用的模型名称
+%%%     content => binary(),      %% 响应文本内容
+%%%     tool_calls => [map()],    %% 工具调用列表（可选）
+%%%     finish_reason => binary(),%% 结束原因（stop/tool_calls/length）
+%%%     usage => #{               %% Token 使用统计
+%%%         prompt_tokens => integer(),
+%%%         completion_tokens => integer(),
+%%%         total_tokens => integer()
+%%%     }
+%%% }
+%%% ```
+%%%
+%%% == 使用示例 ==
+%%%
+%%% ```erlang
+%%% %% 解析 OpenAI 格式响应
+%%% {ok, Response} = llm_response_adapter:parse_openai(RawResponse),
+%%% Content = maps:get(content, Response),
+%%% ToolCalls = maps:get(tool_calls, Response),
+%%%
+%%% %% 解析 Anthropic 格式响应
+%%% {ok, Response} = llm_response_adapter:parse_anthropic(RawResponse).
+%%% ```
 %%%
 %%% @end
 %%%-------------------------------------------------------------------

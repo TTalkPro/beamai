@@ -438,7 +438,6 @@ notify_task_change(TaskPid) ->
     spawn(fun() -> beamai_a2a_push:notify_async(TaskId, Task) end),
     ok.
 
-%% @private 格式化错误
-format_error(Reason) when is_binary(Reason) -> Reason;
-format_error(Reason) when is_atom(Reason) -> atom_to_binary(Reason, utf8);
-format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
+%% @private 格式化错误（委托给公共模块）
+format_error(Reason) ->
+    beamai_a2a_utils:format_error(Reason).

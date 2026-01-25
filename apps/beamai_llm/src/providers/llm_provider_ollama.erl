@@ -77,13 +77,9 @@ stream_chat(Config, Request, Callback) ->
 %% 请求构建（Provider 特定）
 %%====================================================================
 
-%% @private 构建请求 URL
-%% base_url 为纯域名，endpoint 包含完整路径（含版本号）
-%% 这样设计便于第三方 API 代理兼容（如 one-api、new-api 等）
+%% @private 构建请求 URL（使用公共模块）
 build_url(Config, DefaultEndpoint) ->
-    BaseUrl = maps:get(base_url, Config, ?OLLAMA_BASE_URL),
-    Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
-    <<BaseUrl/binary, Endpoint/binary>>.
+    llm_provider_common:build_url(Config, DefaultEndpoint, ?OLLAMA_BASE_URL).
 
 %% @private 构建请求头（Ollama 无需认证）
 build_headers() ->
@@ -126,11 +122,9 @@ build_options(Config) ->
         {max_tokens, <<"num_predict">>}
     ]).
 
-%% @private 添加工具定义
-maybe_add_tools(Body, #{tools := Tools}) when Tools =/= [] ->
-    Body#{<<"tools">> => llm_tool_adapter:to_openai(Tools)};
-maybe_add_tools(Body, _) ->
-    Body.
+%% @private 添加工具定义（使用公共模块）
+maybe_add_tools(Body, Request) ->
+    llm_provider_common:maybe_add_tools(Body, Request).
 
 %%====================================================================
 %% 响应解析（支持两种格式）
@@ -172,14 +166,8 @@ parse_usage(Resp) ->
 %% @private Ollama 原生格式事件累加
 accumulate_event(#{<<"message">> := #{<<"content">> := Content}}, Acc) ->
     Acc#{content => <<(maps:get(content, Acc))/binary, Content/binary>>};
-%% @private OpenAI 兼容格式事件累加
-accumulate_event(#{<<"choices">> := [#{<<"delta">> := Delta} | _]} = Event, Acc) ->
-    Content = maps:get(<<"content">>, Delta, <<>>),
-    ContentBin = beamai_utils:ensure_binary(Content),
-    Acc#{
-        id => maps:get(<<"id">>, Event, maps:get(id, Acc)),
-        model => maps:get(<<"model">>, Event, maps:get(model, Acc)),
-        content => <<(maps:get(content, Acc))/binary, ContentBin/binary>>
-    };
+%% @private OpenAI 兼容格式事件累加（使用公共模块）
+accumulate_event(#{<<"choices">> := _} = Event, Acc) ->
+    llm_provider_common:accumulate_openai_event(Event, Acc);
 accumulate_event(_, Acc) ->
     Acc.

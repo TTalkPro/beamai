@@ -294,10 +294,9 @@ make_rate_limit_error_response(Id, RateLimitInfo) ->
     }.
 
 %%====================================================================
-%% 内部函数
+%% 内部函数（使用公共模块）
 %%====================================================================
 
-%% @private 格式化错误
-format_error(Reason) when is_binary(Reason) -> Reason;
-format_error(Reason) when is_atom(Reason) -> atom_to_binary(Reason, utf8);
-format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
+%% @private 格式化错误（委托给公共模块）
+format_error(Reason) ->
+    beamai_a2a_utils:format_error(Reason).

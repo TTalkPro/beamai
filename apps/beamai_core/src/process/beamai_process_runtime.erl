@@ -184,51 +184,54 @@ init_fresh(ProcessSpec, Opts) ->
 %% @private 从快照恢复的初始化路径
 %% 直接使用 Opts 中传入的已恢复步骤状态，不调用 init_steps
 init_from_restored(ProcessSpec, Opts) ->
-    Context = maps:get(context, Opts, beamai_context:new()),
-    StepsState = maps:get(restored_steps_state, Opts),
+    Data = build_restored_data(ProcessSpec, Opts),
     CurrentState = maps:get(restored_current_state, Opts, idle),
-    PausedStep = maps:get(restored_paused_step, Opts, undefined),
-    PauseReason = maps:get(restored_pause_reason, Opts, undefined),
+    determine_initial_state(CurrentState, Data).
+
+%% @private 构建恢复数据记录
+%% 从 Opts 中提取所有恢复相关字段，构建 #data{} 记录
+-spec build_restored_data(map(), map()) -> #data{}.
+build_restored_data(ProcessSpec, Opts) ->
     EventQueue = maps:get(restored_event_queue, Opts, []),
-    Queue = queue:from_list(EventQueue),
-    Store = maps:get(store, Opts, undefined),
-    CheckpointPolicy = maps:get(checkpoint_policy, Opts, default_checkpoint_policy()),
-    OnQuiescent = maps:get(on_quiescent, Opts, undefined),
-    Data = #data{
+    #data{
         process_spec = ProcessSpec,
-        steps_state = StepsState,
-        event_queue = Queue,
-        context = Context,
-        paused_step = PausedStep,
-        pause_reason = PauseReason,
+        steps_state = maps:get(restored_steps_state, Opts),
+        event_queue = queue:from_list(EventQueue),
+        context = maps:get(context, Opts, beamai_context:new()),
+        paused_step = maps:get(restored_paused_step, Opts, undefined),
+        pause_reason = maps:get(restored_pause_reason, Opts, undefined),
         pending_steps = #{},
         pending_results = [],
         expected_count = 0,
         caller = maps:get(caller, Opts, undefined),
         opts = Opts,
-        store = Store,
-        checkpoint_policy = CheckpointPolicy,
-        on_quiescent = OnQuiescent
-    },
-    %% 根据恢复时的状态决定进入哪个 FSM 状态
-    case CurrentState of
-        paused ->
-            {ok, paused, Data};
-        running ->
-            %% 恢复运行态时继续处理事件队列
-            case queue:is_empty(Queue) of
-                true -> {ok, idle, Data};
-                false -> {ok, running, Data, [{state_timeout, 0, process_queue}]}
-            end;
-        completed ->
-            {ok, completed, Data};
-        failed ->
-            {ok, failed, Data};
-        _ ->
-            case queue:is_empty(Queue) of
-                true -> {ok, idle, Data};
-                false -> {ok, running, Data, [{state_timeout, 0, process_queue}]}
-            end
+        store = maps:get(store, Opts, undefined),
+        checkpoint_policy = maps:get(checkpoint_policy, Opts, default_checkpoint_policy()),
+        on_quiescent = maps:get(on_quiescent, Opts, undefined)
+    }.
+
+%% @private 根据恢复状态和事件队列决定初始 FSM 状态
+%% 将复杂的嵌套条件判断拆分为独立函数
+-spec determine_initial_state(atom(), #data{}) -> {ok, atom(), #data{}} | {ok, atom(), #data{}, list()}.
+determine_initial_state(paused, Data) ->
+    {ok, paused, Data};
+determine_initial_state(completed, Data) ->
+    {ok, completed, Data};
+determine_initial_state(failed, Data) ->
+    {ok, failed, Data};
+determine_initial_state(running, Data) ->
+    initial_state_from_queue(Data);
+determine_initial_state(_, Data) ->
+    %% idle 或其他状态，根据队列决定
+    initial_state_from_queue(Data).
+
+%% @private 根据事件队列状态决定初始状态
+%% 队列为空进入 idle，否则进入 running 并触发处理
+-spec initial_state_from_queue(#data{}) -> {ok, atom(), #data{}} | {ok, atom(), #data{}, list()}.
+initial_state_from_queue(#data{event_queue = Queue} = Data) ->
+    case queue:is_empty(Queue) of
+        true -> {ok, idle, Data};
+        false -> {ok, running, Data, [{state_timeout, 0, process_queue}]}
     end.
 
 %% @private 进程终止回调

@@ -553,13 +553,12 @@ make_error_response(Id, Code, Message, Data) ->
     }.
 
 %%====================================================================
-%% 工具函数
+%% 工具函数（使用公共模块）
 %%====================================================================
 
-%% @private 格式化错误
-format_error(Reason) when is_binary(Reason) -> Reason;
-format_error(Reason) when is_atom(Reason) -> atom_to_binary(Reason, utf8);
-format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
+%% @private 格式化错误（委托给公共模块）
+format_error(Reason) ->
+    beamai_a2a_utils:format_error(Reason).
 
 %% @private 规范化 webhook 配置
 normalize_webhook_config(Config) ->
@@ -570,11 +569,16 @@ normalize_webhook_config(Config) ->
         retry_count => maps:get(<<"retryCount">>, Config, 3)
     }.
 
-%% @private 规范化 webhook 事件列表
+%% @private 规范化 webhook 事件列表（安全版本）
+%%
+%% 使用 beamai_a2a_types 的安全转换函数，防止 atom 表耗尽攻击。
+%% 无效事件会被过滤掉。
 normalize_webhook_events(all) -> all;
 normalize_webhook_events(<<"all">>) -> all;
 normalize_webhook_events(Events) when is_list(Events) ->
-    [binary_to_atom(E, utf8) || E <- Events, is_binary(E)];
+    ValidEvents = [beamai_a2a_types:binary_to_push_event(E) || E <- Events, is_binary(E)],
+    %% 过滤掉 undefined（无效事件）
+    [E || E <- ValidEvents, E =/= undefined];
 normalize_webhook_events(_) -> all.
 
 %% @private 将 webhook 配置转换为 JSON

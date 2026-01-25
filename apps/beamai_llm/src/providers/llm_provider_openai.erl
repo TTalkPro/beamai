@@ -71,20 +71,13 @@ stream_chat(Config, Request, Callback) ->
 %% 请求构建（Provider 特定）
 %%====================================================================
 
-%% @private 构建请求 URL
-%% base_url 为纯域名，endpoint 包含完整路径（含版本号）
-%% 支持自定义 endpoint，便于第三方 API 兼容（如智谱 coding API 等）
+%% @private 构建请求 URL（使用公共模块）
 build_url(Config, DefaultEndpoint) ->
-    BaseUrl = maps:get(base_url, Config, ?OPENAI_BASE_URL),
-    Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
-    <<BaseUrl/binary, Endpoint/binary>>.
+    llm_provider_common:build_url(Config, DefaultEndpoint, ?OPENAI_BASE_URL).
 
-%% @private 构建请求头
-build_headers(#{api_key := ApiKey}) ->
-    [
-        {<<"Authorization">>, <<"Bearer ", ApiKey/binary>>},
-        {<<"Content-Type">>, <<"application/json">>}
-    ].
+%% @private 构建请求头（使用公共模块）
+build_headers(Config) ->
+    llm_provider_common:build_bearer_auth_headers(Config).
 
 %% @private 构建请求体（使用管道模式）
 build_request_body(Config, Request) ->
@@ -96,34 +89,14 @@ build_request_body(Config, Request) ->
         <<"temperature">> => maps:get(temperature, Config, ?OPENAI_TEMPERATURE)
     },
     ?BUILD_BODY_PIPELINE(Base, [
-        fun(B) -> maybe_add_stream(B, Request) end,
-        fun(B) -> maybe_add_tools(B, Request) end
+        fun(B) -> llm_provider_common:maybe_add_stream(B, Request) end,
+        fun(B) -> llm_provider_common:maybe_add_tools(B, Request) end
     ]).
 
-%% @private 添加流式标志
-maybe_add_stream(Body, #{stream := true}) -> Body#{<<"stream">> => true};
-maybe_add_stream(Body, _) -> Body.
-
-%% @private 添加工具定义
-maybe_add_tools(Body, #{tools := Tools}) when Tools =/= [] ->
-    FormattedTools = llm_tool_adapter:to_openai(Tools),
-    ToolChoice = maps:get(tool_choice, Body, <<"auto">>),
-    Body#{<<"tools">> => FormattedTools, <<"tool_choice">> => ToolChoice};
-maybe_add_tools(Body, _) ->
-    Body.
-
 %%====================================================================
-%% 流式事件累加（Provider 特定）
+%% 流式事件累加（使用公共模块）
 %%====================================================================
 
-%% @private OpenAI 格式事件累加器
-accumulate_event(#{<<"choices">> := [#{<<"delta">> := Delta} | _]} = Event, Acc) ->
-    Content = maps:get(<<"content">>, Delta, <<>>),
-    ContentBin = beamai_utils:ensure_binary(Content),
-    Acc#{
-        id => maps:get(<<"id">>, Event, maps:get(id, Acc)),
-        model => maps:get(<<"model">>, Event, maps:get(model, Acc)),
-        content => <<(maps:get(content, Acc))/binary, ContentBin/binary>>
-    };
-accumulate_event(_, Acc) ->
-    Acc.
+%% @private OpenAI 格式事件累加器（委托给公共模块）
+accumulate_event(Event, Acc) ->
+    llm_provider_common:accumulate_openai_event(Event, Acc).

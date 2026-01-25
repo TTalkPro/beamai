@@ -146,23 +146,16 @@ do_get_request(Url, Headers, Opts) ->
     end.
 
 %%====================================================================
-%% 请求构建（Provider 特定）
+%% 请求构建（使用公共模块）
 %%====================================================================
 
 %% @private 构建请求 URL
-%% base_url 为纯域名，endpoint 包含完整路径（含版本号）
-%% 这样设计便于第三方 API 代理兼容（如 one-api、new-api 等）
 build_url(Config, DefaultEndpoint) ->
-    BaseUrl = maps:get(base_url, Config, ?ZHIPU_BASE_URL),
-    Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
-    <<BaseUrl/binary, Endpoint/binary>>.
+    llm_provider_common:build_url(Config, DefaultEndpoint, ?ZHIPU_BASE_URL).
 
 %% @private 构建请求头
-build_headers(#{api_key := ApiKey}) ->
-    [
-        {<<"Authorization">>, <<"Bearer ", ApiKey/binary>>},
-        {<<"Content-Type">>, <<"application/json">>}
-    ].
+build_headers(Config) ->
+    llm_provider_common:build_bearer_auth_headers(Config).
 
 %% @private 构建请求选项
 build_request_opts(Config) ->
@@ -182,29 +175,13 @@ build_request_body(Config, Request) ->
     },
     build_body_pipeline(Base, Config, Request).
 
-%% @private 请求体构建管道（使用宏）
+%% @private 请求体构建管道（使用公共模块）
 build_body_pipeline(Body, Config, Request) ->
     ?BUILD_BODY_PIPELINE(Body, [
-        fun(B) -> maybe_add_stream(B, Request) end,
-        fun(B) -> maybe_add_tools(B, Request) end,
-        fun(B) -> maybe_add_top_p(B, Config) end
+        fun(B) -> llm_provider_common:maybe_add_stream(B, Request) end,
+        fun(B) -> llm_provider_common:maybe_add_tools(B, Request) end,
+        fun(B) -> llm_provider_common:maybe_add_top_p(B, Config) end
     ]).
-
-%% @private 添加流式标志
-maybe_add_stream(Body, #{stream := true}) -> Body#{<<"stream">> => true};
-maybe_add_stream(Body, _) -> Body.
-
-%% @private 添加工具定义
-maybe_add_tools(Body, #{tools := Tools}) when Tools =/= [] ->
-    FormattedTools = llm_tool_adapter:to_openai(Tools),
-    ToolChoice = maps:get(tool_choice, Body, <<"auto">>),
-    Body#{<<"tools">> => FormattedTools, <<"tool_choice">> => ToolChoice};
-maybe_add_tools(Body, _) ->
-    Body.
-
-%% @private 添加 top_p 参数
-maybe_add_top_p(Body, #{top_p := TopP}) -> Body#{<<"top_p">> => TopP};
-maybe_add_top_p(Body, _) -> Body.
 
 %%====================================================================
 %% 响应解析
@@ -243,29 +220,13 @@ extract_content(Message) ->
             end
     end.
 
-%% @private 解析工具调用
-parse_tool_calls(#{<<"tool_calls">> := Calls}) when is_list(Calls) ->
-    [parse_single_tool_call(C) || C <- Calls];
-parse_tool_calls(_) ->
-    [].
+%% @private 解析工具调用（使用公共模块）
+parse_tool_calls(Message) ->
+    llm_provider_common:parse_tool_calls(Message).
 
-%% @private 解析单个工具调用
-parse_single_tool_call(#{<<"id">> := Id, <<"function">> := Func}) ->
-    #{
-        id => Id,
-        name => maps:get(<<"name">>, Func, <<>>),
-        arguments => maps:get(<<"arguments">>, Func, <<>>)
-    };
-parse_single_tool_call(_) ->
-    #{id => <<>>, name => <<>>, arguments => <<>>}.
-
-%% @private 解析使用统计
+%% @private 解析使用统计（使用公共模块）
 parse_usage(Usage) ->
-    #{
-        prompt_tokens => maps:get(<<"prompt_tokens">>, Usage, 0),
-        completion_tokens => maps:get(<<"completion_tokens">>, Usage, 0),
-        total_tokens => maps:get(<<"total_tokens">>, Usage, 0)
-    }.
+    llm_provider_common:parse_usage(Usage).
 
 %%====================================================================
 %% 流式事件累加（OpenAI 兼容格式）

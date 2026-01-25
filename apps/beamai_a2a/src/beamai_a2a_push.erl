@@ -546,15 +546,30 @@ normalize_url(Url) when is_binary(Url) -> Url;
 normalize_url(Url) when is_list(Url) -> list_to_binary(Url).
 
 %% @private 规范化事件列表
+%%
+%% 使用 beamai_a2a_types 的安全转换函数，防止 atom 表耗尽攻击。
+%% 无效事件会被过滤掉。
 normalize_events(all) -> all;
 normalize_events(Events) when is_list(Events) ->
-    [normalize_event(E) || E <- Events];
+    ValidEvents = [normalize_event(E) || E <- Events],
+    %% 过滤掉 undefined（无效事件）
+    [E || E <- ValidEvents, E =/= undefined];
 normalize_events(_) -> all.
 
-%% @private 规范化单个事件
-normalize_event(E) when is_atom(E) -> E;
-normalize_event(E) when is_binary(E) -> binary_to_atom(E, utf8);
-normalize_event(E) when is_list(E) -> list_to_atom(E).
+%% @private 规范化单个事件（安全版本）
+%%
+%% 使用白名单验证，防止恶意输入创建任意 atom。
+normalize_event(E) when is_atom(E) ->
+    %% 验证 atom 是否在白名单中
+    case beamai_a2a_types:is_valid_push_event(E) of
+        true -> E;
+        false -> undefined
+    end;
+normalize_event(E) when is_binary(E) ->
+    beamai_a2a_types:binary_to_push_event(E);
+normalize_event(E) when is_list(E) ->
+    %% 先转为 binary 再使用安全转换
+    beamai_a2a_types:binary_to_push_event(list_to_binary(E)).
 
 %% @private 将 webhook 记录转换为 map
 %%

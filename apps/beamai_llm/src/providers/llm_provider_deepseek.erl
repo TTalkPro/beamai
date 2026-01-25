@@ -72,21 +72,16 @@ stream_chat(Config, Request, Callback) ->
     llm_http_client:stream_request(Url, Headers, Body, Opts, Callback, fun accumulate_event/2).
 
 %%====================================================================
-%% 请求构建（Provider 特定）
+%% 请求构建（使用公共模块）
 %%====================================================================
 
 %% @private 构建请求 URL
 build_url(Config, DefaultEndpoint) ->
-    BaseUrl = maps:get(base_url, Config, ?DEEPSEEK_BASE_URL),
-    Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
-    <<BaseUrl/binary, Endpoint/binary>>.
+    llm_provider_common:build_url(Config, DefaultEndpoint, ?DEEPSEEK_BASE_URL).
 
 %% @private 构建请求头
-build_headers(#{api_key := ApiKey}) ->
-    [
-        {<<"Authorization">>, <<"Bearer ", ApiKey/binary>>},
-        {<<"Content-Type">>, <<"application/json">>}
-    ].
+build_headers(Config) ->
+    llm_provider_common:build_bearer_auth_headers(Config).
 
 %% @private 构建请求体（使用管道模式）
 build_request_body(Config, Request) ->
@@ -98,48 +93,22 @@ build_request_body(Config, Request) ->
         <<"temperature">> => maps:get(temperature, Config, ?DEEPSEEK_TEMPERATURE)
     },
     ?BUILD_BODY_PIPELINE(Base, [
-        fun(B) -> maybe_add_stream(B, Request) end,
-        fun(B) -> maybe_add_tools(B, Request) end,
-        fun(B) -> maybe_add_top_p(B, Config) end,
+        fun(B) -> llm_provider_common:maybe_add_stream(B, Request) end,
+        fun(B) -> llm_provider_common:maybe_add_tools(B, Request) end,
+        fun(B) -> llm_provider_common:maybe_add_top_p(B, Config) end,
         fun(B) -> maybe_add_response_format(B, Request) end
     ]).
 
-%% @private 添加流式标志
-maybe_add_stream(Body, #{stream := true}) -> Body#{<<"stream">> => true};
-maybe_add_stream(Body, _) -> Body.
-
-%% @private 添加工具定义
-maybe_add_tools(Body, #{tools := Tools}) when Tools =/= [] ->
-    FormattedTools = llm_tool_adapter:to_openai(Tools),
-    ToolChoice = maps:get(tool_choice, Body, <<"auto">>),
-    Body#{<<"tools">> => FormattedTools, <<"tool_choice">> => ToolChoice};
-maybe_add_tools(Body, _) ->
-    Body.
-
-%% @private 添加 top_p 参数
-maybe_add_top_p(Body, #{top_p := TopP}) when is_number(TopP) ->
-    Body#{<<"top_p">> => TopP};
-maybe_add_top_p(Body, _) ->
-    Body.
-
-%% @private 添加响应格式（JSON 模式）
+%% @private 添加响应格式（JSON 模式，DeepSeek 特有）
 maybe_add_response_format(Body, #{response_format := Format}) when is_map(Format) ->
     Body#{<<"response_format">> => Format};
 maybe_add_response_format(Body, _) ->
     Body.
 
 %%====================================================================
-%% 流式事件累加（Provider 特定）
+%% 流式事件累加（使用公共模块）
 %%====================================================================
 
 %% @private DeepSeek/OpenAI 格式事件累加器
-accumulate_event(#{<<"choices">> := [#{<<"delta">> := Delta} | _]} = Event, Acc) ->
-    Content = maps:get(<<"content">>, Delta, <<>>),
-    ContentBin = beamai_utils:ensure_binary(Content),
-    Acc#{
-        id => maps:get(<<"id">>, Event, maps:get(id, Acc)),
-        model => maps:get(<<"model">>, Event, maps:get(model, Acc)),
-        content => <<(maps:get(content, Acc))/binary, ContentBin/binary>>
-    };
-accumulate_event(_, Acc) ->
-    Acc.
+accumulate_event(Event, Acc) ->
+    llm_provider_common:accumulate_openai_event(Event, Acc).
