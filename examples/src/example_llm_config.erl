@@ -22,6 +22,7 @@
     anthropic/0, anthropic/1,
     claude/0, claude/1,
     zhipu/0, zhipu/1,
+    openai_glm/0, openai_glm/1,
     deepseek/0, deepseek/1,
     openai/0, openai/1
 ]).
@@ -31,9 +32,10 @@
 %%====================================================================
 
 -define(ZHIPU_ANTHROPIC_BASE_URL, <<"https://open.bigmodel.cn/api/anthropic">>).
+-define(ZHIPU_OPENAI_BASE_URL, <<"https://open.bigmodel.cn/api/paas">>).
 -define(ANTHROPIC_DEFAULT_MODEL, <<"glm-4.7">>).
 -define(CLAUDE_DEFAULT_MODEL, <<"claude-sonnet-4-20250514">>).
--define(ZHIPU_DEFAULT_MODEL, <<"glm-4.6">>).
+-define(ZHIPU_DEFAULT_MODEL, <<"glm-4.7">>).
 -define(DEEPSEEK_DEFAULT_MODEL, <<"deepseek-chat">>).
 -define(OPENAI_DEFAULT_MODEL, <<"gpt-4">>).
 -define(DEFAULT_MAX_TOKENS, 2048).
@@ -109,6 +111,32 @@ zhipu() ->
 zhipu(Opts) ->
     beamai_chat_completion:create(zhipu, #{
         api_key => maps:get(api_key, Opts),
+        model => maps:get(model, Opts, ?ZHIPU_DEFAULT_MODEL),
+        max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS)
+    }).
+
+%% @doc 创建 OpenAI 兼容 LLM 配置（使用 Zhipu 的 OpenAI 兼容 API）
+%%
+%% 使用 Zhipu 的 OpenAI 兼容 API，模型为 GLM-4.7。
+-spec openai_glm() -> beamai_chat_completion:config().
+openai_glm() ->
+    ApiKey = require_env("ZHIPU_API_KEY"),
+    openai_glm(#{api_key => ApiKey}).
+
+%% @doc 创建 OpenAI 兼容 LLM 配置（使用 Zhipu API）
+%%
+%% 通过 Zhipu 的 OpenAI 兼容 URL 调用，provider 为 openai。
+%%
+%% Opts 支持:
+%%   - api_key: API Key (必填)
+%%   - model: 模型名 (默认 glm-4.7)
+%%   - max_tokens: 最大 token 数 (默认 2048)
+-spec openai_glm(map()) -> beamai_chat_completion:config().
+openai_glm(Opts) ->
+    beamai_chat_completion:create(openai, #{
+        api_key => maps:get(api_key, Opts),
+        base_url => ?ZHIPU_OPENAI_BASE_URL,
+        endpoint => <<"/v4/chat/completions">>,
         model => maps:get(model, Opts, ?ZHIPU_DEFAULT_MODEL),
         max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS)
     }).

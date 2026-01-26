@@ -33,7 +33,7 @@ sort_filters_test() ->
 %%====================================================================
 
 apply_pre_filters_empty_test() ->
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     Args = #{key => <<"value">>},
     Ctx = beamai_context:new(),
     ?assertMatch({ok, #{key := <<"value">>}, _},
@@ -44,7 +44,7 @@ apply_pre_filters_modify_args_test() ->
         fun(#{args := A} = C) ->
             {continue, C#{args => A#{extra => added}}}
         end),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     Args = #{key => <<"value">>},
     Ctx = beamai_context:new(),
     {ok, NewArgs, _} = beamai_filter:apply_pre_filters([Filter], FuncDef, Args, Ctx),
@@ -53,14 +53,14 @@ apply_pre_filters_modify_args_test() ->
 apply_pre_filters_skip_test() ->
     Filter = beamai_filter:new(<<"skip">>, pre_invocation,
         fun(_) -> {skip, cached} end),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     ?assertEqual({skip, cached},
                  beamai_filter:apply_pre_filters([Filter], FuncDef, #{}, beamai_context:new())).
 
 apply_pre_filters_error_test() ->
     Filter = beamai_filter:new(<<"err">>, pre_invocation,
         fun(_) -> {error, forbidden} end),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     ?assertEqual({error, forbidden},
                  beamai_filter:apply_pre_filters([Filter], FuncDef, #{}, beamai_context:new())).
 
@@ -73,7 +73,7 @@ apply_pre_filters_chain_test() ->
         fun(#{args := A} = C) ->
             {continue, C#{args => A#{step2 => true}}}
         end, 2),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     {ok, NewArgs, _} = beamai_filter:apply_pre_filters([F2, F1], FuncDef, #{}, beamai_context:new()),
     ?assertEqual(true, maps:get(step1, NewArgs)),
     ?assertEqual(true, maps:get(step2, NewArgs)).
@@ -83,7 +83,7 @@ apply_pre_filters_only_matching_type_test() ->
         fun(#{args := A} = C) -> {continue, C#{args => A#{pre => true}}} end),
     PostFilter = beamai_filter:new(<<"post">>, post_invocation,
         fun(#{result := R} = C) -> {continue, C#{result => {modified, R}}} end),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     {ok, NewArgs, _} = beamai_filter:apply_pre_filters([PreFilter, PostFilter], FuncDef, #{}, beamai_context:new()),
     ?assertEqual(true, maps:get(pre, NewArgs)).
 
@@ -92,7 +92,7 @@ apply_pre_filters_only_matching_type_test() ->
 %%====================================================================
 
 apply_post_filters_empty_test() ->
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     Ctx = beamai_context:new(),
     ?assertMatch({ok, 42, _}, beamai_filter:apply_post_filters([], FuncDef, 42, Ctx)).
 
@@ -101,7 +101,7 @@ apply_post_filters_modify_result_test() ->
         fun(#{result := R} = C) ->
             {continue, C#{result => R * 2}}
         end),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     ?assertMatch({ok, 84, _},
                  beamai_filter:apply_post_filters([Filter], FuncDef, 42, beamai_context:new())).
 
@@ -110,7 +110,7 @@ apply_post_filters_error_test() ->
         fun(#{result := R}) when R < 0 -> {error, negative_result};
            (C) -> {continue, C}
         end),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     ?assertEqual({error, negative_result},
                  beamai_filter:apply_post_filters([Filter], FuncDef, -1, beamai_context:new())).
 
@@ -137,6 +137,6 @@ apply_pre_chat_filters_test() ->
 filter_exception_test() ->
     Filter = beamai_filter:new(<<"crash">>, pre_invocation,
         fun(_) -> error(boom) end),
-    FuncDef = beamai_function:new(<<"test">>, fun(_) -> {ok, done} end),
+    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
     ?assertMatch({error, #{class := error, reason := boom}},
                  beamai_filter:apply_pre_filters([Filter], FuncDef, #{}, beamai_context:new())).

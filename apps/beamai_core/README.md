@@ -8,15 +8,15 @@ BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP �
 
 ### Kernel 子系统
 
-基于 Semantic Kernel 理念的核心抽象，管理 Plugin 和 Function 的注册与调用：
+基于 Semantic Kernel 理念的核心抽象，管理 Tool 的注册与调用：
 
-- **beamai_kernel** - Kernel 核心，管理 Plugin/Function 注册和调用
-- **beamai_function** - 函数定义，封装可调用的工具函数
+- **beamai_kernel** - Kernel 核心，管理 Tool 注册和调用
+- **beamai_tool** - 工具定义，封装可调用的工具
+- **beamai_tool_behaviour** - 工具模块行为接口
 - **beamai_context** - 上下文管理，传递执行环境信息
-- **beamai_filter** - 过滤器，用于函数调用前后的拦截
-- **beamai_plugin** - 插件定义（Kernel 内部使用）
+- **beamai_filter** - 过滤器，用于工具调用前后的拦截
 - **beamai_prompt** - 提示词模板管理
-- **beamai_result** - 函数调用结果类型
+- **beamai_result** - 工具调用结果类型
 
 ### Process Framework 子系统
 
@@ -74,37 +74,50 @@ BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP �
 beamai_kernel:new() -> kernel().
 beamai_kernel:new(Opts) -> kernel().
 
-%% 添加 Plugin
-beamai_kernel:add_plugin(Kernel, Name, Functions) -> kernel().
-beamai_kernel:add_plugin(Kernel, Name, Functions, Opts) -> kernel().
-beamai_kernel:add_plugin_from_module(Kernel, Module) -> kernel().
+%% 添加 Tool
+beamai_kernel:add_tool(Kernel, ToolSpec) -> kernel().
+beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
+beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
 
 %% 添加服务和过滤器
 beamai_kernel:add_service(Kernel, Service) -> kernel().
 beamai_kernel:add_filter(Kernel, Filter) -> kernel().
 
-%% 调用函数
-beamai_kernel:invoke(Kernel, FunctionName, Args) -> {ok, Result} | {error, Reason}.
-beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result} | {error, Reason}.
+%% 调用工具
+beamai_kernel:invoke(Kernel, ToolName, Args, Context) -> {ok, Result, NewContext} | {error, Reason}.
 beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response} | {error, Reason}.
+beamai_kernel:invoke_chat_with_tools(Kernel, Messages, Opts) -> {ok, Response} | {error, Reason}.
 
-%% 查询函数
-beamai_kernel:get_function(Kernel, Name) -> {ok, Function} | error.
-beamai_kernel:list_functions(Kernel) -> [Function].
+%% 查询工具
+beamai_kernel:find_tool(Kernel, Name) -> {ok, ToolSpec} | error.
 beamai_kernel:get_tool_specs(Kernel) -> [ToolSpec].
-beamai_kernel:get_tool_schemas(Kernel) -> [Schema].
+beamai_kernel:tools_by_tag(Kernel, Tag) -> [ToolSpec].
 ```
 
-### beamai_function
+### beamai_tool
 
 ```erlang
-%% 创建函数
-beamai_function:new(Name, Description, Handler, Opts) -> function().
+%% 创建工具
+beamai_tool:new(Name, Handler) -> tool_spec().
+beamai_tool:new(Name, Handler, Opts) -> tool_spec().
 
-%% Name: 函数名（binary）
-%% Description: 函数描述（binary）
-%% Handler: fun(Args, Context) -> {ok, Result} | {error, Reason}
-%% Opts: #{parameters => Schema, ...}
+%% 或直接定义 Map
+ToolSpec = #{
+    name := binary(),                    % 必填：工具名称
+    handler := handler(),                % 必填：处理器
+    description => binary(),             % 可选：描述
+    parameters => parameters_schema(),   % 可选：参数定义
+    tag => binary() | [binary()]         % 可选：分类标签
+}.
+
+%% Handler 形式
+%% fun/1：fun(Args) -> {ok, Result} | {error, Reason}
+%% fun/2：fun(Args, Context) -> {ok, Result} | {ok, Result, NewContext} | {error, Reason}
+%% {M, F}：模块函数
+%% {M, F, ExtraArgs}：带额外参数
+
+%% 转换为 LLM schema
+beamai_tool:to_tool_schema(ToolSpec, openai | anthropic) -> map().
 ```
 
 ### beamai_process_builder
@@ -130,38 +143,38 @@ beamai_process_executor:run(Process, Input, Opts) -> {ok, Result} | {error, Reas
 
 ## 使用示例
 
-### Kernel + Function
+### Kernel + Tool
 
 ```erlang
 %% 创建 Kernel
 Kernel = beamai_kernel:new(),
 
-%% 定义函数
-ReadFile = beamai_function:new(
-    <<"read_file">>,
-    <<"读取文件内容"/utf8>>,
-    fun(#{<<"path">> := Path}, _Ctx) ->
+%% 定义工具
+ReadFile = #{
+    name => <<"read_file">>,
+    description => <<"读取文件内容"/utf8>>,
+    parameters => #{
+        <<"path">> => #{
+            type => string,
+            required => true,
+            description => <<"文件路径"/utf8>>
+        }
+    },
+    handler => fun(#{<<"path">> := Path}, _Ctx) ->
         case file:read_file(Path) of
             {ok, Content} -> {ok, Content};
             {error, Reason} -> {error, Reason}
         end
-    end,
-    #{parameters => #{
-        type => object,
-        properties => #{
-            <<"path">> => #{type => string, description => <<"文件路径"/utf8>>}
-        },
-        required => [<<"path">>]
-    }}
-),
+    end
+},
 
 %% 注册到 Kernel
-Kernel1 = beamai_kernel:add_plugin(Kernel, <<"file_ops">>, [ReadFile]),
+Kernel1 = beamai_kernel:add_tool(Kernel, ReadFile),
 
 %% 调用
-{ok, Content} = beamai_kernel:invoke(Kernel1, <<"file_ops-read_file">>, #{
+{ok, Content, _NewCtx} = beamai_kernel:invoke(Kernel1, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
-}).
+}, beamai_context:new()).
 ```
 
 ### Process Framework

@@ -66,10 +66,10 @@ build_chat_opts(Kernel, Opts) ->
 -spec execute_tools(beamai_kernel:kernel(), [map()]) -> {[map()], [map()]}.
 execute_tools(Kernel, ToolCalls) ->
     lists:foldl(fun(TC, {ResultsAcc, CallsAcc}) ->
-        {Id, Name, Args} = beamai_function:parse_tool_call(TC),
+        {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
         Result = case beamai_kernel:invoke_tool(Kernel, Name, Args, beamai_context:new()) of
-            {ok, Value, _Ctx} -> beamai_function:encode_result(Value);
-            {error, Reason} -> beamai_function:encode_result(#{error => Reason})
+            {ok, Value, _Ctx} -> beamai_tool:encode_result(Value);
+            {error, Reason} -> beamai_tool:encode_result(#{error => Reason})
         end,
         Msg = #{role => tool, tool_call_id => Id, content => Result},
         CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id},
@@ -96,4 +96,4 @@ parse_tool_results_messages(Results) ->
 %%====================================================================
 
 ensure_binary(V) when is_binary(V) -> V;
-ensure_binary(V) -> beamai_function:encode_result(V).
+ensure_binary(V) -> beamai_tool:encode_result(V).

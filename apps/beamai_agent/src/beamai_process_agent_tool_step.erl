@@ -92,7 +92,7 @@ execute_all_tools(_Kernel, [], _OnToolCall, ResultsAcc, State) ->
     Event = beamai_process_event:new(tool_results, Results),
     {ok, #{events => [Event], state => State}};
 execute_all_tools(Kernel, [TC | Rest], OnToolCall, ResultsAcc, State) ->
-    {Id, Name, Args} = beamai_function:parse_tool_call(TC),
+    {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
     case check_tool_hook(OnToolCall, Name, Args) of
         ok ->
             Result = execute_single_tool(Kernel, Id, Name, Args),
@@ -113,9 +113,9 @@ execute_all_tools(Kernel, [TC | Rest], OnToolCall, ResultsAcc, State) ->
 execute_single_tool(Kernel, Id, Name, Args) ->
     ResultBinary = case beamai_kernel:invoke_tool(Kernel, Name, Args, beamai_context:new()) of
         {ok, Value, _Ctx} ->
-            beamai_function:encode_result(Value);
+            beamai_tool:encode_result(Value);
         {error, Reason} ->
-            beamai_function:encode_result(#{error => Reason})
+            beamai_tool:encode_result(#{error => Reason})
     end,
     #{tool_call_id => Id, name => Name, args => Args, result => ResultBinary}.
 

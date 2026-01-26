@@ -10,10 +10,10 @@
 
 ## 特性
 
-- **Kernel/Plugin 架构**: 语义化的函数注册和调用系统
+- **Kernel/Tool 架构**: 语义化的工具注册和调用系统
   - 基于 Semantic Kernel 理念的 Kernel 核心
-  - 插件化工具管理和 Middleware 管道
-  - 安全验证和权限控制
+  - 统一的 Tool 定义和管理
+  - Filter 过滤器和安全验证
 
 - **Process Framework**: 可编排的流程引擎
   - 支持步骤定义、条件分支、并行执行
@@ -93,29 +93,28 @@ Response = maps:get(final_response, Result).
 %% Result 中 Agent 会记得用户叫张三
 ```
 
-### 4. Simple Agent（使用 Kernel + Plugin 注册工具）
+### 4. Simple Agent（使用 Kernel + Tool 注册工具）
 
 ```erlang
 %% 创建 Kernel
 Kernel = beamai_kernel:new(),
 
-%% 通过 Plugin 模块注册工具
-Kernel1 = beamai_kernel:add_plugin_from_module(Kernel, beamai_plugin_shell),
+%% 从 Tool 模块加载工具
+Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_shell),
 
-%% 或手动定义工具函数
-SearchFn = beamai_function:new(<<"search">>, <<"搜索信息"/utf8>>,
-    fun(#{<<"query">> := Query}, _Context) ->
+%% 或直接定义 Tool
+SearchTool = #{
+    name => <<"search">>,
+    description => <<"搜索信息"/utf8>>,
+    parameters => #{
+        <<"query">> => #{type => string, required => true, description => <<"搜索关键词"/utf8>>}
+    },
+    handler => fun(#{<<"query">> := Query}, _Context) ->
         {ok, <<"搜索结果: ", Query/binary>>}
-    end,
-    #{parameters => #{
-        type => object,
-        properties => #{
-            <<"query">> => #{type => string, description => <<"搜索关键词"/utf8>>}
-        },
-        required => [<<"query">>]
-    }}),
+    end
+},
 
-Kernel2 = beamai_kernel:add_plugin(Kernel1, <<"search_plugin">>, [SearchFn]),
+Kernel2 = beamai_kernel:add_tool(Kernel1, SearchTool),
 
 %% 获取工具规格供 Agent 使用
 Tools = beamai_kernel:get_tool_specs(Kernel2),
@@ -164,8 +163,8 @@ Config = beamai_deepagent:new(#{
     planning_enabled => true,
     reflection_enabled => true,
     system_prompt => <<"你是一个研究专家。"/utf8>>,
-    %% 使用 Plugin 模块提供工具
-    plugins => [beamai_plugin_file, beamai_plugin_shell]
+    %% 使用 Tool 模块提供工具
+    plugins => [beamai_tool_file, beamai_tool_shell]
 }),
 
 %% 运行复杂任务（Planner → Executor → Reflector）
@@ -231,7 +230,7 @@ Parser = beamai_output_parser:json(#{
 ```
 apps/
 ├── beamai_core/        # 核心框架
-│   ├── Kernel         # beamai_kernel, beamai_function, beamai_context,
+│   ├── Kernel         # beamai_kernel, beamai_tool, beamai_context,
 │   │                  # beamai_filter, beamai_prompt, beamai_result
 │   ├── Process        # beamai_process, beamai_process_builder,
 │   │                  # beamai_process_runtime, beamai_process_step,
@@ -249,13 +248,13 @@ apps/
 │   ├── State          # graph_state, graph_state_reducer, graph_command
 │   └── Pregel         # pregel, pregel_master, pregel_worker, pregel_vertex
 │
-├── beamai_plugin/      # 插件系统
-│   ├── Core           # beamai_plugins, beamai_plugin_behaviour, beamai_tool
+├── beamai_plugin/      # 工具和中间件系统
+│   ├── Core           # beamai_plugins, beamai_tool_behaviour
 │   ├── Middleware     # beamai_middleware, beamai_middleware_runner,
 │   │                  # middleware_call_limit, middleware_tool_retry
 │   ├── Security       # beamai_tool_security
-│   └── Plugins        # beamai_plugin_file, beamai_plugin_shell,
-│                      # beamai_plugin_human, beamai_plugin_todo
+│   └── Tools          # beamai_tool_file, beamai_tool_shell,
+│                      # beamai_tool_human, beamai_tool_todo
 │
 ├── beamai_llm/         # LLM 客户端
 │   ├── Chat           # beamai_chat_completion
@@ -322,19 +321,32 @@ apps/
 
 ### 1. Kernel 架构
 
-Kernel 是 BeamAI 的核心抽象，管理 Plugin 和 Function 的注册与调用：
+Kernel 是 BeamAI 的核心抽象，管理 Tool 的注册与调用：
 
 ```erlang
 %% 创建 Kernel 实例
 Kernel = beamai_kernel:new(),
 
-%% 从模块加载插件
-Kernel1 = beamai_kernel:add_plugin_from_module(Kernel, beamai_plugin_file),
+%% 从 Tool 模块加载工具
+Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
 
-%% 调用注册的函数
-{ok, Result} = beamai_kernel:invoke(Kernel1, <<"file-read_file">>, #{
+%% 或添加单个工具
+Tool = #{
+    name => <<"read_file">>,
+    description => <<"读取文件内容"/utf8>>,
+    parameters => #{
+        <<"path">> => #{type => string, required => true}
+    },
+    handler => fun(#{<<"path">> := Path}, _Ctx) ->
+        file:read_file(Path)
+    end
+},
+Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
+
+%% 调用注册的工具
+{ok, Result, _NewCtx} = beamai_kernel:invoke(Kernel2, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
-}).
+}, beamai_context:new()).
 ```
 
 ### 2. Process Framework
@@ -482,7 +494,7 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 |------|------|------|
 | **beamai_core** | 核心框架：Kernel、Process Framework、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
 | **beamai_graph** | Graph 引擎：图构建、执行、Pregel 分布式计算 | [README](apps/beamai_graph/README.md) |
-| **beamai_plugin** | 插件系统：工具管理、Middleware、安全验证 | [README](apps/beamai_plugin/README.md) |
+| **beamai_plugin** | 工具和中间件系统：Tool 模块、Middleware、安全验证 | [README](apps/beamai_plugin/README.md) |
 | **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
 | **beamai_agent** | Agent 实现：ReAct 模式、回调系统、Process Agent | [README](apps/beamai_agent/README.md) |
 | **beamai_deepagent** | Deep Agent：SubAgent 编排、任务规划、并行执行、自我反思 | [README](apps/beamai_deepagent/README.md) |

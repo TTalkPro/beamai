@@ -200,13 +200,14 @@ run_multi_turn_live() ->
 run_with_plugin() ->
     io:format("=== BeamAI Agent: Plugin Usage (Mock) ===~n~n"),
 
-    %% 1. 构建带自定义 Plugin 的 Kernel
+    %% 1. 构建带自定义 Tool 的 Kernel
     Kernel0 = beamai_kernel:new(),
     LlmConfig = beamai_chat_completion:create(mock, #{}),
     K1 = beamai_kernel:add_service(Kernel0, LlmConfig),
-    K2 = beamai_kernel:add_plugin(K1, <<"weather">>, [
+    K2 = beamai_kernel:add_tool(K1,
         #{name => <<"get_weather">>,
           description => <<"Get current weather for a city">>,
+          tag => <<"weather">>,
           parameters => #{
               <<"city">> => #{type => string,
                             description => <<"City name">>,
@@ -216,8 +217,7 @@ run_with_plugin() ->
               City = maps:get(<<"city">>, Args, maps:get(city, Args, <<"unknown">>)),
               io:format("  [weather tool] Querying weather for: ~ts~n", [City]),
               {ok, #{city => City, temp => 25, condition => <<"Sunny">>}}
-          end}
-    ]),
+          end}),
 
     %% 2. 使用预构建 Kernel 创建 Agent
     {ok, Agent0} = beamai_agent:new(#{
@@ -252,13 +252,14 @@ run_with_plugin() ->
 run_with_plugin_live() ->
     io:format("=== BeamAI Agent: Plugin Usage (Live) ===~n~n"),
 
-    %% 1. 构建 Kernel：LLM + 自定义天气 Plugin
+    %% 1. 构建 Kernel：LLM + 自定义天气 Tool
     LLMConfig = example_llm_config:anthropic(),
     Kernel0 = beamai_kernel:new(),
     K1 = beamai_kernel:add_service(Kernel0, LLMConfig),
-    K2 = beamai_kernel:add_plugin(K1, <<"weather">>, [
+    K2 = beamai_kernel:add_tool(K1,
         #{name => <<"get_current_weather">>,
           description => <<"Get the current weather for a given city. Returns temperature, condition, and humidity.">>,
+          tag => <<"weather">>,
           parameters => #{
               <<"city">> => #{type => string,
                             description => <<"City name, e.g. Beijing, Tokyo, New York">>,
@@ -269,8 +270,7 @@ run_with_plugin_live() ->
               io:format("  [tool executed] get_current_weather(~ts)~n", [City]),
               Weather = mock_weather(City),
               {ok, Weather}
-          end}
-    ]),
+          end}),
 
     %% 2. 创建 Agent
     {ok, Agent0} = beamai_agent:new(#{
@@ -316,18 +316,18 @@ run_with_plugin_live() ->
     end,
     ok.
 
-%% @doc 使用内置 file plugin（真实 LLM）
+%% @doc 使用内置 file 工具模块（真实 LLM）
 %%
-%% 展示如何通过 plugins 选项直接加载内置 plugin 模块。
-%% beamai_plugin_file 提供 file_read, file_write, file_glob, file_list 等工具。
+%% 展示如何通过 plugins 选项直接加载内置工具模块。
+%% beamai_tool_file 提供 file_read, file_write, file_glob, file_list 等工具。
 -spec run_with_file_plugin() -> ok.
 run_with_file_plugin() ->
-    io:format("=== BeamAI Agent: Built-in File Plugin (Live) ===~n~n"),
+    io:format("=== BeamAI Agent: Built-in File Tools (Live) ===~n~n"),
 
     LLMConfig = example_llm_config:anthropic(),
     {ok, Agent0} = beamai_agent:new(#{
         llm => LLMConfig,
-        plugins => [beamai_plugin_file],
+        plugins => [beamai_tool_file],
         system_prompt => <<"You are a helpful assistant with file system access. "
                           "Use the file tools to help users explore files. "
                           "Be concise in your responses.">>,

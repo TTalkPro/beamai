@@ -54,7 +54,7 @@ plan_plugin_handler_test() ->
             #{<<"description">> => <<"Do thing 2">>, <<"dependencies">> => [1]}
         ]
     },
-    {ok, ResultJson} = beamai_function:invoke(FnDef, Args),
+    {ok, ResultJson} = beamai_tool:invoke(FnDef, Args),
     Result = jsx:decode(ResultJson, [return_maps]),
     ?assertEqual(<<"plan_created">>, maps:get(<<"status">>, Result)),
     ?assertEqual(<<"Test goal">>, maps:get(<<"goal">>, Result)),
@@ -63,7 +63,7 @@ plan_plugin_handler_test() ->
 plan_plugin_handler_missing_args_test() ->
     Fns = beamai_deepagent_plan_plugin:functions(),
     [FnDef] = Fns,
-    {error, _} = beamai_function:invoke(FnDef, #{}).
+    {error, _} = beamai_tool:invoke(FnDef, #{}).
 
 %%====================================================================
 %% 测试: beamai_deepagent_dependencies (依赖分析)

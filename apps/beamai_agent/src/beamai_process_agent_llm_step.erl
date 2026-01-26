@@ -104,7 +104,7 @@ handle_tool_response(TCs, NewMessages, State) ->
     AssistantMsg = #{role => assistant, content => null, tool_calls => TCs},
     UpdatedMessages = NewMessages ++ [AssistantMsg],
     NewToolCalls = lists:map(fun(TC) ->
-        {_Id, Name, Args} = beamai_function:parse_tool_call(TC),
+        {_Id, Name, Args} = beamai_tool:parse_tool_call(TC),
         #{name => Name, args => Args}
     end, TCs),
     NewState = State#{

@@ -7,16 +7,18 @@
 
 make_math_kernel() ->
     K0 = beamai_kernel:new(),
-    beamai_kernel:add_plugin(K0, <<"math">>, [
-        beamai_function:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
+    beamai_kernel:add_tools(K0, [
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
             description => <<"Add two numbers">>,
+            tag => <<"math">>,
             parameters => #{
                 a => #{type => integer, required => true},
                 b => #{type => integer, required => true}
             }
         }),
-        beamai_function:new(<<"multiply">>, fun(#{a := A, b := B}) -> {ok, A * B} end, #{
+        beamai_tool:new(<<"multiply">>, fun(#{a := A, b := B}) -> {ok, A * B} end, #{
             description => <<"Multiply two numbers">>,
+            tag => <<"math">>,
             parameters => #{
                 a => #{type => integer, required => true},
                 b => #{type => integer, required => true}
@@ -24,15 +26,17 @@ make_math_kernel() ->
         })
     ]).
 
-make_multi_plugin_kernel() ->
+make_multi_tag_kernel() ->
     K0 = make_math_kernel(),
-    beamai_kernel:add_plugin(K0, <<"string">>, [
-        beamai_function:new(<<"upper">>, fun(#{text := T}) -> {ok, string:uppercase(T)} end, #{
+    beamai_kernel:add_tools(K0, [
+        beamai_tool:new(<<"upper">>, fun(#{text := T}) -> {ok, string:uppercase(T)} end, #{
             description => <<"Convert to uppercase">>,
+            tag => <<"string">>,
             parameters => #{text => #{type => string, required => true}}
         }),
-        beamai_function:new(<<"length">>, fun(#{text := T}) -> {ok, byte_size(T)} end, #{
+        beamai_tool:new(<<"length">>, fun(#{text := T}) -> {ok, byte_size(T)} end, #{
             description => <<"Get string length">>,
+            tag => <<"string">>,
             parameters => #{text => #{type => string, required => true}}
         })
     ]).
@@ -44,7 +48,7 @@ make_multi_plugin_kernel() ->
 new_default_test() ->
     K = beamai_kernel:new(),
     ?assertEqual(true, maps:get('__kernel__', K)),
-    ?assertEqual(#{}, maps:get(plugins, K)),
+    ?assertEqual(#{}, maps:get(tools, K)),
     ?assertEqual(undefined, maps:get(llm_config, K)),
     ?assertEqual([], maps:get(filters, K)).
 
@@ -53,84 +57,78 @@ new_with_settings_test() ->
     ?assertEqual(#{max_tool_iterations => 5}, maps:get(settings, K)).
 
 %%====================================================================
-%% add_plugin Tests
+%% add_tool Tests
 %%====================================================================
 
-add_plugin_def_test() ->
+add_tool_test() ->
     K0 = beamai_kernel:new(),
-    Plugin = beamai_plugin:new(<<"math">>, [
-        beamai_function:new(<<"add">>, fun(_) -> {ok, 0} end)
-    ]),
-    K1 = beamai_kernel:add_plugin(K0, Plugin),
-    ?assert(maps:is_key(<<"math">>, maps:get(plugins, K1))).
+    Tool = beamai_tool:new(<<"add">>, fun(_) -> {ok, 0} end),
+    K1 = beamai_kernel:add_tool(K0, Tool),
+    ?assert(maps:is_key(<<"add">>, maps:get(tools, K1))).
 
-add_plugin_inline_test() ->
+add_tools_test() ->
     K = make_math_kernel(),
-    ?assert(maps:is_key(<<"math">>, maps:get(plugins, K))).
+    ?assert(maps:is_key(<<"add">>, maps:get(tools, K))),
+    ?assert(maps:is_key(<<"multiply">>, maps:get(tools, K))).
 
 %%====================================================================
 %% invoke_tool/4 Tests
 %%====================================================================
 
-invoke_qualified_name_test() ->
-    K = make_math_kernel(),
-    ?assertMatch({ok, 15, _}, beamai_kernel:invoke_tool(K, <<"math.add">>, #{a => 7, b => 8}, beamai_context:new())).
-
-invoke_unqualified_name_test() ->
+invoke_add_test() ->
     K = make_math_kernel(),
     ?assertMatch({ok, 15, _}, beamai_kernel:invoke_tool(K, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_multiply_test() ->
     K = make_math_kernel(),
-    ?assertMatch({ok, 42, _}, beamai_kernel:invoke_tool(K, <<"math.multiply">>, #{a => 6, b => 7}, beamai_context:new())).
+    ?assertMatch({ok, 42, _}, beamai_kernel:invoke_tool(K, <<"multiply">>, #{a => 6, b => 7}, beamai_context:new())).
 
 invoke_not_found_test() ->
     K = make_math_kernel(),
-    ?assertEqual({error, {function_not_found, <<"nonexistent">>}},
+    ?assertEqual({error, {tool_not_found, <<"nonexistent">>}},
                  beamai_kernel:invoke_tool(K, <<"nonexistent">>, #{}, beamai_context:new())).
 
 invoke_with_context_test() ->
-    K = beamai_kernel:add_plugin(beamai_kernel:new(), <<"ctx">>, [
-        beamai_function:new(<<"get_var">>,
+    K = beamai_kernel:add_tool(beamai_kernel:new(),
+        beamai_tool:new(<<"get_var">>,
             fun(#{key := Key}, Ctx) ->
                 {ok, beamai_context:get(Ctx, Key)}
-            end)
-    ]),
+            end)),
     Ctx = beamai_context:set(beamai_context:new(), <<"name">>, <<"Alice">>),
     ?assertMatch({ok, <<"Alice">>, _},
-                 beamai_kernel:invoke_tool(K, <<"ctx.get_var">>, #{key => <<"name">>}, Ctx)).
+                 beamai_kernel:invoke_tool(K, <<"get_var">>, #{key => <<"name">>}, Ctx)).
 
-invoke_multi_plugin_test() ->
-    K = make_multi_plugin_kernel(),
-    ?assertMatch({ok, 15, _}, beamai_kernel:invoke_tool(K, <<"math.add">>, #{a => 7, b => 8}, beamai_context:new())),
-    ?assertMatch({ok, <<"HELLO">>, _}, beamai_kernel:invoke_tool(K, <<"string.upper">>, #{text => <<"hello">>}, beamai_context:new())).
+invoke_multi_tag_test() ->
+    K = make_multi_tag_kernel(),
+    ?assertMatch({ok, 15, _}, beamai_kernel:invoke_tool(K, <<"add">>, #{a => 7, b => 8}, beamai_context:new())),
+    ?assertMatch({ok, <<"HELLO">>, _}, beamai_kernel:invoke_tool(K, <<"upper">>, #{text => <<"hello">>}, beamai_context:new())).
 
 %%====================================================================
-%% get_function/2 Tests
+%% get_tool/2 Tests
 %%====================================================================
 
-get_function_qualified_test() ->
+get_tool_add_test() ->
     K = make_math_kernel(),
-    {ok, F} = beamai_kernel:get_function(K, <<"math.add">>),
-    ?assertEqual(<<"add">>, maps:get(name, F)).
+    {ok, T} = beamai_kernel:get_tool(K, <<"add">>),
+    ?assertEqual(<<"add">>, maps:get(name, T)).
 
-get_function_unqualified_test() ->
+get_tool_multiply_test() ->
     K = make_math_kernel(),
-    {ok, F} = beamai_kernel:get_function(K, <<"multiply">>),
-    ?assertEqual(<<"multiply">>, maps:get(name, F)).
+    {ok, T} = beamai_kernel:get_tool(K, <<"multiply">>),
+    ?assertEqual(<<"multiply">>, maps:get(name, T)).
 
-get_function_not_found_test() ->
+get_tool_not_found_test() ->
     K = make_math_kernel(),
-    ?assertEqual(error, beamai_kernel:get_function(K, <<"nonexistent">>)).
+    ?assertEqual(error, beamai_kernel:get_tool(K, <<"nonexistent">>)).
 
 %%====================================================================
-%% list_functions/1 Tests
+%% list_tools/1 Tests
 %%====================================================================
 
-list_functions_test() ->
-    K = make_multi_plugin_kernel(),
-    Funcs = beamai_kernel:list_functions(K),
-    ?assertEqual(4, length(Funcs)).
+list_tools_test() ->
+    K = make_multi_tag_kernel(),
+    Tools = beamai_kernel:list_tools(K),
+    ?assertEqual(4, length(Tools)).
 
 %%====================================================================
 %% get_tool_schemas Tests
@@ -187,9 +185,9 @@ no_llm_service_chat_test() ->
 
 invoke_with_pre_filter_test() ->
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_plugin(K0, <<"math">>, [
-        beamai_function:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
-    ]),
+    K1 = beamai_kernel:add_tool(K0,
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
+    ),
     Filter = beamai_filter:new(<<"doubler">>, pre_invocation,
         fun(#{args := Args} = Ctx) ->
             NewArgs = maps:map(fun(_K, V) when is_number(V) -> V * 2;
@@ -197,31 +195,31 @@ invoke_with_pre_filter_test() ->
             {continue, Ctx#{args => NewArgs}}
         end),
     K2 = beamai_kernel:add_filter(K1, Filter),
-    ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"math.add">>, #{a => 7, b => 8}, beamai_context:new())).
+    ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_with_post_filter_test() ->
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_plugin(K0, <<"math">>, [
-        beamai_function:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
-    ]),
+    K1 = beamai_kernel:add_tool(K0,
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
+    ),
     Filter = beamai_filter:new(<<"result_doubler">>, post_invocation,
         fun(#{result := R} = Ctx) ->
             {continue, Ctx#{result => R * 2}}
         end),
     K2 = beamai_kernel:add_filter(K1, Filter),
-    ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"math.add">>, #{a => 7, b => 8}, beamai_context:new())).
+    ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_with_skip_filter_test() ->
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_plugin(K0, <<"math">>, [
-        beamai_function:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
-    ]),
+    K1 = beamai_kernel:add_tool(K0,
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
+    ),
     Filter = beamai_filter:new(<<"cache">>, pre_invocation,
         fun(_Ctx) ->
             {skip, cached_result}
         end),
     K2 = beamai_kernel:add_filter(K1, Filter),
-    ?assertMatch({ok, cached_result, _}, beamai_kernel:invoke_tool(K2, <<"math.add">>, #{a => 7, b => 8}, beamai_context:new())).
+    ?assertMatch({ok, cached_result, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 %%====================================================================
 %% Facade API Tests
@@ -231,18 +229,18 @@ facade_kernel_test() ->
     K = beamai:kernel(),
     ?assertEqual(true, maps:get('__kernel__', K)).
 
-facade_add_plugin_test() ->
+facade_add_tool_test() ->
     K0 = beamai:kernel(),
-    K1 = beamai:add_plugin(K0, <<"math">>, [
-        beamai:function(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
+    K1 = beamai:add_tool(K0,
+        beamai:tool(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
             description => <<"Add">>,
             parameters => #{
                 a => #{type => integer, required => true},
                 b => #{type => integer, required => true}
             }
         })
-    ]),
-    ?assertMatch({ok, 15, _}, beamai:invoke_tool(K1, <<"math.add">>, #{a => 7, b => 8}, beamai_context:new())).
+    ),
+    ?assertMatch({ok, 15, _}, beamai:invoke_tool(K1, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 facade_add_llm_test() ->
     K0 = beamai:kernel(),
@@ -255,9 +253,12 @@ facade_tools_test() ->
     Tools = beamai:tools(K),
     ?assertEqual(2, length(Tools)).
 
-facade_functions_test() ->
-    K = make_multi_plugin_kernel(),
-    ?assertEqual(4, length(beamai:functions(K))).
+facade_tools_by_tag_test() ->
+    K = make_multi_tag_kernel(),
+    MathTools = beamai:tools_by_tag(K, <<"math">>),
+    StringTools = beamai:tools_by_tag(K, <<"string">>),
+    ?assertEqual(2, length(MathTools)),
+    ?assertEqual(2, length(StringTools)).
 
 facade_context_test() ->
     Ctx = beamai:context(#{<<"key">> => <<"value">>}),
@@ -306,7 +307,7 @@ setup_mock() ->
                         id => <<"call_1">>,
                         type => function,
                         function => #{
-                            name => <<"math.add">>,
+                            name => <<"add">>,
                             arguments => <<"{\"a\":7,\"b\":8}">>
                         }
                     }]
@@ -344,14 +345,14 @@ cleanup_mock(_) ->
 
 mock_tool_call_loop() ->
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_plugin(K0, <<"math">>, [
-        beamai_function:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
+    K1 = beamai_kernel:add_tool(K0,
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
             parameters => #{
                 a => #{type => integer, required => true},
                 b => #{type => integer, required => true}
             }
         })
-    ]),
+    ),
     LlmConfig = beamai_chat_completion:create({custom, ?MOCK_MODULE}, #{model => <<"mock">>}),
     K2 = beamai_kernel:add_service(K1, LlmConfig),
     Messages = [#{role => user, content => <<"What is 7 + 8?">>}],

@@ -129,5 +129,5 @@ status_to_binary(_) -> <<"unknown">>.
 %% 候选列表为硬编码的已知插件模块名。
 -spec available_plugins() -> [module()].
 available_plugins() ->
-    Candidates = [beamai_plugin_file, beamai_plugin_shell, beamai_plugin_todo],
+    Candidates = [beamai_tool_file, beamai_tool_shell, beamai_tool_todo],
     [M || M <- Candidates, code:ensure_loaded(M) =:= {module, M}].

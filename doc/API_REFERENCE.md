@@ -809,6 +809,90 @@ Tools = beamai_tool_registry:from_config(#{
 
 ## beamai_core - 核心模块
 
+### Kernel 和 Tool 系统
+
+Kernel 是 BeamAI 的核心抽象，管理 Tool 的注册与调用。
+
+```erlang
+%% 创建 Kernel
+beamai_kernel:new() -> kernel().
+beamai_kernel:new(Opts) -> kernel().
+
+%% 添加工具
+beamai_kernel:add_tool(Kernel, ToolSpec) -> kernel().
+beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
+beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
+
+%% 添加服务和过滤器
+beamai_kernel:add_service(Kernel, Service) -> kernel().
+beamai_kernel:add_filter(Kernel, Filter) -> kernel().
+
+%% 调用工具
+beamai_kernel:invoke(Kernel, ToolName, Args, Context) -> {ok, Result, NewContext} | {error, Reason}.
+beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response} | {error, Reason}.
+beamai_kernel:invoke_chat_with_tools(Kernel, Messages, Opts) -> {ok, Response} | {error, Reason}.
+
+%% 查询工具
+beamai_kernel:find_tool(Kernel, Name) -> {ok, ToolSpec} | error.
+beamai_kernel:get_tool_specs(Kernel) -> [ToolSpec].
+beamai_kernel:tools_by_tag(Kernel, Tag) -> [ToolSpec].
+```
+
+**Tool 定义示例：**
+
+```erlang
+%% 直接定义 Map
+Tool = #{
+    name => <<"get_weather">>,
+    description => <<"获取城市天气"/utf8>>,
+    tag => <<"weather">>,
+    parameters => #{
+        <<"city">> => #{type => string, required => true, description => <<"城市名称"/utf8>>}
+    },
+    handler => fun(#{<<"city">> := City}, _Ctx) ->
+        {ok, #{city => City, temp => 25}}
+    end
+}.
+
+%% 使用 beamai_tool:new
+Tool = beamai_tool:new(<<"my_tool">>, fun handle/2, #{
+    description => <<"工具描述"/utf8>>,
+    parameters => #{...}
+}).
+
+%% 注册到 Kernel
+Kernel1 = beamai_kernel:add_tool(Kernel, Tool).
+```
+
+**Tool Module（behaviour 模式）：**
+
+```erlang
+-module(my_tools).
+-behaviour(beamai_tool_behaviour).
+-export([tool_info/0, tools/0]).
+
+tool_info() ->
+    #{description => <<"我的工具集"/utf8>>, tags => [<<"custom">>]}.
+
+tools() ->
+    [
+        #{name => <<"tool_a">>, handler => fun ?MODULE:handle_a/2, ...},
+        #{name => <<"tool_b">>, handler => fun ?MODULE:handle_b/2, ...}
+    ].
+
+%% 加载到 Kernel
+Kernel1 = beamai_kernel:add_tool_module(Kernel, my_tools).
+```
+
+**内置 Tool 模块：**
+
+| 模块 | 描述 | 工具 |
+|------|------|------|
+| `beamai_tool_file` | 文件操作 | file_read, file_write, file_list, file_glob |
+| `beamai_tool_shell` | Shell 命令 | shell_exec |
+| `beamai_tool_todo` | 任务管理 | todo_add, todo_list, todo_update |
+| `beamai_tool_human` | 人工交互 | human_input |
+
 ### Graph 执行引擎
 
 ```erlang
@@ -1116,15 +1200,41 @@ beamai_rag:query(State, Question).
 
 ## 通用类型
 
-### 工具定义
+### 工具定义（tool_spec）
 
 ```erlang
--type tool_def() :: #{
-    name := binary(),
-    description := binary(),
-    parameters := json_schema(),
-    handler := fun((map()) -> {ok, term()} | {error, term()})
-                | fun((map(), map()) -> {ok, term()} | {error, term()})
+-type tool_spec() :: #{
+    name := binary(),                    % 必填：工具名称
+    handler := handler(),                % 必填：处理器
+    description => binary(),             % 可选：描述（供 LLM 理解）
+    parameters => parameters_schema(),   % 可选：参数定义
+    tag => binary() | [binary()],        % 可选：分类标签
+    timeout => pos_integer(),            % 可选：超时时间（毫秒）
+    retry => #{max => integer(), delay => integer()},  % 可选：重试策略
+    metadata => map()                    % 可选：自定义元数据
+}.
+
+-type handler() ::
+    fun((args()) -> tool_result())                        % fun/1：仅接收参数
+    | fun((args(), beamai_context:t()) -> tool_result())  % fun/2：参数 + 上下文
+    | {module(), atom()}                                  % {M, F}：模块函数
+    | {module(), atom(), [term()]}.                       % {M, F, ExtraArgs}
+
+-type tool_result() ::
+    {ok, term()}                          % 成功，返回结果
+    | {ok, term(), beamai_context:t()}    % 成功，返回结果和更新的上下文
+    | {error, term()}.                    % 失败
+
+-type parameters_schema() :: #{
+    atom() | binary() => #{
+        type := string | integer | float | boolean | array | object,
+        description => binary(),
+        required => boolean(),
+        default => term(),
+        enum => [term()],
+        items => param_spec(),           % array 元素类型
+        properties => parameters_schema() % object 嵌套属性
+    }
 }.
 ```
 

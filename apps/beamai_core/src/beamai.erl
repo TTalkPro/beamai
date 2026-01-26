@@ -2,9 +2,9 @@
 %%% @doc Facade 入口：所有外部调用的统一入口
 %%%
 %%% 提供简洁的顶层 API，涵盖：
-%%% - 构建 Kernel（插件 + LLM 服务）
-%%% - 调用函数和 Chat Completion
-%%% - 工具调用循环（LLM + 函数执行）
+%%% - 构建 Kernel（工具 + LLM 服务）
+%%% - 调用工具和 Chat Completion
+%%% - 工具调用循环（LLM + 工具执行）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -13,13 +13,11 @@
 %% Kernel
 -export([kernel/0, kernel/1]).
 
-%% Plugin
--export([plugin/2, plugin/3]).
--export([add_plugin/2, add_plugin/3]).
--export([add_plugin_module/2]).
-
-%% Function
--export([function/2, function/3]).
+%% Tool
+-export([tool/2, tool/3]).
+-export([add_tool/2]).
+-export([add_tools/2]).
+-export([add_tool_module/2]).
 
 %% Service (LLM)
 -export([add_llm/3, add_llm/2]).
@@ -36,8 +34,8 @@
 -export([render/2]).
 
 %% Query
--export([functions/1]).
 -export([tools/1, tools/2]).
+-export([tools_by_tag/2]).
 
 %% Context
 -export([context/0, context/1]).
@@ -59,49 +57,35 @@ kernel(Settings) ->
     beamai_kernel:new(Settings).
 
 %%====================================================================
-%% Plugin
+%% Tool
 %%====================================================================
 
-%% @doc 创建插件（名称 + 函数列表）
--spec plugin(binary(), [beamai_function:function_def()]) -> beamai_plugin:plugin().
-plugin(Name, Functions) ->
-    beamai_plugin:new(Name, Functions).
+%% @doc 创建工具定义（名称 + 处理器）
+-spec tool(binary(), beamai_tool:handler()) -> beamai_tool:tool_spec().
+tool(Name, Handler) ->
+    beamai_tool:new(Name, Handler).
 
-%% @doc 创建插件（带额外选项，如 description）
--spec plugin(binary(), [beamai_function:function_def()], map()) -> beamai_plugin:plugin().
-plugin(Name, Functions, Opts) ->
-    beamai_plugin:new(Name, Functions, Opts).
+%% @doc 创建工具定义（带额外选项，如 description、parameters、tag）
+-spec tool(binary(), beamai_tool:handler(), map()) -> beamai_tool:tool_spec().
+tool(Name, Handler, Opts) ->
+    beamai_tool:new(Name, Handler, Opts).
 
-%% @doc 注册已构建的插件到 Kernel
--spec add_plugin(beamai_kernel:kernel(), beamai_plugin:plugin()) -> beamai_kernel:kernel().
-add_plugin(Kernel, Plugin) ->
-    beamai_kernel:add_plugin(Kernel, Plugin).
+%% @doc 注册单个工具到 Kernel
+-spec add_tool(beamai_kernel:kernel(), beamai_tool:tool_spec()) -> beamai_kernel:kernel().
+add_tool(Kernel, Tool) ->
+    beamai_kernel:add_tool(Kernel, Tool).
 
-%% @doc 快捷注册插件（从名称和函数列表自动构建并注册）
--spec add_plugin(beamai_kernel:kernel(), binary(), [beamai_function:function_def()]) -> beamai_kernel:kernel().
-add_plugin(Kernel, Name, Functions) ->
-    beamai_kernel:add_plugin(Kernel, Name, Functions).
+%% @doc 批量注册工具到 Kernel
+-spec add_tools(beamai_kernel:kernel(), [beamai_tool:tool_spec()]) -> beamai_kernel:kernel().
+add_tools(Kernel, Tools) ->
+    beamai_kernel:add_tools(Kernel, Tools).
 
-%% @doc 从模块自动加载并注册插件
+%% @doc 从模块自动加载并注册工具
 %%
-%% 模块需实现 plugin_info/0 和 functions/0 回调。
--spec add_plugin_module(beamai_kernel:kernel(), module()) -> beamai_kernel:kernel().
-add_plugin_module(Kernel, Module) ->
-    beamai_kernel:add_plugin_from_module(Kernel, Module).
-
-%%====================================================================
-%% Function
-%%====================================================================
-
-%% @doc 创建函数定义（名称 + 处理器）
--spec function(binary(), beamai_function:handler()) -> beamai_function:function_def().
-function(Name, Handler) ->
-    beamai_function:new(Name, Handler).
-
-%% @doc 创建函数定义（带额外选项，如 description、parameters）
--spec function(binary(), beamai_function:handler(), map()) -> beamai_function:function_def().
-function(Name, Handler, Opts) ->
-    beamai_function:new(Name, Handler, Opts).
+%% 模块需实现 beamai_tool_behaviour，至少实现 tools/0 回调。
+-spec add_tool_module(beamai_kernel:kernel(), module()) -> beamai_kernel:kernel().
+add_tool_module(Kernel, Module) ->
+    beamai_kernel:add_tool_module(Kernel, Module).
 
 %%====================================================================
 %% Service (LLM)
@@ -157,13 +141,11 @@ add_filter(Kernel, Name, Type, Handler) ->
 %% Invoke
 %%====================================================================
 
-%% @doc 调用 Kernel 中注册的工具函数
-%%
-%% 函数名支持 <<"plugin.func">> 或 <<"func">> 格式。
--spec invoke_tool(beamai_kernel:kernel(), binary(), beamai_function:args(), beamai_context:t()) ->
+%% @doc 调用 Kernel 中注册的工具
+-spec invoke_tool(beamai_kernel:kernel(), binary(), beamai_tool:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
-invoke_tool(Kernel, FuncName, Args, Context) ->
-    beamai_kernel:invoke_tool(Kernel, FuncName, Args, Context).
+invoke_tool(Kernel, ToolName, Args, Context) ->
+    beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context).
 
 %% @doc 发送 Chat Completion 请求（默认选项）
 -spec chat(beamai_kernel:kernel(), [map()]) ->
@@ -181,7 +163,7 @@ chat(Kernel, Messages, Opts) ->
 
 %% @doc 发送带工具调用循环的 Chat 请求（默认选项）
 %%
-%% 自动注册 Kernel 中所有函数为 tools，驱动 LLM ↔ Function 循环。
+%% 自动注册 Kernel 中所有工具为 tools，驱动 LLM ↔ Tool 循环。
 -spec chat_with_tools(beamai_kernel:kernel(), [map()]) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 chat_with_tools(Kernel, Messages) ->
@@ -213,20 +195,20 @@ render(Template, Vars) ->
 %% Query
 %%====================================================================
 
-%% @doc 列出 Kernel 中所有注册的函数定义
--spec functions(beamai_kernel:kernel()) -> [beamai_function:function_def()].
-functions(Kernel) ->
-    beamai_kernel:list_functions(Kernel).
-
-%% @doc 获取所有函数的 tool schema（默认 OpenAI 格式）
+%% @doc 获取所有工具的 tool schema（默认 OpenAI 格式）
 -spec tools(beamai_kernel:kernel()) -> [map()].
 tools(Kernel) ->
     beamai_kernel:get_tool_schemas(Kernel).
 
-%% @doc 获取所有函数的 tool schema（指定提供商格式）
+%% @doc 获取所有工具的 tool schema（指定提供商格式）
 -spec tools(beamai_kernel:kernel(), openai | anthropic | atom()) -> [map()].
 tools(Kernel, Provider) ->
     beamai_kernel:get_tool_schemas(Kernel, Provider).
+
+%% @doc 按标签查找工具
+-spec tools_by_tag(beamai_kernel:kernel(), binary()) -> [beamai_tool:tool_spec()].
+tools_by_tag(Kernel, Tag) ->
+    beamai_kernel:get_tools_by_tag(Kernel, Tag).
 
 %%====================================================================
 %% Context
