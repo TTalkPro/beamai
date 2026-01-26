@@ -12,7 +12,7 @@ Deep Agent implementation based on SubAgent architecture, supporting complex tas
 - Dependency management
 - Reflection and self-correction
 - Coordinator multi-Agent orchestration
-- Plugin tool integration
+- Tool module integration
 
 ## Architecture
 
@@ -48,7 +48,7 @@ beamai_deepagent
 
 ### Tool Modules
 
-- **beamai_deepagent_plan_plugin** - Planning tool plugin (implements beamai_plugin_behaviour)
+- **beamai_deepagent_plan_plugin** - Planning tool plugin (implements beamai_tool_behaviour)
 
 ### Core Data Structures
 
@@ -88,8 +88,8 @@ Config = beamai_deepagent:new(#{
     %% LLM configuration (required, created with beamai_chat_completion:create/2)
     llm => LLM,
 
-    %% Plugin list (optional, modules implementing beamai_plugin_behaviour)
-    plugins => [beamai_plugin_file, beamai_plugin_shell],
+    %% Tool modules (optional, modules implementing beamai_tool_behaviour)
+    plugins => [beamai_tool_file, beamai_tool_shell],
 
     %% Custom tools (optional, list of tool maps)
     custom_tools => [#{name => ..., handler => ...}],
@@ -153,12 +153,12 @@ Plan = beamai_deepagent:get_plan(Result),
 Trace = beamai_deepagent:get_trace(Result).
 ```
 
-### Using Plugin Tools
+### Using Tool Modules
 
 ```erlang
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    plugins => [beamai_plugin_file, beamai_plugin_shell],
+    plugins => [beamai_tool_file, beamai_tool_shell],
     max_depth => 2
 }),
 
@@ -171,7 +171,7 @@ Config = beamai_deepagent:new(#{
 ```erlang
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    plugins => [beamai_plugin_file],
+    plugins => [beamai_tool_file],
     callbacks => #{
         on_plan_created => fun(Plan) ->
             io:format("Plan created: ~p~n", [Plan])
@@ -199,7 +199,7 @@ LLM = beamai_chat_completion:create(anthropic, #{
 
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    plugins => [beamai_plugin_file]
+    plugins => [beamai_tool_file]
 }),
 
 {ok, Result} = beamai_deepagent:run(Config, <<"Analyze project structure and generate report">>).
@@ -215,7 +215,7 @@ Config = beamai_deepagent:new(#{
 3. Sort steps by dependencies
    ↓
 4. For each step:
-   a. Executor executes step (using Plugin tools)
+   a. Executor executes step (using tools)
    b. Supports parallel execution of independent steps
    ↓
 5. Reflector evaluates execution results
@@ -229,7 +229,7 @@ Config = beamai_deepagent:new(#{
 
 - beamai_core (Kernel, Process Framework)
 - beamai_llm (LLM calls)
-- beamai_plugin (Plugin system)
+- beamai_tools (Tools and middleware)
 - beamai_memory (State persistence)
 
 ## License

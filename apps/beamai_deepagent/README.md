@@ -12,7 +12,7 @@
 - 依赖关系管理
 - 反思与自我纠正
 - Coordinator 多 Agent 协调
-- Plugin 工具集成
+- Tool 工具集成
 
 ## 架构
 
@@ -48,7 +48,7 @@ beamai_deepagent
 
 ### 工具模块
 
-- **beamai_deepagent_plan_plugin** - 规划工具插件（实现 beamai_plugin_behaviour）
+- **beamai_deepagent_plan_plugin** - 规划工具插件（实现 beamai_tool_behaviour）
 
 ### 核心数据结构
 
@@ -88,8 +88,8 @@ Config = beamai_deepagent:new(#{
     %% LLM 配置（必填，使用 beamai_chat_completion:create/2 创建）
     llm => LLM,
 
-    %% Plugin 列表（可选，实现 beamai_plugin_behaviour 的模块）
-    plugins => [beamai_plugin_file, beamai_plugin_shell],
+    %% 工具模块列表（可选，实现 beamai_tool_behaviour 的模块）
+    plugins => [beamai_tool_file, beamai_tool_shell],
 
     %% 自定义工具（可选，工具 map 列表）
     custom_tools => [#{name => ..., handler => ...}],
@@ -153,12 +153,12 @@ Plan = beamai_deepagent:get_plan(Result),
 Trace = beamai_deepagent:get_trace(Result).
 ```
 
-### 使用 Plugin 工具
+### 使用工具模块
 
 ```erlang
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    plugins => [beamai_plugin_file, beamai_plugin_shell],
+    plugins => [beamai_tool_file, beamai_tool_shell],
     max_depth => 2
 }),
 
@@ -171,7 +171,7 @@ Config = beamai_deepagent:new(#{
 ```erlang
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    plugins => [beamai_plugin_file],
+    plugins => [beamai_tool_file],
     callbacks => #{
         on_plan_created => fun(Plan) ->
             io:format("计划创建: ~p~n", [Plan])
@@ -199,7 +199,7 @@ LLM = beamai_chat_completion:create(anthropic, #{
 
 Config = beamai_deepagent:new(#{
     llm => LLM,
-    plugins => [beamai_plugin_file]
+    plugins => [beamai_tool_file]
 }),
 
 {ok, Result} = beamai_deepagent:run(Config, <<"分析项目结构并生成报告"/utf8>>).
@@ -215,7 +215,7 @@ Config = beamai_deepagent:new(#{
 3. 按依赖关系排序步骤
    ↓
 4. 对于每个步骤：
-   a. Executor 执行步骤（使用 Plugin 工具）
+   a. Executor 执行步骤（使用工具）
    b. 支持并行执行无依赖的步骤
    ↓
 5. Reflector 评估执行结果
@@ -229,7 +229,7 @@ Config = beamai_deepagent:new(#{
 
 - beamai_core（Kernel、Process Framework）
 - beamai_llm（LLM 调用）
-- beamai_plugin（Plugin 系统）
+- beamai_tools（工具和中间件）
 - beamai_memory（状态持久化）
 
 ## 许可证

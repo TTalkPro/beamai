@@ -112,7 +112,7 @@ LLM = beamai_chat_completion:create(anthropic, #{
 ```erlang
 %% 使用 Kernel 注册工具
 Kernel = beamai_kernel:new(),
-Kernel1 = beamai_kernel:add_plugin_from_module(Kernel, beamai_plugin_file),
+Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
 Tools = beamai_kernel:get_tool_specs(Kernel1),
 
 {ok, State} = beamai_agent:new(#{
@@ -179,7 +179,7 @@ Process = beamai_process_agent:build(#{
 
 - beamai_core（Kernel、Process Framework）
 - beamai_llm（LLM 调用）
-- beamai_plugin（Plugin 工具）
+- beamai_tools（工具和中间件）
 - beamai_memory（持久化）
 
 ## 许可证

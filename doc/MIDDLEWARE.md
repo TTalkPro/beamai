@@ -2,7 +2,7 @@
 
 [English](MIDDLEWARE_EN.md) | 中文
 
-beamai_plugin 的 Middleware 系统提供了一种灵活的方式来拦截、修改和控制 Kernel 函数调用的各个阶段。
+beamai_tools 的 Middleware 系统提供了一种灵活的方式来拦截、修改和控制 Kernel 函数调用的各个阶段。
 
 ## 目录
 
@@ -68,9 +68,9 @@ Middleware 是 Kernel 函数调用过程中的拦截器，可以：
 
 | 模块 | 位置 | 说明 |
 |------|------|------|
-| `beamai_middleware` | `apps/beamai_plugin/src/middleware/` | Middleware 行为定义 |
-| `beamai_middleware_runner` | `apps/beamai_plugin/src/middleware/` | Middleware 链执行器 |
-| `beamai_middleware_presets` | `apps/beamai_plugin/src/middleware/` | 预设配置 |
+| `beamai_middleware` | `apps/beamai_tools/src/middleware/` | Middleware 行为定义 |
+| `beamai_middleware_runner` | `apps/beamai_tools/src/middleware/` | Middleware 链执行器 |
+| `beamai_middleware_presets` | `apps/beamai_tools/src/middleware/` | 预设配置 |
 
 ---
 
@@ -424,10 +424,10 @@ log(debug, Fmt, Args) -> logger:debug(Fmt, Args).
 ### 与 Kernel 集成
 
 ```erlang
-%% 方式 1：使用 beamai_plugins 的 with_middleware
+%% 方式 1：使用 beamai_tools 的 with_middleware
 Kernel = beamai_kernel:new(),
-Kernel1 = beamai_plugins:load_all(Kernel, [beamai_plugin_file, beamai_plugin_shell]),
-Kernel2 = beamai_plugins:with_middleware(Kernel1,
+Kernel1 = beamai_tools:load_all(Kernel, [beamai_tool_file, beamai_tool_shell]),
+Kernel2 = beamai_tools:with_middleware(Kernel1,
     beamai_middleware_presets:production()),
 
 %% 方式 2：手动初始化 Middleware 链
@@ -595,6 +595,6 @@ pre_invocation(FilterCtx, #{cache := Cache} = _MwState) ->
 
 ## 更多资源
 
-- [beamai_plugin README](../apps/beamai_plugin/README.md) - Plugin 模块文档
+- [beamai_tools README](../apps/beamai_tools/README.md) - Tools 模块文档
 - [beamai_core README](../apps/beamai_core/README.md) - Kernel 架构文档
 - [API 参考](API_REFERENCE.md) - API 参考文档

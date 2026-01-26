@@ -10,9 +10,9 @@ A high-performance AI Agent application framework based on Erlang/OTP, providing
 
 ## Features
 
-- **Kernel/Plugin Architecture**: Semantic function registration and invocation system
+- **Kernel/Tool Architecture**: Semantic function registration and invocation system
   - Kernel core based on Semantic Kernel concepts
-  - Plugin-based tool management and Middleware pipeline
+  - Tool management and Middleware pipeline
   - Security validation and permission control
 
 - **Process Framework**: Orchestratable process engine
@@ -93,29 +93,32 @@ Response = maps:get(final_response, Result).
 %% Agent will remember user's name is John
 ```
 
-### 4. Simple Agent (Using Kernel + Plugin for Tools)
+### 4. Simple Agent (Using Kernel + Tools)
 
 ```erlang
 %% Create Kernel
 Kernel = beamai_kernel:new(),
 
-%% Register tools via Plugin module
-Kernel1 = beamai_kernel:add_plugin_from_module(Kernel, beamai_plugin_shell),
+%% Register tools via Tool module
+Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_shell),
 
 %% Or manually define tool functions
-SearchFn = beamai_function:new(<<"search">>, <<"Search for information">>,
+SearchTool = beamai_tool:new(<<"search">>,
     fun(#{<<"query">> := Query}, _Context) ->
         {ok, <<"Search result: ", Query/binary>>}
     end,
-    #{parameters => #{
-        type => object,
-        properties => #{
-            <<"query">> => #{type => string, description => <<"Search keywords">>}
-        },
-        required => [<<"query">>]
-    }}),
+    #{
+        description => <<"Search for information">>,
+        parameters => #{
+            type => object,
+            properties => #{
+                <<"query">> => #{type => string, description => <<"Search keywords">>}
+            },
+            required => [<<"query">>]
+        }
+    }),
 
-Kernel2 = beamai_kernel:add_plugin(Kernel1, <<"search_plugin">>, [SearchFn]),
+Kernel2 = beamai_kernel:add_tools(Kernel1, [SearchTool]),
 
 %% Get tool specs for Agent use
 Tools = beamai_kernel:get_tool_specs(Kernel2),
@@ -164,8 +167,8 @@ Config = beamai_deepagent:new(#{
     planning_enabled => true,
     reflection_enabled => true,
     system_prompt => <<"You are a research expert.">>,
-    %% Use Plugin modules for tools
-    plugins => [beamai_plugin_file, beamai_plugin_shell]
+    %% Use Tool modules for tools
+    plugins => [beamai_tool_file, beamai_tool_shell]
 }),
 
 %% Run complex task (Planner -> Executor -> Reflector)
@@ -242,20 +245,17 @@ apps/
 │   │                  # beamai_step_behaviour, beamai_process_store_behaviour
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
-├── beamai_graph/       # Graph computation engine
-│   ├── Core           # graph, graph_node, graph_edge
-│   ├── Builder        # graph_builder, graph_dsl
-│   ├── Runner         # graph_runner, graph_snapshot
-│   ├── State          # graph_state, graph_state_reducer, graph_command
+│   ├── Graph          # graph, graph_node, graph_edge, graph_builder, graph_dsl,
+│   │                  # graph_runner, graph_snapshot, graph_state, graph_state_reducer
 │   └── Pregel         # pregel, pregel_master, pregel_worker, pregel_vertex
 │
-├── beamai_plugin/      # Plugin system
-│   ├── Core           # beamai_plugins, beamai_plugin_behaviour, beamai_tool
+├── beamai_tools/       # Tool system
+│   ├── Core           # beamai_tools, beamai_tool_behaviour
 │   ├── Middleware     # beamai_middleware, beamai_middleware_runner,
 │   │                  # middleware_call_limit, middleware_tool_retry
 │   ├── Security       # beamai_tool_security
-│   └── Plugins        # beamai_plugin_file, beamai_plugin_shell,
-│                      # beamai_plugin_human, beamai_plugin_todo
+│   └── Tools          # beamai_tool_file, beamai_tool_shell,
+│                      # beamai_tool_human, beamai_tool_todo
 │
 ├── beamai_llm/         # LLM client
 │   ├── Chat           # beamai_chat_completion
@@ -305,14 +305,13 @@ apps/
                  │
 ┌────────────────┴────────────────────┐
 │   Services Layer                     │
-│  (beamai_llm, beamai_plugin,        │
+│  (beamai_llm, beamai_tools,         │
 │   beamai_rag, beamai_a2a, beamai_mcp)│
 └────────────────┬────────────────────┘
                  │
 ┌────────────────┴────────────────────┐
 │   Core Layer                         │
-│  (beamai_core, beamai_graph,        │
-│   beamai_memory)                     │
+│  (beamai_core, beamai_memory)        │
 └─────────────────────────────────────┘
 ```
 
@@ -322,19 +321,19 @@ See [DEPENDENCIES_EN.md](doc/DEPENDENCIES_EN.md) for details
 
 ### 1. Kernel Architecture
 
-Kernel is BeamAI's core abstraction, managing Plugin and Function registration and invocation:
+Kernel is BeamAI's core abstraction, managing Tool registration and invocation:
 
 ```erlang
 %% Create Kernel instance
 Kernel = beamai_kernel:new(),
 
-%% Load plugin from module
-Kernel1 = beamai_kernel:add_plugin_from_module(Kernel, beamai_plugin_file),
+%% Load tool from module
+Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
 
-%% Invoke registered function
-{ok, Result} = beamai_kernel:invoke(Kernel1, <<"file-read_file">>, #{
+%% Invoke registered tool
+{ok, Result, _Ctx} = beamai_kernel:invoke(Kernel1, <<"file_read">>, #{
     <<"path">> => <<"/tmp/test.txt">>
-}).
+}, #{}).
 ```
 
 ### 2. Process Framework
@@ -355,7 +354,7 @@ Process1 = beamai_process_builder:add_step(Process, <<"step1">>, #{
 
 ### 3. Graph Execution Engine
 
-Graph computation engine based on LangGraph concepts (in beamai_graph app):
+Graph computation engine based on LangGraph concepts (in beamai_core app):
 
 ```erlang
 %% Create graph
@@ -480,9 +479,8 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 
 | Module | Description | Documentation |
 |--------|-------------|---------------|
-| **beamai_core** | Core framework: Kernel, Process Framework, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
-| **beamai_graph** | Graph engine: graph building, execution, Pregel distributed computing | [README](apps/beamai_graph/README.md) |
-| **beamai_plugin** | Plugin system: tool management, Middleware, security validation | [README](apps/beamai_plugin/README.md) |
+| **beamai_core** | Core framework: Kernel, Process Framework, Graph Engine, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
+| **beamai_tools** | Tool system: tool management, Middleware, security validation | [README](apps/beamai_tools/README.md) |
 | **beamai_llm** | LLM client: supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama | [README](apps/beamai_llm/README_EN.md) |
 | **beamai_agent** | Agent implementation: ReAct pattern, callback system, Process Agent | [README](apps/beamai_agent/README.md) |
 | **beamai_deepagent** | Deep Agent: SubAgent orchestration, task planning, parallel execution, self-reflection | [README](apps/beamai_deepagent/README_EN.md) |

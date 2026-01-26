@@ -2,7 +2,7 @@
 
 English | [中文](MIDDLEWARE.md)
 
-The Middleware system in beamai_plugin provides a flexible way to intercept, modify, and control various stages of Kernel function invocations.
+The Middleware system in beamai_tools provides a flexible way to intercept, modify, and control various stages of Kernel function invocations.
 
 ## Table of Contents
 
@@ -68,9 +68,9 @@ Middleware are interceptors in the Kernel function invocation process that can:
 
 | Module | Location | Description |
 |--------|----------|-------------|
-| `beamai_middleware` | `apps/beamai_plugin/src/middleware/` | Middleware behaviour definition |
-| `beamai_middleware_runner` | `apps/beamai_plugin/src/middleware/` | Middleware chain executor |
-| `beamai_middleware_presets` | `apps/beamai_plugin/src/middleware/` | Preset configurations |
+| `beamai_middleware` | `apps/beamai_tools/src/middleware/` | Middleware behaviour definition |
+| `beamai_middleware_runner` | `apps/beamai_tools/src/middleware/` | Middleware chain executor |
+| `beamai_middleware_presets` | `apps/beamai_tools/src/middleware/` | Preset configurations |
 
 ---
 
@@ -424,10 +424,10 @@ log(debug, Fmt, Args) -> logger:debug(Fmt, Args).
 ### Integration with Kernel
 
 ```erlang
-%% Method 1: Using beamai_plugins with_middleware
+%% Method 1: Using beamai_tools with_middleware
 Kernel = beamai_kernel:new(),
-Kernel1 = beamai_plugins:load_all(Kernel, [beamai_plugin_file, beamai_plugin_shell]),
-Kernel2 = beamai_plugins:with_middleware(Kernel1,
+Kernel1 = beamai_tools:load_all(Kernel, [beamai_tool_file, beamai_tool_shell]),
+Kernel2 = beamai_tools:with_middleware(Kernel1,
     beamai_middleware_presets:production()),
 
 %% Method 2: Manually initialize Middleware chain
@@ -595,6 +595,6 @@ pre_invocation(FilterCtx, #{cache := Cache} = _MwState) ->
 
 ## More Resources
 
-- [beamai_plugin README](../apps/beamai_plugin/README.md) - Plugin module documentation
+- [beamai_tools README](../apps/beamai_tools/README.md) - Tools module documentation
 - [beamai_core README](../apps/beamai_core/README.md) - Kernel architecture documentation
 - [API Reference](API_REFERENCE.md) - API reference documentation

@@ -178,7 +178,7 @@ Kernel#{tools => #{<<"get_weather">> => ToolSpec}}
 | `apps/beamai_core/src/kernel/beamai_tool.erl` | 工具定义、调用、schema 生成 |
 | `apps/beamai_core/src/kernel/beamai_tool_behaviour.erl` | 工具模块行为定义 |
 | `apps/beamai_core/src/kernel/beamai_kernel.erl` | Kernel 核心，管理工具和调用循环 |
-| `apps/beamai_plugin/src/beamai_plugins.erl` | 工具模块加载辅助 |
+| `apps/beamai_tools/src/beamai_tools.erl` | 工具模块加载辅助 |
 
 ## 迁移指南（从 Plugin 到 Tool）
 

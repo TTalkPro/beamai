@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | 中文
 
-BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP 客户端和行为定义。
+BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、Graph Engine、HTTP 客户端和行为定义。
 
 ## 模块概览
 
@@ -34,6 +34,29 @@ BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP �
 - **beamai_process_worker** - 流程工作进程
 - **beamai_process_sup** - 流程监督树
 
+### Graph Engine 子系统
+
+基于 LangGraph 理念的声明式图执行引擎：
+
+- **graph** - 图定义和构建器
+- **graph_node** - 节点定义
+- **graph_edge** - 边定义
+- **graph_builder** - 图构建器
+- **graph_dsl** - 声明式 DSL
+- **graph_runner** - 图执行引擎
+- **graph_state** - 图状态管理
+- **graph_snapshot** - 图状态快照
+
+### Pregel 子系统
+
+基于 Pregel 模型的分布式图计算：
+
+- **pregel** - Pregel 主节点和工作节点
+- **pregel_master** - 主节点
+- **pregel_worker** - 工作节点
+- **pregel_vertex** - 顶点计算
+- **pregel_dispatch_worker** - 分发池工作进程
+
 ### HTTP 子系统
 
 可插拔的 HTTP 客户端，支持 Gun 和 Hackney 后端：
@@ -51,6 +74,7 @@ BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP �
 - **beamai_http_behaviour** - HTTP 后端行为接口
 - **beamai_step_behaviour** - 流程步骤行为接口
 - **beamai_process_store_behaviour** - 流程存储行为接口
+- **beamai_tool_behaviour** - 工具模块行为接口
 
 ### 工具与协议
 
@@ -206,12 +230,49 @@ Builder3 = beamai_process_builder:add_step(Builder2, <<"save">>, #{
 {ok, Result} = beamai_process_executor:run(Process, #{}).
 ```
 
+### Graph Engine
+
+```erlang
+%% 使用 DSL 构建简单图
+{ok, Graph} = graph:build([
+    {node, greeting, fun(State, _Ctx) ->
+        Name = graph_state:get(State, name, <<"World">>),
+        Message = <<"Hello, ", Name/binary, "!">>,
+        {ok, graph_state:set(State, message, Message)}
+    end},
+    {node, uppercase, fun(State, _Ctx) ->
+        Message = graph_state:get(State, message, <<>>),
+        Upper = string:uppercase(Message),
+        {ok, graph_state:set(State, message, Upper)}
+    end},
+    {edge, greeting, uppercase},
+    {edge, uppercase, '__end__'},
+    {entry, greeting}
+]),
+
+%% 运行图
+InitialState = graph:state(#{name => <<"Erlang">>}),
+Result = graph:run(Graph, InitialState).
+```
+
+### 加载工具模块
+
+```erlang
+%% 加载实现 beamai_tool_behaviour 的工具模块
+Kernel = beamai_kernel:new(),
+Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
+
+%% 列出已注册的工具
+Tools = beamai_kernel:get_tool_specs(Kernel1).
+```
+
 ## 依赖
 
 - jsx - JSON 编解码
 - uuid - UUID 生成
 - gun - HTTP/2 客户端
 - hackney - HTTP/1.1 客户端
+- poolboy - 连接池
 
 ## 许可证
 
