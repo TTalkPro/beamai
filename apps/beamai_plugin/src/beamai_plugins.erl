@@ -10,8 +10,8 @@
 %%%
 %%% ```erlang
 %%% K0 = beamai:kernel(),
-%%% %% 加载插件
-%%% K1 = beamai_plugins:load(K0, beamai_plugin_file),
+%%% %% 加载工具模块
+%%% K1 = beamai_plugins:load(K0, beamai_tool_file),
 %%% %% 添加中间件
 %%% K2 = beamai_plugins:with_middleware(K1, beamai_middleware_presets:default()),
 %%% %% 添加 LLM 配置并使用
@@ -36,20 +36,20 @@
 %% 插件加载
 %%====================================================================
 
-%% @doc 加载插件模块到 kernel。
+%% @doc 加载工具模块到 kernel。
 %%
-%% 指定的模块必须实现 beamai_plugin_behaviour 的回调函数
-%% （plugin_info/0 和 functions/0）。
+%% 指定的模块必须实现 beamai_tool_behaviour 的回调函数
+%% （tool_info/0 和 tools/0）。
 %%
-%% 同时会加载插件通过 filters/0 回调定义的所有过滤器。
+%% 同时会加载工具模块通过 filters/0 回调定义的所有过滤器。
 %%
 %% @param Kernel  当前的 Kernel 实例
-%% @param Module  实现了 beamai_plugin_behaviour 的插件模块名
-%% @returns 注册了插件后的更新 Kernel 实例
+%% @param Module  实现了 beamai_tool_behaviour 的工具模块名
+%% @returns 注册了工具后的更新 Kernel 实例
 -spec load(beamai_kernel:kernel(), module()) -> beamai_kernel:kernel().
 load(Kernel, Module) ->
-    K1 = beamai_kernel:add_plugin_from_module(Kernel, Module),
-    %% 如果插件定义了 filters/0 回调，则加载对应的过滤器
+    K1 = beamai_kernel:add_tool_module(Kernel, Module),
+    %% 如果工具模块定义了 filters/0 回调，则加载对应的过滤器
     case erlang:function_exported(Module, filters, 0) of
         true ->
             Filters = Module:filters(),
@@ -58,30 +58,30 @@ load(Kernel, Module) ->
             K1
     end.
 
-%% @doc 批量加载多个插件模块到 kernel。
+%% @doc 批量加载多个工具模块到 kernel。
 %%
-%% 按顺序依次加载所有指定的插件模块，每个模块的过滤器也会被加载。
+%% 按顺序依次加载所有指定的工具模块，每个模块的过滤器也会被加载。
 %%
 %% @param Kernel   当前的 Kernel 实例
-%% @param Modules  插件模块名列表
-%% @returns 加载所有插件后的更新 Kernel 实例
+%% @param Modules  工具模块名列表
+%% @returns 加载所有工具后的更新 Kernel 实例
 -spec load_all(beamai_kernel:kernel(), [module()]) -> beamai_kernel:kernel().
 load_all(Kernel, Modules) ->
     lists:foldl(fun(M, K) -> load(K, M) end, Kernel, Modules).
 
-%% @doc 列出所有内置插件模块。
+%% @doc 列出所有内置工具模块。
 %%
-%% 返回系统内置可用的插件模块列表，包括文件操作、Shell 命令、
-%% TODO 列表和人机交互等插件。
+%% 返回系统内置可用的工具模块列表，包括文件操作、Shell 命令、
+%% TODO 列表和人机交互等工具。
 %%
-%% @returns 内置插件模块名列表
+%% @returns 内置工具模块名列表
 -spec available() -> [module()].
 available() ->
     [
-        beamai_plugin_file,
-        beamai_plugin_shell,
-        beamai_plugin_todo,
-        beamai_plugin_human
+        beamai_tool_file,
+        beamai_tool_shell,
+        beamai_tool_todo,
+        beamai_tool_human
     ].
 
 %%====================================================================
@@ -131,9 +131,9 @@ presets(_) -> beamai_middleware_presets:default().
 %% @param Description 工具描述（二进制字符串）
 %% @param Handler     工具处理器函数
 %% @returns 工具定义映射
--spec define_tool(binary(), binary(), function()) -> beamai_tool:tool_def().
+-spec define_tool(binary(), binary(), function()) -> beamai_tool:tool_spec().
 define_tool(Name, Description, Handler) ->
-    beamai_tool:define(Name, Description, Handler).
+    beamai_tool:new(Name, Handler, #{description => Description}).
 
 %% @doc 工具定义 DSL 快捷方式（带参数定义）。
 %%
@@ -144,9 +144,9 @@ define_tool(Name, Description, Handler) ->
 %% @param Params      参数定义（列表或映射格式）
 %% @param Handler     工具处理器函数
 %% @returns 工具定义映射
--spec define_tool(binary(), binary(), list() | map(), function()) -> beamai_tool:tool_def().
+-spec define_tool(binary(), binary(), list() | map(), function()) -> beamai_tool:tool_spec().
 define_tool(Name, Description, Params, Handler) ->
-    beamai_tool:define(Name, Description, Params, Handler).
+    beamai_tool:new(Name, Handler, #{description => Description, parameters => Params}).
 
 %% @doc 工具定义 DSL 快捷方式（带选项和参数定义）。
 %%
@@ -158,6 +158,6 @@ define_tool(Name, Description, Params, Handler) ->
 %% @param Params      参数定义（列表或映射格式）
 %% @param Handler     工具处理器函数
 %% @returns 工具定义映射
--spec define_tool(binary(), binary(), map(), list() | map(), function()) -> beamai_tool:tool_def().
+-spec define_tool(binary(), binary(), map(), list() | map(), function()) -> beamai_tool:tool_spec().
 define_tool(Name, Description, Opts, Params, Handler) ->
-    beamai_tool:define(Name, Description, Opts, Params, Handler).
+    beamai_tool:new(Name, Handler, maps:merge(Opts, #{description => Description, parameters => Params})).

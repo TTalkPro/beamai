@@ -8,7 +8,7 @@
 tool_schema_full_test() ->
     K = beamai_kernel:new(),
     K1 = beamai_kernel:add_plugin(K, <<"tools">>, [
-        beamai_function:new(<<"get_weather">>,
+        beamai_tool:new(<<"get_weather">>,
             fun(#{location := L}) -> {ok, #{location => L, temp => 22}} end,
             #{
                 description => <<"Get current weather for a location">>,
@@ -29,7 +29,7 @@ tool_schema_full_test() ->
 tool_schema_anthropic_format_test() ->
     K = beamai_kernel:new(),
     K1 = beamai_kernel:add_plugin(K, <<"tools">>, [
-        beamai_function:new(<<"search">>,
+        beamai_tool:new(<<"search">>,
             fun(_) -> {ok, []} end,
             #{
                 description => <<"Search the web">>,

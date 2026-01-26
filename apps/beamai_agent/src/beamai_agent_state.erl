@@ -236,10 +236,10 @@ add_llm(Kernel, Config) ->
             beamai_kernel:add_service(Kernel, LlmCfg)
     end.
 
-%% @private 加载 plugins 到 kernel
+%% @private 加载工具模块到 kernel
 %%
 %% 遍历 plugins 列表中的模块，逐个调用 beamai_plugins:load 加载。
-%% 每个模块需实现 beamai_plugin_behaviour 回调。
+%% 每个模块需实现 beamai_tool_behaviour 回调。
 add_plugins(Kernel, Config) ->
     Plugins = maps:get(plugins, Config, []),
     beamai_plugins:load_all(Kernel, Plugins).

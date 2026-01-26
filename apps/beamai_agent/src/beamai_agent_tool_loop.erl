@@ -216,7 +216,7 @@ check_callback_interrupt(ToolCalls, Callbacks) ->
 check_callback_interrupt_loop([], _Fun) ->
     ok;
 check_callback_interrupt_loop([TC | Rest], Fun) ->
-    {_Id, Name, Args} = beamai_function:parse_tool_call(TC),
+    {_Id, Name, Args} = beamai_tool:parse_tool_call(TC),
     case catch Fun(Name, Args) of
         {interrupt, Reason} ->
             {interrupt, Reason, TC};
@@ -239,23 +239,23 @@ execute_tools_with_interrupt_check(Kernel, ToolCalls) ->
 execute_tools_iter(_Kernel, [], ResultsAcc, CallsAcc) ->
     {ok, lists:reverse(ResultsAcc), lists:reverse(CallsAcc)};
 execute_tools_iter(Kernel, [TC | Rest], ResultsAcc, CallsAcc) ->
-    {Id, Name, Args} = beamai_function:parse_tool_call(TC),
+    {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
     case beamai_kernel:invoke_tool(Kernel, Name, Args, beamai_context:new()) of
         {ok, Value, _Ctx} ->
-            Result = beamai_function:encode_result(Value),
+            Result = beamai_tool:encode_result(Value),
             Msg = #{role => tool, tool_call_id => Id, content => Result},
             CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id},
             execute_tools_iter(Kernel, Rest,
                 [Msg | ResultsAcc], [CallRecord | CallsAcc]);
         {interrupt, Reason, PartialResult} ->
             PartialMsg = #{role => tool, tool_call_id => Id,
-                          content => beamai_function:encode_result(PartialResult)},
+                          content => beamai_tool:encode_result(PartialResult)},
             {interrupt, Reason,
              lists:reverse([PartialMsg | ResultsAcc]),
              TC,
              lists:reverse(CallsAcc)};
         {error, Reason} ->
-            Result = beamai_function:encode_result(#{error => Reason}),
+            Result = beamai_tool:encode_result(#{error => Reason}),
             Msg = #{role => tool, tool_call_id => Id, content => Result},
             CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id},
             execute_tools_iter(Kernel, Rest,
@@ -272,5 +272,5 @@ extract_interrupt_reason(#{function := #{arguments := Args}}) when is_map(Args) 
 extract_interrupt_reason(#{<<"function">> := #{<<"arguments">> := Args}}) when is_map(Args) ->
     Args;
 extract_interrupt_reason(TC) ->
-    {_Id, Name, Args} = beamai_function:parse_tool_call(TC),
+    {_Id, Name, Args} = beamai_tool:parse_tool_call(TC),
     #{tool => Name, arguments => Args}.

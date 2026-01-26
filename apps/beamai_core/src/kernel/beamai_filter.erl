@@ -32,8 +32,8 @@
 -type filter_type() :: pre_invocation | post_invocation | pre_chat | post_chat.
 
 -type filter_context() :: #{
-    function => beamai_function:function_def(),
-    args => beamai_function:args(),
+    tool => beamai_tool:tool_spec(),
+    args => beamai_tool:args(),
     result => term(),
     messages => [beamai_context:message()],
     context => beamai_context:t(),
@@ -89,12 +89,12 @@ new(Name, Type, Handler, Priority) ->
 %% @param Args 调用参数
 %% @param Context 执行上下文
 %% @returns {ok, 过滤后参数, 过滤后上下文} | {skip, 跳过值} | {error, 原因}
--spec apply_pre_filters([filter_def()], beamai_function:function_def(), beamai_function:args(), beamai_context:t()) ->
-    {ok, beamai_function:args(), beamai_context:t()} | {skip, term()} | {error, term()}.
-apply_pre_filters(Filters, FuncDef, Args, Context) ->
+-spec apply_pre_filters([filter_def()], beamai_tool:tool_spec(), beamai_tool:args(), beamai_context:t()) ->
+    {ok, beamai_tool:args(), beamai_context:t()} | {skip, term()} | {error, term()}.
+apply_pre_filters(Filters, ToolSpec, Args, Context) ->
     PreFilters = get_filters_by_type(Filters, pre_invocation),
     FilterCtx = #{
-        function => FuncDef,
+        tool => ToolSpec,
         args => Args,
         context => Context,
         metadata => #{}
@@ -122,12 +122,12 @@ apply_pre_filters(Filters, FuncDef, Args, Context) ->
 %% @param Result 函数执行结果
 %% @param Context 执行上下文
 %% @returns {ok, 过滤后结果, 过滤后上下文} | {error, 原因}
--spec apply_post_filters([filter_def()], beamai_function:function_def(), term(), beamai_context:t()) ->
+-spec apply_post_filters([filter_def()], beamai_tool:tool_spec(), term(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
-apply_post_filters(Filters, FuncDef, Result, Context) ->
+apply_post_filters(Filters, ToolSpec, Result, Context) ->
     PostFilters = get_filters_by_type(Filters, post_invocation),
     FilterCtx = #{
-        function => FuncDef,
+        tool => ToolSpec,
         result => Result,
         context => Context,
         metadata => #{}

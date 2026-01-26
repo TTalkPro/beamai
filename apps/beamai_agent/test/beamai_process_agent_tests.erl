@@ -21,7 +21,7 @@ build_chat_opts_no_tools_test() ->
 
 build_chat_opts_with_tools_test() ->
     K0 = beamai_kernel:new(),
-    Func = beamai_function:new(<<"test_func">>, fun(_) -> {ok, <<"ok">>} end,
+    Func = beamai_tool:new(<<"test_func">>, fun(_) -> {ok, <<"ok">>} end,
         #{description => <<"desc">>, parameters => #{}}),
     K1 = beamai_kernel:add_plugin(K0, <<"test_plugin">>, [Func]),
     Opts = beamai_agent_utils:build_chat_opts(K1, #{}),
@@ -113,7 +113,7 @@ tool_step_no_kernel_error_test() ->
 tool_step_executes_tools_test() ->
     %% 创建带 tool 的 kernel
     K0 = beamai_kernel:new(),
-    Func = beamai_function:new(<<"echo">>,
+    Func = beamai_tool:new(<<"echo">>,
         fun(#{<<"msg">> := Msg}) -> {ok, Msg} end,
         #{description => <<"echo input">>,
           parameters => #{msg => #{type => string}}}),
@@ -144,7 +144,7 @@ tool_step_executes_tools_test() ->
 
 tool_step_pause_on_hook_test() ->
     K0 = beamai_kernel:new(),
-    Func = beamai_function:new(<<"danger">>,
+    Func = beamai_tool:new(<<"danger">>,
         fun(_) -> {ok, <<"done">>} end,
         #{description => <<"dangerous op">>,
           parameters => #{}}),
