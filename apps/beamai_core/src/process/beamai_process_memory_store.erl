@@ -113,7 +113,7 @@ load_snapshot({Memory, ThreadConfig}, SnapshotId, _LoadOpts) ->
     ThreadId = maps:get(thread_id, ThreadConfig),
     Config = #{thread_id => ThreadId, snapshot_id => SnapshotId},
     SnapshotManager = beamai_memory:get_snapshot_manager(Memory),
-    case beamai_snapshot_manager:load(SnapshotManager, SnapshotId, Config) of
+    case beamai_snapshot:load(SnapshotManager, SnapshotId, Config) of
         {ok, {Snapshot, _Meta, _ParentCfg}} ->
             {ok, beamai_memory:snapshot_to_state(Snapshot)};
         {error, _} = Error ->
@@ -171,7 +171,7 @@ branch({Memory, ThreadConfig}, BranchName, BranchOpts) ->
     BranchThreadId = maps:get(thread_id, BranchOpts,
                               generate_branch_thread_id(ThreadId, BranchName)),
 
-    case beamai_memory:create_branch(Memory, Config, BranchName,
+    case beamai_memory:snapshot_fork(Memory, Config, BranchName,
                                      #{thread_id => BranchThreadId}) of
         {ok, BranchId} ->
             {ok, #{branch_thread_id => BranchThreadId, snapshot_id => BranchId}};
@@ -197,7 +197,7 @@ load_branch({Memory, _ThreadConfig}, BranchThreadId, _Opts) ->
 -spec list_branches(store_ref(), map()) ->
     {ok, [map()]} | {error, term()}.
 list_branches({Memory, _ThreadConfig}, _Opts) ->
-    beamai_memory:list_branches(Memory).
+    beamai_memory:snapshot_branches(Memory).
 
 %% @doc 获取执行谱系（从当前快照回溯到根）
 -spec get_lineage(store_ref(), map()) ->
@@ -205,14 +205,14 @@ list_branches({Memory, _ThreadConfig}, _Opts) ->
 get_lineage({Memory, ThreadConfig}, Opts) ->
     ThreadId = maps:get(thread_id, Opts, maps:get(thread_id, ThreadConfig)),
     Config = #{thread_id => ThreadId},
-    beamai_memory:get_lineage(Memory, Config).
+    beamai_memory:snapshot_lineage(Memory, Config).
 
 %% @doc 比较两个快照（不同 thread）的差异
 -spec diff(store_ref(), map(), map()) ->
     {ok, map()} | {error, term()}.
 diff({Memory, _ThreadConfig}, Config1, Config2) ->
     SnapshotManager = beamai_memory:get_snapshot_manager(Memory),
-    beamai_snapshot_manager:diff(SnapshotManager, Config1, Config2).
+    beamai_snapshot:diff(SnapshotManager, Config1, Config2).
 
 %%====================================================================
 %% 时间旅行 API
@@ -226,7 +226,7 @@ diff({Memory, _ThreadConfig}, Config1, Config2) ->
 go_back({Memory, ThreadConfig}, Steps) ->
     ThreadId = maps:get(thread_id, ThreadConfig),
     Config = #{thread_id => ThreadId},
-    beamai_memory:go_back(Memory, Config, Steps).
+    beamai_memory:snapshot_go_back(Memory, Config, Steps).
 
 %% @doc 前进 N 步
 %%
@@ -236,7 +236,7 @@ go_back({Memory, ThreadConfig}, Steps) ->
 go_forward({Memory, ThreadConfig}, Steps) ->
     ThreadId = maps:get(thread_id, ThreadConfig),
     Config = #{thread_id => ThreadId},
-    beamai_memory:go_forward(Memory, Config, Steps).
+    beamai_memory:snapshot_go_forward(Memory, Config, Steps).
 
 %% @doc 跳转到指定快照
 %%
@@ -246,7 +246,7 @@ go_forward({Memory, ThreadConfig}, Steps) ->
 goto({Memory, ThreadConfig}, SnapshotId) ->
     ThreadId = maps:get(thread_id, ThreadConfig),
     Config = #{thread_id => ThreadId},
-    beamai_memory:goto(Memory, Config, SnapshotId).
+    beamai_memory:snapshot_goto(Memory, Config, SnapshotId).
 
 %% @doc 列出执行历史
 %%
@@ -256,7 +256,7 @@ goto({Memory, ThreadConfig}, SnapshotId) ->
 list_history({Memory, ThreadConfig}) ->
     ThreadId = maps:get(thread_id, ThreadConfig),
     Config = #{thread_id => ThreadId},
-    beamai_memory:list_history(Memory, Config).
+    beamai_memory:snapshot_history(Memory, Config).
 
 %%====================================================================
 %% 内部函数

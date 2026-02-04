@@ -49,7 +49,10 @@
 -export_type([memory/0]).
 
 %% 构造函数
--export([new/1]).
+-export([new/1, get_thread_id/1]).
+
+%% Agent interrupt 辅助函数
+-export([has_pending_interrupt/2, get_interrupt_context/2]).
 
 %%====================================================================
 %% Snapshot API (Process Framework)
@@ -148,7 +151,8 @@
 -record(memory, {
     snapshot_manager :: beamai_snapshot:manager(),
     checkpoint_manager :: beamai_checkpoint:manager(),
-    store :: beamai_store:store()
+    store :: beamai_store:store(),
+    thread_id :: binary() | undefined
 }).
 
 -opaque memory() :: #memory{}.
@@ -160,7 +164,11 @@
 %% @doc 创建 Memory 实例
 -spec new(map()) -> {ok, memory()} | {error, term()}.
 new(Opts) ->
-    Backend = maps:get(backend, Opts),
+    %% 支持 context_store 和 backend 两种键名，优先使用 context_store
+    Backend = case maps:find(context_store, Opts) of
+        {ok, Store} -> Store;
+        error -> maps:get(backend, Opts)
+    end,
 
     %% 创建 State Store
     StateStore = beamai_state_store:new(Backend, #{
@@ -179,13 +187,21 @@ new(Opts) ->
         auto_prune => maps:get(auto_prune, Opts, true)
     }),
 
+    ThreadId = maps:get(thread_id, Opts, undefined),
+
     Memory = #memory{
         snapshot_manager = SnapshotMgr,
         checkpoint_manager = CheckpointMgr,
-        store = Backend
+        store = Backend,
+        thread_id = ThreadId
     },
 
     {ok, Memory}.
+
+%% @doc 获取 Memory 实例关联的 thread_id
+-spec get_thread_id(memory()) -> binary() | undefined.
+get_thread_id(#memory{thread_id = ThreadId}) ->
+    ThreadId.
 
 %%====================================================================
 %% Snapshot API 实现
@@ -561,3 +577,69 @@ update_snapshot_manager(Memory, Mgr) ->
 -spec update_checkpoint_manager(memory(), beamai_checkpoint:manager()) -> memory().
 update_checkpoint_manager(Memory, Mgr) ->
     Memory#memory{checkpoint_manager = Mgr}.
+
+%%====================================================================
+%% Agent Interrupt 辅助函数
+%%====================================================================
+
+%% @doc 检查是否有待处理的中断
+%%
+%% 检查最新的 snapshot 中是否包含中断状态。
+-spec has_pending_interrupt(memory(), map()) -> boolean().
+has_pending_interrupt(Memory, Config) ->
+    ThreadId = case maps:find(thread_id, Config) of
+        {ok, TId} -> TId;
+        error -> get_thread_id(Memory)
+    end,
+    case get_latest_snapshot(Memory, ThreadId) of
+        {ok, Snapshot} ->
+            StepsState = beamai_snapshot:get_steps_state(Snapshot),
+            case maps:find(agent_state, StepsState) of
+                {ok, #{state := SavedData}} ->
+                    case maps:find(interrupt_state, SavedData) of
+                        {ok, IntState} when is_map(IntState) ->
+                            maps:get(status, IntState, undefined) =:= interrupted;
+                        _ ->
+                            false
+                    end;
+                _ ->
+                    false
+            end;
+        {error, _} ->
+            false
+    end.
+
+%% @doc 获取中断上下文
+%%
+%% 从最新的 snapshot 中提取中断状态信息。
+-spec get_interrupt_context(memory(), map()) ->
+    {ok, map()} | {error, not_interrupted} | {error, term()}.
+get_interrupt_context(Memory, Config) ->
+    ThreadId = case maps:find(thread_id, Config) of
+        {ok, TId} -> TId;
+        error -> get_thread_id(Memory)
+    end,
+    case get_latest_snapshot(Memory, ThreadId) of
+        {ok, Snapshot} ->
+            StepsState = beamai_snapshot:get_steps_state(Snapshot),
+            case maps:find(agent_state, StepsState) of
+                {ok, #{state := SavedData}} ->
+                    case maps:find(interrupt_state, SavedData) of
+                        {ok, IntState} when is_map(IntState) ->
+                            case maps:get(status, IntState, undefined) of
+                                interrupted ->
+                                    {ok, IntState};
+                                _ ->
+                                    {error, not_interrupted}
+                            end;
+                        _ ->
+                            {error, not_interrupted}
+                    end;
+                _ ->
+                    {error, not_interrupted}
+            end;
+        {error, not_found} ->
+            {error, not_interrupted};
+        {error, Reason} ->
+            {error, Reason}
+    end.

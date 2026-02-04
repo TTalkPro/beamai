@@ -286,13 +286,18 @@ branch_from(Memory, SnapshotConfig, BranchOpts) ->
     BranchThreadId = maps:get(thread_id, BranchOpts,
                               generate_branch_thread_id(ThreadId, BranchName)),
 
-    Config = #{thread_id => ThreadId},
-    case beamai_memory:create_branch(Memory, Config, BranchName,
-                                     #{thread_id => BranchThreadId}) of
-        {ok, SnapshotId} ->
-            %% create_branch 返回新分支初始快照的 ID
-            {ok, #{branch_thread_id => BranchThreadId,
-                   snapshot_id => SnapshotId}};
+    %% 获取源线程的最新快照
+    case beamai_memory:get_latest_snapshot(Memory, ThreadId) of
+        {ok, Snapshot} ->
+            SnapshotId = beamai_snapshot:get_id(Snapshot),
+            %% 从快照创建分支
+            case beamai_memory:snapshot_fork(Memory, SnapshotId, BranchName, BranchThreadId) of
+                {ok, BranchSnapshot, _NewMemory} ->
+                    BranchSnapshotId = beamai_snapshot:get_id(BranchSnapshot),
+                    {ok, #{branch_thread_id => BranchThreadId,
+                           snapshot_id => BranchSnapshotId}};
+                {error, _} = Error -> Error
+            end;
         {error, _} = Error -> Error
     end.
 
@@ -324,7 +329,7 @@ restore_branch(Memory, BranchConfig, ProcessSpec, Opts) ->
 -spec list_branches(beamai_memory:memory(), map()) ->
     {ok, [branch_info()]} | {error, term()}.
 list_branches(Memory, _Opts) ->
-    case beamai_memory:list_branches(Memory) of
+    case beamai_memory:snapshot_branches(Memory) of
         {ok, Branches} ->
             BranchInfos = [memory_branch_to_info(B) || B <- Branches],
             {ok, BranchInfos};
@@ -335,10 +340,16 @@ list_branches(Memory, _Opts) ->
 -spec get_lineage(beamai_memory:memory(), map()) ->
     {ok, [snapshot_info()]} | {error, term()}.
 get_lineage(Memory, Config) ->
-    case beamai_memory:get_lineage(Memory, Config) of
-        {ok, States} ->
-            Infos = [state_to_snapshot_info(S) || S <- States],
-            {ok, Infos};
+    ThreadId = maps:get(thread_id, Config),
+    case beamai_memory:get_latest_snapshot(Memory, ThreadId) of
+        {ok, Snapshot} ->
+            SnapshotId = beamai_snapshot:get_id(Snapshot),
+            case beamai_memory:snapshot_lineage(Memory, SnapshotId) of
+                {ok, States} ->
+                    Infos = [state_to_snapshot_info(S) || S <- States],
+                    {ok, Infos};
+                {error, _} = Error -> Error
+            end;
         {error, _} = Error -> Error
     end.
 
@@ -371,7 +382,7 @@ go_back(Memory, Config, Steps, ProcessSpec) ->
               beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
 go_back(Memory, Config, Steps, ProcessSpec, Opts) ->
-    case beamai_memory:go_back(Memory, Config, Steps) of
+    case beamai_memory:snapshot_go_back(Memory, Config, Steps) of
         {ok, PastState} ->
             restore_from_memory_state(PastState, ProcessSpec, Opts);
         {error, _} = Error -> Error
@@ -392,7 +403,7 @@ go_forward(Memory, Config, Steps, ProcessSpec) ->
                  beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
 go_forward(Memory, Config, Steps, ProcessSpec, Opts) ->
-    case beamai_memory:go_forward(Memory, Config, Steps) of
+    case beamai_memory:snapshot_go_forward(Memory, Config, Steps) of
         {ok, FutureState} ->
             restore_from_memory_state(FutureState, ProcessSpec, Opts);
         {error, _} = Error -> Error
@@ -412,7 +423,7 @@ goto_snapshot(Memory, Config, SnapshotId, ProcessSpec) ->
                     beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
 goto_snapshot(Memory, Config, SnapshotId, ProcessSpec, Opts) ->
-    case beamai_memory:goto(Memory, Config, SnapshotId) of
+    case beamai_memory:snapshot_goto(Memory, Config, SnapshotId) of
         {ok, TargetState} ->
             restore_from_memory_state(TargetState, ProcessSpec, Opts);
         {error, _} = Error -> Error
@@ -424,7 +435,7 @@ goto_snapshot(Memory, Config, SnapshotId, ProcessSpec, Opts) ->
 -spec list_history(beamai_memory:memory(), map()) ->
     {ok, [map()]} | {error, term()}.
 list_history(Memory, Config) ->
-    beamai_memory:list_history(Memory, Config).
+    beamai_memory:snapshot_history(Memory, Config).
 
 %%====================================================================
 %% 内部函数

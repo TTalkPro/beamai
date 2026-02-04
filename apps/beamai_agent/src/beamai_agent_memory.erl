@@ -55,7 +55,10 @@ save(#{memory := Memory, messages := Messages, id := AgentId,
     ThreadId = beamai_memory:get_thread_id(Memory),
     IntState = maps:get(interrupt_state, State, undefined),
     RunId = maps:get(run_id, State, undefined),
-    StateData = #{
+
+    %% 将 agent 数据包装为 process_snapshot 格式
+    %% 使用 steps_state 存储 agent 状态
+    AgentData = #{
         messages => Messages,
         turn_count => TurnCount,
         metadata => Meta,
@@ -64,13 +67,28 @@ save(#{memory := Memory, messages := Messages, id := AgentId,
         interrupt_state => IntState,
         run_id => RunId
     },
+
+    ProcessState = #{
+        process_spec => <<"beamai_agent">>,
+        fsm_state => idle,
+        steps_state => #{agent_state => #{state => AgentData}},
+        event_queue => []
+    },
+
     CheckpointType = case IntState of
         undefined -> <<"agent_snapshot">>;
         _ -> <<"agent_interrupt">>
     end,
-    Config = #{thread_id => ThreadId},
-    Metadata = #{agent_id => AgentId, type => CheckpointType},
-    beamai_memory:save_snapshot(Memory, Config, StateData, Metadata).
+
+    Opts = #{
+        agent_id => AgentId,
+        metadata => #{type => CheckpointType}
+    },
+
+    case beamai_memory:save_snapshot(Memory, ThreadId, ProcessState, Opts) of
+        {ok, _Snapshot, _NewMemory} -> ok;
+        {error, _} = Error -> Error
+    end.
 
 %% @doc 从 memory 恢复 agent 状态
 %%
@@ -89,8 +107,11 @@ save(#{memory := Memory, messages := Messages, id := AgentId,
 -spec restore(map(), term()) -> {ok, map()} | {error, term()}.
 restore(Config, Memory) ->
     ThreadId = beamai_memory:get_thread_id(Memory),
-    case beamai_memory:load_latest_snapshot(Memory, #{thread_id => ThreadId}) of
-        {ok, SavedData} ->
+    case beamai_memory:get_latest_snapshot(Memory, ThreadId) of
+        {ok, Snapshot} ->
+            %% 从 snapshot 的 steps_state 中提取 agent 数据
+            StepsState = beamai_snapshot:get_steps_state(Snapshot),
+            #{agent_state := #{state := SavedData}} = StepsState,
             %% 用原始 config + memory 重建 agent
             case beamai_agent:new(Config#{memory => Memory}) of
                 {ok, State0} ->

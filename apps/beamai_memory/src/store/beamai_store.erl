@@ -65,7 +65,8 @@
 %% 管理 API
 -export([
     stats/1,
-    clear/1
+    clear/1,
+    clear/2
 ]).
 
 %% 工具函数
@@ -227,6 +228,13 @@ stats({_Module, Ref}) ->
 -spec clear(store()) -> ok | {error, term()}.
 clear({_Module, Ref}) ->
     safe_call(Ref, clear).
+
+%% @doc 清空指定命名空间
+%%
+%% 删除指定命名空间下的所有数据。
+-spec clear(store(), namespace()) -> ok | {error, term()}.
+clear({_Module, Ref}, Namespace) ->
+    safe_call(Ref, {clear_namespace, Namespace}).
 
 %%====================================================================
 %% 工具函数

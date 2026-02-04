@@ -79,7 +79,7 @@ record_event(Memory, UserId, EventData) ->
     },
 
     Value = event_to_map(Event),
-    beamai_memory:put(Memory, Namespace, EventId, Value).
+    beamai_memory:put(Memory, Namespace, EventId, Value, #{}).
 
 %% @doc 获取单个事件
 -spec get_event(memory(), user_id(), event_id()) ->

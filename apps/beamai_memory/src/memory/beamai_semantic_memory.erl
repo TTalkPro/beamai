@@ -247,7 +247,7 @@ upsert_entity(Memory, UserId, EntityData) ->
     %% 转换为存储格式
     Value = entity_to_map(Entity),
 
-    beamai_memory:put(Memory, Namespace, EntityId, Value).
+    beamai_memory:put(Memory, Namespace, EntityId, Value, #{}).
 
 %% @doc 获取单个实体
 -spec get_entity(memory(), user_id(), entity_id()) ->

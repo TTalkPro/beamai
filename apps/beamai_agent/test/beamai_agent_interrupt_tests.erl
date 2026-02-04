@@ -355,11 +355,18 @@ memory_has_pending_interrupt_test() ->
         %% 初始状态：无中断
         ?assertNot(beamai_memory:has_pending_interrupt(Memory, Config)),
         %% 保存中断状态
-        StateData = #{
+        AgentData = #{
             messages => [],
             interrupt_state => #{status => interrupted, reason => test}
         },
-        ok = beamai_memory:save_snapshot(Memory, Config, StateData),
+        ProcessState = #{
+            process_spec => <<"test">>,
+            fsm_state => idle,
+            steps_state => #{agent_state => #{state => AgentData}},
+            event_queue => []
+        },
+        ThreadId = maps:get(thread_id, Config),
+        {ok, _Snapshot, _NewMemory} = beamai_memory:save_snapshot(Memory, ThreadId, ProcessState, #{}),
         %% 现在有中断
         ?assert(beamai_memory:has_pending_interrupt(Memory, Config))
     after
@@ -379,7 +386,7 @@ memory_get_interrupt_context_test() ->
         ?assertEqual({error, not_interrupted},
                      beamai_memory:get_interrupt_context(Memory, Config)),
         %% 保存中断状态
-        StateData = #{
+        AgentData = #{
             messages => [],
             interrupt_state => #{
                 status => interrupted,
@@ -389,7 +396,14 @@ memory_get_interrupt_context_test() ->
                 created_at => 99999
             }
         },
-        ok = beamai_memory:save_snapshot(Memory, Config, StateData),
+        ProcessState = #{
+            process_spec => <<"test">>,
+            fsm_state => idle,
+            steps_state => #{agent_state => #{state => AgentData}},
+            event_queue => []
+        },
+        ThreadId = maps:get(thread_id, Config),
+        {ok, _Snapshot, _NewMemory} = beamai_memory:save_snapshot(Memory, ThreadId, ProcessState, #{}),
         %% 获取上下文
         {ok, Ctx} = beamai_memory:get_interrupt_context(Memory, Config),
         ?assertEqual(#{question => <<"approve?">>}, maps:get(reason, Ctx)),
