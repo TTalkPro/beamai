@@ -33,6 +33,7 @@ start_link() ->
 %%====================================================================
 
 %% @doc 初始化 supervisor
+-spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}} | ignore.
 init([]) ->
     SupFlags = #{
         strategy => one_for_one,
@@ -148,4 +149,3 @@ process_sup_spec() ->
         type => supervisor,
         modules => [beamai_process_sup]
     }.
-
