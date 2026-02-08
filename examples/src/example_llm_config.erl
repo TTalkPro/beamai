@@ -4,15 +4,18 @@
 %%% 提供多种 LLM 配置方案：
 %%%   - anthropic(): Zhipu Anthropic 兼容 API（GLM-4.7）
 %%%   - claude(): Anthropic 原生 API（Claude Sonnet 4）
+%%%   - claude_from_env(): 从 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN 读取
 %%%   - zhipu(): Zhipu 原生 API（GLM-4.6）
 %%%   - deepseek(): DeepSeek API（deepseek-chat）
 %%%   - openai(): OpenAI 兼容 API（gpt-4）
 %%%
 %%% 环境变量：
-%%%   ZHIPU_API_KEY     - 智谱 API Key
-%%%   ANTHROPIC_API_KEY - Anthropic API Key
-%%%   DEEPSEEK_API_KEY  - DeepSeek API Key
-%%%   OPENAI_API_KEY    - OpenAI API Key
+%%%   ZHIPU_API_KEY          - 智谱 API Key
+%%%   ANTHROPIC_API_KEY      - Anthropic API Key
+%%%   ANTHROPIC_BASE_URL     - Anthropic 自定义 Base URL
+%%%   ANTHROPIC_AUTH_TOKEN   - Anthropic Auth Token (替代 api_key)
+%%%   DEEPSEEK_API_KEY       - DeepSeek API Key
+%%%   OPENAI_API_KEY         - OpenAI API Key
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -21,6 +24,7 @@
 -export([
     anthropic/0, anthropic/1,
     claude/0, claude/1,
+    claude_from_env/0, claude_from_env/1,
     zhipu/0, zhipu/1,
     openai_glm/0, openai_glm/1,
     deepseek/0, deepseek/1,
@@ -90,6 +94,60 @@ claude(Opts) ->
         model => maps:get(model, Opts, ?CLAUDE_DEFAULT_MODEL),
         max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS)
     }).
+
+%% @doc 从环境变量创建 Claude LLM 配置
+%%
+%% 支持两种环境变量方式：
+%%   1. ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN（推荐）
+%%   2. ANTHROPIC_API_KEY（回退方案）
+%%
+%% 优先使用 ANTHROPIC_BASE_URL 和 ANTHROPIC_AUTH_TOKEN，
+%% 如果不存在则回退到 ANTHROPIC_API_KEY。
+-spec claude_from_env() -> beamai_chat_completion:config().
+claude_from_env() ->
+    BaseUrl = case os:getenv("ANTHROPIC_BASE_URL") of
+        false -> undefined;
+        Url -> list_to_binary(Url)
+    end,
+    ApiKey = case os:getenv("ANTHROPIC_AUTH_TOKEN") of
+        false ->
+            %% 回退到 ANTHROPIC_API_KEY
+            case os:getenv("ANTHROPIC_API_KEY") of
+                false -> error({missing_env, "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY"});
+                Key -> list_to_binary(Key)
+            end;
+        Token -> list_to_binary(Token)
+    end,
+    claude_from_env(#{api_key => ApiKey, base_url => BaseUrl}).
+
+%% @doc 从环境变量创建 Claude LLM 配置（带选项）
+%%
+%% Opts 支持:
+%%   - api_key: API Key（必填，如果环境变量不存在）
+%%   - base_url: 自定义 Base URL（可选）
+%%   - model: 模型名（默认 claude-sonnet-4-20250514）
+%%   - max_tokens: 最大 token 数（默认 2048）
+%%
+%% 环境变量优先级高于 Opts 中的值。
+-spec claude_from_env(map()) -> beamai_chat_completion:config().
+claude_from_env(Opts) ->
+    BaseUrl = case os:getenv("ANTHROPIC_BASE_URL") of
+        false -> maps:get(base_url, Opts, undefined);
+        Url -> list_to_binary(Url)
+    end,
+    ApiKey = case os:getenv("ANTHROPIC_AUTH_TOKEN") of
+        false -> maps:get(api_key, Opts);
+        Token -> list_to_binary(Token)
+    end,
+    Config = #{
+        api_key => ApiKey,
+        model => maps:get(model, Opts, ?CLAUDE_DEFAULT_MODEL),
+        max_tokens => maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS)
+    },
+    case BaseUrl of
+        undefined -> beamai_chat_completion:create(anthropic, Config);
+        _ -> beamai_chat_completion:create(anthropic, Config#{base_url => BaseUrl})
+    end.
 
 %% @doc 创建 Zhipu 原生 LLM 配置（从环境变量获取 API Key）
 %%

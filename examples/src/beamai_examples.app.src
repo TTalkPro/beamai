@@ -1,5 +1,5 @@
 {application, beamai_examples, [
-    {description, "BeamAI Kernel Examples"},
+    {description, "BeamAI Core Examples"},
     {vsn, "0.1.0"},
     {registered, []},
     {applications, [
@@ -13,7 +13,6 @@
     {modules, [
         example_llm_config,
         example_kernel_chat,
-        example_weather_plugin,
         example_streaming,
         example_filter,
         example_prompt,
@@ -22,7 +21,11 @@
         example_process_tools,
         example_process_hooks,
         example_process_parallel,
-        example_process_agent_test
+        example_graph_simple,
+        example_graph_conditional,
+        example_graph_loop,
+        example_graph_fanout,
+        example_tool_refactored
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}
