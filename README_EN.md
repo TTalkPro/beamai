@@ -18,7 +18,9 @@ A high-performance AI Agent framework core library based on Erlang/OTP, providin
 Foundational infrastructure for building AI Agents:
 - **beamai_core** - Kernel/Tool architecture, Process Framework, Graph Engine, HTTP client
 - **beamai_llm** - Unified LLM client (supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama)
-- **beamai_memory** - State persistence, snapshots, time travel
+- **beamai_memory** - Pure storage engine (snapshots, Store backends, state storage)
+- **beamai_cognition** - Cognitive architecture (semantic/episodic/procedural memory + algorithms)
+- **beamai_context** - LLM context management (conversation buffer, summarizer)
 
 ### Extension Project ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 Advanced features built on top of the core library:
@@ -242,7 +244,7 @@ apps/
 │   │                  # beamai_process_executor, beamai_process_event
 │   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_hackney,
 │   │                  # beamai_http_pool
-│   ├── Behaviours     # beamai_llm_behaviour, beamai_http_behaviour,
+│   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour,
 │   │                  # beamai_step_behaviour, beamai_process_store_behaviour
 │   ├── Graph          # graph, graph_node, graph_edge, graph_builder, graph_dsl,
 │   │                  # graph_runner, graph_snapshot, graph_state, graph_command
@@ -256,25 +258,40 @@ apps/
 │   ├── Adapters       # llm_message_adapter, llm_response_parser, llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
-└── beamai_memory/      # Memory and context storage
-    ├── Context        # Context management
-    ├── Store          # ETS/SQLite storage backends
-    └── Snapshot       # Snapshots, branching, time travel
+├── beamai_memory/      # Pure storage engine
+│   ├── Store          # ETS/SQLite storage backends
+│   └── Snapshot       # Snapshots, branching, time travel
+│
+├── beamai_cognition/   # Cognitive architecture
+│   ├── Memory         # Semantic/episodic/procedural memory
+│   └── Algorithms     # Memory retrieval and integration algorithms
+│
+└── beamai_context/     # LLM context management
+    ├── Buffer         # Conversation buffer
+    └── Summarizer     # Context summarization
 ```
 
 ### Dependency Relationships
 
 ```
-┌─────────────────────────────────────┐
-│   Services Layer                     │
-│  (beamai_llm)                        │
-└────────────────┬────────────────────┘
-                 │
-┌────────────────┴────────────────────┐
-│   Core Layer                         │
-│  (beamai_core, beamai_memory)        │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│   Services Layer                                     │
+│  (beamai_llm)                                        │
+└──────────────────────────┬──────────────────────────┘
+                           │
+┌──────────────────────────┴──────────────────────────┐
+│   Storage / Cognition Layer                          │
+│  (beamai_memory, beamai_cognition, beamai_context)   │
+└──────────────────────────┬──────────────────────────┘
+                           │
+┌──────────────────────────┴──────────────────────────┐
+│   Core Layer                                         │
+│  (beamai_core)                                       │
+└─────────────────────────────────────────────────────┘
 ```
+
+> beamai_core is decoupled via Behaviour interfaces and `{Module, Ref}` dynamic dispatch,
+> with no compile-time dependency on beamai_memory/cognition/context.
 
 See [DEPENDENCIES_EN.md](docs/DEPENDENCIES_EN.md) for details
 
@@ -441,7 +458,9 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 |--------|-------------|---------------|
 | **beamai_core** | Core framework: Kernel, Process Framework, Graph Engine, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
 | **beamai_llm** | LLM client: supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama | [README](apps/beamai_llm/README_EN.md) |
-| **beamai_memory** | Memory management: Checkpoint, Store, time travel, branching | [README](apps/beamai_memory/README_EN.md) |
+| **beamai_memory** | Pure storage engine: snapshot management, Store backends, state storage | [README](apps/beamai_memory/README_EN.md) |
+| **beamai_cognition** | Cognitive architecture: semantic/episodic/procedural memory, retrieval algorithms | - |
+| **beamai_context** | LLM context management: conversation buffer, context summarization | - |
 
 ## Running Examples
 
@@ -457,7 +476,7 @@ rebar3 shell
 
 | Metric | Count |
 |--------|-------|
-| **OTP Applications** | 3 |
+| **OTP Applications** | 5 |
 | **Source Modules** | ~60 |
 | **Test Files** | ~20 |
 | **Lines of Code** | ~20,000 |

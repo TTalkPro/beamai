@@ -79,17 +79,22 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 |  (RAG)    |   |  (LLM)    |  |  memory   |  | (Tools+Middleware)|
 +-----+-----+   +-----+-----+  +-----+-----+  +---------+---------+
       |               |              |                  |
-      |               | implements   | implements       |
-      |               | Behaviour   | Behaviour        |
-      |               |              |           +------+
-      |               +------+-------+           |
-      |                      |                   |
-      |                      v                   |
-      |         +------------------------+       |
-      |         | Behaviour Interface    |<------+
+      |               |              |  +---------------+  +---------------+
+      |               |              |  |beamai_cognition|  |beamai_context |
+      |               |              |  | (Cognition)    |  |(Context Mgmt) |
+      |               |              |  +-------+-------+  +-------+-------+
+      |               |              |          |                  |
+      |               | implements   |          |                  |
+      |               | Behaviour   |          |           +------+
+      |               +------+------+----------+           |
+      |                      |                             |
+      |                      v                             |
+      |         +------------------------+                 |
+      |         | Behaviour Interface    |<----------------+
       |         | Definition             |
-      |         | (beamai_llm_behaviour, |
-      |         |  beamai_buffer_behaviour)|
+      |         | (beamai_chat_behaviour,|
+      |         |  beamai_process_store_ |
+      |         |  behaviour)            |
       |         +------------+-----------+
       |                      |
       +----------------------+
@@ -108,7 +113,7 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
         - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         Runtime Optional Dependencies (injected via Adapter, not compile-time):
         beamai_tools ···> beamai_llm (llm_client)
-        beamai_tools ···> beamai_memory (beamai_conversation_buffer)
+        beamai_tools ···> beamai_context (beamai_conversation_buffer)
 ```
 
 **Dependency Direction Notes**:
@@ -117,9 +122,10 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - `beamai_deepagent` **does not depend on** `beamai_agent`, they are parallel implementations
 - `beamai_a2a` depends on `beamai_agent` (for Agent execution)
 - `beamai_mcp` **optionally depends on** `beamai_agent` at the adapter layer (for tool conversion)
-- `beamai_tools`, `beamai_llm`, `beamai_memory` are at the same level, all only depend on `beamai_core`
-- `beamai_core` defines Behaviour interfaces, `beamai_llm` and `beamai_memory` implement these interfaces
-- `beamai_tools` uses beamai_llm/memory at **runtime** via Adapter pattern, no compile-time dependency
+- `beamai_tools`, `beamai_llm`, `beamai_memory`, `beamai_cognition`, `beamai_context` are at the same level, all only depend on `beamai_core`
+- `beamai_core` defines Behaviour interfaces (`beamai_chat_behaviour`, `beamai_process_store_behaviour`, etc.), upper-layer modules implement these interfaces
+- `beamai_core` does not depend on `beamai_memory`, decoupled via `{Module, Ref}` dynamic dispatch
+- `beamai_tools` uses beamai_llm/context at **runtime** via Adapter pattern, no compile-time dependency
 
 ### Application Dependency Details
 
@@ -140,25 +146,40 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
   - `beamai_http_gun` - Gun backend (HTTP/2 support)
   - `beamai_http_pool` - Gun connection pool management
 - **Behaviour Definitions** (for dependency decoupling)
-  - `beamai_llm_behaviour` - LLM client interface
-  - `beamai_buffer_behaviour` - Conversation buffer interface
+  - `beamai_chat_behaviour` - LLM chat interface (formerly beamai_llm_behaviour)
+  - `beamai_process_store_behaviour` - Process store interface (with optional branch/time-travel callbacks)
   - `beamai_http_behaviour` - HTTP client interface
 
-#### beamai_memory (Memory System)
+#### beamai_memory (Pure Storage Engine)
 
-**Dependencies**: No internal dependencies
+**Dependencies**: beamai_core
 
 **Provides**:
-- Multi-type memory management
-  - Semantic memory (beamai_semantic_memory)
-  - Episodic memory (beamai_episodic_memory)
-  - Procedural memory (beamai_procedural_memory)
-  - Skill memory (beamai_skill_memory)
 - Storage backends
   - ETS storage (beamai_store_ets)
   - SQLite storage (beamai_store_sqlite)
-- Checkpoint system (beamai_checkpoint_*)
+- Snapshot management (beamai_process_snapshot)
+- Process store (beamai_process_memory_store) — implements beamai_process_store_behaviour
+- State store (beamai_state_store)
+
+#### beamai_cognition (Cognitive Architecture)
+
+**Dependencies**: beamai_core
+
+**Provides**:
+- Semantic memory (beamai_semantic_memory)
+- Episodic memory (beamai_episodic_memory)
+- Procedural memory (beamai_procedural_memory)
+- Skill memory (beamai_skill_memory)
+- Memory retrieval and integration algorithms
+
+#### beamai_context (LLM Context Management)
+
+**Dependencies**: beamai_core
+
+**Provides**:
 - Conversation buffer (beamai_conversation_buffer)
+- Context summarization (beamai_context_summarizer)
 
 #### beamai_tools (Tool System + Middleware System)
 

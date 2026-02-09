@@ -106,6 +106,55 @@ pregel_graph:add_edge(Graph, From, To, Weight).
 {ok, Result} = pregel:run(Graph, ComputeFn, MaxIterations).
 ```
 
+### Process Branch & Time Travel API
+
+The Process framework provides branching and time-travel capabilities through a pluggable store backend.
+All operations use the `{Module, Ref}` dynamic dispatch pattern via `beamai_process_store_behaviour` optional callbacks.
+
+```erlang
+-type store() :: {module(), term()}.
+
+%% Branch API
+-spec branch_from(store(), BranchName :: binary(), Opts :: map()) ->
+    {ok, #{branch_thread_id := binary(), snapshot_id := binary()}} | {error, term()}.
+-spec restore_branch(store(), BranchThreadId :: binary(),
+                     ProcessSpec, Opts :: map()) -> {ok, pid()} | {error, term()}.
+-spec list_branches(store(), Opts :: map()) -> {ok, [map()]} | {error, term()}.
+-spec get_lineage(store(), Opts :: map()) -> {ok, [map()]} | {error, term()}.
+
+%% Time Travel API
+-spec go_back(store(), Steps :: pos_integer(), ProcessSpec) ->
+    {ok, pid()} | {error, term()}.
+-spec go_back(store(), Steps :: pos_integer(), ProcessSpec, Opts :: map()) ->
+    {ok, pid()} | {error, term()}.
+-spec go_forward(store(), Steps :: pos_integer(), ProcessSpec) ->
+    {ok, pid()} | {error, term()}.
+-spec go_forward(store(), Steps :: pos_integer(), ProcessSpec, Opts :: map()) ->
+    {ok, pid()} | {error, term()}.
+-spec goto_snapshot(store(), SnapshotId :: binary(), ProcessSpec) ->
+    {ok, pid()} | {error, term()}.
+-spec goto_snapshot(store(), SnapshotId :: binary(), ProcessSpec, Opts :: map()) ->
+    {ok, pid()} | {error, term()}.
+-spec list_history(store()) -> {ok, [map()]} | {error, term()}.
+```
+
+**Usage Example:**
+
+```erlang
+%% Create store reference
+Store = {beamai_process_memory_store, {Mgr, #{thread_id => ThreadId}}},
+
+%% Create a branch
+{ok, #{branch_thread_id := BranchId}} =
+    beamai_process:branch_from(Store, <<"experiment">>, #{}),
+
+%% Time travel: go back 2 steps
+{ok, Pid} = beamai_process:go_back(Store, 2, ProcessSpec),
+
+%% List execution history
+{ok, History} = beamai_process:list_history(Store).
+```
+
 ### HTTP Client
 
 BeamAI provides a unified HTTP client interface, supporting both Gun and Hackney backends.

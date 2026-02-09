@@ -75,10 +75,10 @@ LLM 响应的统一抽象层：
 
 框架的行为接口定义：
 
-- **beamai_llm_behaviour** - LLM 提供者行为接口
+- **beamai_chat_behaviour** - LLM 聊天接口（原 beamai_llm_behaviour）
 - **beamai_http_behaviour** - HTTP 后端行为接口
 - **beamai_step_behaviour** - 流程步骤行为接口
-- **beamai_process_store_behaviour** - 流程存储行为接口
+- **beamai_process_store_behaviour** - 流程存储行为接口（含分支/时间旅行可选回调）
 - **beamai_tool_behaviour** - 工具模块行为接口
 
 ### 工具与协议

@@ -18,7 +18,9 @@
 提供构建 AI Agent 的基础设施：
 - **beamai_core** - Kernel/Tool 架构、Process Framework、Graph 引擎、HTTP 客户端
 - **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama）
-- **beamai_memory** - 状态持久化、快照、时间旅行
+- **beamai_memory** - 纯存储引擎（快照、Store、状态存储）
+- **beamai_cognition** - 认知架构（语义/情景/程序记忆 + 算法）
+- **beamai_context** - LLM 上下文管理（对话缓冲、摘要）
 
 ### 扩展项目 ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 基于核心库构建的高级功能：
@@ -214,7 +216,7 @@ apps/
 │   │                  # beamai_process_executor, beamai_process_event
 │   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_hackney,
 │   │                  # beamai_http_pool
-│   ├── Behaviours     # beamai_llm_behaviour, beamai_http_behaviour,
+│   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour,
 │   │                  # beamai_step_behaviour, beamai_process_store_behaviour
 │   ├── Graph          # graph, graph_node, graph_edge, graph_builder, graph_dsl,
 │   │                  # graph_runner, graph_snapshot, graph_state, graph_command
@@ -228,25 +230,40 @@ apps/
 │   ├── Adapters       # llm_message_adapter, llm_response_parser, llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
-└── beamai_memory/      # 内存和上下文存储
-    ├── Context        # 上下文管理
-    ├── Store          # ETS/SQLite 存储后端
-    └── Snapshot       # 快照、分支、时间旅行
+├── beamai_memory/      # 纯存储引擎
+│   ├── Store          # ETS/SQLite 存储后端
+│   └── Snapshot       # 快照、分支、时间旅行
+│
+├── beamai_cognition/   # 认知架构
+│   ├── Memory         # 语义/情景/程序记忆
+│   └── Algorithms     # 记忆检索与整合算法
+│
+└── beamai_context/     # LLM 上下文管理
+    ├── Buffer         # 对话缓冲
+    └── Summarizer     # 上下文摘要
 ```
 
 ### 依赖关系
 
 ```
-┌─────────────────────────────────────┐
-│   服务层                             │
-│  (beamai_llm)                        │
-└────────────────┬────────────────────┘
-                 │
-┌────────────────┴────────────────────┐
-│   核心层                             │
-│  (beamai_core, beamai_memory)        │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│   服务层                                         │
+│  (beamai_llm)                                    │
+└────────────────────────┬────────────────────────┘
+                         │
+┌────────────────────────┴────────────────────────┐
+│   存储/认知层                                     │
+│  (beamai_memory, beamai_cognition, beamai_context)│
+└────────────────────────┬────────────────────────┘
+                         │
+┌────────────────────────┴────────────────────────┐
+│   核心层                                         │
+│  (beamai_core)                                   │
+└─────────────────────────────────────────────────┘
 ```
+
+> beamai_core 通过 Behaviour 接口和 `{Module, Ref}` 动态分发模式解耦，
+> 不依赖 beamai_memory/cognition/context。
 
 ## 核心概念
 
@@ -403,7 +420,9 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 |------|------|------|
 | **beamai_core** | 核心框架：Kernel、Process Framework、Graph 引擎、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
 | **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
-| **beamai_memory** | 记忆管理：Checkpoint、Store、时间旅行、分支 | [README](apps/beamai_memory/README.md) |
+| **beamai_memory** | 纯存储引擎：快照管理、Store 后端、状态存储 | [README](apps/beamai_memory/README.md) |
+| **beamai_cognition** | 认知架构：语义/情景/程序记忆、检索与整合算法 | - |
+| **beamai_context** | LLM 上下文管理：对话缓冲、上下文摘要 | - |
 
 ## 运行示例
 
@@ -419,7 +438,7 @@ rebar3 shell
 
 | 指标 | 数量 |
 |------|------|
-| **OTP 应用** | 3 个 |
+| **OTP 应用** | 5 个 |
 | **源代码模块** | ~60 个 |
 | **测试文件** | ~20 个 |
 | **代码行数 | ~20,000 行 |

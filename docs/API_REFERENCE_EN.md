@@ -106,6 +106,55 @@ pregel_graph:add_edge(Graph, From, To, Weight).
 {ok, Result} = pregel:run(Graph, ComputeFn, MaxIterations).
 ```
 
+### Process 分支与时间旅行 API
+
+Process 框架通过可插拔的 Store 后端提供分支和时间旅行能力。
+所有操作使用 `{Module, Ref}` 动态分发模式，通过 `beamai_process_store_behaviour` 可选回调实现。
+
+```erlang
+-type store() :: {module(), term()}.
+
+%% 分支 API
+-spec branch_from(store(), BranchName :: binary(), Opts :: map()) ->
+    {ok, #{branch_thread_id := binary(), snapshot_id := binary()}} | {error, term()}.
+-spec restore_branch(store(), BranchThreadId :: binary(),
+                     ProcessSpec, Opts :: map()) -> {ok, pid()} | {error, term()}.
+-spec list_branches(store(), Opts :: map()) -> {ok, [map()]} | {error, term()}.
+-spec get_lineage(store(), Opts :: map()) -> {ok, [map()]} | {error, term()}.
+
+%% 时间旅行 API
+-spec go_back(store(), Steps :: pos_integer(), ProcessSpec) ->
+    {ok, pid()} | {error, term()}.
+-spec go_back(store(), Steps :: pos_integer(), ProcessSpec, Opts :: map()) ->
+    {ok, pid()} | {error, term()}.
+-spec go_forward(store(), Steps :: pos_integer(), ProcessSpec) ->
+    {ok, pid()} | {error, term()}.
+-spec go_forward(store(), Steps :: pos_integer(), ProcessSpec, Opts :: map()) ->
+    {ok, pid()} | {error, term()}.
+-spec goto_snapshot(store(), SnapshotId :: binary(), ProcessSpec) ->
+    {ok, pid()} | {error, term()}.
+-spec goto_snapshot(store(), SnapshotId :: binary(), ProcessSpec, Opts :: map()) ->
+    {ok, pid()} | {error, term()}.
+-spec list_history(store()) -> {ok, [map()]} | {error, term()}.
+```
+
+**使用示例：**
+
+```erlang
+%% 创建 Store 引用
+Store = {beamai_process_memory_store, {Mgr, #{thread_id => ThreadId}}},
+
+%% 创建分支
+{ok, #{branch_thread_id := BranchId}} =
+    beamai_process:branch_from(Store, <<"experiment">>, #{}),
+
+%% 时间旅行：回退 2 步
+{ok, Pid} = beamai_process:go_back(Store, 2, ProcessSpec),
+
+%% 列出执行历史
+{ok, History} = beamai_process:list_history(Store).
+```
+
 ### HTTP 客户端
 
 BeamAI 提供统一的 HTTP 客户端接口，支持 Gun 和 Hackney 两种后端。

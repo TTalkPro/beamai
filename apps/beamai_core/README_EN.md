@@ -75,10 +75,10 @@ Pluggable HTTP client supporting Gun and Hackney backends:
 
 Framework behavior interface definitions:
 
-- **beamai_llm_behaviour** - LLM provider behavior interface
+- **beamai_chat_behaviour** - LLM chat interface (formerly beamai_llm_behaviour)
 - **beamai_http_behaviour** - HTTP backend behavior interface
 - **beamai_step_behaviour** - Process step behavior interface
-- **beamai_process_store_behaviour** - Process store behavior interface
+- **beamai_process_store_behaviour** - Process store behavior interface (with optional branch/time-travel callbacks)
 - **beamai_tool_behaviour** - Tool module behavior interface
 
 ### Utilities and Protocols
