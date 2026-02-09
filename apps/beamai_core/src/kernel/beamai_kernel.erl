@@ -223,9 +223,10 @@ invoke(Kernel, Messages, Opts) ->
     Context = track_new_messages(Context0, Messages),
     case get_service(Kernel) of
         {ok, LlmConfig} ->
+            #{filters := Filters} = Kernel,
             MaxIter = maps:get(max_tool_iterations, Opts,
                 maps:get(max_tool_iterations, maps:get(settings, Kernel, #{}), 10)),
-            tool_calling_loop(Kernel, LlmConfig, ConvMsgs, ChatOpts, Context, SystemPrompts, MaxIter);
+            tool_calling_loop(Kernel, LlmConfig, Filters, ConvMsgs, ChatOpts, Context, SystemPrompts, MaxIter);
         error ->
             {error, no_llm_service}
     end.
@@ -293,33 +294,34 @@ get_service(#{llm_config := Config}) -> {ok, Config}.
 
 %% @private 工具调用循环主体
 %%
+%% 每次迭代通过 run_chat_pipeline 调用 LLM，确保 pre_chat/post_chat 过滤器生效。
 %% LLM 返回 tool_calls 时：解析调用 → 执行工具 → 拼接结果 → 再次请求 LLM。
 %% 迭代次数耗尽返回 max_tool_iterations 错误。
 %% LLM 返回纯文本响应时终止循环。
-tool_calling_loop(_Kernel, _LlmConfig, _Msgs, _Opts, _Context, _SysPrompts, 0) ->
+tool_calling_loop(_Kernel, _LlmConfig, _Filters, _Msgs, _Opts, _Context, _SysPrompts, 0) ->
     {error, max_tool_iterations};
-tool_calling_loop(Kernel, LlmConfig, Msgs, Opts, Context, SysPrompts, N) ->
+tool_calling_loop(Kernel, LlmConfig, Filters, Msgs, Opts, Context, SysPrompts, N) ->
     %% 每次调用 LLM 时，将 system_prompts 拼在最前面
     LlmMsgs = SysPrompts ++ Msgs,
-    case beamai_chat_completion:chat(LlmConfig, LlmMsgs, Opts) of
-        {ok, Response} ->
+    case run_chat_pipeline(LlmConfig, Filters, LlmMsgs, Opts, Context) of
+        {ok, Response, Ctx0} ->
             %% 使用 llm_response 访问器统一处理响应
             case llm_response:has_tool_calls(Response) of
                 true ->
                     TCs = llm_response:tool_calls(Response),
                     AssistantMsg = #{role => assistant, content => null, tool_calls => TCs},
-                    Ctx1 = track_message(Context, AssistantMsg),
+                    Ctx1 = track_message(Ctx0, AssistantMsg),
                     {ToolResults, Ctx2} = execute_tool_calls(Kernel, TCs, Ctx1),
                     NewMsgs = Msgs ++ [AssistantMsg | ToolResults],
-                    tool_calling_loop(Kernel, LlmConfig, NewMsgs, Opts, Ctx2, SysPrompts, N - 1);
+                    tool_calling_loop(Kernel, LlmConfig, Filters, NewMsgs, Opts, Ctx2, SysPrompts, N - 1);
                 false ->
                     Content = llm_response:content(Response),
                     case Content of
                         null ->
-                            {ok, Response, Context};
+                            {ok, Response, Ctx0};
                         _ ->
                             FinalMsg = #{role => assistant, content => Content},
-                            FinalCtx = track_message(Context, FinalMsg),
+                            FinalCtx = track_message(Ctx0, FinalMsg),
                             {ok, Response, FinalCtx}
                     end
             end;
