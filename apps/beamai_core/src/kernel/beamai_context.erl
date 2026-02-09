@@ -10,10 +10,12 @@
 %%% - 元数据
 %%%
 %%% Key 标准化规则：
-%%% - '__context__' 保持 atom
-%%% - '__ctx_xxx__' 前缀的 atom 保持 atom（内部字段）
-%%% - 其他 atom key → binary
+%%% - '__context__' 保持 atom（类型标记）
+%%% - 其他 atom key → binary（用户变量）
 %%% - binary key 保持不变
+%%%
+%%% 内部字段（messages, history, kernel, trace, metadata）
+%%% 使用 atom key，通过专用访问器操作，不经过 normalize_key。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -38,11 +40,11 @@
 
 -type t() :: #{
     '__context__' := true,
-    '__ctx_messages__' := [message()],
-    '__ctx_history__' := [message()],
-    '__ctx_kernel__' := term() | undefined,
-    '__ctx_trace__' := [trace_entry()],
-    '__ctx_metadata__' := map(),
+    messages := [message()],
+    history := [message()],
+    kernel := term() | undefined,
+    trace := [trace_entry()],
+    metadata := map(),
     binary() => term()
 }.
 
@@ -78,11 +80,11 @@
 new() ->
     #{
         '__context__' => true,
-        '__ctx_messages__' => [],
-        '__ctx_history__' => [],
-        '__ctx_kernel__' => undefined,
-        '__ctx_trace__' => [],
-        '__ctx_metadata__' => #{}
+        messages => [],
+        history => [],
+        kernel => undefined,
+        trace => [],
+        metadata => #{}
     }.
 
 %% @doc 创建带初始变量的执行上下文
@@ -95,17 +97,12 @@ new(Vars) when is_map(Vars) ->
 
 %% @doc 标准化 key
 %%
-%% - '__context__' 保持 atom
-%% - '__ctx_xxx__' 前缀的 atom 保持 atom（内部字段）
-%% - 其他 atom key → binary
+%% - '__context__' 保持 atom（类型标记）
+%% - 其他 atom key → binary（用户变量）
 %% - binary key 保持不变
 -spec normalize_key(atom() | binary()) -> atom() | binary().
 normalize_key('__context__') -> '__context__';
-normalize_key(Key) when is_atom(Key) ->
-    case atom_to_binary(Key, utf8) of
-        <<"__ctx_", _/binary>> -> Key;
-        BinKey -> BinKey
-    end;
+normalize_key(Key) when is_atom(Key) -> atom_to_binary(Key, utf8);
 normalize_key(Key) when is_binary(Key) -> Key.
 
 %% @doc 获取上下文中的变量值
@@ -157,7 +154,7 @@ update(Ctx, Key, Fun) ->
 %%
 %% 可能是经过 summarize/truncate 处理后的消息列表。
 -spec get_messages(t()) -> [message()].
-get_messages(#{'__ctx_messages__' := Messages}) -> Messages.
+get_messages(#{messages := Messages}) -> Messages.
 
 %% @doc 替换消息缓冲（用于 summarize/truncate 后重置）
 %%
@@ -166,7 +163,7 @@ get_messages(#{'__ctx_messages__' := Messages}) -> Messages.
 %% @returns 更新后的上下文
 -spec set_messages(t(), [message()]) -> t().
 set_messages(Ctx, Messages) ->
-    Ctx#{'__ctx_messages__' => Messages}.
+    Ctx#{messages => Messages}.
 
 %% @doc 追加消息到消息缓冲末尾
 %%
@@ -174,14 +171,14 @@ set_messages(Ctx, Messages) ->
 %% @param Message 消息 Map
 %% @returns 更新后的上下文
 -spec append_message(t(), message()) -> t().
-append_message(#{'__ctx_messages__' := Messages} = Ctx, Message) ->
-    Ctx#{'__ctx_messages__' => Messages ++ [Message]}.
+append_message(#{messages := Messages} = Ctx, Message) ->
+    Ctx#{messages => Messages ++ [Message]}.
 
 %% @doc 获取完整对话历史（只追加的原始日志）
 %%
 %% 返回上下文中积累的所有原始消息记录，不会被 summarize 影响。
 -spec get_history(t()) -> [message()].
-get_history(#{'__ctx_history__' := History}) -> History.
+get_history(#{history := History}) -> History.
 
 %% @doc 追加消息到对话历史末尾（只追加，不可修改）
 %%
@@ -189,8 +186,8 @@ get_history(#{'__ctx_history__' := History}) -> History.
 %% @param Message 消息 Map，至少包含 role 和 content 字段
 %% @returns 包含新消息的上下文
 -spec add_history(t(), message()) -> t().
-add_history(#{'__ctx_history__' := History} = Ctx, Message) ->
-    Ctx#{'__ctx_history__' => History ++ [Message]}.
+add_history(#{history := History} = Ctx, Message) ->
+    Ctx#{history => History ++ [Message]}.
 
 %% @doc 将 Kernel 引用关联到上下文
 %%
@@ -201,13 +198,13 @@ add_history(#{'__ctx_history__' := History} = Ctx, Message) ->
 %% @returns 关联了 Kernel 的新上下文
 -spec with_kernel(t(), term()) -> t().
 with_kernel(Ctx, Kernel) ->
-    Ctx#{'__ctx_kernel__' => Kernel}.
+    Ctx#{kernel => Kernel}.
 
 %% @doc 获取上下文关联的 Kernel 引用
 %%
 %% 未关联时返回 undefined。
 -spec get_kernel(t()) -> term() | undefined.
-get_kernel(#{'__ctx_kernel__' := Kernel}) -> Kernel.
+get_kernel(#{kernel := Kernel}) -> Kernel.
 
 %% @doc 添加执行跟踪记录
 %%
@@ -217,16 +214,16 @@ get_kernel(#{'__ctx_kernel__' := Kernel}) -> Kernel.
 %% @param Entry 跟踪条目，包含 type 和 data 字段
 %% @returns 包含新跟踪记录的上下文
 -spec add_trace(t(), trace_entry()) -> t().
-add_trace(#{'__ctx_trace__' := Trace} = Ctx, Entry) ->
-    Ctx#{'__ctx_trace__' => Trace ++ [Entry#{timestamp => erlang:system_time(millisecond)}]}.
+add_trace(#{trace := Trace} = Ctx, Entry) ->
+    Ctx#{trace => Trace ++ [Entry#{timestamp => erlang:system_time(millisecond)}]}.
 
 %% @doc 获取所有执行跟踪记录
 -spec get_trace(t()) -> [trace_entry()].
-get_trace(#{'__ctx_trace__' := Trace}) -> Trace.
+get_trace(#{trace := Trace}) -> Trace.
 
 %% @doc 获取上下文元数据
 -spec get_metadata(t()) -> map().
-get_metadata(#{'__ctx_metadata__' := Meta}) -> Meta.
+get_metadata(#{metadata := Meta}) -> Meta.
 
 %% @doc 设置上下文元数据字段
 %%
@@ -235,5 +232,5 @@ get_metadata(#{'__ctx_metadata__' := Meta}) -> Meta.
 %% @param Value 元数据值
 %% @returns 更新后的上下文
 -spec set_metadata(t(), binary() | atom(), term()) -> t().
-set_metadata(#{'__ctx_metadata__' := Meta} = Ctx, Key, Value) ->
-    Ctx#{'__ctx_metadata__' => Meta#{Key => Value}}.
+set_metadata(#{metadata := Meta} = Ctx, Key, Value) ->
+    Ctx#{metadata => Meta#{Key => Value}}.

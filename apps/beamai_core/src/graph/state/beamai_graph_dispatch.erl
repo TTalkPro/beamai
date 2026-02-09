@@ -5,15 +5,15 @@
 %%% 创建任意数量的并行执行分支，每个分支有独立的输入参数。
 %%%
 %%% 全局状态模式说明：
-%%% - 全局状态由 Master 管理，所有分支共享同一个 global_state
+%%% - 全局状态由 Master 管理，所有分支共享同一个 context
 %%% - Dispatch 中的 "input" 字段是分支的输入参数（不是独立状态）
-%%% - 分支执行产生的 delta 会合并到 global_state
+%%% - 分支执行产生的 delta 会合并到 context
 %%% - Fan-in 时所有分支的 delta 按 field_reducers 合并
 %%%
 %%% 核心概念:
 %%% - Dispatch: 待执行的节点调用指令（包含目标节点和输入参数）
 %%% - Fan-out: 条件边返回多个 Dispatch 创建并行分支
-%%% - Fan-in: 并行分支完成后 delta 自动聚合到 global_state
+%%% - Fan-in: 并行分支完成后 delta 自动聚合到 context
 %%%
 %%% @end
 %%%-------------------------------------------------------------------

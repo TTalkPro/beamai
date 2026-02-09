@@ -240,7 +240,7 @@ restore(Snapshot, Graph) ->
 -spec restore(beamai_graph_state:snapshot(), graph(), map()) ->
     {ok, pid()} | {error, term()}.
 restore(Snapshot, Graph, Opts) ->
-    case beamai_graph_state:restore(Snapshot, Graph) of
+    case beamai_graph_state:restore_from_snapshot(Snapshot, Graph) of
         {ok, Restored} ->
             beamai_graph_sup:start_runtime(Graph, beamai_context:new(),
                 Opts#{restore_from => Restored});
@@ -343,7 +343,7 @@ run_sync_fresh(Graph, InitialState, Opts) ->
 %% 并将 resume 的顶点加入 pending_activations，
 %% 这样引擎初始化后就能直接重新执行这些顶点。
 run_sync_resume(Graph, Snapshot, ResumeData, Opts) ->
-    case beamai_graph_state:restore(Snapshot, Graph) of
+    case beamai_graph_state:restore_from_snapshot(Snapshot, Graph) of
         {ok, Restored} ->
             #{pregel_graph := PregelGraph} = Graph,
             ComputeFn = beamai_graph_compute:compute_fn(),

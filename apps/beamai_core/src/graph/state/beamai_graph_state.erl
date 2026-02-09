@@ -13,7 +13,7 @@
 %%%-------------------------------------------------------------------
 -module(beamai_graph_state).
 
--export([take/1, restore/2]).
+-export([take_snapshot/1, restore_from_snapshot/2]).
 -export_type([snapshot/0]).
 
 -type vertex_id() :: beamai_pregel_vertex:vertex_id().
@@ -42,8 +42,8 @@
 %%
 %% 去掉函数引用（vertices 只保留 id + halted），
 %% 保留所有可序列化的状态数据。
--spec take(beamai_graph_engine:engine()) -> snapshot().
-take(Engine) ->
+-spec take_snapshot(beamai_graph_engine:engine()) -> snapshot().
+take_snapshot(Engine) ->
     %% 通过 extract_snapshot_data 获取引擎内部数据
     SnapshotData = beamai_graph_engine:extract_snapshot_data(Engine),
 
@@ -87,21 +87,16 @@ take(Engine) ->
 %% 用 Graph 中的 pregel_graph 重建 vertices（恢复 fun_ 和 routing_edges），
 %% 合并 snapshot 中的 halted 状态。
 %% 返回 restore_opts 格式的 map，可传给 beamai_graph_engine:new/3 的 restore_from。
--spec restore(snapshot(), beamai_graph_builder:graph()) ->
+-spec restore_from_snapshot(snapshot(), beamai_graph_builder:graph()) ->
     {ok, beamai_graph_engine:restore_opts()} | {error, term()}.
-restore(#{'__graph_snapshot__' := true} = Snapshot, Graph) ->
+restore_from_snapshot(#{'__graph_snapshot__' := true} = Snapshot, Graph) ->
     #{
         superstep := Superstep,
+        context := Context,
         vertices := SnapshotVertices,
         pending_deltas := PendingDeltas,
         pending_activations := PendingActivations
     } = Snapshot,
-
-    %% 向后兼容：旧快照用 global_state，新快照用 context
-    Context = case maps:get(context, Snapshot, undefined) of
-        undefined -> maps:get(global_state, Snapshot, beamai_context:new());
-        C -> C
-    end,
 
     #{pregel_graph := PregelGraph} = Graph,
 
@@ -134,7 +129,7 @@ restore(#{'__graph_snapshot__' := true} = Snapshot, Graph) ->
         pending_activations => PendingActivations
     },
 
-    %% 从 snapshot 恢复 resume_data（向后兼容旧快照）
+    %% 从 snapshot 恢复 resume_data（可选字段）
     RestoreOpts = case maps:get(resume_data, Snapshot, #{}) of
         RD when map_size(RD) > 0 -> RestoreOpts0#{resume_data => RD};
         _ -> RestoreOpts0
@@ -142,5 +137,5 @@ restore(#{'__graph_snapshot__' := true} = Snapshot, Graph) ->
 
     {ok, RestoreOpts};
 
-restore(_, _) ->
+restore_from_snapshot(_, _) ->
     {error, invalid_snapshot}.

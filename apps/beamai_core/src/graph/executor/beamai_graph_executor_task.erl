@@ -7,7 +7,7 @@
 %%%-------------------------------------------------------------------
 -module(beamai_graph_executor_task).
 
--export([make_context/6, make_context/7, build_task_list/2, execute_tasks/7, execute_tasks/8,
+-export([make_context/6, make_context/7, build_task_list/2, execute_tasks/8,
          process_compute_result/3]).
 
 -type vertex_id() :: beamai_graph_engine:vertex_id().
@@ -60,16 +60,7 @@ build_task_list(ActiveVertices, VertexInputs) ->
         ActiveVertices
     ).
 
-%% @doc 执行任务列表（向后兼容，无 resume_data）
--spec execute_tasks(
-    [{vertex_id(), vertex(), map() | undefined}],
-    compute_fn(), beamai_context:t(), non_neg_integer(),
-    non_neg_integer(), atom(), pos_integer()
-) -> {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}.
-execute_tasks(Tasks, ComputeFn, Context, Superstep, NumVertices, PoolName, PoolTimeout) ->
-    execute_tasks(Tasks, ComputeFn, Context, Superstep, NumVertices, PoolName, PoolTimeout, #{}).
-
-%% @doc 执行任务列表（含 resume_data）
+%% @doc 执行任务列表
 -spec execute_tasks(
     [{vertex_id(), vertex(), map() | undefined}],
     compute_fn(), beamai_context:t(), non_neg_integer(),

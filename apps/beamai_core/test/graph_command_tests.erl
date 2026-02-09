@@ -165,9 +165,9 @@ command_goto_overrides_edge_routing_test() ->
     ?assertEqual(ok, maps:get(status, Result)),
     %% goto 覆盖了边路由，应该激活 target_b 而不是 target_a
     ?assertEqual([target_b], maps:get(activations, Result)),
-    %% delta 应该是 Command 的 update
+    %% delta 应该是 Command 的 update（key 已标准化为 binary）
     Delta = maps:get(delta, Result),
-    ?assertEqual(done, maps:get(result, Delta)).
+    ?assertEqual(done, maps:get(<<"result">>, Delta)).
 
 %% 测试：无 goto 时回退正常边路由
 command_no_goto_falls_back_to_edge_routing_test() ->
@@ -193,9 +193,9 @@ command_no_goto_falls_back_to_edge_routing_test() ->
     ?assertEqual(ok, maps:get(status, Result)),
     %% delta 合并后 flag=true，路由应该选择 route_a
     ?assertEqual([route_a], maps:get(activations, Result)),
-    %% delta 是 update 内容
+    %% delta 是 update 内容（key 已标准化为 binary）
     Delta = maps:get(delta, Result),
-    ?assertEqual(true, maps:get(flag, Delta)).
+    ?assertEqual(true, maps:get(<<"flag">>, Delta)).
 
 %% 测试：goto 多节点并行
 command_goto_multiple_nodes_test() ->
@@ -214,7 +214,7 @@ command_goto_multiple_nodes_test() ->
     ?assertEqual(ok, maps:get(status, Result)),
     ?assertEqual([worker_a, worker_b, worker_c], maps:get(activations, Result)),
     Delta = maps:get(delta, Result),
-    ?assertEqual(parallel, maps:get(step, Delta)).
+    ?assertEqual(parallel, maps:get(<<"step">>, Delta)).
 
 %% 测试：goto '__end__'
 command_goto_end_test() ->
@@ -315,10 +315,10 @@ command_update_bypasses_compute_delta_test() ->
     Result = ComputeFn(Ctx),
 
     Delta = maps:get(delta, Result),
-    %% delta 应该只包含 Command 的 update 内容
-    ?assertEqual(#{new_field => 42}, Delta),
+    %% delta 应该只包含 Command 的 update 内容（key 已标准化为 binary）
+    ?assertEqual(#{<<"new_field">> => 42}, Delta),
     %% 不应该包含 existing 字段（不像 compute_delta 会对比全量状态）
-    ?assertNot(maps:is_key(existing, Delta)).
+    ?assertNot(maps:is_key(<<"existing">>, Delta)).
 
 %%====================================================================
 %% graph_node 集成测试

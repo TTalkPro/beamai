@@ -7,7 +7,7 @@
 %%% 三层 API:
 %%% 1. 纯函数核心（不依赖进程）: new, do_step, do_retry, do_resume, run
 %%% 2. 无进程 API（在调用者进程内运行到完成）: execute, execute/3
-%%% 3. 访问器: current_state, global_state, superstep, take_snapshot, etc.
+%%% 3. 访问器: current_state, context, superstep, take_snapshot, etc.
 %%%
 %%% 核心特点:
 %%% - 无分区：所有顶点直接存储在状态中
@@ -31,7 +31,7 @@
 -export([run/1]).
 
 %% === 访问器 ===
--export([current_state/1, context/1, global_state/1, superstep/1,
+-export([current_state/1, context/1, superstep/1,
          take_snapshot/1, extract_snapshot_data/1,
          last_results/1, last_info/1, build_result/1,
          drain_effects/1, resume_data/1]).
@@ -47,7 +47,7 @@
 -export_type([opts/0, result/0, restore_opts/0, snapshot_data/0]).
 -export_type([step_result/0, superstep_info/0, snapshot_type/0, done_reason/0]).
 -export_type([field_reducer/0, field_reducers/0, delta/0]).
--export_type([compute_context/0, context/0, compute_result/0, compute_status/0, vertex_id/0, compute_fn/0]).
+-export_type([compute_context/0, compute_result/0, compute_status/0, vertex_id/0, compute_fn/0]).
 
 %% 类型导出 - 高级（来自 graph_runner/graph_snapshot）
 -export_type([run_options/0, run_result/0]).
@@ -83,8 +83,6 @@
     num_vertices := non_neg_integer(),
     resume_data => term() | undefined
 }.
--type context() :: compute_context().  %% 过渡别名
-
 %% 计算结果状态
 -type compute_status() :: ok | {error, term()} | {interrupt, term()}.
 
@@ -360,10 +358,6 @@ current_state(#engine{current_state = CS}) -> CS.
 -spec context(engine()) -> beamai_context:t().
 context(#engine{context = Ctx}) -> Ctx.
 
-%% @doc 获取 context（向后兼容别名）
--spec global_state(engine()) -> beamai_context:t().
-global_state(Engine) -> context(Engine).
-
 %% @doc 获取当前超步号
 -spec superstep(engine()) -> non_neg_integer().
 superstep(#engine{superstep = S}) -> S.
@@ -383,7 +377,7 @@ last_info(#engine{last_results = Results}) ->
 %% @doc 获取快照数据（委托到 graph_snapshot）
 -spec take_snapshot(engine()) -> beamai_graph_state:snapshot().
 take_snapshot(Engine) ->
-    beamai_graph_state:take(Engine).
+    beamai_graph_state:take_snapshot(Engine).
 
 %% @doc 提取 snapshot_data（执行器级别）
 -spec extract_snapshot_data(engine()) -> snapshot_data().
@@ -953,14 +947,7 @@ prepare_restore_options(SnapshotData, Options, _DefaultContext) ->
 
     Context = case maps:get(context, SnapshotData, undefined) of
         undefined ->
-            case maps:get(global_state, SnapshotData, undefined) of
-                undefined ->
-                    case maps:get(context, PregelCheckpoint, undefined) of
-                        undefined -> maps:get(global_state, PregelCheckpoint, beamai_context:new());
-                        C -> C
-                    end;
-                GS -> GS
-            end;
+            maps:get(context, PregelCheckpoint, beamai_context:new());
         C -> C
     end,
     Iteration = maps:get(iteration, SnapshotData, 0),

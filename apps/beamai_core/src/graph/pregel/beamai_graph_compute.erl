@@ -237,7 +237,9 @@ compute_delta(OldCtx, NewCtx) ->
 -spec handle_command(beamai_graph_command:command(), beamai_context:t(), list()) ->
     beamai_graph_engine:compute_result().
 handle_command(Cmd, Context, RoutingEdges) ->
-    Delta = beamai_graph_command:get_update(Cmd),
+    RawDelta = beamai_graph_command:get_update(Cmd),
+    %% 标准化 delta 中的 key（Command 的 update 可能含原始 atom key）
+    Delta = normalize_delta(RawDelta),
     Goto = beamai_graph_command:get_goto(Cmd),
     Activations = resolve_goto(Goto, Context, Delta, RoutingEdges),
     #{delta => Delta, activations => Activations, status => ok}.
@@ -287,5 +289,21 @@ build_activations(Edges, State) ->
         end,
         [],
         Edges
+    ).
+
+%%====================================================================
+%% 内部辅助
+%%====================================================================
+
+%% @private 标准化 delta 的 key
+%%
+%% Command 的 update map 可能含原始 atom key（如 #{count => 1}），
+%% 需要通过 normalize_key 转为 binary，与 context 中的用户变量 key 一致。
+-spec normalize_delta(map()) -> map().
+normalize_delta(Delta) ->
+    maps:fold(
+        fun(K, V, Acc) -> Acc#{beamai_context:normalize_key(K) => V} end,
+        #{},
+        Delta
     ).
 

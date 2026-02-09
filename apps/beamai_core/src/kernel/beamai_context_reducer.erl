@@ -69,15 +69,15 @@
 %% API
 %%====================================================================
 
-%% @doc 返回内部 __ctx_xxx__ 字段的默认 reducers
+%% @doc 返回内部字段的默认 reducers
 -spec default_reducers() -> field_reducers().
 default_reducers() ->
     #{
-        '__ctx_messages__' => fun last_write_win_reducer/2,
-        '__ctx_history__' => fun last_write_win_reducer/2,
-        '__ctx_kernel__' => fun last_write_win_reducer/2,
-        '__ctx_trace__' => fun last_write_win_reducer/2,
-        '__ctx_metadata__' => fun merge_reducer/2
+        messages => fun append_reducer/2,
+        history => fun append_reducer/2,
+        kernel => fun last_write_win_reducer/2,
+        trace => fun append_reducer/2,
+        metadata => fun merge_reducer/2
     }.
 
 %% @doc 添加单个字段 reducer
@@ -115,14 +115,14 @@ apply_delta(State, Delta, FieldReducers) ->
             case get_field_reducer(Field, FieldReducers) of
                 %% 转换型 reducer：写入不同的目标键，源键不保留
                 {transform, TargetKey, Reducer} ->
-                    OldValue = beamai_context:get(AccState, TargetKey),
+                    OldValue = maps:get(TargetKey, AccState, undefined),
                     MergedValue = apply_reducer(Reducer, OldValue, NewValue),
-                    beamai_context:set(AccState, TargetKey, MergedValue);
+                    AccState#{TargetKey => MergedValue};
                 %% 普通 reducer：同键合并
                 Reducer ->
-                    OldValue = beamai_context:get(AccState, Field),
+                    OldValue = maps:get(Field, AccState, undefined),
                     MergedValue = apply_reducer(Reducer, OldValue, NewValue),
-                    beamai_context:set(AccState, Field, MergedValue)
+                    AccState#{Field => MergedValue}
             end
         end,
         State,
