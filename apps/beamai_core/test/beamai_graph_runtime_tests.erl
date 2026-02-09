@@ -34,14 +34,11 @@ make_interrupt_graph() ->
     ProcessFn = fun(State, _) ->
         {ok, beamai_graph_engine:state_set(State, processed, true)}
     end,
-    ReviewFn = fun(State, _) ->
-        ResumeKey = <<"resume_data:review">>,
-        case beamai_graph_engine:state_get(State, ResumeKey, undefined) of
-            undefined ->
-                {interrupt, need_approval, State};
-            _ResumeData ->
-                {ok, beamai_graph_engine:state_set(State, approved, true)}
-        end
+    ReviewFn = fun
+        (State, _Input, undefined) ->
+            {interrupt, need_approval, State};
+        (State, _Input, _ResumeData) ->
+            {ok, beamai_graph_engine:state_set(State, approved, true)}
     end,
     {ok, Graph} = beamai_graph:build([
         {node, process, ProcessFn},

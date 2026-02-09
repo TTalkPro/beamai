@@ -30,7 +30,8 @@
     last_results := map() | undefined,
     cumulative_failures := [{vertex_id(), term()}],
     current_state := atom(),
-    timestamp := integer()
+    timestamp := integer(),
+    resume_data => #{vertex_id() => term()}
 }.
 
 %%====================================================================
@@ -62,7 +63,9 @@ take(Engine) ->
         Vertices
     ),
 
-    #{
+    ResumeData = beamai_graph_engine:resume_data(Engine),
+
+    Base = #{
         '__graph_snapshot__' => true,
         superstep => Superstep,
         global_state => GlobalState,
@@ -73,7 +76,11 @@ take(Engine) ->
         cumulative_failures => [],
         current_state => beamai_graph_engine:current_state(Engine),
         timestamp => erlang:system_time(millisecond)
-    }.
+    },
+    case map_size(ResumeData) of
+        0 -> Base;
+        _ -> Base#{resume_data => ResumeData}
+    end.
 
 %% @doc 从快照 + Graph 重建引擎恢复数据
 %%
@@ -89,7 +96,7 @@ restore(#{
     vertices := SnapshotVertices,
     pending_deltas := PendingDeltas,
     pending_activations := PendingActivations
-}, Graph) ->
+} = Snapshot, Graph) ->
     #{pregel_graph := PregelGraph} = Graph,
 
     %% 从 Graph 获取完整顶点（含 fun_ 和 routing_edges）
@@ -113,13 +120,19 @@ restore(#{
         BaseVertices
     ),
 
-    RestoreOpts = #{
+    RestoreOpts0 = #{
         superstep => Superstep,
         global_state => GlobalState,
         vertices => RestoredVertices,
         pending_deltas => PendingDeltas,
         pending_activations => PendingActivations
     },
+
+    %% 从 snapshot 恢复 resume_data（向后兼容旧快照）
+    RestoreOpts = case maps:get(resume_data, Snapshot, #{}) of
+        RD when map_size(RD) > 0 -> RestoreOpts0#{resume_data => RD};
+        _ -> RestoreOpts0
+    end,
 
     {ok, RestoreOpts};
 

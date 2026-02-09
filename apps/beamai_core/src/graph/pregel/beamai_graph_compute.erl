@@ -151,6 +151,7 @@ handle_regular_node(Ctx, GlobalState) ->
 execute_and_route(Ctx, GlobalState, Vertex) ->
     #{vertex_id := VertexId} = Ctx,
     VertexInput = maps:get(vertex_input, Ctx, undefined),
+    ResumeData = maps:get(resume_data, Ctx, undefined),
     %% 使用扁平化访问器获取属性
     Fun = beamai_pregel_vertex:fun_(Vertex),
     RoutingEdges = beamai_pregel_vertex:routing_edges(Vertex),
@@ -161,14 +162,21 @@ execute_and_route(Ctx, GlobalState, Vertex) ->
             route_to_next(GlobalState, RoutingEdges);
         _ ->
             %% 执行节点函数
-            execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput)
+            execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput, ResumeData)
+    end.
+
+%% @private 根据 arity 调用节点函数：fun/2 或 fun/3
+call_node_fun(Fun, State, Input, ResumeData) ->
+    case erlang:fun_info(Fun, arity) of
+        {arity, 3} -> Fun(State, Input, ResumeData);
+        {arity, 2} -> Fun(State, Input)
     end.
 
 %% @private 执行节点函数并路由
--spec execute_fun_and_route(beamai_pregel_vertex:vertex_id(), term(), beamai_graph_engine:state(), list(), map() | undefined) ->
+-spec execute_fun_and_route(beamai_pregel_vertex:vertex_id(), term(), beamai_graph_engine:state(), list(), map() | undefined, term() | undefined) ->
     beamai_graph_engine:compute_result().
-execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput) ->
-    try Fun(GlobalState, VertexInput) of
+execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput, ResumeData) ->
+    try call_node_fun(Fun, GlobalState, VertexInput, ResumeData) of
         {ok, NewState} ->
             %% 成功：计算 delta，激活下游顶点
             Delta = compute_delta(GlobalState, NewState),

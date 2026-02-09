@@ -34,7 +34,7 @@
 -export([current_state/1, global_state/1, superstep/1,
          take_snapshot/1, extract_snapshot_data/1,
          last_results/1, last_info/1, build_result/1,
-         drain_effects/1]).
+         drain_effects/1, resume_data/1]).
 
 %% === 无进程 API（在调用者进程内运行到完成）===
 -export([execute/2, execute/3]).
@@ -102,7 +102,8 @@
     global_state := state(),
     vertex_input := map() | undefined,
     superstep := non_neg_integer(),
-    num_vertices := non_neg_integer()
+    num_vertices := non_neg_integer(),
+    resume_data => term() | undefined
 }.
 
 %% 计算结果状态
@@ -265,6 +266,7 @@
     halted           :: boolean(),
 
     %% 新增字段
+    resume_data = #{} :: #{vertex_id() => term()},
     current_state = idle :: idle | running | interrupted | completed | error,
     effects = [] :: [effect()]
 }).
@@ -330,28 +332,17 @@ do_retry(VertexIds, #engine{pending_deltas = undefined} = Engine) ->
 do_retry(VertexIds, Engine) ->
     execute_deferred_retry(VertexIds, Engine).
 
-%% @doc 恢复中断（纯函数）= 注入 resume_data 到 global_state + 重试中断顶点
+%% @doc 恢复中断（纯函数）= 存储 resume_data 到引擎字段 + 重试中断顶点
 -spec do_resume(#{vertex_id() => term()}, engine()) -> {step_result(), engine()}.
-do_resume(ResumeData, #engine{global_state = GlobalState, last_results = LastResults} = Engine) ->
-    %% 1. 注入 resume_data 到 global_state
-    NewGlobalState = maps:fold(
-        fun(VertexId, Data, Acc) ->
-            VertexIdBin = to_binary(VertexId),
-            Key = <<"resume_data:", VertexIdBin/binary>>,
-            state_set(Acc, Key, Data)
-        end,
-        GlobalState,
-        ResumeData
-    ),
-    %% 2. 获取中断顶点 + resume_data 键
+do_resume(ResumeData, #engine{last_results = LastResults} = Engine) ->
+    %% 1. 获取中断顶点 + resume_data 键
     InterruptedIds = case LastResults of
         undefined -> [];
         _ -> [Id || {Id, _} <- maps:get(interrupted_vertices, LastResults, [])]
     end,
-    ResumeIds = maps:keys(ResumeData),
-    AllIds = lists:usort(InterruptedIds ++ ResumeIds),
-    %% 3. 更新引擎状态并调用 do_retry
-    Engine1 = Engine#engine{global_state = NewGlobalState, current_state = running},
+    AllIds = lists:usort(maps:keys(ResumeData) ++ InterruptedIds),
+    %% 2. 存入 engine field，更新引擎状态并调用 do_retry
+    Engine1 = Engine#engine{resume_data = ResumeData, current_state = running},
     do_retry(AllIds, Engine1).
 
 %%====================================================================
@@ -418,6 +409,7 @@ extract_snapshot_data(#engine{
     pending_deltas = PendingDeltas,
     pending_activations = PendingActivations,
     vertices = Vertices,
+    resume_data = ResumeData,
     last_results = Results
 }) ->
     Activations = case PendingActivations of
@@ -428,18 +420,26 @@ extract_snapshot_data(#engine{
             end;
         _ -> PendingActivations
     end,
-    #{
+    Base = #{
         superstep => Superstep,
         global_state => GlobalState,
         pending_deltas => PendingDeltas,
         pending_activations => Activations,
         vertices => Vertices
-    }.
+    },
+    case map_size(ResumeData) of
+        0 -> Base;
+        _ -> Base#{resume_data => ResumeData}
+    end.
 
 %% @doc 返回并清空 effects 列表
 -spec drain_effects(engine()) -> {[effect()], engine()}.
 drain_effects(#engine{effects = Effects} = Engine) ->
     {lists:reverse(Effects), Engine#engine{effects = []}}.
+
+%% @doc 获取 resume_data
+-spec resume_data(engine()) -> #{vertex_id() => term()}.
+resume_data(#engine{resume_data = RD}) -> RD.
 
 %% @doc 构建低级结果（从 engine）
 -spec build_result(engine()) -> result().
@@ -543,7 +543,7 @@ execute_superstep(#engine{
     %% 5. 执行任务
     {Deltas, NewActivations, FailedVertices, InterruptedVertices} =
         beamai_graph_executor_task:execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
-                      PoolName, PoolTimeout),
+                      PoolName, PoolTimeout, Engine#engine.resume_data),
 
     %% 6. 更新顶点状态（halt 计算完成的顶点）
     NewVertices = beamai_graph_executor_utils:update_vertex_states(Vertices, ActiveVertices, FailedVertices, InterruptedVertices),
@@ -606,6 +606,12 @@ execute_superstep(#engine{
             {continue, Info}
     end,
 
+    %% 清理已成功执行顶点的 resume_data
+    SuccessIds = [Id || {Id, _, _} <- Tasks,
+                  not lists:keymember(Id, 1, FailedVertices),
+                  not lists:keymember(Id, 1, InterruptedVertices)],
+    CleanedRD = maps:without(SuccessIds, Engine#engine.resume_data),
+
     NewEngine = Engine#engine{
         vertices = NewVertices,
         global_state = NewGlobalState,
@@ -614,7 +620,8 @@ execute_superstep(#engine{
         last_results = UpdatedResults,
         cumulative_failures = NewCumulativeFailures,
         superstep = NewSuperstep,
-        halted = IsDone
+        halted = IsDone,
+        resume_data = CleanedRD
     },
     {Reply, NewEngine}.
 
@@ -641,7 +648,7 @@ execute_retry_direct(VertexIds, #engine{
 
     {RetryDeltas, RetryActivations, StillFailed, StillInterrupted} =
         beamai_graph_executor_task:execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
-                      PoolName, PoolTimeout),
+                      PoolName, PoolTimeout, Engine#engine.resume_data),
 
     HasError = length(StillFailed) > 0 orelse length(StillInterrupted) > 0,
 
@@ -653,6 +660,12 @@ execute_retry_direct(VertexIds, #engine{
             UpdatedState = beamai_graph_state_reducer:apply_deltas(GlobalState, RetryDeltas, FieldReducers),
             {UpdatedState, undefined, undefined}
     end,
+
+    %% 清理已成功执行顶点的 resume_data
+    SuccessIds = [Id || {Id, _} <- maps:to_list(RetryVertices),
+                  not lists:keymember(Id, 1, StillFailed),
+                  not lists:keymember(Id, 1, StillInterrupted)],
+    CleanedRD = maps:without(SuccessIds, Engine#engine.resume_data),
 
     UpdatedResults = LastResults#{
         failed_count => length(StillFailed),
@@ -671,7 +684,8 @@ execute_retry_direct(VertexIds, #engine{
         global_state = NewGlobalState,
         pending_deltas = NewPendingDeltas,
         pending_activations = NewPendingActivations,
-        last_results = UpdatedResults
+        last_results = UpdatedResults,
+        resume_data = CleanedRD
     },
     {{continue, Info}, NewEngine}.
 
@@ -695,7 +709,7 @@ execute_deferred_retry(VertexIds, #engine{
 
     {RetryDeltas, RetryActivations, StillFailed, StillInterrupted} =
         beamai_graph_executor_task:execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
-                      PoolName, PoolTimeout),
+                      PoolName, PoolTimeout, Engine#engine.resume_data),
 
     HasError = length(StillFailed) > 0 orelse length(StillInterrupted) > 0,
 
@@ -719,6 +733,12 @@ execute_deferred_retry(VertexIds, #engine{
             {UpdatedState, undefined, undefined}
     end,
 
+    %% 清理已成功执行顶点的 resume_data
+    SuccessIds = [Id || {Id, _} <- maps:to_list(RetryVertices),
+                  not lists:keymember(Id, 1, StillFailed),
+                  not lists:keymember(Id, 1, StillInterrupted)],
+    CleanedRD = maps:without(SuccessIds, Engine#engine.resume_data),
+
     UpdatedResults = #{
         failed_count => length(StillFailed),
         failed_vertices => StillFailed,
@@ -737,7 +757,8 @@ execute_deferred_retry(VertexIds, #engine{
         global_state = NewGlobalState,
         pending_deltas = NewPendingDeltas,
         pending_activations = NewPendingActivations,
-        last_results = UpdatedResults
+        last_results = UpdatedResults,
+        resume_data = CleanedRD
     },
     {{continue, Info}, NewEngine}.
 
@@ -963,27 +984,15 @@ prepare_restore_options(SnapshotData, Options, _DefaultGlobalState) ->
     ResumeVertexIds = maps:keys(ResumeData),
     AllActivations = lists:usort(ResumeVertexIds ++ RetryVertices ++ PendingActivations),
 
-    FinalGlobalState = case map_size(ResumeData) of
-        0 -> GlobalState;
-        _ -> maps:fold(
-                 fun(VertexId, Data, Acc) ->
-                     VertexIdBin = to_binary(VertexId),
-                     Key = <<"resume_data:", VertexIdBin/binary>>,
-                     state_set(Acc, Key, Data)
-                 end,
-                 GlobalState,
-                 ResumeData
-             )
-    end,
-
     PregelRestoreOpts = #{
         superstep => Superstep,
         vertices => Vertices,
         pending_activations => AllActivations,
-        global_state => FinalGlobalState
+        global_state => GlobalState,
+        resume_data => ResumeData
     },
 
-    {FinalGlobalState, PregelRestoreOpts, Iteration}.
+    {GlobalState, PregelRestoreOpts, Iteration}.
 
 %% @private 确保 Options 中存在 run_id
 -spec ensure_run_id(run_options()) -> run_options().
@@ -1160,6 +1169,11 @@ new_engine(Graph, ComputeFn, Opts) ->
         _ -> undefined
     end,
 
+    ResumeData = case RestoreOpts of
+        #{resume_data := RD} -> RD;
+        _ -> #{}
+    end,
+
     Vertices = beamai_graph_executor_utils:get_all_vertices(Graph, RestoreOpts),
     PoolTimeout = application:get_env(beamai_core, graph_pool_timeout, 30000),
 
@@ -1181,6 +1195,7 @@ new_engine(Graph, ComputeFn, Opts) ->
         initialized = false,
         initial_returned = false,
         halted = false,
+        resume_data = ResumeData,
         current_state = idle,
         effects = []
     }.
@@ -1219,11 +1234,6 @@ inject_restore_activations(#engine{restore_from = RestoreOpts} = Engine) ->
     end,
     Engine#engine{pending_activations = Activations}.
 
-%% @private 将 vertex_id 转换为 binary
--spec to_binary(term()) -> binary().
-to_binary(Id) when is_atom(Id) -> atom_to_binary(Id, utf8);
-to_binary(Id) when is_binary(Id) -> Id;
-to_binary(Id) -> iolist_to_binary(io_lib:format("~p", [Id])).
 
 %%====================================================================
 %% 状态操作 API（原 graph_state 模块）

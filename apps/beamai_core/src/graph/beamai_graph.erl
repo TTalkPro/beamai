@@ -349,18 +349,6 @@ run_sync_resume(Graph, Snapshot, ResumeData, Opts) ->
             ComputeFn = beamai_graph_compute:compute_fn(),
             FieldReducers = maps:get(field_reducers, Opts, #{}),
 
-            %% 将 resume_data 注入 global_state
-            GlobalState0 = maps:get(global_state, Restored, beamai_graph_engine:state_new()),
-            GlobalState1 = maps:fold(
-                fun(VertexId, Data, Acc) ->
-                    VertexIdBin = vertex_id_to_binary(VertexId),
-                    Key = <<"resume_data:", VertexIdBin/binary>>,
-                    beamai_graph_engine:state_set(Acc, Key, Data)
-                end,
-                GlobalState0,
-                ResumeData
-            ),
-
             %% 将 resume 顶点加入 pending_activations
             ExistingActivations = maps:get(pending_activations, Restored, []),
             ResumeIds = maps:keys(ResumeData),
@@ -380,9 +368,9 @@ run_sync_resume(Graph, Snapshot, ResumeData, Opts) ->
             ),
 
             Restored1 = Restored#{
-                global_state => GlobalState1,
                 pending_activations => AllActivations,
-                vertices => Vertices1
+                vertices => Vertices1,
+                resume_data => ResumeData
             },
 
             {ok, Engine} = beamai_graph_engine:from_restored(Restored1,
@@ -415,11 +403,3 @@ run_sync_engine(Engine) ->
             end
     end.
 
-%%====================================================================
-%% 内部辅助函数
-%%====================================================================
-
-%% @private 将 vertex_id 转换为 binary
-vertex_id_to_binary(Id) when is_atom(Id) -> atom_to_binary(Id, utf8);
-vertex_id_to_binary(Id) when is_binary(Id) -> Id;
-vertex_id_to_binary(Id) -> iolist_to_binary(io_lib:format("~p", [Id])).

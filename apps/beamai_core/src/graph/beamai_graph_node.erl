@@ -29,7 +29,8 @@
 
 %% 类型定义
 -type node_id() :: atom().
--type node_fun() :: fun((beamai_graph_engine:state(), map() | undefined) -> node_result()).
+-type node_fun() :: fun((beamai_graph_engine:state(), map() | undefined) -> node_result())
+                  | fun((beamai_graph_engine:state(), map() | undefined, term() | undefined) -> node_result()).
 %% 节点返回值类型：
 %% - {ok, State}: 执行成功
 %% - {error, Reason}: 执行失败
@@ -69,7 +70,7 @@ new(Id, Fun) ->
 
 %% @doc 创建带元数据的新节点
 -spec new(node_id(), node_fun(), metadata()) -> graph_node().
-new(Id, Fun, Metadata) when is_atom(Id), is_function(Fun, 2) ->
+new(Id, Fun, Metadata) when is_atom(Id), (is_function(Fun, 2) orelse is_function(Fun, 3)) ->
     #{
         id => Id,
         fun_ => Fun,
@@ -113,7 +114,7 @@ execute(#{fun_ := Fun} = Node, State) ->
 %% 捕获所有异常并包装为错误
 -spec try_execute(graph_node(), node_fun(), beamai_graph_engine:state()) -> node_result().
 try_execute(Node, Fun, State) ->
-    try Fun(State, undefined) of
+    try call_node_fun(Fun, State, undefined, undefined) of
         {ok, NewState} when is_map(NewState) ->
             {ok, NewState};
         {command, Cmd} when is_map(Cmd) ->
@@ -164,7 +165,18 @@ is_end(_) -> false.
 
 %% @doc 验证节点结构是否有效
 -spec is_valid(term()) -> boolean().
-is_valid(#{id := Id, fun_ := Fun}) when is_atom(Id), is_function(Fun, 2) ->
+is_valid(#{id := Id, fun_ := Fun}) when is_atom(Id), (is_function(Fun, 2) orelse is_function(Fun, 3)) ->
     true;
 is_valid(_) ->
     false.
+
+%%====================================================================
+%% 内部辅助函数
+%%====================================================================
+
+%% @private 根据 arity 调用节点函数：fun/2 或 fun/3
+call_node_fun(Fun, State, Input, ResumeData) ->
+    case erlang:fun_info(Fun, arity) of
+        {arity, 3} -> Fun(State, Input, ResumeData);
+        {arity, 2} -> Fun(State, Input)
+    end.

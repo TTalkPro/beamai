@@ -45,17 +45,13 @@ make_interrupt_graph() ->
         State1 = beamai_graph_engine:state_set(State, processed, true),
         {ok, beamai_graph_engine:state_set(State1, count, 1)}
     end,
-    ReviewFn = fun(State, _) ->
-        %% 检查是否有 resume_data
-        ResumeKey = <<"resume_data:review">>,
-        case beamai_graph_engine:state_get(State, ResumeKey, undefined) of
-            undefined ->
-                %% 没有 resume_data，触发 interrupt
-                {interrupt, need_approval, State};
-            _ResumeData ->
-                %% 有 resume_data，继续执行
-                {ok, beamai_graph_engine:state_set(State, approved, true)}
-        end
+    ReviewFn = fun
+        (State, _Input, undefined) ->
+            %% 没有 resume_data，触发 interrupt
+            {interrupt, need_approval, State};
+        (State, _Input, _ResumeData) ->
+            %% 有 resume_data，继续执行
+            {ok, beamai_graph_engine:state_set(State, approved, true)}
     end,
     {ok, Graph} = beamai_graph:build([
         {node, process, ProcessFn},
