@@ -1,7 +1,7 @@
 {application, beamai_core, [
     {description, "BeamAI Core - Kernel, Process, Graph 框架"},
     {vsn, "0.1.0"},
-    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool, beamai_dispatch_pool]},
+    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool, beamai_graph_pool]},
     {mod, {beamai_core_app, []}},
     {applications, [kernel, stdlib, jsx, uuid, hackney, poolboy]},
     {optional_applications, [gun, beamai_llm]},
@@ -11,10 +11,10 @@
         %% {process_pool_size, 16},
         %% {process_pool_max_overflow, 32},
 
-        %% Dispatch pool 配置（默认启用，大小 CPU*2）
-        {dispatch_pool_enabled, true},
-        %% {dispatch_pool, #{size => 16, max_overflow => 32}},
-        {dispatch_timeout, 30000}
+        %% Graph pool 配置（默认启用，大小 CPU*2）
+        {graph_pool_enabled, true},
+        %% {graph_pool, #{size => 16, max_overflow => 32}},
+        {graph_pool_timeout, 30000}
     ]},
     {modules, [
         %% OTP 应用
@@ -74,19 +74,14 @@
         %% Graph Runner
         graph_runner,
         graph_snapshot,
-        %% Pregel 分布式计算
-        pregel,
-        pregel_master,
-        pregel_worker,
-        pregel_vertex,
+        %% Graph Executor
+        graph_executor,
+        graph_pool_worker,
+        graph_compute,
+        %% Pregel 数据结构（保留）
         pregel_graph,
-        pregel_partition,
-        pregel_barrier,
-        pregel_superstep,
-        pregel_utils,
-        pregel_retry,
-        pregel_dispatch_worker,
-        graph_compute
+        pregel_vertex,
+        pregel_utils
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

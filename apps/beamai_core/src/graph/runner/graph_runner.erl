@@ -30,7 +30,7 @@
 -type node_id() :: graph_node:node_id().
 -type state() :: graph_state:state().
 
-%% Snapshot 数据类型（包含 pregel 层状态）
+%% Snapshot 数据类型（包含执行器层状态）
 %% 全局状态模式：状态在 global_state 中，不在顶点 value 中
 %%
 %% Snapshot 类型说明：
@@ -40,8 +40,8 @@
 %% - interrupt: 超步完成但有中断的顶点（human-in-the-loop）
 %% - final: 执行结束
 -type snapshot_data() :: #{
-    type := pregel:snapshot_type(),              %% snapshot 类型
-    pregel_snapshot := pregel:snapshot_data(), %% pregel 层 snapshot
+    type := graph_executor:snapshot_type(),              %% snapshot 类型
+    pregel_snapshot := graph_executor:snapshot_data(), %% 执行器 snapshot
     global_state := state(),                       %% 当前全局状态
     iteration := non_neg_integer()                 %% 当前迭代次数
 }.
@@ -53,23 +53,34 @@
 -type snapshot_callback_result() ::
     continue |
     {stop, term()} |
-    {retry, [pregel:vertex_id()]}.
+    {retry, [graph_executor:vertex_id()]}.
 
 %% Snapshot 回调函数类型
 %% 输入：superstep_info 和 snapshot_data
 %% 返回：snapshot_callback_result()
--type snapshot_callback() :: fun((pregel:superstep_info(), snapshot_data()) ->
+-type snapshot_callback() :: fun((graph_executor:superstep_info(), snapshot_data()) ->
     snapshot_callback_result()).
 
 %% Snapshot 恢复选项
 %% 全局状态模式（无 inbox 版本）：状态从 global_state 恢复
 %% resume_data 中的数据会被合并到 global_state 中
 -type restore_options() :: #{
-    pregel_snapshot := pregel:snapshot_data(),  %% pregel snapshot 数据
+    pregel_snapshot := graph_executor:snapshot_data(),  %% 执行器 snapshot 数据
     global_state => state(),                        %% 恢复时的全局状态
     iteration => non_neg_integer(),                 %% 迭代次数（可选）
-    resume_data => #{pregel:vertex_id() => term()}  %% 恢复时注入的用户数据（合并到 global_state）
+    resume_data => #{graph_executor:vertex_id() => term()}  %% 恢复时注入的用户数据（合并到 global_state）
 }.
+
+%% Snapshot 策略类型
+-type snapshot_strategy() ::
+    every_superstep |                        %% 每个超步保存
+    {every_n, pos_integer()} |               %% 每 N 个超步保存
+    on_interrupt |                           %% 仅在中断时保存
+    on_error |                               %% 仅在错误时保存
+    manual.                                  %% 手动保存（不自动保存）
+
+%% Store 配置类型
+-type store_config() :: {module(), beamai_graph_store_behaviour:store_ref()}.
 
 -type run_options() :: #{
     workers => pos_integer(),        %% Pregel worker 数量 (默认 1)
@@ -82,8 +93,14 @@
     run_id => binary(),                      %% 外部传入的执行 ID
     %% 全局状态选项
     global_state => state(),                 %% 初始全局状态
-    field_reducers => pregel_master:field_reducers()   %% 字段级 Reducer 配置
+    field_reducers => graph_executor:field_reducers(),   %% 字段级 Reducer 配置
+    %% Store 相关选项（简化使用）
+    store => store_config(),                 %% 存储后端配置 {Module, Ref}
+    snapshot_strategy => snapshot_strategy(), %% Snapshot 策略
+    graph_name => atom() | binary()          %% 图名称（用于存储分类）
 }.
+
+-export_type([snapshot_strategy/0, store_config/0]).
 
 -export_type([snapshot_data/0, snapshot_callback/0, snapshot_callback_result/0, restore_options/0]).
 
@@ -110,7 +127,7 @@
     iterations := non_neg_integer(),
     trace => [trace_entry()],
     error => term(),
-    done_reason => pregel:done_reason()  %% snapshot 模式下的完成原因
+    done_reason => graph_executor:done_reason()  %% snapshot 模式下的完成原因
 }.
 
 -export_type([run_options/0, run_result/0, execution_context/0, trace_entry/0]).
@@ -157,7 +174,9 @@ ensure_global_state(Options, InitialState) ->
 %% @private 检查是否需要 snapshot 模式
 -spec needs_snapshot_mode(run_options()) -> boolean().
 needs_snapshot_mode(Options) ->
-    maps:is_key(on_snapshot, Options) orelse maps:is_key(restore_from, Options).
+    maps:is_key(on_snapshot, Options) orelse
+    maps:is_key(restore_from, Options) orelse
+    maps:is_key(store, Options).
 
 %% @private 简单执行模式（无 snapshot）
 %%
@@ -171,28 +190,126 @@ run_simple(Graph, InitialState, Options) ->
     GlobalState = maps:get(global_state, Options, InitialState),
     FieldReducers = maps:get(field_reducers, Options, #{}),
 
-    PregelOpts = #{
+    ExecutorOpts = #{
         max_supersteps => maps:get(max_supersteps, Options, MaxIterations),
-        num_workers => maps:get(workers, Options, 1),
         global_state => GlobalState,
         field_reducers => FieldReducers
     },
 
     %% 使用全局计算函数执行
     ComputeFn = graph_compute:compute_fn(),
-    Result = pregel:run(PregelGraph, ComputeFn, PregelOpts),
+    Result = graph_executor:run(PregelGraph, ComputeFn, ExecutorOpts),
 
     %% 提取结果
-    PregelResult = graph_compute:from_pregel_result(Result),
-    handle_pregel_result(PregelResult, InitialState, Options).
+    ExecutorResult = graph_compute:from_pregel_result(Result),
+    handle_pregel_result(ExecutorResult, InitialState, Options).
 
 %% @private Snapshot 执行模式（使用步进式 API）
 %%
-%% 委托给 graph_snapshot 模块处理
+%% 委托给 graph_snapshot 模块处理。
+%% 如果配置了 store，自动生成 on_snapshot callback。
 -spec run_with_snapshot(graph(), state(), run_options()) -> run_result().
 run_with_snapshot(Graph, InitialState, Options) ->
     ActualGlobalState = maps:get(global_state, Options, InitialState),
-    graph_snapshot:run_with_snapshot(Graph, InitialState, ActualGlobalState, Options).
+    %% 如果配置了 store，注入自动快照的 on_snapshot 回调
+    OptionsWithStore = maybe_inject_store_callback(Options),
+    graph_snapshot:run_with_snapshot(Graph, InitialState, ActualGlobalState, OptionsWithStore).
+
+%% @private 如果配置了 store，生成自动保存的 on_snapshot 回调
+-spec maybe_inject_store_callback(run_options()) -> run_options().
+maybe_inject_store_callback(Options) ->
+    case maps:get(store, Options, undefined) of
+        undefined ->
+            Options;
+        {StoreModule, StoreRef} ->
+            %% 获取快照策略和图名称
+            Strategy = maps:get(snapshot_strategy, Options, every_superstep),
+            GraphName = maps:get(graph_name, Options, undefined),
+
+            %% 获取用户提供的原始回调（如果有）
+            UserCallback = maps:get(on_snapshot, Options, fun(_, _) -> continue end),
+
+            %% 创建包装回调
+            StoreCallback = make_store_callback(StoreModule, StoreRef, Strategy, GraphName, UserCallback),
+            Options#{on_snapshot => StoreCallback}
+    end.
+
+%% @private 创建 store 保存回调
+-spec make_store_callback(module(), term(), snapshot_strategy(), atom() | binary() | undefined, snapshot_callback()) ->
+    snapshot_callback().
+make_store_callback(StoreModule, StoreRef, Strategy, GraphName, UserCallback) ->
+    fun(Info, SnapshotData) ->
+        %% 先调用用户回调
+        UserResult = UserCallback(Info, SnapshotData),
+
+        %% 根据用户回调结果和策略决定是否保存
+        case UserResult of
+            {stop, _Reason} ->
+                %% 用户请求停止，总是保存
+                do_save_snapshot(StoreModule, StoreRef, SnapshotData, GraphName, stopped),
+                UserResult;
+            {retry, _VertexIds} ->
+                %% 重试时不保存
+                UserResult;
+            continue ->
+                %% 根据策略决定是否保存
+                Type = maps:get(type, SnapshotData),
+                Superstep = maps:get(superstep, SnapshotData, 0),
+                case should_save(Strategy, Type, Superstep) of
+                    true ->
+                        do_save_snapshot(StoreModule, StoreRef, SnapshotData, GraphName, Type),
+                        continue;
+                    false ->
+                        continue
+                end
+        end
+    end.
+
+%% @private 根据策略判断是否需要保存
+-spec should_save(snapshot_strategy(), atom(), non_neg_integer()) -> boolean().
+should_save(every_superstep, _Type, _Superstep) ->
+    true;
+should_save({every_n, N}, _Type, Superstep) ->
+    Superstep rem N =:= 0;
+should_save(on_interrupt, interrupt, _Superstep) ->
+    true;
+should_save(on_interrupt, _Type, _Superstep) ->
+    false;
+should_save(on_error, error, _Superstep) ->
+    true;
+should_save(on_error, _Type, _Superstep) ->
+    false;
+should_save(manual, _Type, _Superstep) ->
+    false.
+
+%% @private 执行快照保存
+-spec do_save_snapshot(module(), term(), snapshot_data(), atom() | binary() | undefined, atom()) -> ok.
+do_save_snapshot(StoreModule, StoreRef, SnapshotData, GraphName, TriggerType) ->
+    Superstep = maps:get(superstep, SnapshotData, 0),
+    SaveOpts = #{
+        graph_name => GraphName,
+        trigger => trigger_from_type(TriggerType),
+        superstep => Superstep,
+        metadata => #{}
+    },
+    %% 异步保存，不阻塞执行
+    %% 错误仅记录日志，不影响图执行
+    case StoreModule:save_snapshot(StoreRef, SnapshotData, SaveOpts) of
+        {ok, _SnapshotId} ->
+            ok;
+        {error, Reason} ->
+            error_logger:warning_msg("Failed to save graph snapshot: ~p~n", [Reason]),
+            ok
+    end.
+
+%% @private 将 snapshot type 转换为 trigger type
+-spec trigger_from_type(atom()) -> beamai_graph_store_behaviour:trigger_type().
+trigger_from_type(initial) -> superstep_completed;
+trigger_from_type(step) -> superstep_completed;
+trigger_from_type(error) -> error_occurred;
+trigger_from_type(interrupt) -> interrupted;
+trigger_from_type(final) -> completed;
+trigger_from_type(stopped) -> manual.
 
 %% Snapshot 相关函数已移至 graph_snapshot 模块
 

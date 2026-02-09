@@ -179,38 +179,51 @@ command_no_goto_uses_edge_routing_test() ->
     FinalState = maps:get(final_state, Result),
     ?assertEqual(2, graph_state:get(FinalState, count)).
 
-%% 测试：Command goto 多节点并行（Pregel 模式）
+%% 测试：Command goto 多节点并行（需要 poolboy 池）
 command_goto_parallel_nodes_test() ->
-    %% 分发节点同时激活多个 worker
-    DispatchFun = fun(_State, _) ->
-        {command, graph_command:new(#{
-            update => #{dispatched => true},
-            goto => [worker_a, worker_b]
-        })}
-    end,
-    WorkerAFun = fun(State, _) ->
-        {ok, graph_state:set(State, worker_a_done, true)}
-    end,
-    WorkerBFun = fun(State, _) ->
-        {ok, graph_state:set(State, worker_b_done, true)}
-    end,
+    %% 启动测试池（并行执行需要 poolboy）
+    PoolArgs = [
+        {name, {local, beamai_graph_pool}},
+        {worker_module, graph_pool_worker},
+        {size, 4},
+        {max_overflow, 4},
+        {strategy, fifo}
+    ],
+    {ok, PoolPid} = poolboy:start_link(PoolArgs, []),
+    try
+        %% 分发节点同时激活多个 worker
+        DispatchFun = fun(_State, _) ->
+            {command, graph_command:new(#{
+                update => #{dispatched => true},
+                goto => [worker_a, worker_b]
+            })}
+        end,
+        WorkerAFun = fun(State, _) ->
+            {ok, graph_state:set(State, worker_a_done, true)}
+        end,
+        WorkerBFun = fun(State, _) ->
+            {ok, graph_state:set(State, worker_b_done, true)}
+        end,
 
-    {ok, Graph} = graph:build([
-        {node, dispatch, DispatchFun},
-        {node, worker_a, WorkerAFun},
-        {node, worker_b, WorkerBFun},
-        {edge, worker_a, '__end__'},
-        {edge, worker_b, '__end__'},
-        {entry, dispatch}
-    ]),
+        {ok, Graph} = graph:build([
+            {node, dispatch, DispatchFun},
+            {node, worker_a, WorkerAFun},
+            {node, worker_b, WorkerBFun},
+            {edge, worker_a, '__end__'},
+            {edge, worker_b, '__end__'},
+            {entry, dispatch}
+        ]),
 
-    InitialState = graph:state(#{}),
-    Result = graph:run(Graph, InitialState),
-    ?assertEqual(completed, maps:get(status, Result)),
-    FinalState = maps:get(final_state, Result),
-    ?assertEqual(true, graph_state:get(FinalState, dispatched)),
-    ?assertEqual(true, graph_state:get(FinalState, worker_a_done)),
-    ?assertEqual(true, graph_state:get(FinalState, worker_b_done)).
+        InitialState = graph:state(#{}),
+        Result = graph:run(Graph, InitialState),
+        ?assertEqual(completed, maps:get(status, Result)),
+        FinalState = maps:get(final_state, Result),
+        ?assertEqual(true, graph_state:get(FinalState, dispatched)),
+        ?assertEqual(true, graph_state:get(FinalState, worker_a_done)),
+        ?assertEqual(true, graph_state:get(FinalState, worker_b_done))
+    after
+        gen_server:stop(PoolPid)
+    end.
 
 %%====================================================================
 %% 回归测试：现有 {ok, State} 代码不受影响

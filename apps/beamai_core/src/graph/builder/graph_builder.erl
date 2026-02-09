@@ -52,7 +52,7 @@
 %%
 %% 注意: nodes/edges/config 已整合到 pregel_graph 的顶点中
 -type graph() :: #{
-    pregel_graph := pregel:graph(),           %% 预构建的 Pregel 图
+    pregel_graph := pregel_graph:graph(),      %% 预构建的 Pregel 图
     entry := node_id(),                       %% 入口节点
     max_iterations := pos_integer()           %% 最大迭代次数
 }.
@@ -183,9 +183,9 @@ build_graph(#{nodes := Nodes, edges := Edges, entry := Entry, config := Config})
 %% 图执行模式：除 __start__ 外，所有顶点初始为 halted 状态
 %% 这确保执行从 __start__ 开始，通过边激活后续顶点
 -spec build_pregel_graph(#{node_id() => graph_node:graph_node()},
-                         #{node_id() => [graph_edge:edge()]}) -> pregel:graph().
+                         #{node_id() => [graph_edge:edge()]}) -> pregel_graph:graph().
 build_pregel_graph(Nodes, EdgeMap) ->
-    EmptyGraph = pregel:new_graph(),
+    EmptyGraph = pregel_graph:new(),
     Graph = maps:fold(
         fun(NodeId, Node, AccGraph) ->
             %% 从 graph_node 提取 fun_ 和 metadata
@@ -204,7 +204,7 @@ build_pregel_graph(Nodes, EdgeMap) ->
     halt_non_start_vertices(Graph).
 
 %% @private 将除 __start__ 外的所有顶点设为 halted
--spec halt_non_start_vertices(pregel:graph()) -> pregel:graph().
+-spec halt_non_start_vertices(pregel_graph:graph()) -> pregel_graph:graph().
 halt_non_start_vertices(Graph) ->
     pregel_graph:map(Graph, fun(Vertex) ->
         case pregel_vertex:id(Vertex) of

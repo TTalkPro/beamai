@@ -13,9 +13,9 @@
 %%% - init_fresh/2: 全新启动，调用各步骤的 Module:init(Config)
 %%% - init_from_restored/2: 从快照恢复，直接使用恢复的步骤状态
 %%%
-%%% == 自动 Checkpoint ==
+%%% == 自动 Snapshot ==
 %%%
-%%% 通过 Opts 传入 store（{Module, Ref}）和 checkpoint_policy 配置。
+%%% 通过 Opts 传入 store（{Module, Ref}）和 snapshot_policy 配置。
 %%% 在关键状态转换点异步保存快照，失败不阻塞流程执行。
 %%% Module 需实现 beamai_process_store_behaviour 行为。
 %%%
@@ -66,8 +66,10 @@
     opts :: map(),
     %% 存储后端引用：{Module, Ref}，Module 需实现 beamai_process_store_behaviour
     store :: {module(), term()} | undefined,
-    %% 自动 checkpoint 策略配置
-    checkpoint_policy :: map(),
+    %% 自动 snapshot 策略配置
+    snapshot_policy :: map(),
+    %% 步骤完成计数器（用于 every_n_steps）
+    snapshot_step_counter = 0 :: non_neg_integer(),
     %% 静止点回调：所有并发步骤执行完毕时触发
     %% 签名: fun(QuiescentInfo :: map()) -> ok
     %% QuiescentInfo 格式见 build_quiescent_info/3
@@ -153,7 +155,7 @@ init_fresh(ProcessSpec, Opts) ->
             InitialEvents = maps:get(initial_events, ProcessSpec, []),
             Queue = queue:from_list(InitialEvents),
             Store = maps:get(store, Opts, undefined),
-            CheckpointPolicy = maps:get(checkpoint_policy, Opts, default_checkpoint_policy()),
+            SnapshotPolicy = maps:get(snapshot_policy, Opts, default_snapshot_policy()),
             OnQuiescent = maps:get(on_quiescent, Opts, undefined),
             Data = #data{
                 process_spec = ProcessSpec,
@@ -168,7 +170,7 @@ init_fresh(ProcessSpec, Opts) ->
                 caller = maps:get(caller, Opts, undefined),
                 opts = Opts,
                 store = Store,
-                checkpoint_policy = CheckpointPolicy,
+                snapshot_policy = SnapshotPolicy,
                 on_quiescent = OnQuiescent
             },
             case queue:is_empty(Queue) of
@@ -206,7 +208,7 @@ build_restored_data(ProcessSpec, Opts) ->
         caller = maps:get(caller, Opts, undefined),
         opts = Opts,
         store = maps:get(store, Opts, undefined),
-        checkpoint_policy = maps:get(checkpoint_policy, Opts, default_checkpoint_policy()),
+        snapshot_policy = maps:get(snapshot_policy, Opts, default_snapshot_policy()),
         on_quiescent = maps:get(on_quiescent, Opts, undefined)
     }.
 
@@ -445,14 +447,14 @@ execute_steps(ActivatedSteps, #data{process_spec = #{execution_mode := Mode},
 apply_sequential_results([], Data) ->
     process_event_queue(Data);
 apply_sequential_results([{StepId, {events, Events, _NewStepState}} | Rest], Data) ->
-    maybe_checkpoint(step_completed, StepId, Data),
-    Data1 = enqueue_events(Events, Data),
-    apply_sequential_results(Rest, Data1);
+    Data1 = maybe_snapshot(step_completed, StepId, Data),
+    Data2 = enqueue_events(Events, Data1),
+    apply_sequential_results(Rest, Data2);
 apply_sequential_results([{StepId, {pause, Reason, _NewStepState}} | _], Data) ->
     Data1 = Data#data{paused_step = StepId, pause_reason = Reason},
     notify_quiescent(paused, Data1),
-    maybe_checkpoint(paused, StepId, Data1),
-    {next_state, paused, Data1};
+    Data2 = maybe_snapshot(paused, StepId, Data1),
+    {next_state, paused, Data2};
 apply_sequential_results([{_StepId, {error, Reason}} | _], Data) ->
     handle_error(Reason, Data).
 
@@ -494,9 +496,9 @@ apply_step_results_loop([{StepId, Result} | Rest], #data{steps_state = StepsStat
         {events, Events, NewStepState} ->
             StepsState1 = StepsState#{StepId => NewStepState},
             Data1 = Data#data{steps_state = StepsState1},
-            maybe_checkpoint(step_completed, StepId, Data1),
-            Data2 = enqueue_events(Events, Data1),
-            apply_step_results_loop(Rest, Data2);
+            Data2 = maybe_snapshot(step_completed, StepId, Data1),
+            Data3 = enqueue_events(Events, Data2),
+            apply_step_results_loop(Rest, Data3);
         {pause, Reason, NewStepState} ->
             StepsState1 = StepsState#{StepId => NewStepState},
             Data1 = Data#data{
@@ -505,8 +507,8 @@ apply_step_results_loop([{StepId, Result} | Rest], #data{steps_state = StepsStat
                 pause_reason = Reason
             },
             notify_quiescent(paused, Data1),
-            maybe_checkpoint(paused, StepId, Data1),
-            {next_state, paused, Data1};
+            Data2 = maybe_snapshot(paused, StepId, Data1),
+            {next_state, paused, Data2};
         {error, Reason} ->
             handle_error(Reason, Data)
     end.
@@ -536,21 +538,21 @@ enqueue_events(Events, #data{event_queue = Queue} = Data) ->
 
 %% @private 转入完成状态并通知调用者
 transition_to_completed(#data{caller = Caller, steps_state = StepsState} = Data) ->
-    maybe_checkpoint(completed, undefined, Data),
+    Data1 = maybe_snapshot(completed, undefined, Data),
     case Caller of
         undefined -> ok;
         Pid -> Pid ! {process_completed, self(), StepsState}
     end,
-    {next_state, completed, Data}.
+    {next_state, completed, Data1}.
 
 %% @private 转入失败状态并通知调用者
 transition_to_failed(Reason, #data{caller = Caller} = Data) ->
-    maybe_checkpoint(error, undefined, Data),
+    Data1 = maybe_snapshot(error, undefined, Data),
     case Caller of
         undefined -> ok;
         Pid -> Pid ! {process_failed, self(), Reason}
     end,
-    {next_state, failed, Data#data{pause_reason = Reason}}.
+    {next_state, failed, Data1#data{pause_reason = Reason}}.
 
 %% @private 处理步骤执行错误
 %% 若配置了 error_handler 则尝试恢复，否则直接转入失败状态
@@ -629,66 +631,96 @@ do_snapshot(StateName, #data{process_spec = ProcessSpec,
     }).
 
 %%====================================================================
-%% 内部函数 - 自动 Checkpoint
+%% 内部函数 - 自动 Snapshot
 %%====================================================================
 
-%% @private 默认 checkpoint 策略
+%% @private 默认 snapshot 策略
 %%
 %% 默认策略：暂停、完成、错误时保存快照，步骤完成时不保存。
--spec default_checkpoint_policy() -> map().
-default_checkpoint_policy() ->
+%% every_n_steps: 0 = 禁用；N = 每 N 个步骤完成自动保存。
+-spec default_snapshot_policy() -> map().
+default_snapshot_policy() ->
     #{
         on_step_completed => false,
         on_pause => true,
         on_complete => true,
         on_error => true,
+        every_n_steps => 0,
         metadata => #{}
     }.
 
-%% @private 根据策略决定是否执行 checkpoint
+%% @private 根据策略决定是否执行 snapshot
 %%
 %% 检查当前触发类型是否在策略中启用。
+%% 当 Trigger =:= step_completed 时，递增 snapshot_step_counter，
+%% 先检查 on_step_completed 布尔开关，若关闭再检查 every_n_steps。
 %% 若启用且 store 已配置，异步 spawn 调用 Module:save_snapshot/3。
 %% 保存失败仅记录 warning 日志，不阻塞流程执行。
 %%
 %% @param Trigger 触发类型（step_completed | paused | completed | error）
 %% @param StepId 触发步骤 ID（可为 undefined）
 %% @param Data 当前运行时数据
--spec maybe_checkpoint(atom(), atom() | undefined, #data{}) -> ok.
-maybe_checkpoint(_Trigger, _StepId, #data{store = undefined}) ->
+%% @returns 更新后的 #data{}（可能更新了 snapshot_step_counter）
+-spec maybe_snapshot(atom(), atom() | undefined, #data{}) -> #data{}.
+maybe_snapshot(_Trigger, _StepId, #data{store = undefined} = Data) ->
     %% 未配置 store，跳过
-    ok;
-maybe_checkpoint(Trigger, StepId, #data{store = {Module, Ref},
-                                         checkpoint_policy = Policy,
-                                         process_spec = #{name := ProcessName}} = Data) ->
+    Data;
+maybe_snapshot(step_completed, StepId, #data{store = {Module, Ref},
+                                              snapshot_policy = Policy,
+                                              snapshot_step_counter = Counter,
+                                              process_spec = #{name := ProcessName}} = Data) ->
+    NewCounter = Counter + 1,
+    Data1 = Data#data{snapshot_step_counter = NewCounter},
+    ShouldSave = case maps:get(on_step_completed, Policy, false) of
+        true ->
+            true;
+        false ->
+            N = maps:get(every_n_steps, Policy, 0),
+            N > 0 andalso NewCounter rem N =:= 0
+    end,
+    case ShouldSave of
+        false ->
+            Data1;
+        true ->
+            do_save_snapshot(Module, Ref, step_completed, StepId, Policy, ProcessName, Data1),
+            Data1
+    end;
+maybe_snapshot(Trigger, StepId, #data{store = {Module, Ref},
+                                       snapshot_policy = Policy,
+                                       process_spec = #{name := ProcessName}} = Data) ->
     PolicyKey = trigger_to_policy_key(Trigger),
     case maps:get(PolicyKey, Policy, false) of
         false ->
-            ok;
+            Data;
         true ->
-            %% 生成快照并异步保存
-            Snapshot = do_snapshot(trigger_to_state(Trigger), Data),
-            PolicyMetadata = maps:get(metadata, Policy, #{}),
-            SaveOpts = #{
-                process_name => ProcessName,
-                trigger => Trigger,
-                step_id => StepId,
-                metadata => PolicyMetadata
-            },
-            spawn(fun() ->
-                case Module:save_snapshot(Ref, Snapshot, SaveOpts) of
-                    {ok, _SnapshotId} ->
-                        ok;
-                    {error, Reason} ->
-                        logger:warning(
-                            "[beamai_process_runtime] checkpoint 保存失败: "
-                            "trigger=~p, step=~p, reason=~p",
-                            [Trigger, StepId, Reason]
-                        )
-                end
-            end),
-            ok
+            do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Data),
+            Data
     end.
+
+%% @private 异步保存快照
+-spec do_save_snapshot(module(), term(), atom(), atom() | undefined, map(), atom(), #data{}) -> ok.
+do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Data) ->
+    Snapshot = do_snapshot(trigger_to_state(Trigger), Data),
+    PolicyMetadata = maps:get(metadata, Policy, #{}),
+    SaveOpts = #{
+        process_name => ProcessName,
+        trigger => Trigger,
+        step_id => StepId,
+        metadata => PolicyMetadata
+    },
+    spawn(fun() ->
+        case Module:save_snapshot(Ref, Snapshot, SaveOpts) of
+            {ok, _SnapshotId} ->
+                ok;
+            {error, Reason} ->
+                logger:warning(
+                    "[beamai_process_runtime] snapshot 保存失败: "
+                    "trigger=~p, step=~p, reason=~p",
+                    [Trigger, StepId, Reason]
+                )
+        end
+    end),
+    ok.
 
 %% @private 触发类型映射到策略键
 -spec trigger_to_policy_key(atom()) -> atom().

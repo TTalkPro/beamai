@@ -146,8 +146,8 @@ start(ProcessSpec) ->
 %% Opts 支持的选项：
 %% - context: beamai_context:t()，共享上下文
 %% - caller: pid()，完成/失败时通知的进程
-%% - store: {Module, Ref}，存储后端（用于自动 checkpoint）
-%% - checkpoint_policy: map()，checkpoint 策略配置
+%% - store: {Module, Ref}，存储后端（用于自动 snapshot）
+%% - snapshot_policy: map()，snapshot 策略配置
 %% - on_quiescent: fun(QuiescentInfo :: map()) -> ok
 %%   静止点回调，当所有并发步骤执行完毕时触发。
 %%   QuiescentInfo 包含 process_name、reason、status、step_states 等字段。

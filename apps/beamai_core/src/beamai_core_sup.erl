@@ -4,7 +4,7 @@
 %%% 管理 beamai_core 的核心进程：
 %%% - beamai_http_pool: HTTP 连接池（仅当使用 Gun 后端时）
 %%% - beamai_process_pool: Process step worker 池（poolboy）
-%%% - beamai_dispatch_pool: Pregel dispatch worker 池（poolboy）
+%%% - beamai_graph_pool: Graph executor worker 池（poolboy）
 %%% - beamai_process_sup: Process runtime 动态 supervisor
 %%%
 %%% @end
@@ -59,11 +59,11 @@ get_children() ->
         true -> [process_pool_spec()];
         false -> []
     end,
-    DispatchChildren = case should_start_dispatch_pool() of
-        true -> [dispatch_pool_spec()];
+    GraphChildren = case should_start_graph_pool() of
+        true -> [graph_pool_spec()];
         false -> []
     end,
-    HttpChildren ++ ProcessChildren ++ DispatchChildren ++ [process_sup_spec()].
+    HttpChildren ++ ProcessChildren ++ GraphChildren ++ [process_sup_spec()].
 
 %% @private 默认池大小计算（CPU * 2）
 default_pool_size() ->
@@ -91,9 +91,9 @@ should_start_process_pool() ->
         true -> code:which(poolboy) =/= non_existing
     end.
 
-%% @private 判断是否需要启动 Dispatch pool
-should_start_dispatch_pool() ->
-    case application:get_env(beamai_core, dispatch_pool_enabled, true) of
+%% @private 判断是否需要启动 Graph pool
+should_start_graph_pool() ->
+    case application:get_env(beamai_core, graph_pool_enabled, true) of
         false -> false;
         true -> code:which(poolboy) =/= non_existing
     end.
@@ -124,20 +124,20 @@ process_pool_spec() ->
     ],
     poolboy:child_spec(beamai_process_pool, PoolArgs, []).
 
-%% @private Dispatch worker pool 规格 (poolboy)
-dispatch_pool_spec() ->
-    PoolConfig = application:get_env(beamai_core, dispatch_pool, #{}),
+%% @private Graph executor worker pool 规格 (poolboy)
+graph_pool_spec() ->
+    PoolConfig = application:get_env(beamai_core, graph_pool, #{}),
     DefaultSize = default_pool_size(),
     Size = maps:get(size, PoolConfig, DefaultSize),
     MaxOverflow = maps:get(max_overflow, PoolConfig, DefaultSize * 2),
     PoolArgs = [
-        {name, {local, beamai_dispatch_pool}},
-        {worker_module, pregel_dispatch_worker},
+        {name, {local, beamai_graph_pool}},
+        {worker_module, graph_pool_worker},
         {size, Size},
         {max_overflow, MaxOverflow},
         {strategy, fifo}
     ],
-    poolboy:child_spec(beamai_dispatch_pool, PoolArgs, []).
+    poolboy:child_spec(beamai_graph_pool, PoolArgs, []).
 
 %% @private Process runtime supervisor 规格
 process_sup_spec() ->

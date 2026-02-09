@@ -2,7 +2,7 @@
 %%% @doc 流程存储行为定义（Process Store Behaviour）
 %%%
 %%% 定义流程快照持久化的统一接口。
-%%% 实现此行为的模块可用于 runtime 自动 checkpoint 功能。
+%%% 实现此行为的模块可用于 runtime 自动 snapshot 功能。
 %%%
 %%% == 设计原则 ==
 %%%

@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc Pregel Dispatch Worker
+%%% @doc Graph Pool Worker
 %%%
 %%% poolboy 管理的无状态 worker 进程。
 %%% 接收 {execute, ComputeFn, Context} 调用，try-catch 包裹执行。
@@ -7,7 +7,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(pregel_dispatch_worker).
+-module(graph_pool_worker).
 -behaviour(gen_server).
 
 -export([start_link/1]).
@@ -32,7 +32,7 @@ handle_call({execute, ComputeFn, Context}, _From, State) ->
         {ok, ComputeFn(Context)}
     catch
         Class:Reason:Stack ->
-            {error, {dispatch_error, {Class, Reason, Stack}}}
+            {error, {compute_error, {Class, Reason, Stack}}}
     end,
     {reply, Result, State};
 handle_call(_Request, _From, State) ->

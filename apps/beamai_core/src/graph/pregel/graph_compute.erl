@@ -45,7 +45,7 @@
 %% - status => ok: 计算成功
 %% - status => {error, Reason}: 计算失败
 %% - status => {interrupt, Reason}: 请求中断（human-in-the-loop）
--spec compute_fn() -> fun((pregel_worker:context()) -> pregel_worker:compute_result()).
+-spec compute_fn() -> fun((graph_executor:context()) -> graph_executor:compute_result()).
 compute_fn() ->
     fun(Ctx) ->
         try
@@ -65,7 +65,7 @@ compute_fn() ->
 %% 无 inbox 版本：节点通过被激活来触发计算
 %% - 不再从 inbox 读取消息
 %% - 从 global_state 读取所有需要的数据
--spec execute_node(pregel_worker:context()) -> pregel_worker:compute_result().
+-spec execute_node(graph_executor:context()) -> graph_executor:compute_result().
 execute_node(Ctx) ->
     #{vertex_id := VertexId, global_state := GlobalState} = Ctx,
 
@@ -82,25 +82,22 @@ execute_node(Ctx) ->
 %%
 %% 全局状态模式：直接返回 global_state
 %% 如果有失败的顶点，返回错误
--spec from_pregel_result(pregel:result()) -> {ok, graph_state:state()} | {error, term()}.
+-spec from_pregel_result(graph_executor:result()) -> {ok, graph_state:state()} | {error, term()}.
 from_pregel_result(Result) ->
     %% 首先检查是否有失败的顶点
     FailedCount = maps:get(failed_count, Result, 0),
+    GlobalState = maps:get(global_state, Result),
     case FailedCount > 0 of
         true ->
-            GlobalState = pregel:get_result_global_state(Result),
             FailedVertices = maps:get(failed_vertices, Result, []),
             {error, {partial_result, GlobalState, {node_failures, FailedVertices}}};
         false ->
-            case pregel:get_result_status(Result) of
+            case maps:get(status, Result) of
                 completed ->
-                    GlobalState = pregel:get_result_global_state(Result),
                     {ok, GlobalState};
                 max_supersteps ->
-                    GlobalState = pregel:get_result_global_state(Result),
                     {error, {partial_result, GlobalState, max_iterations_exceeded}};
                 {error, Reason} ->
-                    GlobalState = pregel:get_result_global_state(Result),
                     {error, {partial_result, GlobalState, Reason}}
             end
     end.
@@ -115,8 +112,8 @@ from_pregel_result(Result) ->
 %% - 超步 0 时自动激活
 %% - 后续超步由 Master 通过 activations 激活
 %% 扁平化模式：顶点直接包含 fun_/metadata/routing_edges
--spec handle_start_node(pregel_worker:context(), graph_state:state()) ->
-    pregel_worker:compute_result().
+-spec handle_start_node(graph_executor:context(), graph_state:state()) ->
+    graph_executor:compute_result().
 handle_start_node(Ctx, GlobalState) ->
     #{vertex := Vertex} = Ctx,
     execute_and_route(Ctx, GlobalState, Vertex).
@@ -124,8 +121,8 @@ handle_start_node(Ctx, GlobalState) ->
 %% @private 处理终止节点
 %%
 %% 无 inbox 版本：终止节点被激活时标记执行完成
--spec handle_end_node(pregel_worker:context()) ->
-    pregel_worker:compute_result().
+-spec handle_end_node(graph_executor:context()) ->
+    graph_executor:compute_result().
 handle_end_node(_Ctx) ->
     %% 终止节点被激活，标记完成，不激活其他节点
     #{delta => #{}, activations => [], status => ok}.
@@ -135,8 +132,8 @@ handle_end_node(_Ctx) ->
 %% 无 inbox 版本：节点被激活时执行
 %% - resume 数据现在通过 global_state 传递
 %% 扁平化模式：顶点直接包含 fun_/metadata/routing_edges
--spec handle_regular_node(pregel_worker:context(), graph_state:state()) ->
-    pregel_worker:compute_result().
+-spec handle_regular_node(graph_executor:context(), graph_state:state()) ->
+    graph_executor:compute_result().
 handle_regular_node(Ctx, GlobalState) ->
     #{vertex := Vertex} = Ctx,
     execute_and_route(Ctx, GlobalState, Vertex).
@@ -149,8 +146,8 @@ handle_regular_node(Ctx, GlobalState) ->
 %%
 %% 扁平化模式：Vertex 直接包含 fun_/metadata/routing_edges
 %% 使用 pregel_vertex 访问器获取属性
--spec execute_and_route(pregel_worker:context(), graph_state:state(), pregel_vertex:vertex()) ->
-    pregel_worker:compute_result().
+-spec execute_and_route(graph_executor:context(), graph_state:state(), pregel_vertex:vertex()) ->
+    graph_executor:compute_result().
 execute_and_route(Ctx, GlobalState, Vertex) ->
     #{vertex_id := VertexId} = Ctx,
     VertexInput = maps:get(vertex_input, Ctx, undefined),
@@ -169,7 +166,7 @@ execute_and_route(Ctx, GlobalState, Vertex) ->
 
 %% @private 执行节点函数并路由
 -spec execute_fun_and_route(pregel_vertex:vertex_id(), term(), graph_state:state(), list(), map() | undefined) ->
-    pregel_worker:compute_result().
+    graph_executor:compute_result().
 execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput) ->
     try Fun(GlobalState, VertexInput) of
         {ok, NewState} ->
@@ -194,7 +191,7 @@ execute_fun_and_route(VertexId, Fun, GlobalState, RoutingEdges, VertexInput) ->
 
 %% @private 直接路由（无节点执行）
 -spec route_to_next(graph_state:state(), [graph_edge:edge()]) ->
-    pregel_worker:compute_result().
+    graph_executor:compute_result().
 route_to_next(State, Edges) ->
     Activations = build_activations(Edges, State),
     #{delta => #{}, activations => Activations, status => ok}.
@@ -231,7 +228,7 @@ compute_delta(OldState, NewState) ->
 %% Command 的 update 直接作为 delta（跳过 compute_delta）
 %% Command 的 goto 覆盖边路由（undefined 时回退正常路由）
 -spec handle_command(graph_command:command(), graph_state:state(), list()) ->
-    pregel_worker:compute_result().
+    graph_executor:compute_result().
 handle_command(Cmd, GlobalState, RoutingEdges) ->
     Delta = graph_command:get_update(Cmd),
     Goto = graph_command:get_goto(Cmd),
