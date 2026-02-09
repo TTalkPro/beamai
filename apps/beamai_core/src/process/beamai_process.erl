@@ -196,7 +196,7 @@ restore(Snapshot, Opts) ->
     case beamai_process_state:restore_from_snapshot(Snapshot) of
         {ok, Restored} ->
             ProcessSpec = maps:get(process_spec, Restored),
-            start(ProcessSpec, Opts#{restored => Restored});
+            start(ProcessSpec, Opts#{restore_from => Restored});
         {error, _} = Error ->
             Error
     end.
@@ -211,73 +211,83 @@ restore(Snapshot, Opts) ->
 run_sync(ProcessSpec) ->
     run_sync(ProcessSpec, #{}).
 
-%% @doc 启动流程并同步等待完成（带选项，可设置超时）
+%% @doc 在调用进程中直接同步执行流程
 %%
-%% 顺序模式下直接在调用进程中执行（无需 spawn 进程），
-%% 并发模式下通过 runtime 进程执行。
+%% 不启动任何额外进程，直接调用引擎执行。
+%% 仅支持 sequential 模式；concurrent 模式请使用 start/2。
+%%
+%% == HITL 支持 ==
+%%
+%% 首次执行遇到 paused 时返回 {paused, Reason, Snapshot}。
+%% 恢复执行时传入 snapshot 和 resume_data：
+%%   run_sync(Spec, #{snapshot => Snapshot, resume_data => Data})
+%%
+%% Opts 支持的选项：
+%% - snapshot: 之前暂停时返回的快照
+%% - resume_data: 恢复暂停所需的数据
 -spec run_sync(beamai_process_builder:process_spec(), map()) ->
-    {ok, map()} | {error, term()}.
+    {ok, map()} | {paused, term(), beamai_process_state:snapshot()} | {error, term()}.
 run_sync(ProcessSpec, Opts) ->
-    case maps:get(execution_mode, ProcessSpec, concurrent) of
-        sequential ->
-            run_sync_direct(ProcessSpec, Opts);
-        concurrent ->
-            Timeout = maps:get(timeout, Opts, 30000),
-            run_sync_via_process(ProcessSpec, Opts, Timeout)
-    end.
-
-%% @private 顺序模式：直接调用引擎，无需进程
-run_sync_direct(ProcessSpec, Opts) ->
     try
-        case beamai_process_engine:new(ProcessSpec, Opts) of
-            {ok, Engine} ->
-                case beamai_process_engine:run(Engine) of
-                    {ok, Engine1} ->
-                        case beamai_process_engine:current_state(Engine1) of
-                            completed ->
-                                {ok, beamai_process_engine:steps_state(Engine1)};
-                            failed ->
-                                {error, beamai_process_engine:pause_reason(Engine1)};
-                            paused ->
-                                {error, {paused, beamai_process_engine:pause_reason(Engine1)}};
-                            idle ->
-                                {ok, beamai_process_engine:steps_state(Engine1)}
-                        end;
-                    {execute_async, _, _} ->
-                        %% 不应发生在顺序模式，回退到进程模式
-                        Timeout = maps:get(timeout, Opts, 30000),
-                        run_sync_via_process(ProcessSpec, Opts, Timeout)
-                end;
-            {error, _} = Error ->
-                Error
+        case maps:get(snapshot, Opts, undefined) of
+            undefined ->
+                run_sync_fresh(ProcessSpec, Opts);
+            Snapshot ->
+                ResumeData = maps:get(resume_data, Opts, #{}),
+                run_sync_resume(ProcessSpec, Snapshot, ResumeData, Opts)
         end
     catch
         _:Reason ->
             {error, {execution_exception, Reason}}
     end.
 
-%% @private 并发模式：通过 runtime 进程执行
-run_sync_via_process(ProcessSpec, Opts, Timeout) ->
-    OptsWithCaller = Opts#{caller => self()},
-    case start(ProcessSpec, OptsWithCaller) of
-        {ok, Pid} ->
-            MonRef = monitor(process, Pid),
-            receive
-                {process_completed, Pid, StepsState} ->
-                    demonitor(MonRef, [flush]),
-                    {ok, StepsState};
-                {process_failed, Pid, Reason} ->
-                    demonitor(MonRef, [flush]),
-                    {error, Reason};
-                {'DOWN', MonRef, process, Pid, Reason} ->
-                    {error, {process_died, Reason}}
-            after Timeout ->
-                demonitor(MonRef, [flush]),
-                stop(Pid),
-                {error, timeout}
+%% @private 首次执行
+run_sync_fresh(ProcessSpec, Opts) ->
+    case beamai_process_engine:new(ProcessSpec, Opts) of
+        {ok, Engine} ->
+            run_sync_engine(Engine);
+        {error, _} = Error ->
+            Error
+    end.
+
+%% @private 从快照恢复并 resume
+run_sync_resume(ProcessSpec, Snapshot, ResumeData, Opts) ->
+    case beamai_process_state:restore_from_snapshot(Snapshot) of
+        {ok, Restored} ->
+            Restored1 = Restored#{process_spec => ProcessSpec},
+            case beamai_process_engine:from_restored(Restored1, Opts) of
+                {ok, Engine} ->
+                    case beamai_process_engine:handle_resume(ResumeData, Engine) of
+                        {ok, Engine1} ->
+                            run_sync_engine(Engine1);
+                        {error, Reason} ->
+                            {error, Reason};
+                        {error, Reason, _Engine1} ->
+                            {error, Reason}
+                    end
             end;
         {error, _} = Error ->
             Error
+    end.
+
+%% @private 运行引擎并处理结果
+run_sync_engine(Engine) ->
+    case beamai_process_engine:run(Engine) of
+        {ok, Engine1} ->
+            case beamai_process_engine:current_state(Engine1) of
+                completed ->
+                    {ok, beamai_process_engine:steps_state(Engine1)};
+                failed ->
+                    {error, beamai_process_engine:pause_reason(Engine1)};
+                paused ->
+                    Reason = beamai_process_engine:pause_reason(Engine1),
+                    Snapshot = beamai_process_engine:take_snapshot(Engine1),
+                    {paused, Reason, Snapshot};
+                idle ->
+                    {ok, beamai_process_engine:steps_state(Engine1)}
+            end;
+        {execute_async, _, _} ->
+            {error, {not_supported, concurrent_mode_use_start}}
     end.
 
 %%====================================================================

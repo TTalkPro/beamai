@@ -24,14 +24,12 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_state_reducer).
+-module(beamai_graph_state_reducer).
 
 %% API 导出
 -export([
     apply_delta/3,
-    apply_deltas/3,
-    merge_states/1,
-    merge_states/2
+    apply_deltas/3
 ]).
 
 %% 内置 Reducer 导出
@@ -80,7 +78,7 @@
 %% @param Delta 要应用的增量 #{field => value}
 %% @param FieldReducers 字段 Reducer 配置
 %% @returns 更新后的全局状态
--spec apply_delta(graph_state:state(), delta(), field_reducers()) -> graph_state:state().
+-spec apply_delta(beamai_graph_engine:state(), delta(), field_reducers()) -> beamai_graph_engine:state().
 apply_delta(State, Delta, _FieldReducers) when map_size(Delta) == 0 ->
     State;
 apply_delta(State, Delta, FieldReducers) ->
@@ -89,14 +87,14 @@ apply_delta(State, Delta, FieldReducers) ->
             case get_field_reducer(Field, FieldReducers) of
                 %% 转换型 reducer：写入不同的目标键，源键不保留
                 {transform, TargetKey, Reducer} ->
-                    OldValue = graph_state:get(AccState, TargetKey),
+                    OldValue = beamai_graph_engine:state_get(AccState, TargetKey),
                     MergedValue = apply_reducer(Reducer, OldValue, NewValue),
-                    graph_state:set(AccState, TargetKey, MergedValue);
+                    beamai_graph_engine:state_set(AccState, TargetKey, MergedValue);
                 %% 普通 reducer：同键合并
                 Reducer ->
-                    OldValue = graph_state:get(AccState, Field),
+                    OldValue = beamai_graph_engine:state_get(AccState, Field),
                     MergedValue = apply_reducer(Reducer, OldValue, NewValue),
-                    graph_state:set(AccState, Field, MergedValue)
+                    beamai_graph_engine:state_set(AccState, Field, MergedValue)
             end
         end,
         State,
@@ -111,7 +109,7 @@ apply_delta(State, Delta, FieldReducers) ->
 %% @param Deltas delta 列表
 %% @param FieldReducers 字段 Reducer 配置
 %% @returns 更新后的全局状态
--spec apply_deltas(graph_state:state(), [delta()], field_reducers()) -> graph_state:state().
+-spec apply_deltas(beamai_graph_engine:state(), [delta()], field_reducers()) -> beamai_graph_engine:state().
 apply_deltas(State, [], _FieldReducers) ->
     State;
 apply_deltas(State, Deltas, FieldReducers) ->
@@ -121,29 +119,6 @@ apply_deltas(State, Deltas, FieldReducers) ->
         end,
         State,
         Deltas
-    ).
-
-%% @doc 合并多个状态（使用默认 Reducer，即 last_write_win）
-%%
-%% 保留此函数以支持向后兼容，但在全局状态模式下建议使用
-%% apply_deltas/3 来处理增量更新。
--spec merge_states([graph_state:state()]) -> graph_state:state().
-merge_states(States) ->
-    merge_states(States, #{}).
-
-%% @doc 合并多个状态（使用自定义 Reducer）
--spec merge_states([graph_state:state()], field_reducers()) -> graph_state:state().
-merge_states([], _FieldReducers) ->
-    graph_state:new();
-merge_states([Single], _FieldReducers) ->
-    Single;
-merge_states([First | Rest], FieldReducers) ->
-    lists:foldl(
-        fun(State, Acc) ->
-            merge_two_states(Acc, State, FieldReducers)
-        end,
-        First,
-        Rest
     ).
 
 %%====================================================================
@@ -189,28 +164,6 @@ increment_reducer(_Old, _New) -> 0.  %% 两者都不是数字时返回 0
 %%====================================================================
 %% 内部函数
 %%====================================================================
-
-%% @private 合并两个状态
--spec merge_two_states(graph_state:state(), graph_state:state(), field_reducers()) ->
-    graph_state:state().
-merge_two_states(State1, State2, FieldReducers) ->
-    %% 获取两个状态的所有键
-    Keys1 = graph_state:keys(State1),
-    Keys2 = graph_state:keys(State2),
-    AllKeys = lists:usort(Keys1 ++ Keys2),
-
-    %% 对每个键应用对应的 Reducer
-    lists:foldl(
-        fun(Key, Acc) ->
-            OldValue = graph_state:get(State1, Key),
-            NewValue = graph_state:get(State2, Key),
-            Reducer = get_field_reducer(Key, FieldReducers),
-            MergedValue = apply_reducer(Reducer, OldValue, NewValue),
-            graph_state:set(Acc, Key, MergedValue)
-        end,
-        graph_state:new(),
-        AllKeys
-    ).
 
 %% @private 获取字段对应的 Reducer
 %%

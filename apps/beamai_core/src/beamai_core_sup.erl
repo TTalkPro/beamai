@@ -6,6 +6,7 @@
 %%% - beamai_process_pool: Process step worker 池（poolboy）
 %%% - beamai_graph_pool: Graph executor worker 池（poolboy）
 %%% - beamai_process_sup: Process runtime 动态 supervisor
+%%% - beamai_graph_sup: Graph runtime 动态 supervisor
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -63,7 +64,7 @@ get_children() ->
         true -> [graph_pool_spec()];
         false -> []
     end,
-    HttpChildren ++ ProcessChildren ++ GraphChildren ++ [process_sup_spec()].
+    HttpChildren ++ ProcessChildren ++ GraphChildren ++ [process_sup_spec(), graph_sup_spec()].
 
 %% @private 默认池大小计算（CPU * 2）
 default_pool_size() ->
@@ -132,7 +133,7 @@ graph_pool_spec() ->
     MaxOverflow = maps:get(max_overflow, PoolConfig, DefaultSize * 2),
     PoolArgs = [
         {name, {local, beamai_graph_pool}},
-        {worker_module, graph_pool_worker},
+        {worker_module, beamai_graph_pool_worker},
         {size, Size},
         {max_overflow, MaxOverflow},
         {strategy, fifo}
@@ -148,4 +149,15 @@ process_sup_spec() ->
         shutdown => infinity,
         type => supervisor,
         modules => [beamai_process_sup]
+    }.
+
+%% @private Graph runtime supervisor 规格
+graph_sup_spec() ->
+    #{
+        id => beamai_graph_sup,
+        start => {beamai_graph_sup, start_link, []},
+        restart => permanent,
+        shutdown => infinity,
+        type => supervisor,
+        modules => [beamai_graph_sup]
     }.

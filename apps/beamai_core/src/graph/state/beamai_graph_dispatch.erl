@@ -17,7 +17,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_dispatch).
+-module(beamai_graph_dispatch).
 
 %% Dispatch 创建
 -export([dispatch/1, dispatch/2, dispatch/3]).

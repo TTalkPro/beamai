@@ -7,7 +7,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_pool_worker).
+-module(beamai_graph_pool_worker).
 -behaviour(gen_server).
 
 -export([start_link/1]).

@@ -22,36 +22,36 @@
 %% 每次循环 count +1，达到目标值后退出
 run_counter() ->
     IncrementFun = fun(State, _Context) ->
-        Count = graph_state:get(State, count, 0),
+        Count = beamai_graph_engine:state_get(State, count, 0),
         io:format("  Incrementing: ~p -> ~p~n", [Count, Count + 1]),
-        {command, graph_command:goto(check, #{count => Count + 1})}
+        {command, beamai_graph_command:goto(check, #{count => Count + 1})}
     end,
 
     CheckFun = fun(State, _Context) ->
-        Count = graph_state:get(State, count, 0),
-        Target = graph_state:get(State, target, 5),
+        Count = beamai_graph_engine:state_get(State, count, 0),
+        Target = beamai_graph_engine:state_get(State, target, 5),
         case Count >= Target of
             true ->
                 io:format("  Reached target ~p, stopping.~n", [Target]),
-                {command, graph_command:goto('__end__', #{done => true})};
+                {command, beamai_graph_command:goto('__end__', #{done => true})};
             false ->
-                {command, graph_command:goto(increment)}
+                {command, beamai_graph_command:goto(increment)}
         end
     end,
 
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, increment, IncrementFun},
         {node, check, CheckFun},
         {entry, increment}
     ]),
 
-    State = graph:state(#{count => 0, target => 5}),
-    Result = graph:run(Graph, State),
+    State = beamai_graph:state(#{count => 0, target => 5}),
+    Result = beamai_graph:run(Graph, State),
 
     Final = maps:get(final_state, Result),
     io:format("Final count: ~p, done: ~p~n", [
-        graph_state:get(Final, count),
-        graph_state:get(Final, done)
+        beamai_graph_engine:state_get(Final, count),
+        beamai_graph_engine:state_get(Final, done)
     ]),
     Result.
 
@@ -66,49 +66,49 @@ run_agent_loop() ->
     Tasks = [<<"fetch_data">>, <<"process_data">>, <<"save_result">>],
 
     ThinkFun = fun(State, _Context) ->
-        Step = graph_state:get(State, step, 0),
-        TaskList = graph_state:get(State, tasks, []),
+        Step = beamai_graph_engine:state_get(State, step, 0),
+        TaskList = beamai_graph_engine:state_get(State, tasks, []),
         case Step < length(TaskList) of
             true ->
                 Task = lists:nth(Step + 1, TaskList),
                 io:format("  [Think] Next task: ~s~n", [Task]),
-                {command, graph_command:goto(act, #{current_task => Task})};
+                {command, beamai_graph_command:goto(act, #{current_task => Task})};
             false ->
                 io:format("  [Think] All tasks done.~n", []),
-                {command, graph_command:goto('__end__', #{status => all_done})}
+                {command, beamai_graph_command:goto('__end__', #{status => all_done})}
         end
     end,
 
     ActFun = fun(State, _Context) ->
-        Task = graph_state:get(State, current_task),
+        Task = beamai_graph_engine:state_get(State, current_task),
         io:format("  [Act] Executing: ~s~n", [Task]),
         %% 模拟动作执行结果
         ActionResult = <<"completed_", Task/binary>>,
-        {command, graph_command:goto(observe, #{action_result => ActionResult})}
+        {command, beamai_graph_command:goto(observe, #{action_result => ActionResult})}
     end,
 
     ObserveFun = fun(State, _Context) ->
-        ActionResult = graph_state:get(State, action_result),
-        Step = graph_state:get(State, step, 0),
-        History = graph_state:get(State, history, []),
+        ActionResult = beamai_graph_engine:state_get(State, action_result),
+        Step = beamai_graph_engine:state_get(State, step, 0),
+        History = beamai_graph_engine:state_get(State, history, []),
         io:format("  [Observe] Result: ~s~n", [ActionResult]),
         NewHistory = History ++ [ActionResult],
-        {command, graph_command:goto(think, #{
+        {command, beamai_graph_command:goto(think, #{
             step => Step + 1,
             history => NewHistory
         })}
     end,
 
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, think, ThinkFun},
         {node, act, ActFun},
         {node, observe, ObserveFun},
         {entry, think}
     ]),
 
-    State = graph:state(#{step => 0, tasks => Tasks, history => []}),
-    Result = graph:run(Graph, State),
+    State = beamai_graph:state(#{step => 0, tasks => Tasks, history => []}),
+    Result = beamai_graph:run(Graph, State),
 
     Final = maps:get(final_state, Result),
-    io:format("~nAgent completed. History: ~p~n", [graph_state:get(Final, history)]),
+    io:format("~nAgent completed. History: ~p~n", [beamai_graph_engine:state_get(Final, history)]),
     Result.

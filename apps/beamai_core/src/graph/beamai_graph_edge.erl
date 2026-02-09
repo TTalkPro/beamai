@@ -14,7 +14,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_edge).
+-module(beamai_graph_edge).
 
 %% API 导出
 -export([direct/2]).
@@ -26,8 +26,8 @@
 -export([is_valid/1]).
 
 %% 类型定义
--type node_id() :: graph_node:node_id().
--type router_fun() :: fun((graph_state:state()) -> node_id() | [node_id()]).
+-type node_id() :: beamai_graph_node:node_id().
+-type router_fun() :: fun((beamai_graph_engine:state()) -> node_id() | [node_id()]).
 -type route_map() :: #{term() => node_id()}.
 
 -type edge() :: #{
@@ -121,7 +121,7 @@ router(#{type := direct}) -> undefined.
 
 %% @doc 解析边，获取下一个节点
 %% 根据当前状态确定目标节点
--spec resolve(edge(), graph_state:state()) -> {ok, node_id() | [node_id()]} | {error, term()}.
+-spec resolve(edge(), beamai_graph_engine:state()) -> {ok, node_id() | [node_id()]} | {error, term()}.
 resolve(#{type := direct, to := To}, _State) ->
     {ok, To};
 resolve(#{type := fanout, targets := Targets}, _State) ->
@@ -130,7 +130,7 @@ resolve(#{type := conditional} = Edge, State) ->
     resolve_conditional(Edge, State).
 
 %% @doc 解析条件边
--spec resolve_conditional(edge(), graph_state:state()) -> {ok, node_id() | [node_id()]} | {error, term()}.
+-spec resolve_conditional(edge(), beamai_graph_engine:state()) -> {ok, node_id() | [node_id()]} | {error, term()}.
 resolve_conditional(#{router := Router} = Edge, State) ->
     try Router(State) of
         Result ->
@@ -145,7 +145,7 @@ resolve_conditional(#{router := Router} = Edge, State) ->
 %% 1. 单一节点 (atom)
 %% 2. 节点列表 (静态并行)
 %% 3. Send 列表 (动态并行，每个 Send 有独立状态)
--spec apply_route_map(edge(), term()) -> {ok, node_id() | [node_id()] | {dispatches, [graph_dispatch:dispatch()]}} | {error, term()}.
+-spec apply_route_map(edge(), term()) -> {ok, node_id() | [node_id()] | {dispatches, [beamai_graph_dispatch:dispatch()]}} | {error, term()}.
 apply_route_map(#{route_map := RouteMap}, Key) ->
     case maps:find(Key, RouteMap) of
         {ok, Target} -> {ok, Target};
@@ -155,7 +155,7 @@ apply_route_map(_Edge, NodeId) when is_atom(NodeId) ->
     {ok, NodeId};
 apply_route_map(_Edge, [First | _] = Result) ->
     %% 判断是节点列表还是 Send 列表
-    case graph_dispatch:is_dispatch(First) of
+    case beamai_graph_dispatch:is_dispatch(First) of
         true ->
             %% Dispatch 列表 - 动态并行分发
             {ok, {dispatches, Result}};
@@ -170,7 +170,7 @@ apply_route_map(_Edge, []) ->
     {ok, '__end__'};
 apply_route_map(_Edge, Other) ->
     %% 检查是否是单个 Send
-    case graph_dispatch:is_dispatch(Other) of
+    case beamai_graph_dispatch:is_dispatch(Other) of
         true -> {ok, {dispatches, [Other]}};
         false -> {error, {invalid_router_result, Other}}
     end.

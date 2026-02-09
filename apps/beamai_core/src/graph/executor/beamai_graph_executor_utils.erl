@@ -5,7 +5,7 @@
 %%% 负责顶点集合操作、activation 分离与聚合、snapshot 类型判定。
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_executor_utils).
+-module(beamai_graph_executor_utils).
 
 -export([get_all_vertices/2, vertices_to_map/1, merge_restored_vertices/2,
          filter_active_vertices/2, update_vertex_states/4, rebuild_graph/2,
@@ -14,21 +14,21 @@
          build_vertex_inputs/1,
          determine_snapshot_type/1, build_superstep_info/2]).
 
--type vertex_id() :: graph_executor:vertex_id().
--type vertex() :: pregel_vertex:vertex().
--type graph() :: pregel_graph:graph().
--type snapshot_type() :: graph_executor:snapshot_type().
--type superstep_info() :: graph_executor:superstep_info().
+-type vertex_id() :: beamai_graph_engine:vertex_id().
+-type vertex() :: beamai_pregel_vertex:vertex().
+-type graph() :: beamai_pregel_graph:graph().
+-type snapshot_type() :: beamai_graph_engine:snapshot_type().
+-type superstep_info() :: beamai_graph_engine:superstep_info().
 
 %%====================================================================
 %% 顶点管理
 %%====================================================================
 
 %% @doc 获取所有顶点（合并恢复的顶点）
--spec get_all_vertices(graph(), graph_executor:restore_opts() | undefined) ->
+-spec get_all_vertices(graph(), beamai_graph_engine:restore_opts() | undefined) ->
     #{vertex_id() => vertex()}.
 get_all_vertices(Graph, RestoreOpts) ->
-    BaseVertices = vertices_to_map(pregel_graph:vertices(Graph)),
+    BaseVertices = vertices_to_map(beamai_pregel_graph:vertices(Graph)),
     RestoredVertices = case RestoreOpts of
         #{vertices := V} -> V;
         _ -> #{}
@@ -38,7 +38,7 @@ get_all_vertices(Graph, RestoreOpts) ->
 %% @doc 将顶点列表转换为映射
 -spec vertices_to_map([vertex()]) -> #{vertex_id() => vertex()}.
 vertices_to_map(Vertices) ->
-    maps:from_list([{pregel_vertex:id(V), V} || V <- Vertices]).
+    maps:from_list([{beamai_pregel_vertex:id(V), V} || V <- Vertices]).
 
 %% @doc 合并恢复的顶点到基础顶点
 -spec merge_restored_vertices(#{vertex_id() => vertex()}, #{vertex_id() => vertex()}) ->
@@ -58,8 +58,8 @@ merge_restored_vertices(BaseVertices, RestoredVertices) ->
 %% @doc 重建图
 -spec rebuild_graph(graph(), #{vertex_id() => vertex()}) -> graph().
 rebuild_graph(OriginalGraph, Vertices) ->
-    pregel_graph:map(OriginalGraph, fun(Vertex) ->
-        Id = pregel_vertex:id(Vertex),
+    beamai_pregel_graph:map(OriginalGraph, fun(Vertex) ->
+        Id = beamai_pregel_vertex:id(Vertex),
         maps:get(Id, Vertices, Vertex)
     end).
 
@@ -70,7 +70,7 @@ filter_active_vertices(Vertices, Activations) ->
     ActivationSet = sets:from_list(Activations),
     maps:filter(
         fun(Id, V) ->
-            sets:is_element(Id, ActivationSet) orelse pregel_vertex:is_active(V)
+            sets:is_element(Id, ActivationSet) orelse beamai_pregel_vertex:is_active(V)
         end,
         Vertices
     ).
@@ -87,7 +87,7 @@ update_vertex_states(AllVertices, ActiveVertices, _FailedVertices, _InterruptedV
     maps:map(
         fun(Id, V) ->
             case lists:member(Id, ActiveIds) of
-                true -> pregel_vertex:halt(V);
+                true -> beamai_pregel_vertex:halt(V);
                 false -> V
             end
         end,
@@ -97,7 +97,7 @@ update_vertex_states(AllVertices, ActiveVertices, _FailedVertices, _InterruptedV
 %% @doc 统计活跃顶点数
 -spec count_active(#{vertex_id() => vertex()}) -> non_neg_integer().
 count_active(Vertices) ->
-    pregel_utils:map_count(fun pregel_vertex:is_active/1, Vertices).
+    beamai_pregel_utils:map_count(fun beamai_pregel_vertex:is_active/1, Vertices).
 
 %%====================================================================
 %% Activation 处理
@@ -114,16 +114,16 @@ get_activations_for_superstep(undefined, LastResults) ->
     maps:get(activations, LastResults, []).
 
 %% @doc 分离 dispatch 项和普通 activations
--spec separate_dispatches([term()]) -> {[{dispatch, graph_dispatch:dispatch()}], [vertex_id()]}.
+-spec separate_dispatches([term()]) -> {[{dispatch, beamai_graph_dispatch:dispatch()}], [vertex_id()]}.
 separate_dispatches(Activations) ->
     lists:partition(fun({dispatch, _}) -> true; (_) -> false end, Activations).
 
 %% @doc 将 dispatch 列表转为 VertexInputs 格式
--spec build_vertex_inputs([{dispatch, graph_dispatch:dispatch()}]) ->
-    #{vertex_id() => [graph_dispatch:dispatch()]}.
+-spec build_vertex_inputs([{dispatch, beamai_graph_dispatch:dispatch()}]) ->
+    #{vertex_id() => [beamai_graph_dispatch:dispatch()]}.
 build_vertex_inputs(Dispatches) ->
     lists:foldl(fun({dispatch, D}, Acc) ->
-        NodeId = graph_dispatch:get_node(D),
+        NodeId = beamai_graph_dispatch:get_node(D),
         Existing = maps:get(NodeId, Acc, []),
         Acc#{NodeId => Existing ++ [D]}
     end, #{}, Dispatches).

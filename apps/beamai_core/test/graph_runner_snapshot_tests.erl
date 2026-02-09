@@ -19,19 +19,19 @@
 %% 创建多步测试图（节点循环执行多次）
 make_multi_step_graph() ->
     ProcessFn = fun(State, _) ->
-        Count = graph_state:get(State, count, 0),
+        Count = beamai_graph_engine:state_get(State, count, 0),
         NewCount = Count + 1,
-        State1 = graph_state:set(State, count, NewCount),
-        {ok, graph_state:set(State1, last_count, NewCount)}
+        State1 = beamai_graph_engine:state_set(State, count, NewCount),
+        {ok, beamai_graph_engine:state_set(State1, last_count, NewCount)}
     end,
     RouterFn = fun(State) ->
-        Count = graph_state:get(State, count, 0),
+        Count = beamai_graph_engine:state_get(State, count, 0),
         case Count >= 3 of
             true -> '__end__';
             false -> process
         end
     end,
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, process, ProcessFn},
         {conditional_edge, process, RouterFn},
         {entry, process}
@@ -42,22 +42,22 @@ make_multi_step_graph() ->
 %% process -> review(interrupt) -> '__end__'
 make_interrupt_graph() ->
     ProcessFn = fun(State, _) ->
-        State1 = graph_state:set(State, processed, true),
-        {ok, graph_state:set(State1, count, 1)}
+        State1 = beamai_graph_engine:state_set(State, processed, true),
+        {ok, beamai_graph_engine:state_set(State1, count, 1)}
     end,
     ReviewFn = fun(State, _) ->
         %% 检查是否有 resume_data
         ResumeKey = <<"resume_data:review">>,
-        case graph_state:get(State, ResumeKey, undefined) of
+        case beamai_graph_engine:state_get(State, ResumeKey, undefined) of
             undefined ->
                 %% 没有 resume_data，触发 interrupt
                 {interrupt, need_approval, State};
             _ResumeData ->
                 %% 有 resume_data，继续执行
-                {ok, graph_state:set(State, approved, true)}
+                {ok, beamai_graph_engine:state_set(State, approved, true)}
         end
     end,
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, process, ProcessFn},
         {edge, process, review},
         {node, review, ReviewFn},
@@ -70,12 +70,12 @@ make_interrupt_graph() ->
 %% process -> fail_node(error) -> '__end__'
 make_error_graph() ->
     ProcessFn = fun(State, _) ->
-        {ok, graph_state:set(State, processed, true)}
+        {ok, beamai_graph_engine:state_set(State, processed, true)}
     end,
     FailFn = fun(_State, _) ->
         error(intentional_failure)
     end,
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, process, ProcessFn},
         {edge, process, fail_node},
         {node, fail_node, FailFn},
@@ -89,20 +89,20 @@ make_error_graph() ->
 %% flaky_node 检查 global_state 中的 retry_count 来决定是否失败
 make_flaky_error_graph() ->
     ProcessFn = fun(State, _) ->
-        {ok, graph_state:set(State, processed, true)}
+        {ok, beamai_graph_engine:state_set(State, processed, true)}
     end,
     FlakyFn = fun(State, _) ->
-        RetryCount = graph_state:get(State, retry_count, 0),
+        RetryCount = beamai_graph_engine:state_get(State, retry_count, 0),
         case RetryCount of
             0 ->
                 %% 第一次执行失败
                 error(transient_failure);
             _ ->
                 %% 重试时成功
-                {ok, graph_state:set(State, flaky_done, true)}
+                {ok, beamai_graph_engine:state_set(State, flaky_done, true)}
         end
     end,
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, process, ProcessFn},
         {edge, process, flaky_node},
         {node, flaky_node, FlakyFn},
@@ -133,18 +133,18 @@ snapshot_opts() ->
 %% 测试：正常图执行，无 snapshot 相关选项
 normal_execution_no_snapshot_test() ->
     Graph = make_multi_step_graph(),
-    InitialState = graph:state(#{count => 0}),
+    InitialState = beamai_graph:state(#{count => 0}),
 
-    Result = graph:run(Graph, InitialState, #{}),
+    Result = beamai_graph:run(Graph, InitialState, #{}),
 
     ?assertEqual(completed, maps:get(status, Result)),
     FinalState = maps:get(final_state, Result),
-    ?assertEqual(3, graph_state:get(FinalState, count)).
+    ?assertEqual(3, beamai_graph_engine:state_get(FinalState, count)).
 
 %% 测试：使用 store 选项时正常执行也通过 snapshot 模式
 normal_execution_with_store_test() ->
     Graph = make_multi_step_graph(),
-    InitialState = graph:state(#{count => 0}),
+    InitialState = beamai_graph:state(#{count => 0}),
 
     Self = self(),
     MockRef = make_ref(),
@@ -158,11 +158,11 @@ normal_execution_with_store_test() ->
             store => {mock_graph_store, MockRef},
             snapshot_strategy => every_superstep
         },
-        Result = graph:run(Graph, InitialState, Options),
+        Result = beamai_graph:run(Graph, InitialState, Options),
 
         ?assertEqual(completed, maps:get(status, Result)),
         FinalState = maps:get(final_state, Result),
-        ?assertEqual(3, graph_state:get(FinalState, count)),
+        ?assertEqual(3, beamai_graph_engine:state_get(FinalState, count)),
 
         %% 验证 store 被调用（至少一次）
         receive
@@ -181,11 +181,11 @@ normal_execution_with_store_test() ->
 %% 测试：图含 interrupt 节点，直接返回 #{status => interrupted}
 interrupt_returns_immediately_test() ->
     Graph = make_interrupt_graph(),
-    InitialState = graph:state(#{count => 0}),
+    InitialState = beamai_graph:state(#{count => 0}),
 
     setup_noop_store(),
     try
-        Result = graph:run(Graph, InitialState, snapshot_opts()),
+        Result = beamai_graph:run(Graph, InitialState, snapshot_opts()),
 
         %% 验证返回 interrupted 状态
         ?assertEqual(interrupted, maps:get(status, Result)),
@@ -211,11 +211,11 @@ interrupt_returns_immediately_test() ->
 %% 测试：图含 error 节点，直接返回 #{status => error}
 error_returns_immediately_test() ->
     Graph = make_error_graph(),
-    InitialState = graph:state(#{}),
+    InitialState = beamai_graph:state(#{}),
 
     setup_noop_store(),
     try
-        Result = graph:run(Graph, InitialState, snapshot_opts()),
+        Result = beamai_graph:run(Graph, InitialState, snapshot_opts()),
 
         %% 验证返回 error 状态
         ?assertEqual(error, maps:get(status, Result)),
@@ -241,12 +241,12 @@ error_returns_immediately_test() ->
 %% 测试：从 interrupt 恢复执行
 restore_from_interrupt_test() ->
     Graph = make_interrupt_graph(),
-    InitialState = graph:state(#{count => 0}),
+    InitialState = beamai_graph:state(#{count => 0}),
 
     setup_noop_store(),
     try
         %% 第一次执行：触发 interrupt
-        Result1 = graph:run(Graph, InitialState, snapshot_opts()),
+        Result1 = beamai_graph:run(Graph, InitialState, snapshot_opts()),
 
         ?assertEqual(interrupted, maps:get(status, Result1)),
         ?assert(maps:is_key(snapshot, Result1)),
@@ -266,14 +266,14 @@ restore_from_interrupt_test() ->
             restore_from => SnapshotData,
             resume_data => #{review => approved}
         },
-        Result2 = graph:run(Graph, InitialState, Options2),
+        Result2 = beamai_graph:run(Graph, InitialState, Options2),
 
         %% 恢复后应该完成
         ?assertEqual(completed, maps:get(status, Result2)),
 
         %% 验证 review 节点被正确恢复并处理了 resume_data
         FinalState2 = maps:get(final_state, Result2),
-        ?assertEqual(true, graph_state:get(FinalState2, approved))
+        ?assertEqual(true, beamai_graph_engine:state_get(FinalState2, approved))
     after
         teardown_noop_store()
     end.
@@ -281,12 +281,12 @@ restore_from_interrupt_test() ->
 %% 测试：resume_data 注入到 global_state
 resume_data_injection_test() ->
     Graph = make_interrupt_graph(),
-    InitialState = graph:state(#{count => 0}),
+    InitialState = beamai_graph:state(#{count => 0}),
 
     setup_noop_store(),
     try
         %% 第一次执行触发 interrupt
-        Result1 = graph:run(Graph, InitialState, snapshot_opts()),
+        Result1 = beamai_graph:run(Graph, InitialState, snapshot_opts()),
         ?assertEqual(interrupted, maps:get(status, Result1)),
 
         %% 构建 SnapshotData
@@ -304,7 +304,7 @@ resume_data_injection_test() ->
             restore_from => SnapshotData,
             resume_data => #{review => {user_input, "hello"}}
         },
-        Result2 = graph:run(Graph, InitialState, Options2),
+        Result2 = beamai_graph:run(Graph, InitialState, Options2),
 
         %% 验证执行完成
         Status2 = maps:get(status, Result2),
@@ -320,7 +320,7 @@ resume_data_injection_test() ->
 %% 测试：interrupt 时 store 被调用
 store_saves_on_interrupt_test() ->
     Graph = make_interrupt_graph(),
-    InitialState = graph:state(#{count => 0}),
+    InitialState = beamai_graph:state(#{count => 0}),
 
     Self = self(),
     MockRef = make_ref(),
@@ -334,7 +334,7 @@ store_saves_on_interrupt_test() ->
             store => {mock_graph_store2, MockRef},
             snapshot_strategy => on_interrupt
         },
-        Result = graph:run(Graph, InitialState, Options),
+        Result = beamai_graph:run(Graph, InitialState, Options),
 
         ?assertEqual(interrupted, maps:get(status, Result)),
 
@@ -364,12 +364,12 @@ collect_store_calls(MockRef, Acc) ->
 %% 测试：retry_vertices 重新激活失败顶点
 retry_vertices_test() ->
     Graph = make_flaky_error_graph(),
-    InitialState = graph:state(#{retry_count => 0}),
+    InitialState = beamai_graph:state(#{retry_count => 0}),
 
     setup_noop_store(),
     try
         %% 第一次执行：flaky_node 失败
-        Result1 = graph:run(Graph, InitialState, snapshot_opts()),
+        Result1 = beamai_graph:run(Graph, InitialState, snapshot_opts()),
 
         ?assertEqual(error, maps:get(status, Result1)),
         ?assert(maps:is_key(snapshot, Result1)),
@@ -383,7 +383,7 @@ retry_vertices_test() ->
         FinalState1 = maps:get(final_state, Result1),
 
         %% 在 global_state 中设置 retry_count，让 flaky_node 下次成功
-        FinalState1WithRetry = graph_state:set(FinalState1, retry_count, 1),
+        FinalState1WithRetry = beamai_graph_engine:state_set(FinalState1, retry_count, 1),
 
         SnapshotData = #{
             type => error,
@@ -397,14 +397,14 @@ retry_vertices_test() ->
             restore_from => SnapshotData,
             retry_vertices => FailedIds
         },
-        Result2 = graph:run(Graph, InitialState, Options2),
+        Result2 = beamai_graph:run(Graph, InitialState, Options2),
 
         %% 重试后应该完成
         ?assertEqual(completed, maps:get(status, Result2)),
 
         %% 验证 flaky_node 执行成功
         FinalState2 = maps:get(final_state, Result2),
-        ?assertEqual(true, graph_state:get(FinalState2, flaky_done))
+        ?assertEqual(true, beamai_graph_engine:state_get(FinalState2, flaky_done))
     after
         teardown_noop_store()
     end.

@@ -184,7 +184,12 @@ concurrent_fanout_subtest() ->
     P4 = beamai_process:on_event(P3, go, w2, input),
     P5 = beamai_process:set_initial_event(P4, go, #{data => concurrent}),
     {ok, Def} = beamai_process:build(P5),
-    {ok, Result} = beamai_process:run_sync(Def, #{timeout => 5000}),
+    {ok, Pid} = beamai_process:start(Def, #{caller => self()}),
+    Result = receive
+        {process_completed, Pid, StepsState} -> StepsState
+    after 5000 ->
+        error(timeout)
+    end,
     #{w1 := W1, w2 := W2} = Result,
     ?assertEqual(1, maps:get(activation_count, W1)),
     ?assertEqual(1, maps:get(activation_count, W2)).

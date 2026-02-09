@@ -86,8 +86,8 @@ snapshot(Pid) ->
 
 %% @private 初始化流程运行时
 init({ProcessSpec, Opts}) ->
-    case maps:get(restored, Opts, false) of
-        false ->
+    case maps:get(restore_from, Opts, undefined) of
+        undefined ->
             init_fresh(ProcessSpec, Opts);
         RestoredState when is_map(RestoredState) ->
             init_restored(RestoredState, Opts)

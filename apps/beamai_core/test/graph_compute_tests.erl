@@ -24,7 +24,7 @@ make_test_context(VertexId, GlobalState) ->
         vertex_input => undefined,
         superstep => 0,
         num_vertices => 1,
-        vertex => pregel_vertex:new_flat(VertexId, undefined, #{}, [])
+        vertex => beamai_pregel_vertex:new_flat(VertexId, undefined, #{}, [])
     }.
 
 %%====================================================================
@@ -38,7 +38,7 @@ compute_fn_success_returns_ok_status_test() ->
     Ctx = make_test_context('__end__', GlobalState),
 
     %% 执行
-    ComputeFn = graph_compute:compute_fn(),
+    ComputeFn = beamai_graph_compute:compute_fn(),
     Result = ComputeFn(Ctx),
 
     %% 验证：status 为 ok
@@ -59,11 +59,11 @@ compute_fn_exception_returns_error_status_test() ->
         vertex_input => undefined,
         superstep => 0,
         num_vertices => 1,
-        vertex => pregel_vertex:new_flat(test_node, ThrowFun, #{}, [])
+        vertex => beamai_pregel_vertex:new_flat(test_node, ThrowFun, #{}, [])
     },
 
     %% 执行
-    ComputeFn = graph_compute:compute_fn(),
+    ComputeFn = beamai_graph_compute:compute_fn(),
     Result = ComputeFn(Ctx),
 
     %% 验证：status 为 error
@@ -83,7 +83,7 @@ compute_fn_result_structure_test() ->
     Ctx = make_test_context('__end__', GlobalState),
 
     %% 执行
-    ComputeFn = graph_compute:compute_fn(),
+    ComputeFn = beamai_graph_compute:compute_fn(),
     Result = ComputeFn(Ctx),
 
     %% 验证：包含所有必要字段
@@ -104,13 +104,13 @@ start_node_activated_at_superstep_0_test() ->
         vertex_input => undefined,
         superstep => 0,
         num_vertices => 3,
-        vertex => pregel_vertex:new_flat(
+        vertex => beamai_pregel_vertex:new_flat(
             '__start__', undefined, #{},
-            [graph_edge:direct('__start__', next_node)]
+            [beamai_graph_edge:direct('__start__', next_node)]
         )
     },
 
-    ComputeFn = graph_compute:compute_fn(),
+    ComputeFn = beamai_graph_compute:compute_fn(),
     Result = ComputeFn(Ctx),
 
     %% 验证：status 为 ok
@@ -128,10 +128,10 @@ end_node_completes_on_activate_test() ->
         vertex_input => undefined,
         superstep => 1,
         num_vertices => 3,
-        vertex => pregel_vertex:new_flat('__end__', undefined, #{}, [])
+        vertex => beamai_pregel_vertex:new_flat('__end__', undefined, #{}, [])
     },
 
-    ComputeFn = graph_compute:compute_fn(),
+    ComputeFn = beamai_graph_compute:compute_fn(),
     Result = ComputeFn(Ctx),
 
     %% 验证：status 为 ok
@@ -151,10 +151,10 @@ regular_node_activated_routes_test() ->
         vertex_input => undefined,
         superstep => 1,
         num_vertices => 3,
-        vertex => pregel_vertex:new_flat(regular_node, undefined, #{}, [])
+        vertex => beamai_pregel_vertex:new_flat(regular_node, undefined, #{}, [])
     },
 
-    ComputeFn = graph_compute:compute_fn(),
+    ComputeFn = beamai_graph_compute:compute_fn(),
     Result = ComputeFn(Ctx),
 
     %% 验证：status 为 ok
@@ -175,7 +175,7 @@ from_pregel_result_completed_test() ->
         global_state => #{key => value, count => 42}
     },
 
-    {ok, State} = graph_compute:from_pregel_result(Result),
+    {ok, State} = beamai_graph_compute:from_pregel_result(Result),
 
     ?assertEqual(value, maps:get(key, State)),
     ?assertEqual(42, maps:get(count, State)).
@@ -188,6 +188,6 @@ from_pregel_result_max_supersteps_test() ->
     },
 
     {error, {partial_result, State, max_iterations_exceeded}} =
-        graph_compute:from_pregel_result(Result),
+        beamai_graph_compute:from_pregel_result(Result),
 
     ?assertEqual(result, maps:get(partial, State)).

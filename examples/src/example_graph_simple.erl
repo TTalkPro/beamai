@@ -22,18 +22,18 @@
 %% greeting 节点生成问候语，uppercase 节点将其转为大写
 run_dsl() ->
     GreetingFun = fun(State, _Context) ->
-        Name = graph_state:get(State, name, <<"World">>),
+        Name = beamai_graph_engine:state_get(State, name, <<"World">>),
         Message = <<"Hello, ", Name/binary, "!">>,
-        {ok, graph_state:set(State, message, Message)}
+        {ok, beamai_graph_engine:state_set(State, message, Message)}
     end,
 
     UppercaseFun = fun(State, _Context) ->
-        Message = graph_state:get(State, message, <<>>),
+        Message = beamai_graph_engine:state_get(State, message, <<>>),
         Upper = string:uppercase(Message),
-        {ok, graph_state:set(State, message, Upper)}
+        {ok, beamai_graph_engine:state_set(State, message, Upper)}
     end,
 
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, greeting, GreetingFun},
         {node, uppercase, UppercaseFun},
         {edge, greeting, uppercase},
@@ -41,12 +41,12 @@ run_dsl() ->
         {entry, greeting}
     ]),
 
-    InitialState = graph:state(#{name => <<"Erlang">>}),
-    Result = graph:run(Graph, InitialState),
+    InitialState = beamai_graph:state(#{name => <<"Erlang">>}),
+    Result = beamai_graph:run(Graph, InitialState),
 
     Status = maps:get(status, Result),
     FinalState = maps:get(final_state, Result),
-    Message = graph_state:get(FinalState, message),
+    Message = beamai_graph_engine:state_get(FinalState, message),
 
     io:format("Status: ~p~n", [Status]),
     io:format("Message: ~s~n", [Message]),
@@ -59,29 +59,29 @@ run_dsl() ->
 run_builder() ->
     TimestampFun = fun(State, _Context) ->
         Now = erlang:system_time(second),
-        {ok, graph_state:set(State, timestamp, Now)}
+        {ok, beamai_graph_engine:state_set(State, timestamp, Now)}
     end,
 
     FormatFun = fun(State, _Context) ->
-        Name = graph_state:get(State, name, <<"unknown">>),
-        Ts = graph_state:get(State, timestamp, 0),
+        Name = beamai_graph_engine:state_get(State, name, <<"unknown">>),
+        Ts = beamai_graph_engine:state_get(State, timestamp, 0),
         Output = io_lib:format("User ~s logged at ~p", [Name, Ts]),
-        {ok, graph_state:set(State, output, iolist_to_binary(Output))}
+        {ok, beamai_graph_engine:state_set(State, output, iolist_to_binary(Output))}
     end,
 
-    B0 = graph:builder(),
-    B1 = graph:add_node(B0, add_timestamp, TimestampFun),
-    B2 = graph:add_node(B1, format, FormatFun),
-    B3 = graph:add_edge(B2, add_timestamp, format),
-    B4 = graph:add_edge(B3, format, '__end__'),
-    B5 = graph:set_entry(B4, add_timestamp),
-    {ok, Graph} = graph:compile(B5),
+    B0 = beamai_graph:builder(),
+    B1 = beamai_graph:add_node(B0, add_timestamp, TimestampFun),
+    B2 = beamai_graph:add_node(B1, format, FormatFun),
+    B3 = beamai_graph:add_edge(B2, add_timestamp, format),
+    B4 = beamai_graph:add_edge(B3, format, '__end__'),
+    B5 = beamai_graph:set_entry(B4, add_timestamp),
+    {ok, Graph} = beamai_graph:compile(B5),
 
-    InitialState = graph:state(#{name => <<"Alice">>}),
-    Result = graph:run(Graph, InitialState),
+    InitialState = beamai_graph:state(#{name => <<"Alice">>}),
+    Result = beamai_graph:run(Graph, InitialState),
 
     FinalState = maps:get(final_state, Result),
-    Output = graph_state:get(FinalState, output),
+    Output = beamai_graph_engine:state_get(FinalState, output),
 
     io:format("Output: ~s~n", [Output]),
     Result.

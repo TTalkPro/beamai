@@ -11,7 +11,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_command).
+-module(beamai_graph_command).
 
 %% 构造器
 -export([new/1, goto/1, goto/2, update/1, update/2]).
@@ -23,8 +23,8 @@
 %% 类型定义
 -type goto_target() :: atom()                        %% 单节点
                      | [atom()]                      %% 多节点并行
-                     | graph_dispatch:dispatch()     %% 单 dispatch
-                     | [graph_dispatch:dispatch()].  %% 多 dispatch
+                     | beamai_graph_dispatch:dispatch()     %% 单 dispatch
+                     | [beamai_graph_dispatch:dispatch()].  %% 多 dispatch
 
 -type command() :: #{
     '__command__' := true,
@@ -128,9 +128,9 @@ valid_goto([]) -> true;
 valid_goto([First | _] = List) when is_atom(First) ->
     lists:all(fun is_atom/1, List);
 valid_goto(Dispatch) when is_map(Dispatch) ->
-    graph_dispatch:is_dispatch(Dispatch);
+    beamai_graph_dispatch:is_dispatch(Dispatch);
 valid_goto([First | _] = List) when is_map(First) ->
-    graph_dispatch:is_dispatches(List);
+    beamai_graph_dispatch:is_dispatches(List);
 valid_goto(_) -> false.
 
 %% @private 验证 graph 目标

@@ -5,11 +5,11 @@
 %%% 支持链式调用风格:
 %%%
 %%% <pre>
-%%% B0 = graph_builder:new(),
-%%% B1 = graph_builder:add_node(B0, process, ProcessFun),
-%%% B2 = graph_builder:add_edge(B1, process, '__end__'),
-%%% B3 = graph_builder:set_entry(B2, process),
-%%% {ok, Graph} = graph_builder:compile(B3).
+%%% B0 = beamai_graph_builder:new(),
+%%% B1 = beamai_graph_builder:add_node(B0, process, ProcessFun),
+%%% B2 = beamai_graph_builder:add_edge(B1, process, '__end__'),
+%%% B3 = beamai_graph_builder:set_entry(B2, process),
+%%% {ok, Graph} = beamai_graph_builder:compile(B3).
 %%% </pre>
 %%%
 %%% 设计原则:
@@ -19,7 +19,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_builder).
+-module(beamai_graph_builder).
 
 %% API 导出
 -export([new/0, new/1]).
@@ -32,10 +32,10 @@
 -export([validate/1]).
 
 %% 类型定义
--type node_id() :: graph_node:node_id().
+-type node_id() :: beamai_graph_node:node_id().
 -type builder() :: #{
-    nodes := #{node_id() => graph_node:graph_node()},
-    edges := [graph_edge:edge()],
+    nodes := #{node_id() => beamai_graph_node:graph_node()},
+    edges := [beamai_graph_edge:edge()],
     entry := node_id() | undefined,
     config := config()
 }.
@@ -46,13 +46,13 @@
 %% 编译后的图结构（简化版）
 %%
 %% 只保留必要字段:
-%% - pregel_graph: 预构建的 Pregel 图（顶点已包含所有计算信息）
+%% - beamai_pregel_graph: 预构建的 Pregel 图（顶点已包含所有计算信息）
 %% - entry: 入口节点ID
 %% - max_iterations: 最大迭代次数
 %%
 %% 注意: nodes/edges/config 已整合到 pregel_graph 的顶点中
 -type graph() :: #{
-    pregel_graph := pregel_graph:graph(),      %% 预构建的 Pregel 图
+    pregel_graph := beamai_pregel_graph:graph(),      %% 预构建的 Pregel 图
     entry := node_id(),                       %% 入口节点
     max_iterations := pos_integer()           %% 最大迭代次数
 }.
@@ -88,15 +88,15 @@ new(Config) ->
 %%====================================================================
 
 %% @doc 添加节点
--spec add_node(builder(), node_id(), graph_node:node_fun()) -> builder().
+-spec add_node(builder(), node_id(), beamai_graph_node:node_fun()) -> builder().
 add_node(Builder, Id, Fun) ->
     add_node(Builder, Id, Fun, #{}).
 
 %% @doc 添加带元数据的节点
--spec add_node(builder(), node_id(), graph_node:node_fun(), graph_node:metadata()) -> builder().
+-spec add_node(builder(), node_id(), beamai_graph_node:node_fun(), beamai_graph_node:metadata()) -> builder().
 add_node(#{nodes := Nodes} = Builder, Id, Fun, Metadata) ->
     validate_node_id(Id),
-    Node = graph_node:new(Id, Fun, Metadata),
+    Node = beamai_graph_node:new(Id, Fun, Metadata),
     Builder#{nodes => Nodes#{Id => Node}}.
 
 %%====================================================================
@@ -106,7 +106,7 @@ add_node(#{nodes := Nodes} = Builder, Id, Fun, Metadata) ->
 %% @doc 添加直接边
 -spec add_edge(builder(), node_id(), node_id()) -> builder().
 add_edge(#{edges := Edges} = Builder, From, To) ->
-    Edge = graph_edge:direct(From, To),
+    Edge = beamai_graph_edge:direct(From, To),
     Builder#{edges => [Edge | Edges]}.
 
 %% @doc 添加扇出边 (并行分发到多个目标)
@@ -114,19 +114,19 @@ add_edge(#{edges := Edges} = Builder, From, To) ->
 %% Targets: 目标节点列表
 -spec add_fanout_edge(builder(), node_id(), [node_id()]) -> builder().
 add_fanout_edge(#{edges := Edges} = Builder, From, Targets) ->
-    Edge = graph_edge:fanout(From, Targets),
+    Edge = beamai_graph_edge:fanout(From, Targets),
     Builder#{edges => [Edge | Edges]}.
 
 %% @doc 添加条件边 (路由函数)
--spec add_conditional_edge(builder(), node_id(), graph_edge:router_fun()) -> builder().
+-spec add_conditional_edge(builder(), node_id(), beamai_graph_edge:router_fun()) -> builder().
 add_conditional_edge(#{edges := Edges} = Builder, From, RouterFun) ->
-    Edge = graph_edge:conditional(From, RouterFun),
+    Edge = beamai_graph_edge:conditional(From, RouterFun),
     Builder#{edges => [Edge | Edges]}.
 
 %% @doc 添加条件边 (路由映射)
--spec add_conditional_edge(builder(), node_id(), graph_edge:router_fun(), graph_edge:route_map()) -> builder().
+-spec add_conditional_edge(builder(), node_id(), beamai_graph_edge:router_fun(), beamai_graph_edge:route_map()) -> builder().
 add_conditional_edge(#{edges := Edges} = Builder, From, RouterFun, RouteMap) ->
-    Edge = graph_edge:conditional(From, RouterFun, RouteMap),
+    Edge = beamai_graph_edge:conditional(From, RouterFun, RouteMap),
     Builder#{edges => [Edge | Edges]}.
 
 %%====================================================================
@@ -161,7 +161,7 @@ build_graph(#{nodes := Nodes, edges := Edges, entry := Entry, config := Config})
     %% 按源节点分组边
     EdgeMap = group_edges_by_source(Edges),
     %% 添加 __start__ 到入口节点的边
-    StartEdge = graph_edge:direct('__start__', Entry),
+    StartEdge = beamai_graph_edge:direct('__start__', Entry),
     FinalEdgeMap = add_edge_to_map(EdgeMap, '__start__', StartEdge),
 
     %% 直接构建 Pregel 图（使用扁平化顶点结构）
@@ -182,19 +182,19 @@ build_graph(#{nodes := Nodes, edges := Edges, entry := Entry, config := Config})
 %%
 %% 图执行模式：除 __start__ 外，所有顶点初始为 halted 状态
 %% 这确保执行从 __start__ 开始，通过边激活后续顶点
--spec build_pregel_graph(#{node_id() => graph_node:graph_node()},
-                         #{node_id() => [graph_edge:edge()]}) -> pregel_graph:graph().
+-spec build_pregel_graph(#{node_id() => beamai_graph_node:graph_node()},
+                         #{node_id() => [beamai_graph_edge:edge()]}) -> beamai_pregel_graph:graph().
 build_pregel_graph(Nodes, EdgeMap) ->
-    EmptyGraph = pregel_graph:new(),
+    EmptyGraph = beamai_pregel_graph:new(),
     Graph = maps:fold(
         fun(NodeId, Node, AccGraph) ->
             %% 从 graph_node 提取 fun_ 和 metadata
-            Fun = graph_node:fun_(Node),
-            Metadata = graph_node:metadata(Node),
+            Fun = beamai_graph_node:fun_(Node),
+            Metadata = beamai_graph_node:metadata(Node),
             %% 获取该节点的路由边
             RoutingEdges = maps:get(NodeId, EdgeMap, []),
             %% 使用扁平化结构添加顶点
-            pregel_graph:add_vertex_flat(AccGraph, NodeId, Fun, Metadata, RoutingEdges)
+            beamai_pregel_graph:add_vertex_flat(AccGraph, NodeId, Fun, Metadata, RoutingEdges)
         end,
         EmptyGraph,
         Nodes
@@ -204,12 +204,12 @@ build_pregel_graph(Nodes, EdgeMap) ->
     halt_non_start_vertices(Graph).
 
 %% @private 将除 __start__ 外的所有顶点设为 halted
--spec halt_non_start_vertices(pregel_graph:graph()) -> pregel_graph:graph().
+-spec halt_non_start_vertices(beamai_pregel_graph:graph()) -> beamai_pregel_graph:graph().
 halt_non_start_vertices(Graph) ->
-    pregel_graph:map(Graph, fun(Vertex) ->
-        case pregel_vertex:id(Vertex) of
+    beamai_pregel_graph:map(Graph, fun(Vertex) ->
+        case beamai_pregel_vertex:id(Vertex) of
             '__start__' -> Vertex;  %% __start__ 保持 active
-            _ -> pregel_vertex:halt(Vertex)  %% 其他顶点 halted
+            _ -> beamai_pregel_vertex:halt(Vertex)  %% 其他顶点 halted
         end
     end).
 
@@ -247,7 +247,7 @@ validate_entry(Entry, Nodes) ->
     end.
 
 %% @doc 验证所有边引用的节点存在
--spec validate_edges([graph_edge:edge()], map()) -> ok | {error, term()}.
+-spec validate_edges([beamai_graph_edge:edge()], map()) -> ok | {error, term()}.
 validate_edges([], _Nodes) ->
     ok;
 validate_edges([Edge | Rest], Nodes) ->
@@ -257,20 +257,20 @@ validate_edges([Edge | Rest], Nodes) ->
     end.
 
 %% @doc 验证单条边
--spec validate_single_edge(graph_edge:edge(), map()) -> ok | {error, term()}.
+-spec validate_single_edge(beamai_graph_edge:edge(), map()) -> ok | {error, term()}.
 validate_single_edge(Edge, Nodes) ->
-    From = graph_edge:from(Edge),
+    From = beamai_graph_edge:from(Edge),
     case maps:is_key(From, Nodes) of
         true -> validate_edge_target(Edge, Nodes);
         false -> {error, {source_node_not_found, From}}
     end.
 
 %% @doc 验证边的目标节点
--spec validate_edge_target(graph_edge:edge(), map()) -> ok | {error, term()}.
+-spec validate_edge_target(beamai_graph_edge:edge(), map()) -> ok | {error, term()}.
 validate_edge_target(Edge, Nodes) ->
-    case graph_edge:is_direct(Edge) of
+    case beamai_graph_edge:is_direct(Edge) of
         true ->
-            To = graph_edge:target(Edge),
+            To = beamai_graph_edge:target(Edge),
             case maps:is_key(To, Nodes) of
                 true -> ok;
                 false -> {error, {target_node_not_found, To}}
@@ -281,7 +281,7 @@ validate_edge_target(Edge, Nodes) ->
     end.
 
 %% @doc 验证可达性 (简化检查)
--spec validate_reachability(node_id(), [graph_edge:edge()]) -> ok | {error, term()}.
+-spec validate_reachability(node_id(), [beamai_graph_edge:edge()]) -> ok | {error, term()}.
 validate_reachability(_Entry, _Edges) ->
     %% TODO: 实现完整的可达性检查
     ok.
@@ -293,8 +293,8 @@ validate_reachability(_Entry, _Edges) ->
 %% @doc 添加特殊节点 (__start__ 和 __end__)
 -spec add_special_nodes(map()) -> map().
 add_special_nodes(Nodes) ->
-    StartNode = graph_node:start_node(),
-    EndNode = graph_node:end_node(),
+    StartNode = beamai_graph_node:start_node(),
+    EndNode = beamai_graph_node:end_node(),
     Nodes#{'__start__' => StartNode, '__end__' => EndNode}.
 
 %% @doc 合并用户配置与默认配置
@@ -316,18 +316,18 @@ validate_node_id(_) ->
     ok.
 
 %% @doc 按源节点分组边
--spec group_edges_by_source([graph_edge:edge()]) -> #{node_id() => [graph_edge:edge()]}.
+-spec group_edges_by_source([beamai_graph_edge:edge()]) -> #{node_id() => [beamai_graph_edge:edge()]}.
 group_edges_by_source(Edges) ->
     lists:foldl(fun group_edge/2, #{}, Edges).
 
 %% @doc 将边加入分组
--spec group_edge(graph_edge:edge(), map()) -> map().
+-spec group_edge(beamai_graph_edge:edge(), map()) -> map().
 group_edge(Edge, Acc) ->
-    From = graph_edge:from(Edge),
+    From = beamai_graph_edge:from(Edge),
     add_edge_to_map(Acc, From, Edge).
 
 %% @doc 将边添加到边映射
--spec add_edge_to_map(map(), node_id(), graph_edge:edge()) -> map().
+-spec add_edge_to_map(map(), node_id(), beamai_graph_edge:edge()) -> map().
 add_edge_to_map(EdgeMap, NodeId, Edge) ->
     Existing = maps:get(NodeId, EdgeMap, []),
     EdgeMap#{NodeId => [Edge | Existing]}.

@@ -23,36 +23,36 @@
 %% prepare 节点准备数据，然后并行分发到三个分析节点
 run_static_fanout() ->
     PrepareFun = fun(State, _Context) ->
-        Text = graph_state:get(State, text, <<"hello world">>),
-        {ok, graph_state:set(State, prepared_text, Text)}
+        Text = beamai_graph_engine:state_get(State, text, <<"hello world">>),
+        {ok, beamai_graph_engine:state_set(State, prepared_text, Text)}
     end,
 
     SentimentFun = fun(State, _Context) ->
-        Text = graph_state:get(State, prepared_text, <<>>),
+        Text = beamai_graph_engine:state_get(State, prepared_text, <<>>),
         %% 简单模拟情感分析
         Sentiment = case binary:match(Text, [<<"good">>, <<"great">>, <<"happy">>]) of
             nomatch -> <<"neutral">>;
             _ -> <<"positive">>
         end,
-        {ok, graph_state:set(State, sentiment, Sentiment)}
+        {ok, beamai_graph_engine:state_set(State, sentiment, Sentiment)}
     end,
 
     KeywordsFun = fun(State, _Context) ->
-        Text = graph_state:get(State, prepared_text, <<>>),
+        Text = beamai_graph_engine:state_get(State, prepared_text, <<>>),
         %% 简单提取：按空格分词取前3个
         Words = binary:split(Text, <<" ">>, [global]),
         Keywords = lists:sublist(Words, 3),
-        {ok, graph_state:set(State, keywords, Keywords)}
+        {ok, beamai_graph_engine:state_set(State, keywords, Keywords)}
     end,
 
     WordCountFun = fun(State, _Context) ->
-        Text = graph_state:get(State, prepared_text, <<>>),
+        Text = beamai_graph_engine:state_get(State, prepared_text, <<>>),
         Words = binary:split(Text, <<" ">>, [global]),
         Count = length(Words),
-        {ok, graph_state:set(State, word_count, Count)}
+        {ok, beamai_graph_engine:state_set(State, word_count, Count)}
     end,
 
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, prepare, PrepareFun},
         {node, analyze_sentiment, SentimentFun},
         {node, extract_keywords, KeywordsFun},
@@ -64,13 +64,13 @@ run_static_fanout() ->
         {entry, prepare}
     ]),
 
-    State = graph:state(#{text => <<"This is a great example of parallel processing">>}),
-    Result = graph:run(Graph, State, #{workers => 3}),
+    State = beamai_graph:state(#{text => <<"This is a great example of parallel processing">>}),
+    Result = beamai_graph:run(Graph, State, #{workers => 3}),
 
     Final = maps:get(final_state, Result),
-    io:format("Sentiment: ~s~n", [graph_state:get(Final, sentiment, <<"unknown">>)]),
-    io:format("Keywords: ~p~n", [graph_state:get(Final, keywords, [])]),
-    io:format("Word count: ~p~n", [graph_state:get(Final, word_count, 0)]),
+    io:format("Sentiment: ~s~n", [beamai_graph_engine:state_get(Final, sentiment, <<"unknown">>)]),
+    io:format("Keywords: ~p~n", [beamai_graph_engine:state_get(Final, keywords, [])]),
+    io:format("Word count: ~p~n", [beamai_graph_engine:state_get(Final, word_count, 0)]),
     Result.
 
 %% @doc 动态分发：运行时决定并行分支数量和输入
@@ -82,12 +82,12 @@ run_static_fanout() ->
 %% 每个 worker 处理一个数据块，最后 aggregate 汇总结果
 run_dynamic_dispatch() ->
     SplitFun = fun(State, _Context) ->
-        Items = graph_state:get(State, items, []),
+        Items = beamai_graph_engine:state_get(State, items, []),
         %% 为每个 item 创建一个 dispatch
         Dispatches = lists:map(fun(Item) ->
-            graph_dispatch:dispatch(worker, #{item => Item})
+            beamai_graph_dispatch:dispatch(worker, #{item => Item})
         end, Items),
-        {ok, graph_state:set(State, dispatch_count, length(Dispatches))}
+        {ok, beamai_graph_engine:state_set(State, dispatch_count, length(Dispatches))}
     end,
 
     WorkerFun = fun(State, VertexInput) ->
@@ -102,24 +102,24 @@ run_dynamic_dispatch() ->
             false -> Item
         end,
         %% 每个 worker 返回单元素列表，由 append_reducer 合并
-        {ok, graph_state:set(State, results, [Processed])}
+        {ok, beamai_graph_engine:state_set(State, results, [Processed])}
     end,
 
     AggregateFun = fun(State, _Context) ->
-        Results = graph_state:get(State, results, []),
+        Results = beamai_graph_engine:state_get(State, results, []),
         Sum = lists:sum([R || R <- Results, is_integer(R)]),
-        {ok, graph_state:set(State, total, Sum)}
+        {ok, beamai_graph_engine:state_set(State, total, Sum)}
     end,
 
     %% 路由函数返回 dispatch 列表实现动态并行
     RouterFun = fun(State) ->
-        Items = graph_state:get(State, items, []),
+        Items = beamai_graph_engine:state_get(State, items, []),
         lists:map(fun(Item) ->
-            graph_dispatch:dispatch(worker, #{item => Item})
+            beamai_graph_dispatch:dispatch(worker, #{item => Item})
         end, Items)
     end,
 
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, split, SplitFun},
         {node, worker, WorkerFun},
         {node, aggregate, AggregateFun},
@@ -129,17 +129,17 @@ run_dynamic_dispatch() ->
         {entry, split}
     ]),
 
-    State = graph:state(#{items => [10, 20, 30, 40, 50]}),
+    State = beamai_graph:state(#{items => [10, 20, 30, 40, 50]}),
     %% 使用 append_reducer 合并多个 worker 的结果列表
-    Result = graph:run(Graph, State, #{
+    Result = beamai_graph:run(Graph, State, #{
         workers => 4,
         field_reducers => #{
-            <<"results">> => fun graph_state_reducer:append_reducer/2
+            <<"results">> => fun beamai_graph_state_reducer:append_reducer/2
         }
     }),
 
     Final = maps:get(final_state, Result),
-    io:format("Dispatch count: ~p~n", [graph_state:get(Final, dispatch_count, 0)]),
-    io:format("Results: ~p~n", [graph_state:get(Final, results, [])]),
-    io:format("Total: ~p~n", [graph_state:get(Final, total, 0)]),
+    io:format("Dispatch count: ~p~n", [beamai_graph_engine:state_get(Final, dispatch_count, 0)]),
+    io:format("Results: ~p~n", [beamai_graph_engine:state_get(Final, results, [])]),
+    io:format("Total: ~p~n", [beamai_graph_engine:state_get(Final, total, 0)]),
     Result.

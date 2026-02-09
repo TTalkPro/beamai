@@ -22,11 +22,10 @@
 %%% - {fanout, From, Targets}        扇出边 (静态并行)
 %%% - {conditional_edge, From, Fun}  条件边
 %%% - {entry, Node}                  入口节点
-%%% - {config, Key, Value}           配置项
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_dsl).
+-module(beamai_graph_dsl).
 
 %% 主 API
 -export([build/1, build/2]).
@@ -34,12 +33,12 @@
 %% DSL 元素构造器 (可选，用于更清晰的语法)
 -export([node/2, node/3]).
 -export([edge/2, fanout/2, conditional_edge/2]).
--export([entry/1, config/2]).
+-export([entry/1]).
 
 %% 类型定义
 -type node_id() :: atom().
 -type node_fun() :: fun((map()) -> {ok, map()} | {error, term()}).
--type router_fun() :: fun((map()) -> node_id() | [node_id()] | [graph_dispatch:dispatch()]).
+-type router_fun() :: fun((map()) -> node_id() | [node_id()] | [beamai_graph_dispatch:dispatch()]).
 
 -type dsl_element() ::
     {node, node_id(), node_fun()} |
@@ -47,8 +46,7 @@
     {edge, node_id(), node_id()} |
     {fanout, node_id(), [node_id()]} |
     {conditional_edge, node_id(), router_fun()} |
-    {entry, node_id()} |
-    {config, atom(), term()}.
+    {entry, node_id()}.
 
 -export_type([dsl_element/0]).
 
@@ -57,17 +55,17 @@
 %%====================================================================
 
 %% @doc 从 DSL 元素列表构建图
--spec build([dsl_element()]) -> {ok, graph_builder:graph()} | {error, term()}.
+-spec build([dsl_element()]) -> {ok, beamai_graph_builder:graph()} | {error, term()}.
 build(Specs) ->
     build(Specs, #{}).
 
 %% @doc 从 DSL 元素列表构建图 (带默认配置)
--spec build([dsl_element()], map()) -> {ok, graph_builder:graph()} | {error, term()}.
+-spec build([dsl_element()], map()) -> {ok, beamai_graph_builder:graph()} | {error, term()}.
 build(Specs, DefaultConfig) ->
-    Builder = graph_builder:new(DefaultConfig),
+    Builder = beamai_graph_builder:new(DefaultConfig),
     case apply_specs(Specs, Builder) of
         {ok, FinalBuilder} ->
-            graph_builder:compile(FinalBuilder);
+            beamai_graph_builder:compile(FinalBuilder);
         {error, _} = Error ->
             Error
     end.
@@ -106,18 +104,13 @@ conditional_edge(From, RouterFun) ->
 entry(Node) ->
     {entry, Node}.
 
-%% @doc 创建配置元素
--spec config(atom(), term()) -> dsl_element().
-config(Key, Value) ->
-    {config, Key, Value}.
-
 %%====================================================================
 %% 内部函数
 %%====================================================================
 
 %% @doc 应用所有 DSL 元素到 Builder
--spec apply_specs([dsl_element()], graph_builder:builder()) ->
-    {ok, graph_builder:builder()} | {error, term()}.
+-spec apply_specs([dsl_element()], beamai_graph_builder:builder()) ->
+    {ok, beamai_graph_builder:builder()} | {error, term()}.
 apply_specs([], Builder) ->
     {ok, Builder};
 apply_specs([Spec | Rest], Builder) ->
@@ -129,30 +122,25 @@ apply_specs([Spec | Rest], Builder) ->
     end.
 
 %% @doc 应用单个 DSL 元素
--spec apply_spec(dsl_element(), graph_builder:builder()) ->
-    {ok, graph_builder:builder()} | {error, term()}.
+-spec apply_spec(dsl_element(), beamai_graph_builder:builder()) ->
+    {ok, beamai_graph_builder:builder()} | {error, term()}.
 apply_spec({node, Name, Fun}, Builder) ->
-    {ok, graph_builder:add_node(Builder, Name, Fun)};
+    {ok, beamai_graph_builder:add_node(Builder, Name, Fun)};
 
 apply_spec({node, Name, Fun, Metadata}, Builder) ->
-    {ok, graph_builder:add_node(Builder, Name, Fun, Metadata)};
+    {ok, beamai_graph_builder:add_node(Builder, Name, Fun, Metadata)};
 
 apply_spec({edge, From, To}, Builder) ->
-    {ok, graph_builder:add_edge(Builder, From, To)};
+    {ok, beamai_graph_builder:add_edge(Builder, From, To)};
 
 apply_spec({fanout, From, Targets}, Builder) ->
-    {ok, graph_builder:add_fanout_edge(Builder, From, Targets)};
+    {ok, beamai_graph_builder:add_fanout_edge(Builder, From, Targets)};
 
 apply_spec({conditional_edge, From, RouterFun}, Builder) ->
-    {ok, graph_builder:add_conditional_edge(Builder, From, RouterFun)};
+    {ok, beamai_graph_builder:add_conditional_edge(Builder, From, RouterFun)};
 
 apply_spec({entry, Node}, Builder) ->
-    {ok, graph_builder:set_entry(Builder, Node)};
-
-apply_spec({config, _Key, _Value}, Builder) ->
-    %% 配置在 build/2 的 DefaultConfig 中处理
-    %% 这里忽略，保持向前兼容
-    {ok, Builder};
+    {ok, beamai_graph_builder:set_entry(Builder, Node)};
 
 apply_spec(Unknown, _Builder) ->
     {error, {unknown_dsl_element, Unknown}}.

@@ -5,24 +5,24 @@
 %%% 负责任务列表构建、poolboy 并行执行、计算结果处理。
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_executor_task).
+-module(beamai_graph_executor_task).
 
 -export([make_context/6, build_task_list/2, execute_tasks/7,
          process_compute_result/3]).
 
--type vertex_id() :: graph_executor:vertex_id().
--type vertex() :: pregel_vertex:vertex().
--type compute_fn() :: graph_executor:compute_fn().
--type context() :: graph_executor:context().
--type compute_result() :: graph_executor:compute_result().
--type delta() :: graph_executor:delta().
+-type vertex_id() :: beamai_graph_engine:vertex_id().
+-type vertex() :: beamai_pregel_vertex:vertex().
+-type compute_fn() :: beamai_graph_engine:compute_fn().
+-type context() :: beamai_graph_engine:context().
+-type compute_result() :: beamai_graph_engine:compute_result().
+-type delta() :: beamai_graph_engine:delta().
 
 %%====================================================================
 %% 导出函数
 %%====================================================================
 
 %% @doc 创建计算上下文
--spec make_context(vertex_id(), vertex(), graph_state:state(),
+-spec make_context(vertex_id(), vertex(), beamai_graph_engine:state(),
                    map() | undefined, non_neg_integer(), non_neg_integer()) -> context().
 make_context(VertexId, Vertex, GlobalState, VertexInput, Superstep, NumVertices) ->
     #{
@@ -36,7 +36,7 @@ make_context(VertexId, Vertex, GlobalState, VertexInput, Superstep, NumVertices)
 
 %% @doc 构建扁平任务列表
 -spec build_task_list(#{vertex_id() => vertex()},
-                      #{vertex_id() => [graph_dispatch:dispatch()]}) ->
+                      #{vertex_id() => [beamai_graph_dispatch:dispatch()]}) ->
     [{vertex_id(), vertex(), map() | undefined}].
 build_task_list(ActiveVertices, VertexInputs) ->
     maps:fold(
@@ -45,7 +45,7 @@ build_task_list(ActiveVertices, VertexInputs) ->
                 [] ->
                     [{Id, Vertex, undefined} | Acc];
                 Dispatches ->
-                    [{Id, Vertex, graph_dispatch:get_input(D)} || D <- Dispatches] ++ Acc
+                    [{Id, Vertex, beamai_graph_dispatch:get_input(D)} || D <- Dispatches] ++ Acc
             end
         end,
         [],
@@ -55,7 +55,7 @@ build_task_list(ActiveVertices, VertexInputs) ->
 %% @doc 执行任务列表
 -spec execute_tasks(
     [{vertex_id(), vertex(), map() | undefined}],
-    compute_fn(), graph_state:state(), non_neg_integer(),
+    compute_fn(), beamai_graph_engine:state(), non_neg_integer(),
     non_neg_integer(), atom(), pos_integer()
 ) -> {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}.
 execute_tasks([], _ComputeFn, _GlobalState, _Superstep, _NumVertices, _PoolName, _PoolTimeout) ->
@@ -110,7 +110,7 @@ safe_compute(ComputeFn, Context) ->
 %% @private 并行执行任务
 -spec execute_parallel_tasks(
     [{vertex_id(), vertex(), map() | undefined}],
-    compute_fn(), graph_state:state(), non_neg_integer(),
+    compute_fn(), beamai_graph_engine:state(), non_neg_integer(),
     non_neg_integer(), atom(), pos_integer()
 ) -> {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}.
 execute_parallel_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
@@ -137,7 +137,7 @@ execute_in_pool(ComputeFn, Context, PoolName, Timeout) ->
     try
         Worker = poolboy:checkout(PoolName, true, Timeout),
         try
-            graph_pool_worker:execute(Worker, ComputeFn, Context)
+            beamai_graph_pool_worker:execute(Worker, ComputeFn, Context)
         after
             poolboy:checkin(PoolName, Worker)
         end

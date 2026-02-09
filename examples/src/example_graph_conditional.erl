@@ -25,44 +25,44 @@
 %% 条件边根据分类结果路由到不同处理节点
 run_router() ->
     ClassifyFun = fun(State, _Context) ->
-        Score = graph_state:get(State, score, 0),
+        Score = beamai_graph_engine:state_get(State, score, 0),
         Priority = if
             Score >= 80 -> <<"high">>;
             Score >= 50 -> <<"normal">>;
             true -> <<"low">>
         end,
-        {ok, graph_state:set(State, priority, Priority)}
+        {ok, beamai_graph_engine:state_set(State, priority, Priority)}
     end,
 
     HighFun = fun(State, _Context) ->
-        {ok, graph_state:set(State, action, <<"escalate_immediately">>)}
+        {ok, beamai_graph_engine:state_set(State, action, <<"escalate_immediately">>)}
     end,
 
     NormalFun = fun(State, _Context) ->
-        {ok, graph_state:set(State, action, <<"process_in_queue">>)}
+        {ok, beamai_graph_engine:state_set(State, action, <<"process_in_queue">>)}
     end,
 
     LowFun = fun(State, _Context) ->
-        {ok, graph_state:set(State, action, <<"batch_later">>)}
+        {ok, beamai_graph_engine:state_set(State, action, <<"batch_later">>)}
     end,
 
     RespondFun = fun(State, _Context) ->
-        Priority = graph_state:get(State, priority),
-        Action = graph_state:get(State, action),
+        Priority = beamai_graph_engine:state_get(State, priority),
+        Action = beamai_graph_engine:state_get(State, action),
         Response = <<"Priority: ", Priority/binary, ", Action: ", Action/binary>>,
-        {ok, graph_state:set(State, response, Response)}
+        {ok, beamai_graph_engine:state_set(State, response, Response)}
     end,
 
     %% 路由函数：根据 priority 字段决定下一个节点
     RouterFun = fun(State) ->
-        case graph_state:get(State, priority) of
+        case beamai_graph_engine:state_get(State, priority) of
             <<"high">> -> high_priority;
             <<"normal">> -> normal;
             <<"low">> -> low_priority
         end
     end,
 
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, classify, ClassifyFun},
         {node, high_priority, HighFun},
         {node, normal, NormalFun},
@@ -78,10 +78,10 @@ run_router() ->
 
     %% 测试不同分数
     lists:foreach(fun(Score) ->
-        State = graph:state(#{score => Score}),
-        Result = graph:run(Graph, State),
+        State = beamai_graph:state(#{score => Score}),
+        Result = beamai_graph:run(Graph, State),
         Final = maps:get(final_state, Result),
-        Response = graph_state:get(Final, response),
+        Response = beamai_graph_engine:state_get(Final, response),
         io:format("Score ~p -> ~s~n", [Score, Response])
     end, [90, 65, 30]),
 
@@ -92,29 +92,29 @@ run_router() ->
 %% 流程:
 %%   evaluate -> (approve | reject) -> __end__
 %%
-%% evaluate 节点使用 graph_command:goto/2 同时设置状态和路由
+%% evaluate 节点使用 beamai_graph_command:goto/2 同时设置状态和路由
 run_command() ->
     EvaluateFun = fun(State, _Context) ->
-        Amount = graph_state:get(State, amount, 0),
+        Amount = beamai_graph_engine:state_get(State, amount, 0),
         case Amount =< 1000 of
             true ->
-                {command, graph_command:goto(approve, #{reason => <<"within_limit">>})};
+                {command, beamai_graph_command:goto(approve, #{reason => <<"within_limit">>})};
             false ->
-                {command, graph_command:goto(reject, #{reason => <<"exceeds_limit">>})}
+                {command, beamai_graph_command:goto(reject, #{reason => <<"exceeds_limit">>})}
         end
     end,
 
     ApproveFun = fun(State, _Context) ->
-        Reason = graph_state:get(State, reason),
-        {ok, graph_state:set(State, result, <<"APPROVED: ", Reason/binary>>)}
+        Reason = beamai_graph_engine:state_get(State, reason),
+        {ok, beamai_graph_engine:state_set(State, result, <<"APPROVED: ", Reason/binary>>)}
     end,
 
     RejectFun = fun(State, _Context) ->
-        Reason = graph_state:get(State, reason),
-        {ok, graph_state:set(State, result, <<"REJECTED: ", Reason/binary>>)}
+        Reason = beamai_graph_engine:state_get(State, reason),
+        {ok, beamai_graph_engine:state_set(State, result, <<"REJECTED: ", Reason/binary>>)}
     end,
 
-    {ok, Graph} = graph:build([
+    {ok, Graph} = beamai_graph:build([
         {node, evaluate, EvaluateFun},
         {node, approve, ApproveFun},
         {node, reject, RejectFun},
@@ -125,10 +125,10 @@ run_command() ->
 
     %% 测试审批流程
     lists:foreach(fun(Amount) ->
-        State = graph:state(#{amount => Amount}),
-        Result = graph:run(Graph, State),
+        State = beamai_graph:state(#{amount => Amount}),
+        Result = beamai_graph:run(Graph, State),
         Final = maps:get(final_state, Result),
-        Res = graph_state:get(Final, result),
+        Res = beamai_graph_engine:state_get(Final, result),
         io:format("Amount ~p -> ~s~n", [Amount, Res])
     end, [500, 1500]),
 

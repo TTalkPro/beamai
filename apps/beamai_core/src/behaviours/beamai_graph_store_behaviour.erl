@@ -7,7 +7,7 @@
 %%% == 设计原则 ==
 %%%
 %%% - 存储引用（store_ref）为不透明类型，由实现模块自行定义
-%%% - Snapshot 格式遵循 graph_runner:snapshot_data() 类型
+%%% - Snapshot 格式遵循 beamai_graph_engine:snapshot_data() 类型
 %%% - 所有操作均为同步调用，异步化由调用方负责
 %%% - 错误不会阻塞图执行，仅用于日志记录
 %%%
@@ -56,11 +56,11 @@
 %% 运行标识（一次完整执行的 ID）
 -type run_id() :: binary().
 
-%% 图快照数据，遵循 graph_runner:snapshot_data() 格式
+%% 图快照数据，遵循 beamai_graph_engine:snapshot_data() 格式
 -type graph_snapshot() :: #{
     type := snapshot_type(),
-    pregel_snapshot := graph_executor:snapshot_data(),
-    global_state := graph_state:state(),
+    pregel_snapshot := beamai_graph_engine:snapshot_data(),
+    global_state := beamai_graph_engine:state(),
     iteration := non_neg_integer(),
     run_id := run_id(),
     active_vertices := [atom()],

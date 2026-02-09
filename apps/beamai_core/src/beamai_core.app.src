@@ -1,7 +1,7 @@
 {application, beamai_core, [
     {description, "BeamAI Core - Kernel, Process, Graph 框架"},
     {vsn, "0.1.0"},
-    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool, beamai_graph_pool]},
+    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool, beamai_graph_pool, beamai_graph_sup]},
     {mod, {beamai_core_app, []}},
     {applications, [kernel, stdlib, jsx, uuid, hackney, poolboy]},
     {optional_applications, [gun, beamai_llm]},
@@ -61,28 +61,29 @@
         beamai_id,
         beamai_utils,
         %% Graph 核心
-        graph,
-        graph_node,
-        graph_edge,
+        beamai_graph,
+        beamai_graph_node,
+        beamai_graph_edge,
         %% Graph Builder
-        graph_builder,
-        graph_dsl,
+        beamai_graph_builder,
+        beamai_graph_dsl,
         %% Graph State
-        graph_state,
-        graph_state_reducer,
-        graph_command,
-        graph_dispatch,
-        %% Graph Runner
-        graph_runner,
-        graph_snapshot,
-        %% Graph Executor
-        graph_executor,
-        graph_pool_worker,
-        graph_compute,
+        beamai_graph_state_reducer,
+        beamai_graph_command,
+        beamai_graph_dispatch,
+        %% Graph Engine + Runtime + Supervisor
+        beamai_graph_engine,
+        beamai_graph_runtime,
+        beamai_graph_state,
+        beamai_graph_sup,
+        beamai_graph_executor_task,
+        beamai_graph_executor_utils,
+        beamai_graph_pool_worker,
+        beamai_graph_compute,
         %% Pregel 数据结构（保留）
-        pregel_graph,
-        pregel_vertex,
-        pregel_utils
+        beamai_pregel_graph,
+        beamai_pregel_vertex,
+        beamai_pregel_utils
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

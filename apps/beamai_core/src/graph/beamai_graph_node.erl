@@ -17,7 +17,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(graph_node).
+-module(beamai_graph_node).
 
 %% API 导出
 -export([new/2, new/3]).
@@ -29,16 +29,16 @@
 
 %% 类型定义
 -type node_id() :: atom().
--type node_fun() :: fun((graph_state:state(), map() | undefined) -> node_result()).
+-type node_fun() :: fun((beamai_graph_engine:state(), map() | undefined) -> node_result()).
 %% 节点返回值类型：
 %% - {ok, State}: 执行成功
 %% - {error, Reason}: 执行失败
 %% - {interrupt, Reason, State}: 请求中断（human-in-the-loop）
 %% - {command, Command}: Command 模式（同时指定 delta 和路由）
--type node_result() :: {ok, graph_state:state()}
+-type node_result() :: {ok, beamai_graph_engine:state()}
                      | {error, term()}
-                     | {interrupt, term(), graph_state:state()}
-                     | {command, graph_command:command()}.
+                     | {interrupt, term(), beamai_graph_engine:state()}
+                     | {command, beamai_graph_command:command()}.
 -type metadata() :: #{
     description => binary(),
     timeout => pos_integer(),
@@ -99,7 +99,7 @@ metadata(#{metadata := Meta}) -> Meta.
 %%====================================================================
 
 %% @doc 执行节点，返回新状态或错误
--spec execute(graph_node(), graph_state:state()) -> node_result().
+-spec execute(graph_node(), beamai_graph_engine:state()) -> node_result().
 execute(#{id := ?END_NODE}, State) ->
     %% 终止节点直接传递状态
     {ok, State};
@@ -111,13 +111,13 @@ execute(#{fun_ := Fun} = Node, State) ->
 
 %% @doc 安全执行节点函数
 %% 捕获所有异常并包装为错误
--spec try_execute(graph_node(), node_fun(), graph_state:state()) -> node_result().
+-spec try_execute(graph_node(), node_fun(), beamai_graph_engine:state()) -> node_result().
 try_execute(Node, Fun, State) ->
     try Fun(State, undefined) of
         {ok, NewState} when is_map(NewState) ->
             {ok, NewState};
         {command, Cmd} when is_map(Cmd) ->
-            case graph_command:is_command(Cmd) of
+            case beamai_graph_command:is_command(Cmd) of
                 true -> {command, Cmd};
                 false -> {error, {invalid_command, id(Node), Cmd}}
             end;
