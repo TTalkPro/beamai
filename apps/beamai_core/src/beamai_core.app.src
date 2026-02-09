@@ -43,6 +43,7 @@
         %% Process Framework
         beamai_process,
         beamai_process_builder,
+        beamai_process_engine,
         beamai_process_event,
         beamai_process_executor,
         beamai_process_runtime,

@@ -1,40 +1,22 @@
 %%%-------------------------------------------------------------------
-%%% @doc 流程运行时引擎（gen_statem 状态机）
+%%% @doc 流程运行时 - 薄 gen_server 壳
 %%%
-%%% 驱动事件驱动的步骤激活与执行，支持并发和顺序两种执行模式。
-%%% 通过 poolboy 工作进程池实现并发步骤执行。
+%%% 委托核心逻辑到 beamai_process_engine（纯函数），
+%%% 自身仅负责：
+%%% - OTP 进程生命周期管理
+%%% - 消息路由（cast/call/info）
+%%% - 并发步骤的 worker 进程 spawn
+%%% - 副作用处理（snapshot 持久化、caller 通知、quiescent 回调）
 %%%
 %%% == 状态转换 ==
 %%%
 %%% idle -> running -> paused/completed/failed
 %%%
-%%% == 初始化路径 ==
-%%%
-%%% - init_fresh/2: 全新启动，调用各步骤的 Module:init(Config)
-%%% - init_from_restored/2: 从快照恢复，直接使用恢复的步骤状态
-%%%
-%%% == 自动 Snapshot ==
-%%%
-%%% 通过 Opts 传入 store（{Module, Ref}）和 snapshot_policy 配置。
-%%% 在关键状态转换点异步保存快照，失败不阻塞流程执行。
-%%% Module 需实现 beamai_process_store_behaviour 行为。
-%%%
-%%% == 静止点回调（on_quiescent）==
-%%%
-%%% 通过 Opts 传入 on_quiescent 回调函数。
-%%% 当所有并发步骤执行完毕时触发（但流程可能尚未完成）。
-%%% 用于监控、自定义持久化、进度通知等。
-%%% 回调签名: fun(QuiescentInfo :: map()) -> ok
-%%%
-%%% 触发时机:
-%%% - quiescent: 并发步骤全部完成，事件队列仍有待处理事件
-%%% - paused: 步骤请求暂停
-%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_process_runtime).
 
--behaviour(gen_statem).
+-behaviour(gen_server).
 
 %% API
 -export([
@@ -46,36 +28,21 @@
     snapshot/1
 ]).
 
-%% gen_statem callbacks
--export([callback_mode/0, init/1, terminate/3]).
--export([idle/3, running/3, paused/3, completed/3, failed/3]).
+%% gen_server callbacks
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(POOL_NAME, beamai_process_pool).
 
--record(data, {
-    process_spec :: beamai_process_builder:process_spec(),
-    steps_state :: #{atom() => beamai_process_step:step_runtime_state()},
-    event_queue :: queue:queue(beamai_process_event:event()),
-    context :: beamai_context:t(),
-    paused_step :: atom() | undefined,
-    pause_reason :: term() | undefined,
-    pending_steps :: #{atom() => reference()},
-    pending_results :: [{atom(), term()}],
-    expected_count :: non_neg_integer(),
+-record(state, {
+    engine :: beamai_process_engine:engine(),
     caller :: pid() | undefined,
-    opts :: map(),
-    %% 存储后端引用：{Module, Ref}，Module 需实现 beamai_process_store_behaviour
     store :: {module(), term()} | undefined,
-    %% 自动 snapshot 策略配置
     snapshot_policy :: map(),
-    %% 步骤完成计数器（用于 every_n_steps）
     snapshot_step_counter = 0 :: non_neg_integer(),
-    %% 静止点回调：所有并发步骤执行完毕时触发
-    %% 签名: fun(QuiescentInfo :: map()) -> ok
-    %% QuiescentInfo 格式见 build_quiescent_info/3
     on_quiescent :: fun((map()) -> ok) | undefined,
-    %% error handler 的持久化状态，跨多次 handle_error 调用保留
-    error_handler_state = #{} :: map()
+    %% 并发步骤结果收集
+    pending_count = 0 :: non_neg_integer(),
+    pending_results = [] :: [{atom(), term()}]
 }).
 
 %%====================================================================
@@ -83,592 +50,272 @@
 %%====================================================================
 
 %% @doc 启动流程运行时进程
-%%
-%% @param ProcessSpec 编译后的流程定义
-%% @param Opts 启动选项（可包含 context、caller、initial_events 等）
-%% @returns {ok, Pid} | {error, Reason}
 -spec start_link(beamai_process_builder:process_spec(), map()) ->
     {ok, pid()} | {error, term()}.
 start_link(ProcessSpec, Opts) ->
-    gen_statem:start_link(?MODULE, {ProcessSpec, Opts}, []).
+    gen_server:start_link(?MODULE, {ProcessSpec, Opts}, []).
 
 %% @doc 向运行中的流程发送事件
-%%
-%% @param Pid 流程运行时进程 PID
-%% @param Event 事件 Map
-%% @returns ok
 -spec send_event(pid(), beamai_process_event:event()) -> ok.
 send_event(Pid, Event) ->
-    gen_statem:cast(Pid, {send_event, Event}).
+    gen_server:cast(Pid, {send_event, Event}).
 
 %% @doc 恢复已暂停的流程
-%%
-%% 调用暂停步骤的 on_resume 回调，传入恢复数据。
-%%
-%% @param Pid 流程运行时进程 PID
-%% @param Data 恢复时传入的数据
-%% @returns ok | {error, not_paused}
--spec resume(pid(), term()) -> ok | {error, not_paused}.
+-spec resume(pid(), term()) -> ok | {error, term()}.
 resume(Pid, Data) ->
-    gen_statem:call(Pid, {resume, Data}).
+    gen_server:call(Pid, {resume, Data}).
 
 %% @doc 停止流程运行时进程
 -spec stop(pid()) -> ok.
 stop(Pid) ->
-    gen_statem:stop(Pid).
+    gen_server:stop(Pid).
 
 %% @doc 获取流程当前状态信息
-%%
-%% @returns {ok, 状态 Map}，包含 state、name、queue_length 等字段
 -spec get_status(pid()) -> {ok, map()}.
 get_status(Pid) ->
-    gen_statem:call(Pid, get_status).
+    gen_server:call(Pid, get_status).
 
 %% @doc 获取流程状态快照（可序列化）
-%%
-%% @returns {ok, 快照 Map}，可用于持久化和恢复
 -spec snapshot(pid()) -> {ok, beamai_process_state:snapshot()}.
 snapshot(Pid) ->
-    gen_statem:call(Pid, snapshot).
+    gen_server:call(Pid, snapshot).
 
 %%====================================================================
-%% gen_statem 回调
+%% gen_server 回调
 %%====================================================================
-
-%% @private 状态机回调模式：状态函数模式
-callback_mode() -> state_functions.
 
 %% @private 初始化流程运行时
-%% 根据 Opts 中 restored 标记决定走全新初始化还是恢复路径
 init({ProcessSpec, Opts}) ->
     case maps:get(restored, Opts, false) of
-        true ->
-            init_from_restored(ProcessSpec, Opts);
         false ->
-            init_fresh(ProcessSpec, Opts)
+            init_fresh(ProcessSpec, Opts);
+        RestoredState when is_map(RestoredState) ->
+            init_restored(RestoredState, Opts)
     end.
 
-%% @private 全新初始化路径
-%% 初始化所有步骤状态，设置事件队列，根据是否有初始事件决定初始状态
-init_fresh(ProcessSpec, Opts) ->
-    case init_steps(ProcessSpec) of
-        {ok, StepsState} ->
-            Context = maps:get(context, Opts, beamai_context:new()),
-            InitialEvents = maps:get(initial_events, ProcessSpec, []),
-            Queue = queue:from_list(InitialEvents),
-            Store = maps:get(store, Opts, undefined),
-            SnapshotPolicy = maps:get(snapshot_policy, Opts, default_snapshot_policy()),
-            OnQuiescent = maps:get(on_quiescent, Opts, undefined),
-            EHState = init_error_handler(ProcessSpec),
-            Data = #data{
-                process_spec = ProcessSpec,
-                steps_state = StepsState,
-                event_queue = Queue,
-                context = Context,
-                paused_step = undefined,
-                pause_reason = undefined,
-                pending_steps = #{},
-                pending_results = [],
-                expected_count = 0,
-                caller = maps:get(caller, Opts, undefined),
-                opts = Opts,
-                store = Store,
-                snapshot_policy = SnapshotPolicy,
-                on_quiescent = OnQuiescent,
-                error_handler_state = EHState
-            },
-            case queue:is_empty(Queue) of
-                true ->
-                    {ok, idle, Data};
-                false ->
-                    {ok, running, Data, [{state_timeout, 0, process_queue}]}
+%% @private 处理同步调用
+handle_call(get_status, _From, #state{engine = Engine} = S) ->
+    {reply, {ok, beamai_process_engine:status(Engine)}, S};
+
+handle_call(snapshot, _From, #state{engine = Engine} = S) ->
+    {reply, {ok, beamai_process_engine:take_snapshot(Engine)}, S};
+
+handle_call({resume, ResumeData}, From, #state{engine = Engine} = S) ->
+    case beamai_process_engine:current_state(Engine) of
+        paused ->
+            case beamai_process_engine:handle_resume(ResumeData, Engine) of
+                {ok, Engine1} ->
+                    gen_server:reply(From, ok),
+                    S1 = S#state{engine = Engine1},
+                    run_engine(S1);
+                {error, Reason} ->
+                    {reply, {error, Reason}, S};
+                {error, Reason, Engine1} ->
+                    S1 = S#state{engine = Engine1},
+                    S2 = process_effects(S1),
+                    {reply, {error, Reason}, S2}
             end;
+        _ ->
+            {reply, {error, not_paused}, S}
+    end;
+
+handle_call(_Request, _From, S) ->
+    {reply, {error, unknown_request}, S}.
+
+%% @private 处理异步消息
+handle_cast({send_event, Event}, #state{engine = Engine, pending_count = PC} = S) ->
+    case beamai_process_engine:current_state(Engine) of
+        CS when CS =:= completed; CS =:= failed ->
+            {noreply, S};
+        _ ->
+            Engine1 = beamai_process_engine:inject_event(Event, Engine),
+            S1 = S#state{engine = Engine1},
+            case PC > 0 of
+                true ->
+                    %% 正在等待并发结果，仅入队
+                    {noreply, S1};
+                false ->
+                    run_engine(S1)
+            end
+    end.
+
+%% @private 处理系统消息
+handle_info(run, S) ->
+    run_engine(S);
+
+handle_info({step_result, StepId, Result},
+            #state{pending_count = PC, pending_results = PR, engine = Engine} = S) ->
+    NewPR = [{StepId, Result} | PR],
+    case length(NewPR) >= PC of
+        true ->
+            %% 所有并发步骤结果已收集，应用到引擎
+            case beamai_process_engine:apply_step_results(NewPR, Engine) of
+                {ok, Engine1} ->
+                    S1 = S#state{engine = Engine1, pending_count = 0, pending_results = []},
+                    S2 = process_effects(S1),
+                    {noreply, S2};
+                {execute_async, Tasks, Engine1} ->
+                    spawn_async_tasks(Tasks),
+                    S1 = S#state{
+                        engine = Engine1,
+                        pending_count = length(Tasks),
+                        pending_results = []
+                    },
+                    S2 = process_effects(S1),
+                    {noreply, S2}
+            end;
+        false ->
+            {noreply, S#state{pending_results = NewPR}}
+    end;
+
+handle_info(_Info, S) ->
+    {noreply, S}.
+
+%% @private 进程终止回调
+terminate(_Reason, _S) ->
+    ok.
+
+%%====================================================================
+%% 内部函数 - 初始化
+%%====================================================================
+
+%% @private 全新初始化路径
+init_fresh(ProcessSpec, Opts) ->
+    case beamai_process_engine:new(ProcessSpec, Opts) of
+        {ok, Engine} ->
+            State = build_state(Engine, Opts),
+            maybe_trigger_run(Engine),
+            {ok, State};
         {error, Reason} ->
             {stop, Reason}
     end.
 
 %% @private 从快照恢复的初始化路径
-%% 直接使用 Opts 中传入的已恢复步骤状态，不调用 init_steps
-init_from_restored(ProcessSpec, Opts) ->
-    Data = build_restored_data(ProcessSpec, Opts),
-    CurrentState = maps:get(restored_current_state, Opts, idle),
-    determine_initial_state(CurrentState, Data).
+init_restored(RestoredState, Opts) ->
+    case beamai_process_engine:from_restored(RestoredState, Opts) of
+        {ok, Engine} ->
+            State = build_state(Engine, Opts),
+            maybe_trigger_run(Engine),
+            {ok, State}
+    end.
 
-%% @private 构建恢复数据记录
-%% 从 Opts 中提取所有恢复相关字段，构建 #data{} 记录
--spec build_restored_data(map(), map()) -> #data{}.
-build_restored_data(ProcessSpec, Opts) ->
-    EventQueue = maps:get(restored_event_queue, Opts, []),
-    #data{
-        process_spec = ProcessSpec,
-        steps_state = maps:get(restored_steps_state, Opts),
-        event_queue = queue:from_list(EventQueue),
-        context = maps:get(context, Opts, beamai_context:new()),
-        paused_step = maps:get(restored_paused_step, Opts, undefined),
-        pause_reason = maps:get(restored_pause_reason, Opts, undefined),
-        pending_steps = #{},
-        pending_results = [],
-        expected_count = 0,
+%% @private 构建 gen_server 状态
+build_state(Engine, Opts) ->
+    #state{
+        engine = Engine,
         caller = maps:get(caller, Opts, undefined),
-        opts = Opts,
         store = maps:get(store, Opts, undefined),
         snapshot_policy = maps:get(snapshot_policy, Opts, default_snapshot_policy()),
-        on_quiescent = maps:get(on_quiescent, Opts, undefined),
-        error_handler_state = maps:get(restored_error_handler_state, Opts, #{})
+        on_quiescent = maps:get(on_quiescent, Opts, undefined)
     }.
 
-%% @private 根据恢复状态和事件队列决定初始 FSM 状态
-%% 将复杂的嵌套条件判断拆分为独立函数
--spec determine_initial_state(atom(), #data{}) -> {ok, atom(), #data{}} | {ok, atom(), #data{}, list()}.
-determine_initial_state(paused, Data) ->
-    {ok, paused, Data};
-determine_initial_state(completed, Data) ->
-    {ok, completed, Data};
-determine_initial_state(failed, Data) ->
-    {ok, failed, Data};
-determine_initial_state(running, Data) ->
-    initial_state_from_queue(Data);
-determine_initial_state(_, Data) ->
-    %% idle 或其他状态，根据队列决定
-    initial_state_from_queue(Data).
-
-%% @private 根据事件队列状态决定初始状态
-%% 队列为空进入 idle，否则进入 running 并触发处理
--spec initial_state_from_queue(#data{}) -> {ok, atom(), #data{}} | {ok, atom(), #data{}, list()}.
-initial_state_from_queue(#data{event_queue = Queue} = Data) ->
-    case queue:is_empty(Queue) of
-        true -> {ok, idle, Data};
-        false -> {ok, running, Data, [{state_timeout, 0, process_queue}]}
+%% @private 引擎处于 running 状态时发送 run 消息触发处理
+maybe_trigger_run(Engine) ->
+    case beamai_process_engine:current_state(Engine) of
+        running -> self() ! run;
+        _ -> ok
     end.
 
-%% @private 进程终止回调
-terminate(_Reason, _State, _Data) ->
-    ok.
-
 %%====================================================================
-%% 状态：idle（空闲）
+%% 内部函数 - 引擎驱动
 %%====================================================================
 
-%% @private 空闲状态：收到事件时转入 running 状态
-idle(cast, {send_event, Event}, #data{event_queue = Queue} = Data) ->
-    NewQueue = queue:in(Event, Queue),
-    {next_state, running, Data#data{event_queue = NewQueue},
-     [{state_timeout, 0, process_queue}]};
-
-%% @private 空闲状态：响应状态查询
-idle({call, From}, get_status, Data) ->
-    {keep_state, Data, [{reply, From, {ok, format_status(idle, Data)}}]};
-
-%% @private 空闲状态：响应快照请求
-idle({call, From}, snapshot, Data) ->
-    {keep_state, Data, [{reply, From, {ok, do_snapshot(idle, Data)}}]};
-
-%% @private 空闲状态：拒绝其他调用
-idle({call, From}, _, Data) ->
-    {keep_state, Data, [{reply, From, {error, idle}}]}.
-
-%%====================================================================
-%% 状态：running（运行中）
-%%====================================================================
-
-%% @private 运行状态：处理事件队列超时触发
-running(state_timeout, process_queue, Data) ->
-    process_event_queue(Data);
-
-%% @private 运行状态：新事件入队等待处理
-running(cast, {send_event, Event}, #data{event_queue = Queue} = Data) ->
-    NewQueue = queue:in(Event, Queue),
-    {keep_state, Data#data{event_queue = NewQueue}};
-
-%% @private 运行状态：接收并发步骤执行结果
-running(info, {step_result, StepId, Result}, Data) ->
-    handle_step_result(StepId, Result, Data);
-
-%% @private 运行状态：响应状态查询
-running({call, From}, get_status, Data) ->
-    {keep_state, Data, [{reply, From, {ok, format_status(running, Data)}}]};
-
-%% @private 运行状态：响应快照请求
-running({call, From}, snapshot, Data) ->
-    {keep_state, Data, [{reply, From, {ok, do_snapshot(running, Data)}}]};
-
-%% @private 运行状态：拒绝其他调用（忙碌中）
-running({call, From}, _, Data) ->
-    {keep_state, Data, [{reply, From, {error, busy}}]}.
-
-%%====================================================================
-%% 状态：paused（已暂停）
-%%====================================================================
-
-%% @private 暂停状态：处理恢复请求
-%% 检查暂停步骤是否支持 on_resume 回调
-paused({call, From}, {resume, ResumeData}, #data{paused_step = StepId,
-                                                  steps_state = StepsState} = Data) ->
-    case StepId of
-        undefined ->
-            {keep_state, Data, [{reply, From, {error, no_paused_step}}]};
-        _ ->
-            StepState = maps:get(StepId, StepsState),
-            #{step_spec := #{module := Module}} = StepState,
-            case erlang:function_exported(Module, on_resume, 3) of
-                true ->
-                    handle_resume(Module, ResumeData, StepState, StepId, From, Data);
-                false ->
-                    {keep_state, Data, [{reply, From, {error, resume_not_supported}}]}
-            end
-    end;
-
-%% @private 暂停状态：新事件入队（等恢复后处理）
-paused(cast, {send_event, Event}, #data{event_queue = Queue} = Data) ->
-    NewQueue = queue:in(Event, Queue),
-    {keep_state, Data#data{event_queue = NewQueue}};
-
-%% @private 暂停状态：响应状态查询
-paused({call, From}, get_status, Data) ->
-    {keep_state, Data, [{reply, From, {ok, format_status(paused, Data)}}]};
-
-%% @private 暂停状态：响应快照请求
-paused({call, From}, snapshot, Data) ->
-    {keep_state, Data, [{reply, From, {ok, do_snapshot(paused, Data)}}]};
-
-%% @private 暂停状态：拒绝其他调用
-paused({call, From}, _, Data) ->
-    {keep_state, Data, [{reply, From, {error, paused}}]}.
-
-%%====================================================================
-%% 状态：completed（已完成）
-%%====================================================================
-
-%% @private 完成状态：忽略新事件
-completed(cast, {send_event, _Event}, _Data) ->
-    keep_state_and_data;
-
-%% @private 完成状态：响应状态查询
-completed({call, From}, get_status, Data) ->
-    {keep_state, Data, [{reply, From, {ok, format_status(completed, Data)}}]};
-
-%% @private 完成状态：响应快照请求
-completed({call, From}, snapshot, Data) ->
-    {keep_state, Data, [{reply, From, {ok, do_snapshot(completed, Data)}}]};
-
-%% @private 完成状态：拒绝其他调用
-completed({call, From}, _, Data) ->
-    {keep_state, Data, [{reply, From, {error, completed}}]}.
-
-%%====================================================================
-%% 状态：failed（已失败）
-%%====================================================================
-
-%% @private 失败状态：忽略新事件
-failed(cast, {send_event, _Event}, _Data) ->
-    keep_state_and_data;
-
-%% @private 失败状态：响应状态查询
-failed({call, From}, get_status, Data) ->
-    {keep_state, Data, [{reply, From, {ok, format_status(failed, Data)}}]};
-
-%% @private 失败状态：响应快照请求
-failed({call, From}, snapshot, Data) ->
-    {keep_state, Data, [{reply, From, {ok, do_snapshot(failed, Data)}}]};
-
-%% @private 失败状态：拒绝其他调用
-failed({call, From}, _, Data) ->
-    {keep_state, Data, [{reply, From, {error, failed}}]}.
-
-%%====================================================================
-%% 内部函数 - 事件处理
-%%====================================================================
-
-%% @private 处理事件队列
-%% 队列为空时转入完成状态；否则取出事件进行路由和激活
-process_event_queue(#data{event_queue = Queue} = Data) ->
-    case queue:out(Queue) of
-        {empty, _} ->
-            transition_to_completed(Data);
-        {{value, Event}, RestQueue} ->
-            Data1 = Data#data{event_queue = RestQueue},
-            route_and_activate(Event, Data1)
-    end.
-
-%% @private 路由事件并激活匹配的步骤
-%% 通过 bindings 将事件数据投递到目标步骤输入，然后检查激活条件
-route_and_activate(Event, #data{process_spec = #{bindings := Bindings},
-                                steps_state = StepsState} = Data) ->
-    Deliveries = beamai_process_event:route(Event, Bindings),
-    NewStepsState = deliver_inputs(Deliveries, StepsState),
-    Data1 = Data#data{steps_state = NewStepsState},
-    ActivatedSteps = find_activated_steps(NewStepsState),
-    case ActivatedSteps of
-        [] ->
-            process_event_queue(Data1);
-        _ ->
-            execute_steps(ActivatedSteps, Data1)
-    end.
-
-%% @private 将事件路由结果投递到各步骤的输入槽
-deliver_inputs(Deliveries, StepsState) ->
-    lists:foldl(
-        fun({StepId, InputName, Value}, Acc) ->
-            beamai_process_step:collect_input(StepId, InputName, Value, Acc)
-        end,
-        StepsState,
-        Deliveries
-    ).
-
-%% @private 查找所有已满足激活条件的步骤
-find_activated_steps(StepsState) ->
-    maps:fold(
-        fun(StepId, StepState, Acc) ->
-            #{step_spec := StepSpec} = StepState,
-            case beamai_process_step:check_activation(StepState, StepSpec) of
-                true -> [StepId | Acc];
-                false -> Acc
-            end
-        end,
-        [],
-        StepsState
-    ).
-
-%% @private 委托执行器执行已激活步骤
-%% 根据返回结果类型（同步完成或异步启动）决定状态转换
-execute_steps(ActivatedSteps, #data{process_spec = #{execution_mode := Mode},
-                                     steps_state = StepsState,
-                                     context = Context} = Data) ->
-    Opts = #{mode => Mode, context => Context},
-    case beamai_process_executor:execute_steps(ActivatedSteps, StepsState, Opts) of
-        {sync_done, Results, NewStepsState} ->
-            apply_sequential_results(Results, Data#data{steps_state = NewStepsState});
-        {async, Monitors, NewStepsState} ->
-            {keep_state, Data#data{
-                steps_state = NewStepsState,
-                pending_steps = Monitors,
-                pending_results = [],
-                expected_count = map_size(Monitors)
-            }}
-    end.
-
-%% @private 处理顺序执行的结果列表
-%% 依次将事件入队，遇到 pause/error 立即转换状态
-apply_sequential_results([], Data) ->
-    process_event_queue(Data);
-apply_sequential_results([{StepId, {events, Events, _NewStepState}} | Rest], Data) ->
-    Data1 = maybe_snapshot(step_completed, StepId, Data),
-    Data2 = enqueue_events(Events, Data1),
-    apply_sequential_results(Rest, Data2);
-apply_sequential_results([{StepId, {pause, Reason, _NewStepState}} | _], Data) ->
-    Data1 = Data#data{paused_step = StepId, pause_reason = Reason},
-    notify_quiescent(paused, Data1),
-    Data2 = maybe_snapshot(paused, StepId, Data1),
-    {next_state, paused, Data2};
-apply_sequential_results([{_StepId, {error, Reason}} | _], Data) ->
-    handle_error(Reason, Data).
-
-%% @private 处理并发步骤执行结果
-%% 收集到所有步骤结果后批量应用
-handle_step_result(StepId, Result, #data{pending_steps = Pending,
-                                          pending_results = Results,
-                                          expected_count = Expected} = Data) ->
-    NewPending = maps:remove(StepId, Pending),
-    NewResults = [{StepId, Result} | Results],
-    Data1 = Data#data{pending_steps = NewPending, pending_results = NewResults},
-    case length(NewResults) >= Expected of
-        true ->
-            apply_step_results(NewResults, Data1#data{
-                pending_steps = #{},
-                pending_results = [],
-                expected_count = 0
-            });
-        false ->
-            {keep_state, Data1}
-    end.
-
-%% @private 批量应用并发步骤的执行结果
-apply_step_results(Results, Data) ->
-    apply_step_results_loop(Results, Data).
-
-%% @private 逐条处理并发执行结果
-%% 事件入队继续处理，pause/error 立即转换状态
-apply_step_results_loop([], #data{event_queue = Queue} = Data) ->
-    %% 所有并发步骤结果已处理 — 静止点
-    %% 仅在队列非空时触发（还有后续事件，非最终完成）
-    case queue:is_empty(Queue) of
-        false -> notify_quiescent(quiescent, Data);
-        true -> ok
-    end,
-    process_event_queue(Data);
-apply_step_results_loop([{StepId, Result} | Rest], #data{steps_state = StepsState} = Data) ->
-    case Result of
-        {events, Events, NewStepState} ->
-            StepsState1 = StepsState#{StepId => NewStepState},
-            Data1 = Data#data{steps_state = StepsState1},
-            Data2 = maybe_snapshot(step_completed, StepId, Data1),
-            Data3 = enqueue_events(Events, Data2),
-            apply_step_results_loop(Rest, Data3);
-        {pause, Reason, NewStepState} ->
-            StepsState1 = StepsState#{StepId => NewStepState},
-            Data1 = Data#data{
-                steps_state = StepsState1,
-                paused_step = StepId,
-                pause_reason = Reason
+%% @private 运行引擎并处理结果
+run_engine(#state{engine = Engine} = S) ->
+    case beamai_process_engine:run(Engine) of
+        {ok, Engine1} ->
+            S1 = S#state{engine = Engine1},
+            S2 = process_effects(S1),
+            {noreply, S2};
+        {execute_async, Tasks, Engine1} ->
+            spawn_async_tasks(Tasks),
+            S1 = S#state{
+                engine = Engine1,
+                pending_count = length(Tasks),
+                pending_results = []
             },
-            notify_quiescent(paused, Data1),
-            Data2 = maybe_snapshot(paused, StepId, Data1),
-            {next_state, paused, Data2};
-        {error, Reason} ->
-            handle_error(Reason, Data)
+            S2 = process_effects(S1),
+            {noreply, S2}
     end.
 
 %%====================================================================
-%% 内部函数 - 辅助
+%% 内部函数 - 副作用处理
 %%====================================================================
 
-%% @private 初始化所有步骤的运行时状态
-init_steps(#{steps := StepSpecs}) ->
-    init_steps_iter(maps:to_list(StepSpecs), #{}).
+%% @private 处理引擎累积的副作用
+process_effects(#state{engine = Engine} = S) ->
+    {Effects, Engine1} = beamai_process_engine:drain_effects(Engine),
+    S1 = S#state{engine = Engine1},
+    lists:foldl(fun apply_effect/2, S1, Effects).
 
-%% @private 逐步初始化步骤（递归）
-init_steps_iter([], Acc) -> {ok, Acc};
-init_steps_iter([{StepId, StepSpec} | Rest], Acc) ->
-    case beamai_process_step:init_step(StepSpec) of
-        {ok, StepState} ->
-            init_steps_iter(Rest, Acc#{StepId => StepState});
-        {error, _} = Error ->
-            Error
-    end.
+%% @private 应用单个副作用
+apply_effect({step_completed, StepId}, S) ->
+    maybe_snapshot(step_completed, StepId, S);
 
-%% @private 初始化 error handler 状态
-%% 若配置了 error_handler 且模块导出 init/1，调用其 init 获取初始状态
--spec init_error_handler(map()) -> map().
-init_error_handler(#{error_handler := undefined}) ->
-    #{};
-init_error_handler(#{error_handler := #{module := Module, config := Config}}) ->
-    case erlang:function_exported(Module, init, 1) of
-        true ->
-            case Module:init(Config) of
-                {ok, State} -> State;
-                _ -> #{}
-            end;
-        false ->
-            #{}
-    end;
-init_error_handler(_) ->
-    #{}.
+apply_effect({paused, StepId, _Reason}, S) ->
+    maybe_snapshot(paused, StepId, S);
 
-%% @private 将事件列表追加到事件队列
-enqueue_events(Events, #data{event_queue = Queue} = Data) ->
-    NewQueue = lists:foldl(fun(E, Q) -> queue:in(E, Q) end, Queue, Events),
-    Data#data{event_queue = NewQueue}.
-
-%% @private 转入完成状态并通知调用者
-transition_to_completed(#data{caller = Caller, steps_state = StepsState} = Data) ->
-    Data1 = maybe_snapshot(completed, undefined, Data),
+apply_effect(completed, #state{caller = Caller, engine = Engine} = S) ->
     case Caller of
         undefined -> ok;
-        Pid -> Pid ! {process_completed, self(), StepsState}
+        Pid -> Pid ! {process_completed, self(), beamai_process_engine:steps_state(Engine)}
     end,
-    {next_state, completed, Data1}.
+    maybe_snapshot(completed, undefined, S);
 
-%% @private 转入失败状态并通知调用者
-transition_to_failed(Reason, #data{caller = Caller} = Data) ->
-    Data1 = maybe_snapshot(error, undefined, Data),
+apply_effect({failed, Reason}, #state{caller = Caller} = S) ->
     case Caller of
         undefined -> ok;
         Pid -> Pid ! {process_failed, self(), Reason}
     end,
-    {next_state, failed, Data1#data{pause_reason = Reason}}.
+    maybe_snapshot(error, undefined, S);
 
-%% @private 处理步骤执行错误
-%% 若配置了 error_handler 则尝试恢复，否则直接转入失败状态
-handle_error(Reason, #data{process_spec = #{error_handler := undefined}} = Data) ->
-    transition_to_failed(Reason, Data);
-handle_error(Reason, #data{process_spec = #{error_handler := Handler},
-                           error_handler_state = EHState,
-                           context = Context} = Data) ->
-    #{module := Module} = Handler,
-    ErrorEvent = beamai_process_event:error_event(runtime, Reason),
-    ErrorInputs = #{error => ErrorEvent},
-    case Module:on_activate(ErrorInputs, EHState, Context) of
-        {ok, #{events := Events, state := NewEHState}} ->
-            Data1 = Data#data{error_handler_state = NewEHState},
-            Data2 = enqueue_events(Events, Data1),
-            process_event_queue(Data2);
-        {ok, #{events := Events}} ->
-            Data1 = enqueue_events(Events, Data),
-            process_event_queue(Data1);
-        _ ->
-            transition_to_failed(Reason, Data)
-    end.
+apply_effect({quiescent, _Reason}, #state{on_quiescent = undefined} = S) ->
+    S;
+apply_effect({quiescent, Reason}, #state{on_quiescent = Callback, engine = Engine} = S) ->
+    Info = beamai_process_engine:build_quiescent_info(Reason, Engine),
+    try
+        Callback(Info)
+    catch
+        Class:Error ->
+            logger:warning(
+                "[beamai_process_runtime] on_quiescent 回调异常: "
+                "reason=~p, class=~p, error=~p",
+                [Reason, Class, Error]
+            )
+    end,
+    S.
 
-%% @private 处理步骤恢复逻辑
-%% 调用步骤模块的 on_resume 回调，根据返回值决定状态转换
-handle_resume(Module, ResumeData, StepState, StepId, From,
-              #data{steps_state = StepsState, context = Context} = Data) ->
-    #{state := InnerState} = StepState,
-    case Module:on_resume(ResumeData, InnerState, Context) of
-        {ok, #{events := Events, state := NewInnerState}} ->
-            NewStepState = StepState#{state => NewInnerState},
-            StepsState1 = StepsState#{StepId => NewStepState},
-            Data1 = enqueue_events(Events, Data#data{
-                steps_state = StepsState1,
-                paused_step = undefined,
-                pause_reason = undefined
-            }),
-            {next_state, running, Data1,
-             [{reply, From, ok}, {state_timeout, 0, process_queue}]};
-        {ok, #{state := NewInnerState}} ->
-            NewStepState = StepState#{state => NewInnerState},
-            StepsState1 = StepsState#{StepId => NewStepState},
-            Data1 = Data#data{
-                steps_state = StepsState1,
-                paused_step = undefined,
-                pause_reason = undefined
-            },
-            {next_state, running, Data1,
-             [{reply, From, ok}, {state_timeout, 0, process_queue}]};
-        {error, Reason} ->
-            {next_state, failed, Data#data{pause_reason = Reason},
-             [{reply, From, {error, Reason}}]}
-    end.
+%%====================================================================
+%% 内部函数 - 并发步骤 spawn
+%%====================================================================
 
-%% @private 格式化运行时状态信息为可读 Map
-format_status(StateName, #data{process_spec = #{name := Name},
-                                paused_step = PausedStep,
-                                pause_reason = PauseReason,
-                                event_queue = Queue}) ->
-    #{
-        state => StateName,
-        name => Name,
-        queue_length => queue:len(Queue),
-        paused_step => PausedStep,
-        pause_reason => PauseReason
-    }.
-
-%% @private 生成当前运行时的可序列化快照
-do_snapshot(StateName, #data{process_spec = ProcessSpec,
-                              steps_state = StepsState,
-                              event_queue = Queue,
-                              paused_step = PausedStep,
-                              pause_reason = PauseReason,
-                              error_handler_state = EHState}) ->
-    beamai_process_state:take_snapshot(#{
-        process_spec => ProcessSpec,
-        current_state => StateName,
-        steps_state => StepsState,
-        event_queue => queue:to_list(Queue),
-        paused_step => PausedStep,
-        pause_reason => PauseReason,
-        error_handler_state => EHState
-    }).
+%% @private 为并发步骤生成 worker 进程
+spawn_async_tasks(Tasks) ->
+    Self = self(),
+    lists:foreach(
+        fun({StepId, StepState, Inputs, Context}) ->
+            spawn_link(fun() ->
+                Result = try
+                    Worker = poolboy:checkout(?POOL_NAME),
+                    try
+                        beamai_process_worker:execute_step(Worker, StepState, Inputs, Context)
+                    after
+                        poolboy:checkin(?POOL_NAME, Worker)
+                    end
+                catch
+                    Class:Error ->
+                        {error, {worker_exception, StepId, {Class, Error}}}
+                end,
+                Self ! {step_result, StepId, Result}
+            end)
+        end,
+        Tasks).
 
 %%====================================================================
 %% 内部函数 - 自动 Snapshot
 %%====================================================================
 
 %% @private 默认 snapshot 策略
-%%
-%% 默认策略：暂停、完成、错误时保存快照，步骤完成时不保存。
-%% every_n_steps: 0 = 禁用；N = 每 N 个步骤完成自动保存。
--spec default_snapshot_policy() -> map().
 default_snapshot_policy() ->
     #{
         on_step_completed => false,
@@ -680,57 +327,42 @@ default_snapshot_policy() ->
     }.
 
 %% @private 根据策略决定是否执行 snapshot
-%%
-%% 检查当前触发类型是否在策略中启用。
-%% 当 Trigger =:= step_completed 时，递增 snapshot_step_counter，
-%% 先检查 on_step_completed 布尔开关，若关闭再检查 every_n_steps。
-%% 若启用且 store 已配置，异步 spawn 调用 Module:save_snapshot/3。
-%% 保存失败仅记录 warning 日志，不阻塞流程执行。
-%%
-%% @param Trigger 触发类型（step_completed | paused | completed | error）
-%% @param StepId 触发步骤 ID（可为 undefined）
-%% @param Data 当前运行时数据
-%% @returns 更新后的 #data{}（可能更新了 snapshot_step_counter）
--spec maybe_snapshot(atom(), atom() | undefined, #data{}) -> #data{}.
-maybe_snapshot(_Trigger, _StepId, #data{store = undefined} = Data) ->
-    %% 未配置 store，跳过
-    Data;
-maybe_snapshot(step_completed, StepId, #data{store = {Module, Ref},
-                                              snapshot_policy = Policy,
-                                              snapshot_step_counter = Counter,
-                                              process_spec = #{name := ProcessName}} = Data) ->
+maybe_snapshot(_Trigger, _StepId, #state{store = undefined} = S) ->
+    S;
+maybe_snapshot(step_completed, StepId, #state{store = {Module, Ref},
+                                               snapshot_policy = Policy,
+                                               snapshot_step_counter = Counter,
+                                               engine = Engine} = S) ->
+    #{name := ProcessName} = beamai_process_engine:status(Engine),
     NewCounter = Counter + 1,
-    Data1 = Data#data{snapshot_step_counter = NewCounter},
+    S1 = S#state{snapshot_step_counter = NewCounter},
     ShouldSave = case maps:get(on_step_completed, Policy, false) of
-        true ->
-            true;
+        true -> true;
         false ->
             N = maps:get(every_n_steps, Policy, 0),
             N > 0 andalso NewCounter rem N =:= 0
     end,
     case ShouldSave of
-        false ->
-            Data1;
+        false -> S1;
         true ->
-            do_save_snapshot(Module, Ref, step_completed, StepId, Policy, ProcessName, Data1),
-            Data1
+            do_save_snapshot(Module, Ref, step_completed, StepId, Policy, ProcessName, Engine),
+            S1
     end;
-maybe_snapshot(Trigger, StepId, #data{store = {Module, Ref},
-                                       snapshot_policy = Policy,
-                                       process_spec = #{name := ProcessName}} = Data) ->
+maybe_snapshot(Trigger, StepId, #state{store = {Module, Ref},
+                                        snapshot_policy = Policy,
+                                        engine = Engine} = S) ->
     PolicyKey = trigger_to_policy_key(Trigger),
     case maps:get(PolicyKey, Policy, false) of
-        false ->
-            Data;
+        false -> S;
         true ->
-            do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Data),
-            Data
+            #{name := ProcessName} = beamai_process_engine:status(Engine),
+            do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Engine),
+            S
     end.
 
 %% @private 异步保存快照
--spec do_save_snapshot(module(), term(), atom(), atom() | undefined, map(), atom(), #data{}) -> ok.
-do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Data) ->
-    Snapshot = do_snapshot(trigger_to_state(Trigger), Data),
+do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Engine) ->
+    Snapshot = beamai_process_engine:take_snapshot(Engine),
     PolicyMetadata = maps:get(metadata, Policy, #{}),
     SaveOpts = #{
         process_name => ProcessName,
@@ -740,8 +372,7 @@ do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Data) ->
     },
     spawn(fun() ->
         case Module:save_snapshot(Ref, Snapshot, SaveOpts) of
-            {ok, _SnapshotId} ->
-                ok;
+            {ok, _} -> ok;
             {error, Reason} ->
                 logger:warning(
                     "[beamai_process_runtime] snapshot 保存失败: "
@@ -753,96 +384,7 @@ do_save_snapshot(Module, Ref, Trigger, StepId, Policy, ProcessName, Data) ->
     ok.
 
 %% @private 触发类型映射到策略键
--spec trigger_to_policy_key(atom()) -> atom().
 trigger_to_policy_key(step_completed) -> on_step_completed;
 trigger_to_policy_key(paused) -> on_pause;
 trigger_to_policy_key(completed) -> on_complete;
 trigger_to_policy_key(error) -> on_error.
-
-%% @private 触发类型映射到 FSM 状态名（用于快照）
--spec trigger_to_state(atom()) -> atom().
-trigger_to_state(step_completed) -> running;
-trigger_to_state(paused) -> paused;
-trigger_to_state(completed) -> completed;
-trigger_to_state(error) -> failed.
-
-%%====================================================================
-%% 内部函数 - 静止点回调（on_quiescent）
-%%====================================================================
-
-%% @private 触发静止点回调
-%%
-%% 当所有并发步骤执行完毕（但流程可能尚未完成）时调用。
-%% 静止点是一个一致性快照点，此时没有步骤正在执行。
-%%
-%% 触发时机：
-%% - quiescent: 所有并发步骤结果已处理，事件队列仍有待处理事件
-%% - paused: 步骤请求暂停
-%%
-%% 回调异常仅记录日志，不影响流程执行。
-%%
-%% @param Reason 触发原因（quiescent | paused）
-%% @param Data 当前运行时数据
--spec notify_quiescent(atom(), #data{}) -> ok.
-notify_quiescent(_Reason, #data{on_quiescent = undefined}) ->
-    ok;
-notify_quiescent(Reason, #data{on_quiescent = Callback} = Data) ->
-    QuiescentInfo = build_quiescent_info(Reason, Data),
-    try
-        Callback(QuiescentInfo)
-    catch
-        Class:Error ->
-            logger:warning(
-                "[beamai_process_runtime] on_quiescent 回调异常: "
-                "reason=~p, class=~p, error=~p",
-                [Reason, Class, Error]
-            )
-    end,
-    ok.
-
-%% @private 构建静止点信息 Map
-%%
-%% 包含流程名称、触发原因、状态、各步骤激活计数和内部状态、
-%% context 快照以及创建时间戳。
-%%
-%% 格式:
-%% #{
-%%   process_name => atom(),          %% 流程名称
-%%   reason => quiescent | paused,    %% 触发原因
-%%   status => running | paused,      %% 当前流程状态
-%%   paused_step => atom() | undefined,   %% 暂停的步骤（仅 paused 时有效）
-%%   pause_reason => term() | undefined,  %% 暂停原因
-%%   step_states => #{StepId => #{    %% 各步骤快照
-%%     state => term(),
-%%     activation_count => integer()
-%%   }},
-%%   context => term(),               %% context 快照
-%%   created_at => integer()          %% 时间戳（毫秒）
-%% }
--spec build_quiescent_info(atom(), #data{}) -> map().
-build_quiescent_info(Reason, #data{process_spec = #{name := ProcessName},
-                                    steps_state = StepsState,
-                                    context = Context,
-                                    paused_step = PausedStep,
-                                    pause_reason = PauseReason}) ->
-    %% 提取各步骤的 state 和 activation_count（不包含 step_spec）
-    StepStates = maps:map(
-        fun(_StepId, #{state := State, activation_count := Count}) ->
-            #{state => State, activation_count => Count}
-        end,
-        StepsState
-    ),
-    Status = case Reason of
-        paused -> paused;
-        _ -> running
-    end,
-    #{
-        process_name => ProcessName,
-        reason => Reason,
-        status => Status,
-        paused_step => PausedStep,
-        pause_reason => PauseReason,
-        step_states => StepStates,
-        context => Context,
-        created_at => erlang:system_time(millisecond)
-    }.
