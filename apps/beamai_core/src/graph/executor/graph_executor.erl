@@ -230,7 +230,7 @@ init({Graph, ComputeFn, Opts}) ->
     end,
 
     %% 获取所有顶点（无分区）
-    Vertices = get_all_vertices(Graph, RestoreOpts),
+    Vertices = graph_executor_utils:get_all_vertices(Graph, RestoreOpts),
 
     PoolTimeout = application:get_env(beamai_core, graph_pool_timeout, 30000),
 
@@ -257,7 +257,7 @@ init({Graph, ComputeFn, Opts}) ->
     {ok, State}.
 
 handle_call(step, _From, #state{halted = true} = State) ->
-    Info = build_superstep_info(final, State#state.last_results),
+    Info = graph_executor_utils:build_superstep_info(final, State#state.last_results),
     {reply, {done, get_done_reason(State), Info}, State};
 
 handle_call(step, _From, #state{initialized = false} = State) ->
@@ -268,7 +268,7 @@ handle_call(step, _From, #state{initialized = false} = State) ->
         initialized = true,
         initial_returned = true
     },
-    Info = build_superstep_info(initial, undefined),
+    Info = graph_executor_utils:build_superstep_info(initial, undefined),
     {reply, {continue, Info}, StateFinal};
 
 handle_call(step, _From, #state{initialized = true} = State) ->
@@ -277,7 +277,7 @@ handle_call(step, _From, #state{initialized = true} = State) ->
     {reply, NewState#state.step_caller, reset_step_caller(NewState)};
 
 handle_call({retry, _VertexIds}, _From, #state{halted = true} = State) ->
-    Info = build_superstep_info(final, State#state.last_results),
+    Info = graph_executor_utils:build_superstep_info(final, State#state.last_results),
     {reply, {done, get_done_reason(State), Info}, State};
 
 handle_call({retry, _VertexIds}, _From, #state{last_results = undefined} = State) ->
@@ -330,7 +330,7 @@ handle_call(get_result, _From, #state{
     cumulative_failures = CumulativeFailures,
     halted = true
 } = State) ->
-    FinalGraph = rebuild_graph(OriginalGraph, Vertices),
+    FinalGraph = graph_executor_utils:rebuild_graph(OriginalGraph, Vertices),
     FailedCount = length(CumulativeFailures),
     Result = #{
         status => get_done_reason(State),
@@ -377,27 +377,27 @@ execute_superstep(#state{
     NumVertices = maps:size(Vertices),
 
     %% 1. 获取 activations
-    Activations = get_activations_for_superstep(PendingActivations, LastResults),
+    Activations = graph_executor_utils:get_activations_for_superstep(PendingActivations, LastResults),
 
     %% 2. 分离 dispatch 项与普通激活
-    {DispatchItems, NormalActivations} = separate_dispatches(Activations),
-    VertexInputs = build_vertex_inputs(DispatchItems),
+    {DispatchItems, NormalActivations} = graph_executor_utils:separate_dispatches(Activations),
+    VertexInputs = graph_executor_utils:build_vertex_inputs(DispatchItems),
     DispatchNodeIds = maps:keys(VertexInputs),
     AllActivationIds = lists:usort(NormalActivations ++ DispatchNodeIds),
 
     %% 3. 筛选活跃顶点
-    ActiveVertices = filter_active_vertices(Vertices, AllActivationIds),
+    ActiveVertices = graph_executor_utils:filter_active_vertices(Vertices, AllActivationIds),
 
     %% 4. 构建扁平任务列表
-    Tasks = build_task_list(ActiveVertices, VertexInputs),
+    Tasks = graph_executor_task:build_task_list(ActiveVertices, VertexInputs),
 
     %% 5. 执行任务
     {Deltas, NewActivations, FailedVertices, InterruptedVertices} =
-        execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
+        graph_executor_task:execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
                       PoolName, PoolTimeout),
 
     %% 6. 更新顶点状态（halt 计算完成的顶点）
-    NewVertices = update_vertex_states(Vertices, ActiveVertices, FailedVertices, InterruptedVertices),
+    NewVertices = graph_executor_utils:update_vertex_states(Vertices, ActiveVertices, FailedVertices, InterruptedVertices),
 
     %% 7. 检查错误并累积失败信息
     FailedCount = length(FailedVertices),
@@ -420,7 +420,7 @@ execute_superstep(#state{
     end,
 
     %% 9. 更新结果映射
-    TotalActive = count_active(NewVertices),
+    TotalActive = graph_executor_utils:count_active(NewVertices),
     UpdatedResults = #{
         active_count => TotalActive,
         deltas => Deltas,
@@ -441,9 +441,9 @@ execute_superstep(#state{
     %% 11. 确定 snapshot 类型
     Type = case IsDone of
         true -> final;
-        false -> determine_snapshot_type(UpdatedResults)
+        false -> graph_executor_utils:determine_snapshot_type(UpdatedResults)
     end,
-    Info = build_superstep_info(Type, UpdatedResults),
+    Info = graph_executor_utils:build_superstep_info(Type, UpdatedResults),
 
     %% 12. 计算新超步号
     NewSuperstep = if IsDone -> Superstep; true -> Superstep + 1 end,
@@ -470,170 +470,6 @@ execute_superstep(#state{
     }.
 
 %%====================================================================
-%% 任务构建
-%%====================================================================
-
-%% @private 构建扁平任务列表
--spec build_task_list(#{vertex_id() => vertex()},
-                      #{vertex_id() => [graph_dispatch:dispatch()]}) ->
-    [{vertex_id(), vertex(), map() | undefined}].
-build_task_list(ActiveVertices, VertexInputs) ->
-    maps:fold(
-        fun(Id, Vertex, Acc) ->
-            case maps:get(Id, VertexInputs, []) of
-                [] ->
-                    [{Id, Vertex, undefined} | Acc];
-                Dispatches ->
-                    [{Id, Vertex, graph_dispatch:get_input(D)} || D <- Dispatches] ++ Acc
-            end
-        end,
-        [],
-        ActiveVertices
-    ).
-
-%%====================================================================
-%% 任务执行
-%%====================================================================
-
-%% @private 执行任务列表
--spec execute_tasks(
-    [{vertex_id(), vertex(), map() | undefined}],
-    compute_fn(), graph_state:state(), non_neg_integer(),
-    non_neg_integer(), atom(), pos_integer()
-) -> {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}.
-execute_tasks([], _ComputeFn, _GlobalState, _Superstep, _NumVertices, _PoolName, _PoolTimeout) ->
-    {[], [], [], []};
-execute_tasks([{Id, Vertex, VertexInput}], ComputeFn, GlobalState, Superstep, NumVertices, _PoolName, _PoolTimeout) ->
-    %% 单任务：协调进程内直接执行（零开销优化）
-    Context = make_context(Id, Vertex, GlobalState, VertexInput, Superstep, NumVertices),
-    Result = safe_compute(ComputeFn, Context),
-    process_compute_result(Id, Result, {[], [], [], []});
-execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices, PoolName, PoolTimeout) ->
-    %% 多任务：并行执行
-    execute_parallel_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
-                           PoolName, PoolTimeout).
-
-%% @private 安全执行计算函数（捕获异常）
--spec safe_compute(compute_fn(), context()) -> compute_result().
-safe_compute(ComputeFn, Context) ->
-    try
-        ComputeFn(Context)
-    catch
-        Class:Reason:Stack ->
-            #{delta => #{}, activations => [], status => {error, {compute_error, {Class, Reason, Stack}}}}
-    end.
-
-%% @private 并行执行任务
--spec execute_parallel_tasks(
-    [{vertex_id(), vertex(), map() | undefined}],
-    compute_fn(), graph_state:state(), non_neg_integer(),
-    non_neg_integer(), atom(), pos_integer()
-) -> {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}.
-execute_parallel_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
-                       PoolName, PoolTimeout) ->
-    Parent = self(),
-    Ref = make_ref(),
-    Deadline = erlang:monotonic_time(millisecond) + PoolTimeout + 5000,
-
-    %% 全部 spawn，每个进程独立 poolboy:checkout 阻塞
-    PidRefs = lists:map(fun({Id, Vertex, VertexInput}) ->
-        Context = make_context(Id, Vertex, GlobalState, VertexInput, Superstep, NumVertices),
-        spawn_monitor(fun() ->
-            Result = execute_in_pool(ComputeFn, Context, PoolName, PoolTimeout),
-            Parent ! {task_result, Ref, self(), Id, Result}
-        end)
-    end, Tasks),
-
-    collect_all_results(PidRefs, Ref, Deadline, {[], [], [], []}).
-
-%% @private 在池中执行计算
--spec execute_in_pool(compute_fn(), context(), atom(), pos_integer()) ->
-    {ok, compute_result()} | {error, term()}.
-execute_in_pool(ComputeFn, Context, PoolName, Timeout) ->
-    try
-        Worker = poolboy:checkout(PoolName, true, Timeout),
-        try
-            graph_pool_worker:execute(Worker, ComputeFn, Context)
-        after
-            poolboy:checkin(PoolName, Worker)
-        end
-    catch
-        exit:{timeout, _} ->
-            {error, {pool_checkout_timeout, Timeout}};
-        exit:{noproc, _} ->
-            {error, {pool_worker_not_found}};
-        exit:{{nodedown, _}, _} ->
-            {error, {pool_worker_nodedown}};
-        exit:{normal, _} ->
-            {error, {pool_worker_exited_normal}};
-        exit:{Reason, _} ->
-            {error, {pool_worker_exit, Reason}};
-        Class:Reason ->
-            {error, {pool_error, {Class, Reason}}}
-    end.
-
-%% @private 收集所有结果
--spec collect_all_results(
-    [{pid(), reference()}], reference(), integer(),
-    {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}
-) -> {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}.
-collect_all_results([], _Ref, _Deadline, Acc) ->
-    Acc;
-collect_all_results([{Pid, MonRef} | Rest], Ref, Deadline, Acc) ->
-    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
-    receive
-        {task_result, Ref, Pid, Id, {ok, ComputeResult}} ->
-            erlang:demonitor(MonRef, [flush]),
-            NewAcc = process_compute_result(Id, ComputeResult, Acc),
-            collect_all_results(Rest, Ref, Deadline, NewAcc);
-
-        {task_result, Ref, Pid, Id, {error, Reason}} ->
-            erlang:demonitor(MonRef, [flush]),
-            ErrorResult = #{delta => #{}, activations => [], status => {error, Reason}},
-            NewAcc = process_compute_result(Id, ErrorResult, Acc),
-            collect_all_results(Rest, Ref, Deadline, NewAcc);
-
-        {'DOWN', MonRef, process, Pid, Reason} ->
-            ErrorResult = #{delta => #{}, activations => [], status => {error, {task_crash, Reason}}},
-            NewAcc = process_compute_result(unknown, ErrorResult, Acc),
-            collect_all_results(Rest, Ref, Deadline, NewAcc)
-
-    after Remaining ->
-        erlang:demonitor(MonRef, [flush]),
-        exit(Pid, kill),
-        ErrorResult = #{delta => #{}, activations => [], status => {error, execution_timeout}},
-        NewAcc = process_compute_result(unknown, ErrorResult, Acc),
-        collect_all_results(Rest, Ref, Deadline, NewAcc)
-    end.
-
-%%====================================================================
-%% 结果处理
-%%====================================================================
-
-%% @private 处理单个顶点的计算结果
--spec process_compute_result(vertex_id(), compute_result(),
-    {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}) ->
-    {[delta()], [vertex_id()], [{vertex_id(), term()}], [{vertex_id(), term()}]}.
-process_compute_result(_Id, #{status := ok, delta := Delta} = Result,
-                       {DeltaAcc, ActAcc, FailedAcc, InterruptedAcc}) ->
-    Activations = maps:get(activations, Result, []),
-    NewDelta = case maps:size(Delta) of
-        0 -> DeltaAcc;
-        _ -> [Delta | DeltaAcc]
-    end,
-    {NewDelta, Activations ++ ActAcc, FailedAcc, InterruptedAcc};
-process_compute_result(Id, #{status := {error, Reason}},
-                       {DeltaAcc, ActAcc, FailedAcc, InterruptedAcc}) ->
-    {DeltaAcc, ActAcc, [{Id, Reason} | FailedAcc], InterruptedAcc};
-process_compute_result(Id, #{status := {interrupt, Reason}} = Result,
-                       {DeltaAcc, ActAcc, FailedAcc, InterruptedAcc}) ->
-    NewDeltaAcc = case maps:get(delta, Result, #{}) of
-        Delta when map_size(Delta) > 0 -> [Delta | DeltaAcc];
-        _ -> DeltaAcc
-    end,
-    {NewDeltaAcc, ActAcc, FailedAcc, [{Id, Reason} | InterruptedAcc]}.
-
-%%====================================================================
 %% 重试逻辑
 %%====================================================================
 
@@ -657,7 +493,7 @@ execute_retry_direct(VertexIds, #state{
 
     %% 执行重试
     {RetryDeltas, RetryActivations, StillFailed, StillInterrupted} =
-        execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
+        graph_executor_task:execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
                       PoolName, PoolTimeout),
 
     HasError = length(StillFailed) > 0 orelse length(StillInterrupted) > 0,
@@ -681,8 +517,8 @@ execute_retry_direct(VertexIds, #state{
         superstep => Superstep
     },
 
-    Type = determine_snapshot_type(UpdatedResults),
-    Info = build_superstep_info(Type, UpdatedResults),
+    Type = graph_executor_utils:determine_snapshot_type(UpdatedResults),
+    Info = graph_executor_utils:build_superstep_info(Type, UpdatedResults),
 
     State#state{
         global_state = NewGlobalState,
@@ -711,7 +547,7 @@ execute_deferred_retry(VertexIds, #state{
     Tasks = [{Id, V, undefined} || {Id, V} <- maps:to_list(RetryVertices)],
 
     {RetryDeltas, RetryActivations, StillFailed, StillInterrupted} =
-        execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
+        graph_executor_task:execute_tasks(Tasks, ComputeFn, GlobalState, Superstep, NumVertices,
                       PoolName, PoolTimeout),
 
     HasError = length(StillFailed) > 0 orelse length(StillInterrupted) > 0,
@@ -747,8 +583,8 @@ execute_deferred_retry(VertexIds, #state{
         active_count => 0
     },
 
-    Type = determine_snapshot_type(UpdatedResults),
-    Info = build_superstep_info(Type, UpdatedResults),
+    Type = graph_executor_utils:determine_snapshot_type(UpdatedResults),
+    Info = graph_executor_utils:build_superstep_info(Type, UpdatedResults),
 
     State#state{
         global_state = NewGlobalState,
@@ -761,154 +597,6 @@ execute_deferred_retry(VertexIds, #state{
 %%====================================================================
 %% 辅助函数
 %%====================================================================
-
-%% @private 创建计算上下文
--spec make_context(vertex_id(), vertex(), graph_state:state(),
-                   map() | undefined, non_neg_integer(), non_neg_integer()) -> context().
-make_context(VertexId, Vertex, GlobalState, VertexInput, Superstep, NumVertices) ->
-    #{
-        vertex_id => VertexId,
-        vertex => Vertex,
-        global_state => GlobalState,
-        vertex_input => VertexInput,
-        superstep => Superstep,
-        num_vertices => NumVertices
-    }.
-
-%% @private 获取所有顶点（合并恢复的顶点）
--spec get_all_vertices(graph(), restore_opts() | undefined) -> #{vertex_id() => vertex()}.
-get_all_vertices(Graph, RestoreOpts) ->
-    BaseVertices = vertices_to_map(pregel_graph:vertices(Graph)),
-    RestoredVertices = case RestoreOpts of
-        #{vertices := V} -> V;
-        _ -> #{}
-    end,
-    merge_restored_vertices(BaseVertices, RestoredVertices).
-
-%% @private 将顶点列表转换为映射
--spec vertices_to_map([vertex()]) -> #{vertex_id() => vertex()}.
-vertices_to_map(Vertices) ->
-    maps:from_list([{pregel_vertex:id(V), V} || V <- Vertices]).
-
-%% @private 合并恢复的顶点到基础顶点
--spec merge_restored_vertices(#{vertex_id() => vertex()}, #{vertex_id() => vertex()}) ->
-    #{vertex_id() => vertex()}.
-merge_restored_vertices(BaseVertices, RestoredVertices) ->
-    maps:fold(
-        fun(Id, RestoredVertex, Acc) ->
-            case maps:is_key(Id, Acc) of
-                true -> Acc#{Id => RestoredVertex};
-                false -> Acc
-            end
-        end,
-        BaseVertices,
-        RestoredVertices
-    ).
-
-%% @private 重建图
--spec rebuild_graph(graph(), #{vertex_id() => vertex()}) -> graph().
-rebuild_graph(OriginalGraph, Vertices) ->
-    pregel_graph:map(OriginalGraph, fun(Vertex) ->
-        Id = pregel_vertex:id(Vertex),
-        maps:get(Id, Vertices, Vertex)
-    end).
-
-%% @private 筛选需要计算的顶点
--spec filter_active_vertices(#{vertex_id() => vertex()}, [vertex_id()]) ->
-    #{vertex_id() => vertex()}.
-filter_active_vertices(Vertices, Activations) ->
-    ActivationSet = sets:from_list(Activations),
-    maps:filter(
-        fun(Id, V) ->
-            sets:is_element(Id, ActivationSet) orelse pregel_vertex:is_active(V)
-        end,
-        Vertices
-    ).
-
-%% @private 更新顶点状态
--spec update_vertex_states(
-    #{vertex_id() => vertex()},
-    #{vertex_id() => vertex()},
-    [{vertex_id(), term()}],
-    [{vertex_id(), term()}]
-) -> #{vertex_id() => vertex()}.
-update_vertex_states(AllVertices, ActiveVertices, _FailedVertices, _InterruptedVertices) ->
-    ActiveIds = maps:keys(ActiveVertices),
-    maps:map(
-        fun(Id, V) ->
-            case lists:member(Id, ActiveIds) of
-                true -> pregel_vertex:halt(V);
-                false -> V
-            end
-        end,
-        AllVertices
-    ).
-
-%% @private 统计活跃顶点数
--spec count_active(#{vertex_id() => vertex()}) -> non_neg_integer().
-count_active(Vertices) ->
-    pregel_utils:map_count(fun pregel_vertex:is_active/1, Vertices).
-
-%% @private 获取下一超步要激活的顶点列表
--spec get_activations_for_superstep([vertex_id()] | undefined, map() | undefined) ->
-    [vertex_id()].
-get_activations_for_superstep(PendingActivations, _LastResults) when is_list(PendingActivations) ->
-    PendingActivations;
-get_activations_for_superstep(undefined, undefined) ->
-    [];
-get_activations_for_superstep(undefined, LastResults) ->
-    maps:get(activations, LastResults, []).
-
-%% @private 分离 dispatch 项和普通 activations
--spec separate_dispatches([term()]) -> {[{dispatch, graph_dispatch:dispatch()}], [vertex_id()]}.
-separate_dispatches(Activations) ->
-    lists:partition(fun({dispatch, _}) -> true; (_) -> false end, Activations).
-
-%% @private 将 dispatch 列表转为 VertexInputs 格式
--spec build_vertex_inputs([{dispatch, graph_dispatch:dispatch()}]) ->
-    #{vertex_id() => [graph_dispatch:dispatch()]}.
-build_vertex_inputs(Dispatches) ->
-    lists:foldl(fun({dispatch, D}, Acc) ->
-        NodeId = graph_dispatch:get_node(D),
-        Existing = maps:get(NodeId, Acc, []),
-        Acc#{NodeId => Existing ++ [D]}
-    end, #{}, Dispatches).
-
-%% @private 确定 snapshot 类型
--spec determine_snapshot_type(map()) -> snapshot_type().
-determine_snapshot_type(Results) ->
-    InterruptedCount = maps:get(interrupted_count, Results, 0),
-    FailedCount = maps:get(failed_count, Results, 0),
-    if
-        InterruptedCount > 0 -> interrupt;
-        FailedCount > 0 -> error;
-        true -> step
-    end.
-
-%% @private 构建超步信息
--spec build_superstep_info(snapshot_type(), map() | undefined) -> superstep_info().
-build_superstep_info(Type, undefined) ->
-    #{
-        type => Type,
-        superstep => 0,
-        active_count => 0,
-        activation_count => 0,
-        failed_count => 0,
-        failed_vertices => [],
-        interrupted_count => 0,
-        interrupted_vertices => []
-    };
-build_superstep_info(Type, Results) ->
-    #{
-        type => Type,
-        superstep => maps:get(superstep, Results, 0),
-        active_count => maps:get(active_count, Results, 0),
-        activation_count => maps:get(activation_count, Results, 0),
-        failed_count => maps:get(failed_count, Results, 0),
-        failed_vertices => maps:get(failed_vertices, Results, []),
-        interrupted_count => maps:get(interrupted_count, Results, 0),
-        interrupted_vertices => maps:get(interrupted_vertices, Results, [])
-    }.
 
 %% @private 获取终止原因
 -spec get_done_reason(#state{}) -> done_reason().

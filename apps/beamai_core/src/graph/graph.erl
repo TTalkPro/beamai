@@ -53,7 +53,6 @@
 
 %% 执行 API
 -export([run/2, run/3]).
--export([stream/2, stream/3]).
 
 %% 状态 API (便捷重导出)
 -export([state/0, state/1]).
@@ -164,16 +163,6 @@ run(Graph, InitialState) ->
 -spec run(graph(), state(), run_options()) -> run_result().
 run(Graph, InitialState, Options) ->
     graph_runner:run(Graph, InitialState, Options).
-
-%% @doc 流式执行图
--spec stream(graph(), state()) -> fun().
-stream(Graph, InitialState) ->
-    graph_runner:stream(Graph, InitialState).
-
-%% @doc 流式执行图，带选项
--spec stream(graph(), state(), run_options()) -> fun().
-stream(Graph, InitialState, Options) ->
-    graph_runner:stream(Graph, InitialState, Options).
 
 %%====================================================================
 %% 状态 API (便捷重导出)

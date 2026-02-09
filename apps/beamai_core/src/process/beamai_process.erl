@@ -197,14 +197,15 @@ restore(Snapshot, Opts) ->
     case beamai_process_state:restore_from_snapshot(Snapshot) of
         {ok, #{process_spec := ProcessSpec, event_queue := EventQueue,
                current_state := CurrentState, steps_state := StepsState,
-               paused_step := PausedStep, pause_reason := PauseReason}} ->
+               paused_step := PausedStep, pause_reason := PauseReason} = Restored} ->
             RestoreOpts = Opts#{
                 restored => true,
                 restored_steps_state => StepsState,
                 restored_current_state => CurrentState,
                 restored_paused_step => PausedStep,
                 restored_pause_reason => PauseReason,
-                restored_event_queue => EventQueue
+                restored_event_queue => EventQueue,
+                restored_error_handler_state => maps:get(error_handler_state, Restored, #{})
             },
             start(ProcessSpec, RestoreOpts);
         {error, _} = Error ->

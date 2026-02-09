@@ -36,6 +36,7 @@
     event_queue := [beamai_process_event:event()],
     paused_step := atom() | undefined,
     pause_reason := term() | undefined,
+    error_handler_state := map(),
     timestamp := integer()
 }.
 
@@ -60,7 +61,7 @@
 -spec take_snapshot(map()) -> snapshot().
 take_snapshot(#{process_spec := ProcessSpec, current_state := CurrentState,
                steps_state := StepsState, event_queue := EventQueue,
-               paused_step := PausedStep, pause_reason := PauseReason}) ->
+               paused_step := PausedStep, pause_reason := PauseReason} = RuntimeState) ->
     #{
         '__process_snapshot__' => true,
         process_spec => ProcessSpec,
@@ -69,6 +70,7 @@ take_snapshot(#{process_spec := ProcessSpec, current_state := CurrentState,
         event_queue => EventQueue,
         paused_step => PausedStep,
         pause_reason => PauseReason,
+        error_handler_state => maps:get(error_handler_state, RuntimeState, #{}),
         timestamp => erlang:system_time(millisecond)
     }.
 
@@ -83,7 +85,7 @@ take_snapshot(#{process_spec := ProcessSpec, current_state := CurrentState,
     {ok, map()} | {error, term()}.
 restore_from_snapshot(#{process_spec := ProcessSpec, current_state := CurrentState,
                         steps_state := StepsSnapshots, event_queue := EventQueue,
-                        paused_step := PausedStep, pause_reason := PauseReason}) ->
+                        paused_step := PausedStep, pause_reason := PauseReason} = Snapshot) ->
     case restore_steps(StepsSnapshots, maps:get(steps, ProcessSpec)) of
         {ok, StepsState} ->
             {ok, #{
@@ -92,7 +94,8 @@ restore_from_snapshot(#{process_spec := ProcessSpec, current_state := CurrentSta
                 steps_state => StepsState,
                 event_queue => EventQueue,
                 paused_step => PausedStep,
-                pause_reason => PauseReason
+                pause_reason => PauseReason,
+                error_handler_state => maps:get(error_handler_state, Snapshot, #{})
             }};
         {error, _} = Error ->
             Error

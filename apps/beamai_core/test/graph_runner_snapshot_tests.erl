@@ -1,11 +1,11 @@
 %%%-------------------------------------------------------------------
 %%% @doc graph_runner snapshot 功能单元测试
 %%%
-%%% 测试 graph_runner 的 snapshot 保存和恢复功能：
-%%% - 简单模式（无 snapshot）正常执行
-%%% - on_snapshot 回调被正确调用
+%%% 测试 graph_runner 的 snapshot 模式功能：
+%%% - interrupt 自动返回 #{status => interrupted, ...}
+%%% - error 自动返回 #{status => error, ...}
 %%% - 从 snapshot 恢复执行
-%%% - snapshot 回调可以停止执行
+%%% - store 保存策略
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -22,7 +22,7 @@ make_multi_step_graph() ->
         Count = graph_state:get(State, count, 0),
         NewCount = Count + 1,
         State1 = graph_state:set(State, count, NewCount),
-        graph_state:set(State1, last_count, NewCount)
+        {ok, graph_state:set(State1, last_count, NewCount)}
     end,
     RouterFn = fun(State) ->
         Count = graph_state:get(State, count, 0),
@@ -38,314 +38,373 @@ make_multi_step_graph() ->
     ]),
     Graph.
 
+%% 创建带 interrupt 节点的图
+%% process -> review(interrupt) -> '__end__'
+make_interrupt_graph() ->
+    ProcessFn = fun(State, _) ->
+        State1 = graph_state:set(State, processed, true),
+        {ok, graph_state:set(State1, count, 1)}
+    end,
+    ReviewFn = fun(State, _) ->
+        %% 检查是否有 resume_data
+        ResumeKey = <<"resume_data:review">>,
+        case graph_state:get(State, ResumeKey, undefined) of
+            undefined ->
+                %% 没有 resume_data，触发 interrupt
+                {interrupt, need_approval, State};
+            _ResumeData ->
+                %% 有 resume_data，继续执行
+                {ok, graph_state:set(State, approved, true)}
+        end
+    end,
+    {ok, Graph} = graph:build([
+        {node, process, ProcessFn},
+        {edge, process, review},
+        {node, review, ReviewFn},
+        {edge, review, '__end__'},
+        {entry, process}
+    ]),
+    Graph.
+
+%% 创建带 error 节点的图（永远失败）
+%% process -> fail_node(error) -> '__end__'
+make_error_graph() ->
+    ProcessFn = fun(State, _) ->
+        {ok, graph_state:set(State, processed, true)}
+    end,
+    FailFn = fun(_State, _) ->
+        error(intentional_failure)
+    end,
+    {ok, Graph} = graph:build([
+        {node, process, ProcessFn},
+        {edge, process, fail_node},
+        {node, fail_node, FailFn},
+        {edge, fail_node, '__end__'},
+        {entry, process}
+    ]),
+    Graph.
+
+%% 创建带瞬时 error 节点的图（第一次失败，重试成功）
+%% process -> flaky_node -> '__end__'
+%% flaky_node 检查 global_state 中的 retry_count 来决定是否失败
+make_flaky_error_graph() ->
+    ProcessFn = fun(State, _) ->
+        {ok, graph_state:set(State, processed, true)}
+    end,
+    FlakyFn = fun(State, _) ->
+        RetryCount = graph_state:get(State, retry_count, 0),
+        case RetryCount of
+            0 ->
+                %% 第一次执行失败
+                error(transient_failure);
+            _ ->
+                %% 重试时成功
+                {ok, graph_state:set(State, flaky_done, true)}
+        end
+    end,
+    {ok, Graph} = graph:build([
+        {node, process, ProcessFn},
+        {edge, process, flaky_node},
+        {node, flaky_node, FlakyFn},
+        {edge, flaky_node, '__end__'},
+        {entry, process}
+    ]),
+    Graph.
+
+%% 设置 noop mock store（不做任何保存）
+setup_noop_store() ->
+    meck:new(noop_graph_store, [non_strict]),
+    meck:expect(noop_graph_store, save_snapshot, fun(_Ref, _Snapshot, _Opts) ->
+        {ok, <<"noop">>}
+    end),
+    ok.
+
+teardown_noop_store() ->
+    meck:unload(noop_graph_store).
+
+%% 用 noop store 进入 snapshot 模式的选项
+snapshot_opts() ->
+    #{store => {noop_graph_store, noop}}.
+
 %%====================================================================
-%% 模式检测测试
+%% 正常执行测试
 %%====================================================================
 
-%% 测试：无 snapshot 选项时 needs_snapshot_mode 返回 false
-needs_snapshot_mode_false_test() ->
-    ?assertEqual(false, graph_runner:needs_snapshot_mode(#{})),
-    ?assertEqual(false, graph_runner:needs_snapshot_mode(#{workers => 2})).
-
-%% 测试：有 snapshot 选项时 needs_snapshot_mode 返回 true
-needs_snapshot_mode_true_test() ->
-    Callback = fun(_, _) -> continue end,
-    ?assertEqual(true, graph_runner:needs_snapshot_mode(#{on_snapshot => Callback})),
-    ?assertEqual(true, graph_runner:needs_snapshot_mode(#{restore_from => #{}})),
-    ?assertEqual(true, graph_runner:needs_snapshot_mode(#{
-        on_snapshot => Callback,
-        restore_from => #{}
-    })).
-
-%%====================================================================
-%% Snapshot 回调测试
-%%====================================================================
-
-%% 测试：on_snapshot 回调被调用
-snapshot_callback_called_test() ->
+%% 测试：正常图执行，无 snapshot 相关选项
+normal_execution_no_snapshot_test() ->
     Graph = make_multi_step_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    %% 使用进程字典记录回调调用次数
+    Result = graph:run(Graph, InitialState, #{}),
+
+    ?assertEqual(completed, maps:get(status, Result)),
+    FinalState = maps:get(final_state, Result),
+    ?assertEqual(3, graph_state:get(FinalState, count)).
+
+%% 测试：使用 store 选项时正常执行也通过 snapshot 模式
+normal_execution_with_store_test() ->
+    Graph = make_multi_step_graph(),
+    InitialState = graph:state(#{count => 0}),
+
     Self = self(),
-    Callback = fun(Info, SnapshotData) ->
-        Self ! {snapshot_called, Info, SnapshotData},
-        continue
-    end,
+    MockRef = make_ref(),
+    meck:new(mock_graph_store, [non_strict]),
+    meck:expect(mock_graph_store, save_snapshot, fun(_Ref, _Snapshot, _Opts) ->
+        Self ! {store_called, MockRef},
+        {ok, <<"snap-1">>}
+    end),
+    try
+        Options = #{
+            store => {mock_graph_store, MockRef},
+            snapshot_strategy => every_superstep
+        },
+        Result = graph:run(Graph, InitialState, Options),
 
-    Options = #{on_snapshot => Callback},
-    _Result = graph:run(Graph, InitialState, Options),
+        ?assertEqual(completed, maps:get(status, Result)),
+        FinalState = maps:get(final_state, Result),
+        ?assertEqual(3, graph_state:get(FinalState, count)),
 
-    %% 收集回调调用
-    Calls = collect_snapshot_calls([]),
-
-    %% 验证回调被调用了（至少一次）
-    ?assert(length(Calls) >= 1),
-
-    %% 验证 snapshot 数据结构
-    %% 注意：graph_state 已移除，状态存储在 pregel_snapshot.vertices 中
-    [{_Info, FirstSnapshot} | _] = Calls,
-    ?assertNot(maps:is_key(graph_state, FirstSnapshot)),  %% 不应包含 graph_state
-    ?assert(maps:is_key(pregel_snapshot, FirstSnapshot)),
-    ?assert(maps:is_key(iteration, FirstSnapshot)).
-
-collect_snapshot_calls(Acc) ->
-    receive
-        {snapshot_called, Info, Data} ->
-            collect_snapshot_calls([{Info, Data} | Acc])
-    after 100 ->
-        lists:reverse(Acc)
+        %% 验证 store 被调用（至少一次）
+        receive
+            {store_called, MockRef} -> ok
+        after 1000 ->
+            ?assert(false)
+        end
+    after
+        meck:unload(mock_graph_store)
     end.
 
-%% 测试：snapshot 数据包含 pregel 层信息
-snapshot_contains_pregel_data_test() ->
-    Graph = make_multi_step_graph(),
+%%====================================================================
+%% Interrupt 自动返回测试
+%%====================================================================
+
+%% 测试：图含 interrupt 节点，直接返回 #{status => interrupted}
+interrupt_returns_immediately_test() ->
+    Graph = make_interrupt_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    Self = self(),
-    Callback = fun(_Info, SnapshotData) ->
-        Self ! {snapshot, SnapshotData},
-        continue
-    end,
+    setup_noop_store(),
+    try
+        Result = graph:run(Graph, InitialState, snapshot_opts()),
 
-    Options = #{on_snapshot => Callback},
-    _Result = graph:run(Graph, InitialState, Options),
+        %% 验证返回 interrupted 状态
+        ?assertEqual(interrupted, maps:get(status, Result)),
 
-    %% 获取第一个 snapshot
-    receive
-        {snapshot, Data} ->
-            PregelSnapshot = maps:get(pregel_snapshot, Data),
-            %% 验证 pregel snapshot 结构（无 inbox 版本）
-            ?assert(maps:is_key(superstep, PregelSnapshot)),
-            ?assert(maps:is_key(vertices, PregelSnapshot)),
-            ?assert(maps:is_key(pending_activations, PregelSnapshot))
-    after 1000 ->
-        ?assert(false)
+        %% 验证包含 snapshot（用于恢复）
+        ?assert(maps:is_key(snapshot, Result)),
+
+        %% 验证包含 interrupted_vertices
+        InterruptedVertices = maps:get(interrupted_vertices, Result),
+        ?assert(length(InterruptedVertices) >= 1),
+
+        %% 验证 interrupted_vertices 包含 review 节点
+        VertexIds = [Id || {Id, _Reason} <- InterruptedVertices],
+        ?assert(lists:member(review, VertexIds))
+    after
+        teardown_noop_store()
     end.
 
 %%====================================================================
-%% Snapshot 停止执行测试
+%% Error 自动返回测试
 %%====================================================================
 
-%% 测试：snapshot 回调返回 {stop, Reason} 时停止执行
-snapshot_callback_can_stop_execution_test() ->
-    Graph = make_multi_step_graph(),
-    InitialState = graph:state(#{count => 0}),
+%% 测试：图含 error 节点，直接返回 #{status => error}
+error_returns_immediately_test() ->
+    Graph = make_error_graph(),
+    InitialState = graph:state(#{}),
 
-    %% 回调在第一次调用时停止执行
-    Callback = fun(_Info, _SnapshotData) ->
-        {stop, user_requested}
-    end,
+    setup_noop_store(),
+    try
+        Result = graph:run(Graph, InitialState, snapshot_opts()),
 
-    Options = #{on_snapshot => Callback},
-    Result = graph:run(Graph, InitialState, Options),
+        %% 验证返回 error 状态
+        ?assertEqual(error, maps:get(status, Result)),
 
-    %% 验证执行被停止
-    ?assertEqual(stopped, maps:get(status, Result)),
-    ?assertMatch({user_stopped, user_requested}, maps:get(error, Result)).
+        %% 验证包含 snapshot（用于恢复）
+        ?assert(maps:is_key(snapshot, Result)),
+
+        %% 验证包含 failed_vertices
+        FailedVertices = maps:get(failed_vertices, Result),
+        ?assert(length(FailedVertices) >= 1),
+
+        %% 验证 failed_vertices 包含 fail_node 节点
+        VertexIds = [Id || {Id, _Reason} <- FailedVertices],
+        ?assert(lists:member(fail_node, VertexIds))
+    after
+        teardown_noop_store()
+    end.
 
 %%====================================================================
 %% Snapshot 恢复测试
 %%====================================================================
 
-%% 测试：从 snapshot 恢复执行
-restore_from_snapshot_test() ->
-    Graph = make_multi_step_graph(),
+%% 测试：从 interrupt 恢复执行
+restore_from_interrupt_test() ->
+    Graph = make_interrupt_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    %% 第一次执行，保存 snapshot 后停止
-    SavedSnapshot = erlang:make_ref(),
-    Self = self(),
-    Callback = fun(_Info, SnapshotData) ->
-        %% 保存 snapshot 数据
-        Self ! {save_snapshot, SavedSnapshot, SnapshotData},
-        {stop, snapshot_saved}
-    end,
+    setup_noop_store(),
+    try
+        %% 第一次执行：触发 interrupt
+        Result1 = graph:run(Graph, InitialState, snapshot_opts()),
 
-    Options1 = #{on_snapshot => Callback},
-    Result1 = graph:run(Graph, InitialState, Options1),
+        ?assertEqual(interrupted, maps:get(status, Result1)),
+        ?assert(maps:is_key(snapshot, Result1)),
 
-    %% 验证第一次执行被停止
-    ?assertEqual(stopped, maps:get(status, Result1)),
+        %% 构建用于恢复的 snapshot_data
+        Snapshot = maps:get(snapshot, Result1),
+        FinalState1 = maps:get(final_state, Result1),
+        SnapshotData = #{
+            type => interrupt,
+            pregel_snapshot => Snapshot,
+            global_state => FinalState1,
+            iteration => maps:get(iterations, Result1, 0)
+        },
 
-    %% 获取保存的 snapshot
-    SnapshotData = receive
-        {save_snapshot, SavedSnapshot, Data} -> Data
-    after 1000 ->
-        error(no_snapshot_saved)
-    end,
+        %% 从 snapshot 恢复，注入 resume_data
+        Options2 = #{
+            restore_from => SnapshotData,
+            resume_data => #{review => approved}
+        },
+        Result2 = graph:run(Graph, InitialState, Options2),
 
-    %% 验证 snapshot 数据结构正确
-    ?assert(maps:is_key(pregel_snapshot, SnapshotData)),
-    ?assert(maps:is_key(iteration, SnapshotData)),
+        %% 恢复后应该完成
+        ?assertEqual(completed, maps:get(status, Result2)),
 
-    %% 从 snapshot 恢复执行（使用回调继续执行）
-    #{pregel_snapshot := PregelSnapshot, iteration := Iteration} = SnapshotData,
-    RestoreOpts = #{
-        pregel_snapshot => PregelSnapshot,
-        iteration => Iteration
-    },
-
-    %% 使用默认回调（continue）恢复执行
-    Options2 = #{restore_from => RestoreOpts},
-    Result2 = graph:run(Graph, InitialState, Options2),
-
-    %% 恢复后应该完成或返回错误（取决于图执行逻辑）
-    Status2 = maps:get(status, Result2),
-    ?assert(Status2 =:= completed orelse Status2 =:= error).
-
-%%====================================================================
-%% Snapshot 类型测试
-%%====================================================================
-
-%% 测试：snapshot 数据包含 type 字段
-snapshot_contains_type_test() ->
-    Graph = make_multi_step_graph(),
-    InitialState = graph:state(#{count => 0}),
-
-    Self = self(),
-    Callback = fun(Info, SnapshotData) ->
-        Self ! {snapshot, Info, SnapshotData},
-        continue
-    end,
-
-    Options = #{on_snapshot => Callback},
-    _Result = graph:run(Graph, InitialState, Options),
-
-    %% 获取第一个 snapshot，验证 type 字段
-    receive
-        {snapshot, Info, Data} ->
-            %% Info 和 Data 都应该包含 type
-            ?assert(maps:is_key(type, Info)),
-            ?assert(maps:is_key(type, Data)),
-            %% 第一个 snapshot 应该是 initial 类型
-            ?assertEqual(initial, maps:get(type, Info))
-    after 1000 ->
-        ?assert(false)
+        %% 验证 review 节点被正确恢复并处理了 resume_data
+        FinalState2 = maps:get(final_state, Result2),
+        ?assertEqual(true, graph_state:get(FinalState2, approved))
+    after
+        teardown_noop_store()
     end.
 
-%% 测试：initial 类型不允许 retry
-initial_type_retry_not_allowed_test() ->
-    Graph = make_multi_step_graph(),
+%% 测试：resume_data 注入到 global_state
+resume_data_injection_test() ->
+    Graph = make_interrupt_graph(),
     InitialState = graph:state(#{count => 0}),
 
-    %% 在 initial snapshot 时尝试 retry
-    Callback = fun(Info, _SnapshotData) ->
-        case maps:get(type, Info) of
-            initial ->
-                %% 尝试在 initial 时 retry（应该导致错误）
-                {retry, [some_vertex]};
-            _ ->
-                continue
-        end
-    end,
+    setup_noop_store(),
+    try
+        %% 第一次执行触发 interrupt
+        Result1 = graph:run(Graph, InitialState, snapshot_opts()),
+        ?assertEqual(interrupted, maps:get(status, Result1)),
 
-    Options = #{on_snapshot => Callback},
-    Result = graph:run(Graph, InitialState, Options),
+        %% 构建 SnapshotData
+        Snapshot = maps:get(snapshot, Result1),
+        FinalState1 = maps:get(final_state, Result1),
+        SnapshotData = #{
+            type => interrupt,
+            pregel_snapshot => Snapshot,
+            global_state => FinalState1,
+            iteration => maps:get(iterations, Result1, 0)
+        },
 
-    %% 应该返回错误
-    ?assertEqual(error, maps:get(status, Result)),
-    ?assertMatch({invalid_operation, {retry_not_allowed, initial}}, maps:get(error, Result)).
+        %% 恢复执行，resume_data 在顶层
+        Options2 = #{
+            restore_from => SnapshotData,
+            resume_data => #{review => {user_input, "hello"}}
+        },
+        Result2 = graph:run(Graph, InitialState, Options2),
 
-%% 测试：step 类型不允许 retry
-step_type_retry_not_allowed_test() ->
-    Graph = make_multi_step_graph(),
-    InitialState = graph:state(#{count => 0}),
-
-    %% 在第一个 step snapshot 时尝试 retry
-    Callback = fun(Info, _SnapshotData) ->
-        case maps:get(type, Info) of
-            initial ->
-                continue;
-            step ->
-                %% 尝试在 step 时 retry（应该导致错误）
-                {retry, [some_vertex]};
-            _ ->
-                continue
-        end
-    end,
-
-    Options = #{on_snapshot => Callback},
-    Result = graph:run(Graph, InitialState, Options),
-
-    %% 应该返回错误
-    ?assertEqual(error, maps:get(status, Result)),
-    ?assertMatch({invalid_operation, {retry_not_allowed, step}}, maps:get(error, Result)).
+        %% 验证执行完成
+        Status2 = maps:get(status, Result2),
+        ?assert(Status2 =:= completed orelse Status2 =:= error)
+    after
+        teardown_noop_store()
+    end.
 
 %%====================================================================
-%% resume_data 测试
+%% Store 保存测试
 %%====================================================================
 
-%% 测试：执行完成时（done）也调用 snapshot 回调
-final_snapshot_callback_called_test() ->
-    Graph = make_multi_step_graph(),
+%% 测试：interrupt 时 store 被调用
+store_saves_on_interrupt_test() ->
+    Graph = make_interrupt_graph(),
     InitialState = graph:state(#{count => 0}),
 
     Self = self(),
-    Callback = fun(Info, SnapshotData) ->
-        Self ! {snapshot, maps:get(type, Info), SnapshotData},
-        continue
-    end,
+    MockRef = make_ref(),
+    meck:new(mock_graph_store2, [non_strict]),
+    meck:expect(mock_graph_store2, save_snapshot, fun(_Ref, Snapshot, Opts) ->
+        Self ! {store_save, MockRef, maps:get(type, Snapshot, undefined), maps:get(trigger, Opts, undefined)},
+        {ok, <<"snap-1">>}
+    end),
+    try
+        Options = #{
+            store => {mock_graph_store2, MockRef},
+            snapshot_strategy => on_interrupt
+        },
+        Result = graph:run(Graph, InitialState, Options),
 
-    Options = #{on_snapshot => Callback},
-    Result = graph:run(Graph, InitialState, Options),
+        ?assertEqual(interrupted, maps:get(status, Result)),
 
-    %% 收集所有 snapshot 类型
-    Types = collect_snapshot_types([]),
+        %% 收集所有 store 调用
+        StoreCalls = collect_store_calls(MockRef, []),
 
-    %% 验证包含 final 类型（不管执行是否成功，final 回调都应该被调用）
-    ?assert(lists:member(final, Types)),
+        %% 验证至少一次保存，且包含 interrupt 触发
+        ?assert(length(StoreCalls) >= 1),
+        Triggers = [Trigger || {_Type, Trigger} <- StoreCalls],
+        ?assert(lists:member(interrupted, Triggers))
+    after
+        meck:unload(mock_graph_store2)
+    end.
 
-    %% 验证 done_reason 是 completed（pregel 层面完成）
-    ?assertEqual(completed, maps:get(done_reason, Result)),
-
-    %% 验证结果中包含最终 snapshot
-    ?assert(maps:is_key(snapshot, Result)).
-
-collect_snapshot_types(Acc) ->
+collect_store_calls(MockRef, Acc) ->
     receive
-        {snapshot, Type, _Data} ->
-            collect_snapshot_types([Type | Acc])
+        {store_save, MockRef, Type, Trigger} ->
+            collect_store_calls(MockRef, [{Type, Trigger} | Acc])
     after 100 ->
         lists:reverse(Acc)
     end.
 
-%% 测试：resume_data 被转换为消息注入
-resume_data_injection_test() ->
-    Graph = make_multi_step_graph(),
-    InitialState = graph:state(#{count => 0}),
+%%====================================================================
+%% Error 重试测试
+%%====================================================================
 
-    %% 第一次执行，保存 snapshot 后停止
-    Self = self(),
-    Callback = fun(_Info, SnapshotData) ->
-        Self ! {save_snapshot, SnapshotData},
-        {stop, waiting_for_input}
-    end,
+%% 测试：retry_vertices 重新激活失败顶点
+retry_vertices_test() ->
+    Graph = make_flaky_error_graph(),
+    InitialState = graph:state(#{retry_count => 0}),
 
-    Options1 = #{on_snapshot => Callback},
-    Result1 = graph:run(Graph, InitialState, Options1),
+    setup_noop_store(),
+    try
+        %% 第一次执行：flaky_node 失败
+        Result1 = graph:run(Graph, InitialState, snapshot_opts()),
 
-    ?assertEqual(stopped, maps:get(status, Result1)),
+        ?assertEqual(error, maps:get(status, Result1)),
+        ?assert(maps:is_key(snapshot, Result1)),
 
-    %% 获取保存的 snapshot
-    SnapshotData = receive
-        {save_snapshot, Data} -> Data
-    after 1000 ->
-        error(no_snapshot_saved)
-    end,
+        FailedVertices = maps:get(failed_vertices, Result1),
+        FailedIds = [Id || {Id, _} <- FailedVertices],
+        ?assert(lists:member(flaky_node, FailedIds)),
 
-    %% 准备恢复选项，包含 resume_data
-    #{pregel_snapshot := PregelSnapshot, iteration := Iteration} = SnapshotData,
-    RestoreOpts = #{
-        pregel_snapshot => PregelSnapshot,
-        iteration => Iteration,
-        resume_data => #{process => {user_input, "hello"}}
-    },
+        %% 构建 snapshot_data 用于恢复
+        Snapshot = maps:get(snapshot, Result1),
+        FinalState1 = maps:get(final_state, Result1),
 
-    %% 恢复执行
-    Options2 = #{restore_from => RestoreOpts},
-    Result2 = graph:run(Graph, InitialState, Options2),
+        %% 在 global_state 中设置 retry_count，让 flaky_node 下次成功
+        FinalState1WithRetry = graph_state:set(FinalState1, retry_count, 1),
 
-    %% 验证执行完成（resume_data 作为消息被注入，但这里只验证能正常恢复）
-    Status2 = maps:get(status, Result2),
-    ?assert(Status2 =:= completed orelse Status2 =:= error).
+        SnapshotData = #{
+            type => error,
+            pregel_snapshot => Snapshot,
+            global_state => FinalState1WithRetry,
+            iteration => maps:get(iterations, Result1, 0)
+        },
+
+        %% 使用 retry_vertices 重试失败的顶点
+        Options2 = #{
+            restore_from => SnapshotData,
+            retry_vertices => FailedIds
+        },
+        Result2 = graph:run(Graph, InitialState, Options2),
+
+        %% 重试后应该完成
+        ?assertEqual(completed, maps:get(status, Result2)),
+
+        %% 验证 flaky_node 执行成功
+        FinalState2 = maps:get(final_state, Result2),
+        ?assertEqual(true, graph_state:get(FinalState2, flaky_done))
+    after
+        teardown_noop_store()
+    end.

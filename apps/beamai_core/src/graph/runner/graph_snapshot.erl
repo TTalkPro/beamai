@@ -1,27 +1,25 @@
 %%%-------------------------------------------------------------------
 %%% @doc Graph Snapshot 执行模块
 %%%
-%%% 本模块负责带 Snapshot 回调的图执行逻辑。
+%%% 本模块负责带 Snapshot 的图执行逻辑。
 %%% 从 graph_runner 拆分出来，专注于 snapshot 级别的处理。
 %%%
 %%% 核心功能:
-%%% - Snapshot 执行循环：每个超步完成后调用回调函数
-%%% - Snapshot 回调处理：根据回调结果决定继续、停止或重试
+%%% - Snapshot 执行循环：每个超步完成后自动处理 interrupt/error
 %%% - 从 Snapshot 恢复：支持从中断点恢复执行
+%%% - Store 持久化：根据策略自动保存 snapshot 到 store
 %%% - 结果构建：将 Pregel 结果转换为 graph_runner 格式
 %%%
-%%% Snapshot 模式说明:
-%%% 当提供 on_snapshot 回调时，图执行进入 snapshot 模式:
-%%% 1. 每个超步完成后，构建 snapshot_data 并调用回调
-%%% 2. 回调返回 continue 则继续下一超步
-%%% 3. 回调返回 {stop, Reason} 则停止执行，保存 snapshot
-%%% 4. 回调返回 {retry, VertexIds} 则重试指定顶点（仅 error 类型有效）
+%%% 执行模式说明:
+%%% interrupt/error 自动返回给调用者，不需要回调：
+%%% 1. step → 按 strategy 保存 store → 继续
+%%% 2. interrupt → 保存 store → 返回 #{status => interrupted, ...}
+%%% 3. error → 保存 store → 返回 #{status => error, ...}
+%%% 4. done → 保存 store → 返回最终结果
 %%%
 %%% 从 Snapshot 恢复:
-%%% 通过 restore_from 选项可以从之前保存的 snapshot 恢复执行:
-%%% - pregel_snapshot: 必须，包含超步、顶点等 pregel 层状态
-%%% - global_state: 可选，恢复时的全局状态
-%%% - resume_data: 可选，注入的用户数据（会合并到 global_state）
+%%% 通过 restore_from 选项直接传入 snapshot_data() 即可恢复执行。
+%%% resume_data 通过 run_options 顶层传入，会合并到 global_state。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -30,13 +28,7 @@
 %% === API 导出 ===
 -export([
     run_with_snapshot/4,
-    run_snapshot_loop/4,
-    handle_snapshot_continue/8,
-    handle_snapshot_done/6,
-    prepare_restore_options/2,
-    build_stopped_result/3,
-    build_error_result_from_snapshot/3,
-    default_snapshot_callback/2,
+    prepare_restore_options/3,
     ensure_run_id/1,
     classify_vertices/1
 ]).
@@ -46,9 +38,6 @@
 -type run_options() :: graph_runner:run_options().
 -type run_result() :: graph_runner:run_result().
 -type snapshot_data() :: graph_runner:snapshot_data().
--type snapshot_callback() :: graph_runner:snapshot_callback().
--type snapshot_callback_result() :: graph_runner:snapshot_callback_result().
--type restore_options() :: graph_runner:restore_options().
 
 %%====================================================================
 %% API
@@ -56,14 +45,14 @@
 
 %% @doc Snapshot 模式执行入口
 %%
-%% 使用步进式 API 执行图，每个超步完成后调用 snapshot 回调。
+%% 使用步进式 API 执行图，interrupt/error 自动返回。
 %% 节点计算逻辑和路由规则已存储在 vertex value 中。
 %%
 %% 执行流程:
 %% 1. 准备恢复选项（如果有）
 %% 2. 构建 Pregel 执行选项
 %% 3. 启动 Pregel Master
-%% 4. 进入 snapshot 执行循环
+%% 4. 进入执行循环
 -spec run_with_snapshot(map(), state(), state(), run_options()) -> run_result().
 run_with_snapshot(Graph, _InitialState, ActualGlobalState, Options) ->
     #{pregel_graph := PregelGraph} = Graph,
@@ -72,9 +61,9 @@ run_with_snapshot(Graph, _InitialState, ActualGlobalState, Options) ->
     OptionsWithRunId = ensure_run_id(Options),
 
     %% 检查是否从 snapshot 恢复
-    RestoreOpts = maps:get(restore_from, OptionsWithRunId, undefined),
+    SnapshotData = maps:get(restore_from, OptionsWithRunId, undefined),
     {FinalGlobalState, ExecutorRestoreOpts, StartIteration} =
-        prepare_restore_options(RestoreOpts, ActualGlobalState),
+        prepare_restore_options(SnapshotData, OptionsWithRunId, ActualGlobalState),
 
     %% 准备执行选项（max_iterations 直接从 Graph 获取）
     MaxIterations = maps:get(max_iterations, Graph, 100),
@@ -96,32 +85,35 @@ run_with_snapshot(Graph, _InitialState, ActualGlobalState, Options) ->
     ComputeFn = graph_compute:compute_fn(),
     {ok, Executor} = graph_executor:start_link(PregelGraph, ComputeFn, ExecutorOpts),
     try
-        SnapshotCallback = maps:get(on_snapshot, OptionsWithRunId, fun default_snapshot_callback/2),
-        run_snapshot_loop(Executor, SnapshotCallback, StartIteration, OptionsWithRunId)
+        run_loop(Executor, StartIteration, OptionsWithRunId)
     after
         graph_executor:stop(Executor)
     end.
 
 %% @doc 准备从 snapshot 恢复的选项
 %%
-%% 处理 restore_from 选项，提取全局状态和 Pregel 恢复选项。
-%% resume_data 会被合并到 global_state 中（键格式: <<"resume_data:vertex_id">>）。
+%% 处理 restore_from 选项，从 snapshot_data() 提取全局状态和 Pregel 恢复选项。
+%%
+%% 恢复有两种模式：
+%% - resume_data: interrupt 恢复，注入用户数据到 global_state（键格式: <<"resume_data:vertex_id">>）
+%% - retry_vertices: error 重试，仅重新激活指定顶点，不修改状态
 %%
 %% 返回值: {FinalGlobalState, PregelRestoreOpts, StartIteration}
--spec prepare_restore_options(restore_options() | undefined, state()) ->
+-spec prepare_restore_options(snapshot_data() | undefined, run_options(), state()) ->
     {state(), graph_executor:restore_opts() | undefined, non_neg_integer()}.
-prepare_restore_options(undefined, GlobalState) ->
+prepare_restore_options(undefined, _Options, GlobalState) ->
     %% 无恢复选项，使用默认值
     {GlobalState, undefined, 0};
-prepare_restore_options(RestoreOpts, _DefaultGlobalState) ->
-    %% 从恢复选项中提取 pregel snapshot
-    PregelCheckpoint = maps:get(pregel_snapshot, RestoreOpts),
+prepare_restore_options(SnapshotData, Options, _DefaultGlobalState) ->
+    %% 从 snapshot_data 中提取 pregel snapshot
+    PregelCheckpoint = maps:get(pregel_snapshot, SnapshotData),
 
-    %% 恢复全局状态（优先使用 RestoreOpts 中的，其次是 PregelCheckpoint 中的）
-    GlobalState = maps:get(global_state, RestoreOpts,
+    %% 恢复全局状态（优先使用 SnapshotData 中的，其次是 PregelCheckpoint 中的）
+    GlobalState = maps:get(global_state, SnapshotData,
                           maps:get(global_state, PregelCheckpoint, graph_state:new())),
-    Iteration = maps:get(iteration, RestoreOpts, 0),
-    ResumeData = maps:get(resume_data, RestoreOpts, #{}),
+    Iteration = maps:get(iteration, SnapshotData, 0),
+    ResumeData = maps:get(resume_data, Options, #{}),
+    RetryVertices = maps:get(retry_vertices, Options, []),
 
     %% 构建 pregel restore_opts
     #{superstep := Superstep, vertices := Vertices} = PregelCheckpoint,
@@ -133,12 +125,13 @@ prepare_restore_options(RestoreOpts, _DefaultGlobalState) ->
         List when is_list(List) -> List
     end,
 
-    %% 将 resume_data 中的顶点添加到激活列表
+    %% 合并激活列表：resume_data 顶点 + retry_vertices + 原有 pending
     ResumeVertexIds = maps:keys(ResumeData),
-    AllActivations = lists:usort(ResumeVertexIds ++ PendingActivations),
+    AllActivations = lists:usort(ResumeVertexIds ++ RetryVertices ++ PendingActivations),
 
     %% 将 resume_data 合并到 global_state
     %% 键格式: <<"resume_data:vertex_id">>，节点可通过此键获取恢复数据
+    %% retry_vertices 不注入任何数据，仅激活
     FinalGlobalState = case map_size(ResumeData) of
         0 -> GlobalState;
         _ -> maps:fold(
@@ -165,231 +158,6 @@ prepare_restore_options(RestoreOpts, _DefaultGlobalState) ->
     },
 
     {FinalGlobalState, PregelRestoreOpts, Iteration}.
-
-%% @doc 默认 snapshot 回调
-%%
-%% 不做任何处理，总是返回 continue。
-%% 用于未指定回调时的默认行为。
--spec default_snapshot_callback(graph_executor:superstep_info(), snapshot_data()) -> continue.
-default_snapshot_callback(_Info, _SnapshotData) ->
-    continue.
-
-%% @doc Snapshot 执行循环
-%%
-%% 核心执行循环，每次循环:
-%% 1. 调用 pregel:step 执行一个超步
-%% 2. 构建 snapshot_data
-%% 3. 调用 snapshot 回调
-%% 4. 根据回调结果决定下一步操作
--spec run_snapshot_loop(pid(), snapshot_callback(), non_neg_integer(), run_options()) ->
-    run_result().
-run_snapshot_loop(Executor, SnapshotCallback, Iteration, Options) ->
-    RunId = maps:get(run_id, Options),
-    case graph_executor:step(Executor) of
-        {continue, Info} ->
-            %% ===== 继续执行：构建 snapshot 并调用回调 =====
-            PregelCheckpoint = graph_executor:get_snapshot_data(Executor),
-            CurrentGlobalState = graph_executor:get_global_state(Executor),
-            Type = maps:get(type, Info),
-            Superstep = maps:get(superstep, Info, 0),
-
-            %% 分类顶点状态（活跃 vs 已完成）
-            Vertices = maps:get(vertices, PregelCheckpoint, #{}),
-            {ActiveVertices, CompletedVertices} = classify_vertices(Vertices),
-
-            %% 构建 snapshot 数据（包含完整的执行状态）
-            SnapshotData = #{
-                type => Type,
-                pregel_snapshot => PregelCheckpoint,
-                global_state => CurrentGlobalState,
-                iteration => Iteration,
-                run_id => RunId,
-                active_vertices => ActiveVertices,
-                completed_vertices => CompletedVertices,
-                superstep => Superstep
-            },
-
-            %% 调用用户提供的 snapshot 回调
-            CallbackResult = SnapshotCallback(Info, SnapshotData),
-
-            %% 根据类型和回调结果决定下一步
-            handle_snapshot_continue(
-                Type, CallbackResult, Executor, SnapshotCallback,
-                SnapshotData, Info, Iteration, Options);
-
-        {done, Reason, Info} ->
-            %% ===== 执行完成 =====
-            handle_snapshot_done(Executor, Reason, Info, Iteration, SnapshotCallback, Options)
-    end.
-
-%% @doc 处理 continue 分支的不同 snapshot 类型
-%%
-%% 根据 snapshot 类型和回调结果决定操作:
-%% - initial: 初始状态，只允许 continue 或 stop
-%% - step: 正常超步完成，只允许 continue 或 stop
-%% - error: 有失败顶点，允许 continue、stop 或 retry
-%% - interrupt: 有中断顶点，只允许 continue 或 stop
-%% - final: 不应出现在 continue 分支
--spec handle_snapshot_continue(
-    graph_executor:snapshot_type(),
-    snapshot_callback_result(),
-    pid(),
-    snapshot_callback(),
-    snapshot_data(),
-    graph_executor:superstep_info(),
-    non_neg_integer(),
-    run_options()
-) -> run_result().
-
-%% === initial 类型处理 ===
-handle_snapshot_continue(initial, continue, Executor, Callback, _Data, _Info, Iteration, Options) ->
-    %% 继续执行下一超步
-    run_snapshot_loop(Executor, Callback, Iteration, Options);
-handle_snapshot_continue(initial, {stop, Reason}, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    %% 用户请求停止
-    build_stopped_result(Data, Reason, Iteration);
-handle_snapshot_continue(initial, {retry, _}, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    %% initial 类型不允许 retry
-    build_error_result_from_snapshot(Data, {invalid_operation, {retry_not_allowed, initial}}, Iteration);
-
-%% === step 类型处理 ===
-handle_snapshot_continue(step, continue, Executor, Callback, _Data, _Info, Iteration, Options) ->
-    run_snapshot_loop(Executor, Callback, Iteration + 1, Options);
-handle_snapshot_continue(step, {stop, Reason}, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    build_stopped_result(Data, Reason, Iteration);
-handle_snapshot_continue(step, {retry, _}, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    %% step 类型不允许 retry（没有失败的顶点）
-    build_error_result_from_snapshot(Data, {invalid_operation, {retry_not_allowed, step}}, Iteration);
-
-%% === error 类型处理（支持重试） ===
-handle_snapshot_continue(error, continue, Executor, Callback, _Data, _Info, Iteration, Options) ->
-    %% 忽略错误，继续执行
-    run_snapshot_loop(Executor, Callback, Iteration + 1, Options);
-handle_snapshot_continue(error, {stop, Reason}, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    build_stopped_result(Data, Reason, Iteration);
-handle_snapshot_continue(error, {retry, VertexIds}, Executor, Callback, _Data, _Info, Iteration, Options) ->
-    %% 重试失败的顶点
-    RunId = maps:get(run_id, Options),
-    case graph_executor:retry(Executor, VertexIds) of
-        {continue, NewInfo} ->
-            %% 重试后继续执行：构建新的 snapshot 并递归处理
-            NewPregelCheckpoint = graph_executor:get_snapshot_data(Executor),
-            NewGlobalState = graph_executor:get_global_state(Executor),
-            NewType = maps:get(type, NewInfo),
-            NewSuperstep = maps:get(superstep, NewInfo, 0),
-
-            NewVertices = maps:get(vertices, NewPregelCheckpoint, #{}),
-            {NewActiveVertices, NewCompletedVertices} = classify_vertices(NewVertices),
-
-            NewSnapshotData = #{
-                type => NewType,
-                pregel_snapshot => NewPregelCheckpoint,
-                global_state => NewGlobalState,
-                iteration => Iteration,
-                run_id => RunId,
-                active_vertices => NewActiveVertices,
-                completed_vertices => NewCompletedVertices,
-                superstep => NewSuperstep
-            },
-
-            %% 重试后再次调用回调，让用户决定下一步
-            NewCallbackResult = Callback(NewInfo, NewSnapshotData),
-            handle_snapshot_continue(
-                NewType, NewCallbackResult, Executor, Callback,
-                NewSnapshotData, NewInfo, Iteration, Options);
-        {done, Reason, DoneInfo} ->
-            handle_snapshot_done(Executor, Reason, DoneInfo, Iteration, Callback, Options)
-    end;
-
-%% === interrupt 类型处理 ===
-handle_snapshot_continue(interrupt, continue, Executor, Callback, _Data, _Info, Iteration, Options) ->
-    run_snapshot_loop(Executor, Callback, Iteration + 1, Options);
-handle_snapshot_continue(interrupt, {stop, Reason}, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    build_stopped_result(Data, Reason, Iteration);
-handle_snapshot_continue(interrupt, {retry, _}, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    %% interrupt 类型不允许 retry（中断需要用户输入，不是简单重试能解决的）
-    build_error_result_from_snapshot(Data, {invalid_operation, {retry_not_allowed, interrupt}}, Iteration);
-
-%% === final 类型处理（不应出现在 continue 分支） ===
-handle_snapshot_continue(final, _, _Executor, _Callback, Data, _Info, Iteration, _Options) ->
-    build_error_result_from_snapshot(Data, {invalid_state, final_in_continue}, Iteration).
-
-%% @doc 处理执行完成（done 分支）
-%%
-%% 执行完成时:
-%% 1. 构建最终的 snapshot 数据
-%% 2. 调用 snapshot 回调（type=final）
-%% 3. 获取并转换 Pregel 结果
--spec handle_snapshot_done(pid(), graph_executor:done_reason(), graph_executor:superstep_info(),
-                             non_neg_integer(), snapshot_callback(), run_options()) -> run_result().
-handle_snapshot_done(Executor, Reason, Info, Iteration, SnapshotCallback, Options) ->
-    RunId = maps:get(run_id, Options),
-    Superstep = maps:get(superstep, Info, 0),
-
-    %% 获取最终状态
-    PregelCheckpoint = graph_executor:get_snapshot_data(Executor),
-    FinalGlobalState = graph_executor:get_global_state(Executor),
-
-    %% 分类顶点
-    Vertices = maps:get(vertices, PregelCheckpoint, #{}),
-    {ActiveVertices, CompletedVertices} = classify_vertices(Vertices),
-
-    %% 构建最终 snapshot 数据
-    SnapshotData = #{
-        type => final,
-        pregel_snapshot => PregelCheckpoint,
-        global_state => FinalGlobalState,
-        iteration => Iteration,
-        run_id => RunId,
-        active_vertices => ActiveVertices,
-        completed_vertices => CompletedVertices,
-        superstep => Superstep
-    },
-
-    %% 调用回调（通知执行完成）
-    _ = SnapshotCallback(Info#{type => final}, SnapshotData),
-
-    %% 转换执行器结果为 graph_runner 格式
-    Result = graph_executor:get_result(Executor),
-    PregelResult = graph_compute:from_pregel_result(Result),
-    FinalResult = handle_pregel_result(PregelResult, FinalGlobalState, Options),
-
-    %% 添加额外信息
-    FinalResult#{
-        iterations => Iteration,
-        done_reason => Reason,
-        snapshot => PregelCheckpoint
-    }.
-
-%% @doc 构建用户停止时的结果
--spec build_stopped_result(snapshot_data(), term(), non_neg_integer()) -> run_result().
-build_stopped_result(SnapshotData, Reason, Iteration) ->
-    PregelCheckpoint = maps:get(pregel_snapshot, SnapshotData),
-    GlobalState = maps:get(global_state, SnapshotData),
-    Type = maps:get(type, SnapshotData),
-    #{
-        status => stopped,
-        final_state => GlobalState,
-        iterations => Iteration,
-        error => {user_stopped, Reason},
-        snapshot => PregelCheckpoint,
-        snapshot_type => Type
-    }.
-
-%% @doc 构建错误结果
--spec build_error_result_from_snapshot(snapshot_data(), term(), non_neg_integer()) -> run_result().
-build_error_result_from_snapshot(SnapshotData, Reason, Iteration) ->
-    PregelCheckpoint = maps:get(pregel_snapshot, SnapshotData),
-    GlobalState = maps:get(global_state, SnapshotData),
-    Type = maps:get(type, SnapshotData),
-    #{
-        status => error,
-        final_state => GlobalState,
-        iterations => Iteration,
-        error => Reason,
-        snapshot => PregelCheckpoint,
-        snapshot_type => Type
-    }.
 
 %% @doc 确保 Options 中存在 run_id
 %%
@@ -425,22 +193,212 @@ classify_vertices(Vertices) ->
     ).
 
 %%====================================================================
-%% 内部函数
+%% 内部函数：执行循环
 %%====================================================================
 
-%% @private 处理 Pregel 引擎执行结果
+%% @private 执行循环
 %%
-%% 将 graph_compute:from_pregel_result/1 的返回值转换为 run_result 格式。
--spec handle_pregel_result({ok, state()} | {error, term()}, state(), run_options()) -> run_result().
-handle_pregel_result({ok, FinalState}, _InitialState, _Options) ->
-    #{status => completed, final_state => FinalState, iterations => 0};
-handle_pregel_result({error, {partial_result, PartialState, max_iterations_exceeded}}, _InitialState, Options) ->
-    MaxIter = maps:get(max_iterations, Options, 100),
-    #{status => max_iterations, final_state => PartialState, iterations => MaxIter};
-handle_pregel_result({error, {partial_result, PartialState, Reason}}, _InitialState, _Options) ->
-    #{status => error, final_state => PartialState, iterations => 0, error => Reason};
-handle_pregel_result({error, max_iterations_exceeded}, InitialState, Options) ->
-    MaxIter = maps:get(max_iterations, Options, 100),
-    #{status => max_iterations, final_state => InitialState, iterations => MaxIter, error => max_iterations_exceeded};
-handle_pregel_result({error, Reason}, InitialState, _Options) ->
-    #{status => error, final_state => InitialState, iterations => 0, error => Reason}.
+%% 每次循环:
+%% 1. 调用 graph_executor:step 执行一个超步
+%% 2. 构建 snapshot_data
+%% 3. 根据类型自动处理：
+%%    - step/initial: 保存 store → 继续
+%%    - interrupt: 保存 store → 返回 interrupted
+%%    - error: 保存 store → 返回 error
+-spec run_loop(pid(), non_neg_integer(), run_options()) -> run_result().
+run_loop(Executor, Iteration, Options) ->
+    case graph_executor:step(Executor) of
+        {continue, Info} ->
+            %% 构建 snapshot 数据
+            SnapshotData = build_snapshot_data(Executor, Info, Iteration, Options),
+            Type = maps:get(type, Info),
+
+            %% 根据策略保存到 store
+            maybe_save_to_store(SnapshotData, Type, Options),
+
+            %% 根据类型决定下一步
+            case Type of
+                interrupt ->
+                    build_interrupted_result(SnapshotData, Info, Iteration);
+                error ->
+                    build_error_result(SnapshotData, Info, Iteration);
+                _ ->
+                    %% initial/step: 继续执行
+                    run_loop(Executor, next_iteration(Type, Iteration), Options)
+            end;
+
+        {done, Reason, Info} ->
+            handle_done(Executor, Reason, Info, Iteration, Options)
+    end.
+
+%% @private 构建 snapshot 数据
+-spec build_snapshot_data(pid(), graph_executor:superstep_info(), non_neg_integer(), run_options()) ->
+    snapshot_data().
+build_snapshot_data(Executor, Info, Iteration, Options) ->
+    RunId = maps:get(run_id, Options),
+    PregelCheckpoint = graph_executor:get_snapshot_data(Executor),
+    CurrentGlobalState = graph_executor:get_global_state(Executor),
+    Type = maps:get(type, Info),
+    Superstep = maps:get(superstep, Info, 0),
+
+    %% 分类顶点状态
+    Vertices = maps:get(vertices, PregelCheckpoint, #{}),
+    {ActiveVertices, CompletedVertices} = classify_vertices(Vertices),
+
+    #{
+        type => Type,
+        pregel_snapshot => PregelCheckpoint,
+        global_state => CurrentGlobalState,
+        iteration => Iteration,
+        run_id => RunId,
+        active_vertices => ActiveVertices,
+        completed_vertices => CompletedVertices,
+        superstep => Superstep
+    }.
+
+%% @private 构建 interrupted 结果
+-spec build_interrupted_result(snapshot_data(), graph_executor:superstep_info(), non_neg_integer()) ->
+    run_result().
+build_interrupted_result(SnapshotData, Info, Iteration) ->
+    PregelCheckpoint = maps:get(pregel_snapshot, SnapshotData),
+    GlobalState = maps:get(global_state, SnapshotData),
+    InterruptedVertices = maps:get(interrupted_vertices, Info, []),
+    #{
+        status => interrupted,
+        final_state => GlobalState,
+        iterations => Iteration,
+        snapshot => PregelCheckpoint,
+        interrupted_vertices => InterruptedVertices
+    }.
+
+%% @private 构建 error 结果（保留 snapshot 用于恢复）
+-spec build_error_result(snapshot_data(), graph_executor:superstep_info(), non_neg_integer()) ->
+    run_result().
+build_error_result(SnapshotData, Info, Iteration) ->
+    PregelCheckpoint = maps:get(pregel_snapshot, SnapshotData),
+    GlobalState = maps:get(global_state, SnapshotData),
+    FailedVertices = maps:get(failed_vertices, Info, []),
+    #{
+        status => error,
+        final_state => GlobalState,
+        iterations => Iteration,
+        snapshot => PregelCheckpoint,
+        failed_vertices => FailedVertices
+    }.
+
+%% @private 计算下一次迭代数
+-spec next_iteration(graph_executor:snapshot_type(), non_neg_integer()) -> non_neg_integer().
+next_iteration(initial, Iteration) -> Iteration;
+next_iteration(_, Iteration) -> Iteration + 1.
+
+%% @private 处理执行完成（done 分支）
+-spec handle_done(pid(), graph_executor:done_reason(), graph_executor:superstep_info(),
+                  non_neg_integer(), run_options()) -> run_result().
+handle_done(Executor, Reason, Info, Iteration, Options) ->
+    RunId = maps:get(run_id, Options),
+    Superstep = maps:get(superstep, Info, 0),
+
+    %% 获取最终状态
+    PregelCheckpoint = graph_executor:get_snapshot_data(Executor),
+    FinalGlobalState = graph_executor:get_global_state(Executor),
+
+    %% 分类顶点
+    Vertices = maps:get(vertices, PregelCheckpoint, #{}),
+    {ActiveVertices, CompletedVertices} = classify_vertices(Vertices),
+
+    %% 构建最终 snapshot 数据
+    SnapshotData = #{
+        type => final,
+        pregel_snapshot => PregelCheckpoint,
+        global_state => FinalGlobalState,
+        iteration => Iteration,
+        run_id => RunId,
+        active_vertices => ActiveVertices,
+        completed_vertices => CompletedVertices,
+        superstep => Superstep
+    },
+
+    %% 保存最终 snapshot 到 store
+    maybe_save_to_store(SnapshotData, final, Options),
+
+    %% 转换执行器结果为 graph_runner 格式
+    Result = graph_executor:get_result(Executor),
+    PregelResult = graph_compute:from_pregel_result(Result),
+    FinalResult = graph_runner:handle_pregel_result(PregelResult, FinalGlobalState, Options),
+
+    %% 添加额外信息
+    FinalResult#{
+        iterations => Iteration,
+        done_reason => Reason,
+        snapshot => PregelCheckpoint
+    }.
+
+%%====================================================================
+%% 内部函数：Store 持久化
+%%====================================================================
+
+%% @private 根据 store/strategy 配置决定是否保存
+-spec maybe_save_to_store(snapshot_data(), graph_executor:snapshot_type(), run_options()) -> ok.
+maybe_save_to_store(SnapshotData, Type, Options) ->
+    case maps:get(store, Options, undefined) of
+        undefined ->
+            ok;
+        {StoreModule, StoreRef} ->
+            Strategy = maps:get(snapshot_strategy, Options, every_superstep),
+            GraphName = maps:get(graph_name, Options, undefined),
+            Superstep = maps:get(superstep, SnapshotData, 0),
+            case should_save(Strategy, Type, Superstep) of
+                true ->
+                    do_save_snapshot(StoreModule, StoreRef, SnapshotData, GraphName, Type);
+                false ->
+                    ok
+            end
+    end.
+
+%% @private 根据策略判断是否需要保存
+-spec should_save(graph_runner:snapshot_strategy(), atom(), non_neg_integer()) -> boolean().
+should_save(every_superstep, _Type, _Superstep) ->
+    true;
+should_save({every_n, N}, _Type, Superstep) ->
+    Superstep rem N =:= 0;
+should_save(on_interrupt, interrupt, _Superstep) ->
+    true;
+should_save(on_interrupt, final, _Superstep) ->
+    true;
+should_save(on_interrupt, _Type, _Superstep) ->
+    false;
+should_save(on_error, error, _Superstep) ->
+    true;
+should_save(on_error, final, _Superstep) ->
+    true;
+should_save(on_error, _Type, _Superstep) ->
+    false.
+
+%% @private 执行快照保存
+-spec do_save_snapshot(module(), term(), snapshot_data(), atom() | binary() | undefined, atom()) -> ok.
+do_save_snapshot(StoreModule, StoreRef, SnapshotData, GraphName, TriggerType) ->
+    Superstep = maps:get(superstep, SnapshotData, 0),
+    SaveOpts = #{
+        graph_name => GraphName,
+        trigger => trigger_from_type(TriggerType),
+        superstep => Superstep,
+        metadata => #{}
+    },
+    %% 错误仅记录日志，不影响图执行
+    case StoreModule:save_snapshot(StoreRef, SnapshotData, SaveOpts) of
+        {ok, _SnapshotId} ->
+            ok;
+        {error, Reason} ->
+            error_logger:warning_msg("Failed to save graph snapshot: ~p~n", [Reason]),
+            ok
+    end.
+
+%% @private 将 snapshot type 转换为 trigger type
+-spec trigger_from_type(atom()) -> beamai_graph_store_behaviour:trigger_type().
+trigger_from_type(initial) -> superstep_completed;
+trigger_from_type(step) -> superstep_completed;
+trigger_from_type(error) -> error_occurred;
+trigger_from_type(interrupt) -> interrupted;
+trigger_from_type(final) -> completed;
+trigger_from_type(stopped) -> stopped.
+

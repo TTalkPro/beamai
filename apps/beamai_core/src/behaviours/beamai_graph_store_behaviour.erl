@@ -76,7 +76,7 @@
                       | interrupted            %% 中断（需要用户输入）
                       | error_occurred         %% 发生错误
                       | completed              %% 图执行完成
-                      | manual.                %% 手动触发
+                      | stopped.               %% 用户请求停止
 
 %% 保存选项
 -type save_opts() :: #{

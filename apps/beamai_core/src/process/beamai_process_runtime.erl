@@ -73,7 +73,9 @@
     %% 静止点回调：所有并发步骤执行完毕时触发
     %% 签名: fun(QuiescentInfo :: map()) -> ok
     %% QuiescentInfo 格式见 build_quiescent_info/3
-    on_quiescent :: fun((map()) -> ok) | undefined
+    on_quiescent :: fun((map()) -> ok) | undefined,
+    %% error handler 的持久化状态，跨多次 handle_error 调用保留
+    error_handler_state = #{} :: map()
 }).
 
 %%====================================================================
@@ -157,6 +159,7 @@ init_fresh(ProcessSpec, Opts) ->
             Store = maps:get(store, Opts, undefined),
             SnapshotPolicy = maps:get(snapshot_policy, Opts, default_snapshot_policy()),
             OnQuiescent = maps:get(on_quiescent, Opts, undefined),
+            EHState = init_error_handler(ProcessSpec),
             Data = #data{
                 process_spec = ProcessSpec,
                 steps_state = StepsState,
@@ -171,7 +174,8 @@ init_fresh(ProcessSpec, Opts) ->
                 opts = Opts,
                 store = Store,
                 snapshot_policy = SnapshotPolicy,
-                on_quiescent = OnQuiescent
+                on_quiescent = OnQuiescent,
+                error_handler_state = EHState
             },
             case queue:is_empty(Queue) of
                 true ->
@@ -209,7 +213,8 @@ build_restored_data(ProcessSpec, Opts) ->
         opts = Opts,
         store = maps:get(store, Opts, undefined),
         snapshot_policy = maps:get(snapshot_policy, Opts, default_snapshot_policy()),
-        on_quiescent = maps:get(on_quiescent, Opts, undefined)
+        on_quiescent = maps:get(on_quiescent, Opts, undefined),
+        error_handler_state = maps:get(restored_error_handler_state, Opts, #{})
     }.
 
 %% @private 根据恢复状态和事件队列决定初始 FSM 状态
@@ -531,6 +536,24 @@ init_steps_iter([{StepId, StepSpec} | Rest], Acc) ->
             Error
     end.
 
+%% @private 初始化 error handler 状态
+%% 若配置了 error_handler 且模块导出 init/1，调用其 init 获取初始状态
+-spec init_error_handler(map()) -> map().
+init_error_handler(#{error_handler := undefined}) ->
+    #{};
+init_error_handler(#{error_handler := #{module := Module, config := Config}}) ->
+    case erlang:function_exported(Module, init, 1) of
+        true ->
+            case Module:init(Config) of
+                {ok, State} -> State;
+                _ -> #{}
+            end;
+        false ->
+            #{}
+    end;
+init_error_handler(_) ->
+    #{}.
+
 %% @private 将事件列表追加到事件队列
 enqueue_events(Events, #data{event_queue = Queue} = Data) ->
     NewQueue = lists:foldl(fun(E, Q) -> queue:in(E, Q) end, Queue, Events),
@@ -559,11 +582,16 @@ transition_to_failed(Reason, #data{caller = Caller} = Data) ->
 handle_error(Reason, #data{process_spec = #{error_handler := undefined}} = Data) ->
     transition_to_failed(Reason, Data);
 handle_error(Reason, #data{process_spec = #{error_handler := Handler},
+                           error_handler_state = EHState,
                            context = Context} = Data) ->
     #{module := Module} = Handler,
     ErrorEvent = beamai_process_event:error_event(runtime, Reason),
     ErrorInputs = #{error => ErrorEvent},
-    case Module:on_activate(ErrorInputs, #{}, Context) of
+    case Module:on_activate(ErrorInputs, EHState, Context) of
+        {ok, #{events := Events, state := NewEHState}} ->
+            Data1 = Data#data{error_handler_state = NewEHState},
+            Data2 = enqueue_events(Events, Data1),
+            process_event_queue(Data2);
         {ok, #{events := Events}} ->
             Data1 = enqueue_events(Events, Data),
             process_event_queue(Data1);
@@ -620,14 +648,16 @@ do_snapshot(StateName, #data{process_spec = ProcessSpec,
                               steps_state = StepsState,
                               event_queue = Queue,
                               paused_step = PausedStep,
-                              pause_reason = PauseReason}) ->
+                              pause_reason = PauseReason,
+                              error_handler_state = EHState}) ->
     beamai_process_state:take_snapshot(#{
         process_spec => ProcessSpec,
         current_state => StateName,
         steps_state => StepsState,
         event_queue => queue:to_list(Queue),
         paused_step => PausedStep,
-        pause_reason => PauseReason
+        pause_reason => PauseReason,
+        error_handler_state => EHState
     }).
 
 %%====================================================================
