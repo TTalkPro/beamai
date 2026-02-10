@@ -79,24 +79,26 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 │  (RAG)    │   │  (LLM)    │  │  memory   │  │ (工具+Middleware) │
 └─────┬─────┘   └─────┬─────┘  └─────┬─────┘  └─────────┬─────────┘
       │               │              │                  │
-      │               │              │  ┌───────────────┐  ┌───────────────┐
-      │               │              │  │beamai_cognition│  │beamai_context │
-      │               │              │  │   (认知架构)    │  │ (上下文管理)  │
-      │               │              │  └───────┬───────┘  └───────┬───────┘
-      │               │              │          │                  │
-      │               │ 实现         │          │                  │
-      │               │ Behaviour   │          │           ┌──────┘
-      │               └──────┬──────┘──────────┘           │
-      │                      │                             │
-      │                      ▼                             │
-      │         ┌────────────────────────┐                 │
-      │         │ Behaviour 接口定义      │◄────────────────┘
-      │         │ (beamai_chat_behaviour,│
-      │         │  beamai_process_store_  │
-      │         │  behaviour)            │
-      │         └────────────┬───────────┘
-      │                      │
-      └──────────────────────┤
+      │               │              │  ┌────────────────┐
+      │               │              │  │beamai_cognition │
+      │               │              │  │   (认知架构)     │
+      │               │              │  │ 依赖: memory     │
+      │               │              │  │ 可选: llm        │
+      │               │              │  └──┬──────┬──┬───┘
+      │               │              │     │      │  │
+      │               │ 实现         │     │      │  │(可选)
+      │               │ Behaviour   │◄────┘      │  └───┐
+      │               └──────┬──────┘────────────┘      │
+      │                      │                          │
+      │                      ▼                          │
+      │         ┌────────────────────────┐              │
+      │         │ Behaviour 接口定义      │              │
+      │         │ (beamai_chat_behaviour,│              │
+      │         │  beamai_process_store_  │              │
+      │         │  behaviour)            │              │
+      │         └────────────┬───────────┘              │
+      │                      │                          │
+      └──────────────────────┤──────────────────────────┘
                              ▼
                   ┌───────────────────────────┐
                   │       beamai_core         │  ← 基础层
@@ -111,7 +113,7 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
         - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         运行时可选依赖（通过 Adapter 注入，非编译依赖）：
         beamai_tools ···> beamai_llm (llm_client)
-        beamai_tools ···> beamai_context (beamai_conversation_buffer)
+        beamai_tools ···> beamai_cognition (beamai_conversation_buffer)
 ```
 
 **依赖方向说明**：
@@ -120,7 +122,8 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - `beamai_deepagent` **不依赖** `beamai_agent`，它们是平行的实现
 - `beamai_a2a` 依赖 `beamai_agent`（用于 Agent 执行）
 - `beamai_mcp` 在适配器层**可选依赖** `beamai_agent`（用于工具转换）
-- `beamai_tools`、`beamai_llm`、`beamai_memory`、`beamai_cognition`、`beamai_context` 同层级，都只依赖 `beamai_core`
+- `beamai_tools`、`beamai_llm`、`beamai_memory` 同层级，都只依赖 `beamai_core`
+- `beamai_cognition` 依赖 `beamai_core` + `beamai_memory`，可选依赖 `beamai_llm`
 - `beamai_core` 定义 Behaviour 接口（`beamai_chat_behaviour`、`beamai_process_store_behaviour` 等），上层模块实现这些接口
 - `beamai_core` 不依赖 `beamai_memory`，通过 `{Module, Ref}` 动态分发实现解耦
 - `beamai_tools` 通过 Adapter 模式在**运行时**使用 beamai_llm/context，无编译依赖
@@ -162,7 +165,9 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 
 #### beamai_cognition（认知架构）
 
-**依赖**: beamai_core
+**依赖**: beamai_core, beamai_memory
+
+**可选依赖**: beamai_llm
 
 **提供功能**:
 - 语义记忆（beamai_semantic_memory）
@@ -170,12 +175,6 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - 程序记忆（beamai_procedural_memory）
 - 技能记忆（beamai_skill_memory）
 - 记忆检索与整合算法
-
-#### beamai_context（LLM 上下文管理）
-
-**依赖**: beamai_core
-
-**提供功能**:
 - 对话缓冲（beamai_conversation_buffer）
 - 上下文摘要（beamai_context_summarizer）
 

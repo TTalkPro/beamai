@@ -275,23 +275,26 @@ apps/
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│   Services Layer                                     │
-│  (beamai_llm)                                        │
-└──────────────────────────┬──────────────────────────┘
-                           │
-┌──────────────────────────┴──────────────────────────┐
-│   Storage / Cognition Layer                          │
-│  (beamai_memory, beamai_cognition, beamai_context)   │
-└──────────────────────────┬──────────────────────────┘
-                           │
-┌──────────────────────────┴──────────────────────────┐
+│   Cognition Layer                                    │
+│  (beamai_cognition)                                  │
+│   Depends on: beamai_core, beamai_memory             │
+│   Optional: beamai_llm                               │
+└─────────────┬───────────────────────┬───────────────┘
+              │                       │
+┌─────────────┴────────────┐ ┌────────┴──────────────┐
+│   Storage Layer           │ │   LLM Layer           │
+│  (beamai_memory)          │ │  (beamai_llm)         │
+└─────────────┬────────────┘ └────────┬──────────────┘
+              │                       │
+┌─────────────┴───────────────────────┴───────────────┐
 │   Core Layer                                         │
 │  (beamai_core)                                       │
 └─────────────────────────────────────────────────────┘
 ```
 
 > beamai_core is decoupled via Behaviour interfaces and `{Module, Ref}` dynamic dispatch,
-> with no compile-time dependency on beamai_memory/cognition/context.
+> with no dependency on upper-layer apps. beamai_llm and beamai_memory are peers with no
+> mutual dependency.
 
 See [DEPENDENCIES_EN.md](docs/DEPENDENCIES_EN.md) for details
 
