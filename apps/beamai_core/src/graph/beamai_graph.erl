@@ -79,8 +79,8 @@
 -type node_fun() :: beamai_graph_node:node_fun().
 -type router_fun() :: beamai_graph_edge:router_fun().
 -type route_map() :: beamai_graph_edge:route_map().
--type run_options() :: beamai_graph_engine:run_options().
--type run_result() :: beamai_graph_engine:run_result().
+-type run_options() :: beamai_graph_runner:run_options().
+-type run_result() :: beamai_graph_runner:run_result().
 
 -export_type([graph/0, builder/0, context/0, node_id/0, node_fun/0,
               router_fun/0, route_map/0, run_options/0, run_result/0]).
@@ -166,12 +166,12 @@ compile(Builder) ->
 %% @doc 运行图
 -spec run(graph(), context()) -> run_result().
 run(Graph, InitialState) ->
-    beamai_graph_engine:run_graph(Graph, InitialState).
+    beamai_graph_runner:run_graph(Graph, InitialState).
 
 %% @doc 运行图，带选项
 -spec run(graph(), context(), run_options()) -> run_result().
 run(Graph, InitialState, Options) ->
-    beamai_graph_engine:run_graph(Graph, InitialState, Options).
+    beamai_graph_runner:run_graph(Graph, InitialState, Options).
 
 %%====================================================================
 %% Sync API（HIL 支持）

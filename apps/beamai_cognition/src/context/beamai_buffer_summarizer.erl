@@ -9,8 +9,8 @@
 %%% ```
 %%% %% 创建 LLM 摘要器
 %%% SummarizeFn = beamai_buffer_summarizer:create_llm_summarizer(#{
-%%%     provider => openai,
-%%%     model => <<"gpt-3.5-turbo">>,
+%%%     provider => zhipu,
+%%%     model => <<"glm-4.5-air">>,
 %%%     max_tokens => 500
 %%% }),
 %%%
@@ -101,8 +101,8 @@ summarize_with_llm(Opts, PromptTemplate, Messages) ->
     Prompt = build_summary_prompt(PromptTemplate, ConversationText, length(Messages)),
 
     %% 调用 LLM
-    Provider = maps:get(provider, Opts, openai),
-    Model = maps:get(model, Opts, <<"gpt-3.5-turbo">>),
+    Provider = maps:get(provider, Opts, zhipu),
+    Model = maps:get(model, Opts, <<"glm-4.5-air">>),
     MaxTokens = maps:get(max_tokens, Opts, ?DEFAULT_MAX_TOKENS),
     Temperature = maps:get(temperature, Opts, ?DEFAULT_TEMPERATURE),
 
@@ -209,11 +209,11 @@ build_summary_prompt(Template, ConversationText, MsgCount) ->
 %% @private 调用 LLM
 -spec call_llm(atom(), [message()], map()) -> {ok, map()} | {error, term()}.
 call_llm(Provider, Messages, Opts) ->
-    %% 检查 agent_llm 是否可用
     case code:ensure_loaded(beamai_chat_completion) of
         {module, beamai_chat_completion} ->
             try
-                beamai_chat_completion:chat(Provider, Messages, Opts)
+                Config = beamai_chat_completion:create(Provider, Opts),
+                beamai_chat_completion:chat(Config, Messages)
             catch
                 _:Reason ->
                     {error, {llm_call_failed, Reason}}

@@ -34,8 +34,6 @@
 %%%-------------------------------------------------------------------
 -module(beamai_conversation_buffer).
 
-%% 对话缓冲模块（beamai_buffer_behaviour 尚未定义）
-%% -behaviour(beamai_buffer_behaviour).
 
 %%====================================================================
 %% 类型定义
@@ -438,24 +436,22 @@ trim_to_tokens(Config, Messages, MaxTokens) ->
     TokenCountFn = maps:get(token_count_fn, Config, fun estimate_tokens/1),
     trim_messages_loop(Messages, MaxTokens, TokenCountFn, [], 0).
 
-%% @private 裁剪循环（从后向前保留）
+%% @private 裁剪循环（从前向后添加，累加 Token 数）
 -spec trim_messages_loop([message()], pos_integer(), token_count_fn(),
                          [message()], non_neg_integer()) ->
     {[message()], non_neg_integer()}.
-trim_messages_loop([], _MaxTokens, _TokenCountFn, Acc, TrimmedTokens) ->
-    {Acc, TrimmedTokens};
-trim_messages_loop([Msg | Rest], MaxTokens, TokenCountFn, Acc, TrimmedTokens) ->
+trim_messages_loop([], _MaxTokens, _TokenCountFn, Acc, _UsedTokens) ->
+    {lists:reverse(Acc), 0};
+trim_messages_loop([Msg | Rest], MaxTokens, TokenCountFn, Acc, UsedTokens) ->
     MsgTokens = TokenCountFn(Msg),
-    CurrentTokens = lists:sum([TokenCountFn(M) || M <- Acc]),
-
-    case CurrentTokens + MsgTokens =< MaxTokens of
+    case UsedTokens + MsgTokens =< MaxTokens of
         true ->
-            %% 还有空间，从头部添加（保持顺序）
-            trim_messages_loop(Rest, MaxTokens, TokenCountFn, [Msg | Acc], TrimmedTokens);
+            trim_messages_loop(Rest, MaxTokens, TokenCountFn,
+                               [Msg | Acc], UsedTokens + MsgTokens);
         false ->
-            %% 超出限制，停止添加
-            RemainingTokens = lists:sum([TokenCountFn(M) || M <- Rest]) + MsgTokens,
-            {Acc, TrimmedTokens + RemainingTokens}
+            %% 超出限制，计算剩余被裁剪的 Token 数
+            TrimmedTokens = MsgTokens + lists:sum([TokenCountFn(M) || M <- Rest]),
+            {lists:reverse(Acc), TrimmedTokens}
     end.
 
 %% @private 默认摘要函数（简单截断）
