@@ -36,7 +36,10 @@
 -export([keys/1, delete/2, has_key/2, update/3]).
 
 %% Types
--export_type([t/0, message/0, trace_entry/0]).
+-export_type([t/0, message/0, tool_call/0, trace_entry/0]).
+
+-type message() :: beamai_message:message().
+-type tool_call() :: beamai_message:tool_call().
 
 -type t() :: #{
     '__context__' := true,
@@ -46,23 +49,6 @@
     trace := [trace_entry()],
     metadata := map(),
     binary() => term()
-}.
-
--type message() :: #{
-    role := user | assistant | system | tool,
-    content := binary() | null,
-    tool_calls => [tool_call()],
-    tool_call_id => binary(),
-    name => binary()
-}.
-
--type tool_call() :: #{
-    id := binary(),
-    type := function,
-    function := #{
-        name := binary(),
-        arguments := binary() | map()
-    }
 }.
 
 -type trace_entry() :: #{

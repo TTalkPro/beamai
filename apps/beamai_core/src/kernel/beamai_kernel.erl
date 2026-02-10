@@ -309,7 +309,7 @@ tool_calling_loop(Kernel, LlmConfig, Filters, Msgs, Opts, Context, SysPrompts, N
             case llm_response:has_tool_calls(Response) of
                 true ->
                     TCs = llm_response:tool_calls(Response),
-                    AssistantMsg = #{role => assistant, content => null, tool_calls => TCs},
+                    AssistantMsg = beamai_message:tool_calls(TCs),
                     Ctx1 = track_message(Ctx0, AssistantMsg),
                     {ToolResults, Ctx2} = execute_tool_calls(Kernel, TCs, Ctx1),
                     NewMsgs = Msgs ++ [AssistantMsg | ToolResults],
@@ -320,7 +320,7 @@ tool_calling_loop(Kernel, LlmConfig, Filters, Msgs, Opts, Context, SysPrompts, N
                         null ->
                             {ok, Response, Ctx0};
                         _ ->
-                            FinalMsg = #{role => assistant, content => Content},
+                            FinalMsg = beamai_message:assistant(Content),
                             FinalCtx = track_message(Ctx0, FinalMsg),
                             {ok, Response, FinalCtx}
                     end
@@ -340,7 +340,7 @@ execute_tool_calls(Kernel, ToolCalls, Context) ->
             {ok, Value, UpdatedCtx} -> {beamai_tool:encode_result(Value), UpdatedCtx};
             {error, Reason} -> {beamai_tool:encode_result(#{error => Reason}), CtxAcc}
         end,
-        Msg = #{role => tool, tool_call_id => Id, name => Name, content => ResultContent},
+        Msg = beamai_message:tool_result(Id, Name, ResultContent),
         Ctx2 = track_message(NewCtx, Msg),
         {ResultsAcc ++ [Msg], Ctx2}
     end, {[], Context}, ToolCalls).

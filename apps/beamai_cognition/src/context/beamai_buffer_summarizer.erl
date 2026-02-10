@@ -113,8 +113,8 @@ summarize_with_llm(Opts, PromptTemplate, Messages) ->
     },
 
     LLMMessages = [
-        #{role => <<"system">>, content => <<"你是一个对话摘要助手，请简洁准确地总结对话内容。">>},
-        #{role => <<"user">>, content => Prompt}
+        beamai_message:system(<<"你是一个对话摘要助手，请简洁准确地总结对话内容。">>),
+        beamai_message:user(Prompt)
     ],
 
     case call_llm(Provider, LLMMessages, LLMOpts) of
@@ -164,7 +164,8 @@ simple_summarize(Messages, MaxMessages, MaxContentLength) ->
     %% 格式化摘要
     Summaries = lists:map(fun(#{role := Role, content := Content}) ->
         ShortContent = truncate_content(Content, MaxContentLength),
-        <<Role/binary, ": ", ShortContent/binary>>
+        RoleLabel = role_to_label(Role),
+        <<RoleLabel/binary, ": ", ShortContent/binary>>
     end, SampleMsgs),
 
     SummaryText = iolist_to_binary([
@@ -193,10 +194,14 @@ format_messages_for_summary(Messages) ->
     iolist_to_binary(lists:join(<<"\n\n">>, FormattedLines)).
 
 %% @private 角色标签转换
--spec role_to_label(binary()) -> binary().
+-spec role_to_label(atom() | binary()) -> binary().
+role_to_label(user) -> <<"用户">>;
+role_to_label(assistant) -> <<"助手">>;
+role_to_label(system) -> <<"系统">>;
 role_to_label(<<"user">>) -> <<"用户">>;
 role_to_label(<<"assistant">>) -> <<"助手">>;
 role_to_label(<<"system">>) -> <<"系统">>;
+role_to_label(Role) when is_atom(Role) -> atom_to_binary(Role, utf8);
 role_to_label(Role) -> Role.
 
 %% @private 构建摘要 Prompt

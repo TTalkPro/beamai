@@ -24,6 +24,7 @@
         beamai,
         %% Kernel 核心
         beamai_kernel,
+        beamai_message,
         beamai_tool,
         beamai_tool_behaviour,
         beamai_context,

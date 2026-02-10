@@ -64,7 +64,7 @@
 
 -type summarize_fn() :: fun(([message()]) -> {ok, binary()} | {error, term()}).
 -type token_count_fn() :: fun((binary() | message()) -> non_neg_integer()).
--type message() :: #{role := binary(), content := binary(), atom() => term()}.
+-type message() :: #{role := atom() | binary(), content := binary(), atom() => term()}.
 
 -type context() :: #{
     %% 用于 LLM 的消息列表
@@ -362,22 +362,24 @@ set_token_count_fn(Config, Fn) ->
 %% @doc 获取系统消息
 -spec get_system_messages([message()]) -> [message()].
 get_system_messages(Messages) ->
-    [M || M = #{role := Role} <- Messages, Role =:= <<"system">>].
+    [M || M = #{role := Role} <- Messages, Role =:= system orelse Role =:= <<"system">>].
 
 %% @doc 获取非系统消息
 -spec get_non_system_messages([message()]) -> [message()].
 get_non_system_messages(Messages) ->
-    [M || M = #{role := Role} <- Messages, Role =/= <<"system">>].
+    [M || M = #{role := Role} <- Messages, Role =/= system andalso Role =/= <<"system">>].
 
 %% @doc 将消息转换为文本
 -spec message_to_text(message()) -> binary().
 message_to_text(#{role := Role, content := Content}) when is_binary(Content) ->
-    <<Role/binary, ": ", Content/binary>>;
+    RoleBin = role_to_binary(Role),
+    <<RoleBin/binary, ": ", Content/binary>>;
 message_to_text(#{role := Role, content := Content}) when is_list(Content) ->
     %% 多模态消息
+    RoleBin = role_to_binary(Role),
     TextParts = [Text || #{type := <<"text">>, text := Text} <- Content],
     CombinedText = iolist_to_binary(lists:join(<<" ">>, TextParts)),
-    <<Role/binary, ": ", CombinedText/binary>>.
+    <<RoleBin/binary, ": ", CombinedText/binary>>.
 
 %%====================================================================
 %% 内部函数
@@ -387,7 +389,7 @@ message_to_text(#{role := Role, content := Content}) when is_list(Content) ->
 -spec partition_system_messages([message()]) -> {[message()], [message()]}.
 partition_system_messages(Messages) ->
     lists:partition(fun(#{role := Role}) ->
-        Role =:= <<"system">>
+        Role =:= system orelse Role =:= <<"system">>
     end, Messages).
 
 %% @private 根据配置决定是否生成摘要
@@ -421,10 +423,7 @@ maybe_add_summary_message(Summary, Opts) ->
     IncludeSummary = maps:get(include_summary, Opts, true),
     case IncludeSummary of
         true ->
-            [#{
-                role => <<"system">>,
-                content => <<"[对话历史摘要]\n", Summary/binary>>
-            }];
+            [beamai_message:system(<<"[对话历史摘要]\n", Summary/binary>>)];
         false ->
             []
     end.
@@ -471,7 +470,8 @@ default_summarize(Messages) ->
             true -> <<(binary:part(Content, 0, 100))/binary, "...">>;
             false -> Content
         end,
-        <<Role/binary, ": ", ShortContent/binary>>
+        RoleBin = role_to_binary(Role),
+        <<RoleBin/binary, ": ", ShortContent/binary>>
     end, lists:sublist(Messages, 5)),  % 最多取 5 条
 
     SummaryText = iolist_to_binary([
@@ -481,3 +481,8 @@ default_summarize(Messages) ->
     ]),
 
     {ok, SummaryText}.
+
+%% @private 将 role 转为 binary（兼容 atom 和 binary）
+-spec role_to_binary(atom() | binary()) -> binary().
+role_to_binary(Role) when is_atom(Role) -> atom_to_binary(Role, utf8);
+role_to_binary(Role) when is_binary(Role) -> Role.
