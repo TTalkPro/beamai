@@ -1,6 +1,6 @@
 {application, beamai_llm, [
     {description, "Agent Framework LLM Layer - Multi-Provider Support"},
-    {vsn, "0.1.0"},
+    {vsn, "1.0.0"},
     {registered, []},
     {applications, [
         kernel,

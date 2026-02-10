@@ -1,6 +1,6 @@
 {application, beamai_cognition, [
     {description, "Cognitive Architecture - Semantic, Episodic, Procedural Memory"},
-    {vsn, "0.1.0"},
+    {vsn, "1.0.0"},
     {registered, []},
     {mod, {beamai_cognition_app, []}},
     {applications, [kernel, stdlib, beamai_core, beamai_memory]},

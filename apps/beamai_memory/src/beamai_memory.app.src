@@ -1,6 +1,6 @@
 {application, beamai_memory,
  [{description, "Agent Memory System - Storage Engine"},
-  {vsn, "0.1.0"},
+  {vsn, "1.0.0"},
   {registered, []},
   {mod, {beamai_memory_app, []}},
   {applications,

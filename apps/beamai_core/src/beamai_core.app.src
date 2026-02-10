@@ -1,6 +1,6 @@
 {application, beamai_core, [
     {description, "BeamAI Core - Kernel, Process, Graph 框架"},
-    {vsn, "0.1.0"},
+    {vsn, "1.0.0"},
     {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool, beamai_graph_pool, beamai_graph_sup]},
     {mod, {beamai_core_app, []}},
     {applications, [kernel, stdlib, jsx, uuid, hackney, poolboy]},
