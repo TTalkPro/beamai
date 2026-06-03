@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc LLM Integration Test Suite
 %%%
-%%% 使用真实 LLM Provider 验证重构后的 graph/process/snapshot 功能。
+%%% 使用真实 LLM Provider 验证重构后的 process/snapshot 功能。
 %%% 通过 ZHIPU_ANTHROPIC_BASE_URL + ZHIPU_API_KEY 环境变量调用
 %%% Zhipu 的 Anthropic 兼容 API。
 %%%
@@ -30,14 +30,6 @@
     end_per_testcase/2
 ]).
 
-%% Graph flow tests
--export([
-    test_graph_single_llm_node/1,
-    test_graph_two_node_chain/1,
-    test_graph_conditional_routing/1,
-    test_graph_interrupt_resume/1
-]).
-
 %% Process flow tests
 -export([
     test_process_single_llm_step/1,
@@ -48,9 +40,7 @@
 %% Snapshot restore tests
 -export([
     test_process_snapshot_save_load/1,
-    test_process_snapshot_time_travel/1,
-    test_graph_snapshot_save_load/1,
-    test_graph_snapshot_interrupt_restore/1
+    test_process_snapshot_time_travel/1
 ]).
 
 %%====================================================================
@@ -58,27 +48,18 @@
 %%====================================================================
 
 all() ->
-    [{group, graph_flow},
-     {group, process_flow},
+    [{group, process_flow},
      {group, snapshot_restore}].
 
 groups() ->
-    [{graph_flow, [sequence], [
-        test_graph_single_llm_node,
-        test_graph_two_node_chain,
-        test_graph_conditional_routing,
-        test_graph_interrupt_resume
-    ]},
-     {process_flow, [sequence], [
+    [{process_flow, [sequence], [
         test_process_single_llm_step,
         test_process_two_step_chain,
         test_process_pause_resume
     ]},
      {snapshot_restore, [sequence], [
         test_process_snapshot_save_load,
-        test_process_snapshot_time_travel,
-        test_graph_snapshot_save_load,
-        test_graph_snapshot_interrupt_restore
+        test_process_snapshot_time_travel
     ]}].
 
 init_per_suite(Config) ->
@@ -130,11 +111,9 @@ init_per_group(snapshot_restore, Config) ->
     Store = {beamai_store_ets, StoreName},
     StateStore = beamai_state_store:new(Store),
     ProcessSnapshotMgr = beamai_process_snapshot:new(StateStore),
-    GraphSnapshotMgr = beamai_graph_snapshot:new(StateStore),
     [{store_name, StoreName},
      {state_store, StateStore},
-     {process_snapshot_mgr, ProcessSnapshotMgr},
-     {graph_snapshot_mgr, GraphSnapshotMgr} | Config];
+     {process_snapshot_mgr, ProcessSnapshotMgr} | Config];
 init_per_group(_Group, Config) ->
     Config.
 
@@ -151,154 +130,6 @@ init_per_testcase(_TestCase, Config) ->
 
 end_per_testcase(_TestCase, _Config) ->
     ok.
-
-%%====================================================================
-%% Graph flow tests
-%%====================================================================
-
-%% 单个 LLM 节点 → __end__
-test_graph_single_llm_node(Config) ->
-    LlmConfig = ?config(llm_config, Config),
-    NodeFn = make_llm_node_fun(LlmConfig, prompt, response),
-
-    {ok, Graph} = beamai_graph:build([
-        {node, llm_node, NodeFn},
-        {edge, llm_node, '__end__'},
-        {entry, llm_node}
-    ]),
-
-    InitCtx = beamai_graph:context(#{prompt => <<"What is 1+1? Reply only the number.">>}),
-    {ok, FinalCtx} = beamai_graph:run_sync(Graph, InitCtx),
-
-    Response = beamai_context:get(FinalCtx, response),
-    ?assert(is_binary(Response)),
-    ?assert(byte_size(Response) > 0),
-    ct:pal("Single LLM node response: ~s", [Response]).
-
-%% LLM 生成 → 预处理 → LLM 润色 → __end__
-test_graph_two_node_chain(Config) ->
-    LlmConfig = ?config(llm_config, Config),
-
-    GenerateFn = make_llm_node_fun(LlmConfig, prompt, draft),
-
-    PrepareFn = fun(State, _) ->
-        Draft = beamai_context:get(State, draft, <<>>),
-        RefinePrompt = <<"Please improve the following text, make it more concise:\n\n",
-                         Draft/binary>>,
-        {ok, beamai_context:set(State, refine_prompt, RefinePrompt)}
-    end,
-
-    RefineFn = make_llm_node_fun(LlmConfig, refine_prompt, refined),
-
-    {ok, Graph} = beamai_graph:build([
-        {node, generate, GenerateFn},
-        {edge, generate, prepare},
-        {node, prepare, PrepareFn},
-        {edge, prepare, refine},
-        {node, refine, RefineFn},
-        {edge, refine, '__end__'},
-        {entry, generate}
-    ]),
-
-    InitCtx = beamai_graph:context(#{
-        prompt => <<"Write a short paragraph about Erlang programming language.">>
-    }),
-    {ok, FinalCtx} = beamai_graph:run_sync(Graph, InitCtx),
-
-    Draft = beamai_context:get(FinalCtx, draft),
-    Refined = beamai_context:get(FinalCtx, refined),
-    ?assert(is_binary(Draft)),
-    ?assert(is_binary(Refined)),
-    ?assert(byte_size(Draft) > 0),
-    ?assert(byte_size(Refined) > 0),
-    ct:pal("Draft: ~s~nRefined: ~s", [Draft, Refined]).
-
-%% LLM 分析 → 条件路由 → positive/negative → __end__
-test_graph_conditional_routing(Config) ->
-    LlmConfig = ?config(llm_config, Config),
-
-    AnalyzeFn = make_llm_node_fun(LlmConfig, prompt, analysis),
-
-    RouterFun = fun(State) ->
-        Analysis = beamai_context:get(State, analysis, <<>>),
-        %% 检查 LLM 回答中是否包含数字 4
-        case binary:match(Analysis, <<"4">>) of
-            nomatch -> negative_path;
-            _ -> positive_path
-        end
-    end,
-
-    PositiveFn = fun(State, _) ->
-        {ok, beamai_context:set(State, route, <<"positive">>)}
-    end,
-
-    NegativeFn = fun(State, _) ->
-        {ok, beamai_context:set(State, route, <<"negative">>)}
-    end,
-
-    {ok, Graph} = beamai_graph:build([
-        {node, analyze, AnalyzeFn},
-        {conditional_edge, analyze, RouterFun},
-        {node, positive_path, PositiveFn},
-        {node, negative_path, NegativeFn},
-        {edge, positive_path, '__end__'},
-        {edge, negative_path, '__end__'},
-        {entry, analyze}
-    ]),
-
-    InitCtx = beamai_graph:context(#{
-        prompt => <<"What is 2+2? Reply only the number.">>
-    }),
-    {ok, FinalCtx} = beamai_graph:run_sync(Graph, InitCtx),
-
-    Route = beamai_context:get(FinalCtx, route),
-    Analysis = beamai_context:get(FinalCtx, analysis),
-    ?assert(is_binary(Route)),
-    ?assert(Route =:= <<"positive">> orelse Route =:= <<"negative">>),
-    ct:pal("Analysis: ~s, Route: ~s", [Analysis, Route]).
-
-%% LLM 调用 → 中断审核 → 恢复 → __end__
-test_graph_interrupt_resume(Config) ->
-    LlmConfig = ?config(llm_config, Config),
-
-    ProcessFn = make_llm_node_fun(LlmConfig, prompt, llm_result),
-
-    ReviewFn = make_llm_interrupt_node_fun(LlmConfig),
-
-    {ok, Graph} = beamai_graph:build([
-        {node, process, ProcessFn},
-        {edge, process, review},
-        {node, review, ReviewFn},
-        {edge, review, '__end__'},
-        {entry, process}
-    ]),
-
-    InitCtx = beamai_graph:context(#{
-        prompt => <<"Say hello in exactly 3 words.">>
-    }),
-
-    %% 第一次执行：应该中断
-    {interrupted, InterruptedVertices, Snapshot} =
-        beamai_graph:run_sync(Graph, InitCtx),
-
-    ?assert(length(InterruptedVertices) >= 1),
-    VertexIds = [Id || {Id, _Reason} <- InterruptedVertices],
-    ?assert(lists:member(review, VertexIds)),
-    ?assert(is_map(Snapshot)),
-
-    ct:pal("Interrupted at vertices: ~p", [VertexIds]),
-
-    %% 第二次执行：从快照恢复
-    {ok, FinalCtx} = beamai_graph:run_sync(Graph, InitCtx, #{
-        snapshot => Snapshot,
-        resume_data => #{review => #{approved => true}}
-    }),
-
-    LlmResult = beamai_context:get(FinalCtx, llm_result),
-    Reviewed = beamai_context:get(FinalCtx, reviewed),
-    ?assert(is_binary(LlmResult)),
-    ?assertEqual(true, Reviewed),
-    ct:pal("LLM result: ~s, Reviewed: ~p", [LlmResult, Reviewed]).
 
 %%====================================================================
 %% Process flow tests
@@ -516,152 +347,9 @@ test_process_snapshot_time_travel(Config) ->
     ct:pal("Time travel: went back from v~p to v~p",
            [beamai_process_snapshot:entry_version(_Sn2), BackVersion]).
 
-%% 运行 graph → 保存快照 → 加载 → 验证
-test_graph_snapshot_save_load(Config) ->
-    LlmConfig = ?config(llm_config, Config),
-    Mgr = ?config(graph_snapshot_mgr, Config),
-
-    %% 运行一个简单的 graph
-    NodeFn = make_llm_node_fun(LlmConfig, prompt, response),
-    {ok, Graph} = beamai_graph:build([
-        {node, llm_node, NodeFn},
-        {edge, llm_node, '__end__'},
-        {entry, llm_node}
-    ]),
-
-    InitCtx = beamai_graph:context(#{prompt => <<"Say hello.">>}),
-    {ok, FinalCtx} = beamai_graph:run_sync(Graph, InitCtx),
-
-    Response = beamai_context:get(FinalCtx, response),
-    ?assert(is_binary(Response)),
-
-    %% 构造 Pregel state 用于快照
-    RunId = <<"test-graph-snap-", (integer_to_binary(erlang:system_time(microsecond)))/binary>>,
-    PregelState = #{
-        superstep => 1,
-        iteration => 0,
-        vertices => #{llm_node => #{
-            value => beamai_context:get(FinalCtx, response),
-            active => false,
-            messages => [],
-            halt_voted => false
-        }},
-        pending_activations => [],
-        global_state => #{response => Response},
-        active_vertices => [],
-        completed_vertices => [llm_node],
-        failed_vertices => [],
-        interrupted_vertices => []
-    },
-
-    %% 保存快照
-    {ok, SavedSn, Mgr1} = beamai_graph_snapshot:save_from_pregel(
-        Mgr, RunId, PregelState, #{snapshot_type => final}),
-
-    %% 加载快照
-    SnId = beamai_graph_snapshot:entry_id(SavedSn),
-    ?assert(is_binary(SnId)),
-    {ok, LoadedSn} = beamai_graph_snapshot:load(Mgr1, SnId),
-
-    %% 验证字段
-    ?assertEqual(SnId, beamai_graph_snapshot:entry_id(LoadedSn)),
-    ?assertEqual(1, beamai_graph_snapshot:get_superstep(LoadedSn)),
-
-    Vertices = beamai_graph_snapshot:get_vertices(LoadedSn),
-    ?assert(maps:is_key(llm_node, Vertices)),
-    ?assertEqual([llm_node], maps:keys(Vertices)),
-
-    ct:pal("Graph snapshot saved and loaded: ~s", [SnId]).
-
-%% Graph 中断 → 快照 → 从快照恢复
-test_graph_snapshot_interrupt_restore(Config) ->
-    LlmConfig = ?config(llm_config, Config),
-    Mgr = ?config(graph_snapshot_mgr, Config),
-
-    ProcessFn = make_llm_node_fun(LlmConfig, prompt, llm_result),
-    ReviewFn = make_llm_interrupt_node_fun(LlmConfig),
-
-    {ok, Graph} = beamai_graph:build([
-        {node, process, ProcessFn},
-        {edge, process, review},
-        {node, review, ReviewFn},
-        {edge, review, '__end__'},
-        {entry, process}
-    ]),
-
-    InitCtx = beamai_graph:context(#{prompt => <<"Count from 1 to 5.">>}),
-
-    %% 第一次执行：中断
-    {interrupted, InterruptedVertices, GraphSnapshot} =
-        beamai_graph:run_sync(Graph, InitCtx),
-
-    ?assert(length(InterruptedVertices) >= 1),
-
-    %% 保存中断快照到存储
-    RunId = <<"test-graph-interrupt-", (integer_to_binary(erlang:system_time(microsecond)))/binary>>,
-    InterruptedState = maps:get('__graph_state__', GraphSnapshot, #{}),
-    PregelState = #{
-        superstep => maps:get(superstep, InterruptedState, 1),
-        vertices => maps:get(vertices, InterruptedState, #{}),
-        global_state => maps:get(global_state, InterruptedState, #{}),
-        interrupted_vertices => [Id || {Id, _} <- InterruptedVertices],
-        pending_activations => [],
-        active_vertices => [],
-        completed_vertices => [],
-        failed_vertices => []
-    },
-    {ok, SavedSn, Mgr1} = beamai_graph_snapshot:save_from_pregel(
-        Mgr, RunId, PregelState, #{snapshot_type => interrupted, resumable => true}),
-
-    %% 验证快照已保存
-    SnId = beamai_graph_snapshot:entry_id(SavedSn),
-    {ok, _LoadedSn} = beamai_graph_snapshot:load(Mgr1, SnId),
-    ?assert(beamai_graph_snapshot:is_resumable(SavedSn)),
-
-    %% 从 run_sync 快照恢复（使用原始 snapshot，非存储的）
-    {ok, FinalCtx} = beamai_graph:run_sync(Graph, InitCtx, #{
-        snapshot => GraphSnapshot,
-        resume_data => #{review => #{approved => true}}
-    }),
-
-    LlmResult = beamai_context:get(FinalCtx, llm_result),
-    Reviewed = beamai_context:get(FinalCtx, reviewed),
-    ?assert(is_binary(LlmResult)),
-    ?assertEqual(true, Reviewed),
-
-    ct:pal("Graph interrupt→snapshot→restore: snapshot=~s, result=~s",
-           [SnId, LlmResult]).
-
 %%====================================================================
 %% Helper functions
 %%====================================================================
-
-%% @doc 创建 2-arity 的 LLM 图节点函数
-%%
-%% 从 context 中读取 PromptKey 的值作为 prompt 发送给 LLM，
-%% 将 LLM 响应写入 context 的 ResponseKey。
-make_llm_node_fun(LlmConfig, PromptKey, ResponseKey) ->
-    fun(State, _Context) ->
-        Prompt = beamai_context:get(State, PromptKey, <<"Hello">>),
-        case call_llm_raw(LlmConfig, Prompt) of
-            {ok, Response} ->
-                {ok, beamai_context:set(State, ResponseKey, Response)};
-            {error, Reason} ->
-                error({llm_call_failed, Reason})
-        end
-    end.
-
-%% @doc 创建 3-arity 的 LLM 中断节点函数
-%%
-%% 首次调用（ResumeData=undefined）：中断等待审核
-%% 恢复调用（ResumeData!=undefined）：标记已审核
-make_llm_interrupt_node_fun(_LlmConfig) ->
-    fun
-        (State, _Input, undefined) ->
-            {interrupt, need_review, State};
-        (State, _Input, _ResumeData) ->
-            {ok, beamai_context:set(State, reviewed, true)}
-    end.
 
 %% @doc 便捷 LLM 调用 — 返回 binary 响应
 call_llm(Config, Prompt) ->
