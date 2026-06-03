@@ -109,23 +109,12 @@ context_set_many_test() ->
     ?assertEqual(1, beamai_context:get(Ctx1, <<"a">>)),
     ?assertEqual(2, beamai_context:get(Ctx1, <<"b">>)).
 
-context_history_test() ->
+%% context 不再记录消息/历史，改由 Memory Filter 按 conversation_id 管理
+context_conversation_id_test() ->
     Ctx0 = beamai_context:new(),
-    Msg = #{role => user, content => <<"Hello">>},
-    Ctx1 = beamai_context:add_history(Ctx0, Msg),
-    ?assertEqual([Msg], beamai_context:get_history(Ctx1)).
-
-context_messages_test() ->
-    Ctx0 = beamai_context:new(),
-    Msg1 = #{role => system, content => <<"You are a helper">>},
-    Msg2 = #{role => user, content => <<"Hello">>},
-    Ctx1 = beamai_context:append_message(Ctx0, Msg1),
-    Ctx2 = beamai_context:append_message(Ctx1, Msg2),
-    ?assertEqual([Msg1, Msg2], beamai_context:get_messages(Ctx2)),
-    %% set_messages 可以替换（用于 summarize 后重置）
-    Summary = #{role => system, content => <<"Summary of conversation">>},
-    Ctx3 = beamai_context:set_messages(Ctx2, [Summary]),
-    ?assertEqual([Summary], beamai_context:get_messages(Ctx3)).
+    ?assertEqual(undefined, beamai_context:conversation_id(Ctx0)),
+    Ctx1 = beamai_context:with_conversation_id(Ctx0, <<"conv-1">>),
+    ?assertEqual(<<"conv-1">>, beamai_context:conversation_id(Ctx1)).
 
 context_kernel_test() ->
     Ctx0 = beamai_context:new(),
