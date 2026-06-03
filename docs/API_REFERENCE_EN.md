@@ -16,58 +16,6 @@
 
 ## beamai_core - 核心模块
 
-### Graph 执行引擎
-
-图引擎分为三层：**Builder**（构建层）、**Pregel**（算法层）、**Runtime**（执行层）。
-
-```erlang
-%% DSL 构建（声明式）
-{ok, Graph} = beamai_graph:build([
-    {node, NodeName, fun(State, Ctx) -> {ok, NewState} end},
-    {edge, From, To},
-    {conditional_edge, From, fun(State, Ctx) -> TargetNode end},
-    {entry, EntryNode}
-]).
-
-%% Builder API（命令式）
-Builder = beamai_graph:builder(),
-Builder1 = beamai_graph:add_node(Builder, NodeName, NodeFun),
-Builder2 = beamai_graph:add_edge(Builder1, From, To),
-Builder3 = beamai_graph:set_entry(Builder2, EntryNode),
-{ok, Graph} = beamai_graph:compile(Builder3).
-
-%% 执行 Graph（异步）
--spec run(graph(), state()) -> {ok, pid()}.
-{ok, Pid} = beamai_graph:run(Graph, InitialState).
-
-%% 执行 Graph（同步，支持中断/恢复）
--spec run_sync(graph(), state()) -> {ok, state()} | {interrupted, [vertex()], snapshot()}.
-{ok, FinalState} = beamai_graph:run_sync(Graph, InitialState).
-
-%% 从中断恢复
-{ok, FinalState} = beamai_graph:run_sync(Graph, State, #{
-    snapshot => Snapshot,
-    resume_data => #{review => approved}
-}).
-```
-
-### Graph State
-
-Graph 状态是普通 Erlang map。节点函数接收 `(State, Context)`：
-
-```erlang
-%% 节点函数签名（2-arity）
-fun(State :: map(), Context :: map()) -> {ok, NewState :: map()}.
-
-%% 节点函数（含中断支持，3-arity）
-fun(State :: map(), Input :: map(), ResumeData :: undefined | map()) ->
-    {ok, NewState :: map()} | {interrupt, InterruptData :: map()}.
-
-%% 读写状态（纯 map 操作）
-Value = maps:get(Key, State, Default).
-NewState = State#{Key => Value}.
-```
-
 ### Context Reducer
 
 字段级 Reducer，用于合并节点返回的 delta 到全局状态。

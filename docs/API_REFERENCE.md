@@ -16,59 +16,6 @@ This document provides the main API reference for the core modules of the BeamAI
 
 ## beamai_core - Core Module
 
-### Graph Execution Engine
-
-The graph engine is organized in three layers: **Builder** (construction), **Pregel** (algorithm primitives), **Runtime** (execution lifecycle).
-
-```erlang
-%% DSL Build (declarative)
--spec build([term()]) -> {ok, graph()} | {error, term()}.
-{ok, Graph} = beamai_graph:build([
-    {node, NodeName, fun(State, Ctx) -> {ok, NewState} end},
-    {edge, From, To},
-    {conditional_edge, From, fun(State, Ctx) -> TargetNode end},
-    {entry, EntryNode}
-]).
-
-%% Builder API (imperative)
-Builder = beamai_graph:builder(),
-Builder1 = beamai_graph:add_node(Builder, NodeName, NodeFun),
-Builder2 = beamai_graph:add_edge(Builder1, From, To),
-Builder3 = beamai_graph:set_entry(Builder2, EntryNode),
-{ok, Graph} = beamai_graph:compile(Builder3).
-
-%% Execute Graph (async)
--spec run(graph(), state()) -> {ok, pid()}.
-{ok, Pid} = beamai_graph:run(Graph, InitialState).
-
-%% Execute Graph (sync, supports interrupt/resume)
--spec run_sync(graph(), state()) -> {ok, state()} | {interrupted, [vertex()], snapshot()}.
-{ok, FinalState} = beamai_graph:run_sync(Graph, InitialState).
-
-%% Resume from interrupt
-{ok, FinalState} = beamai_graph:run_sync(Graph, State, #{
-    snapshot => Snapshot,
-    resume_data => #{review => approved}
-}).
-```
-
-### Graph State
-
-Graph state is a plain Erlang map. Node functions receive `(State, Context)`:
-
-```erlang
-%% Node function signature (2-arity)
-fun(State :: map(), Context :: map()) -> {ok, NewState :: map()}.
-
-%% Node function with interrupt support (3-arity)
-fun(State :: map(), Input :: map(), ResumeData :: undefined | map()) ->
-    {ok, NewState :: map()} | {interrupt, InterruptData :: map()}.
-
-%% Read/Write state (plain map operations)
-Value = maps:get(Key, State, Default).
-NewState = State#{Key => Value}.
-```
-
 ### Process Branch & Time Travel API
 
 The Process framework provides branching and time-travel capabilities through a pluggable store backend.
@@ -338,20 +285,6 @@ Mgr = beamai_process_snapshot:new(StateStore, #{max_entries => 100}).
 -spec switch_branch(manager(), branch_name()) -> {ok, manager()}.
 ```
 
-### Graph Snapshot Operations
-
-```erlang
-%% Create graph snapshot manager
-GraphMgr = beamai_graph_snapshot:new(StateStore).
-
-%% Save from Pregel state
--spec save_from_pregel(manager(), run_id(), pregel_state()) -> {ok, snapshot(), manager()}.
-{ok, GraphSnapshot, GraphMgr1} = beamai_graph_snapshot:save_from_pregel(GraphMgr, RunId, PregelState).
-
-%% Load, time travel, branch — same API as process snapshot
-{ok, Loaded} = beamai_graph_snapshot:load(GraphMgr, SnapshotId).
-```
-
 ---
 
 ## Common Types
@@ -414,6 +347,6 @@ All APIs return `{ok, Result}` or `{error, Reason}` format. Common error types:
 - [README.md](../README.md) - Project overview
 - [ARCHITECTURE.md](ARCHITECTURE.md) - Architecture design
 - Module READMEs:
-  - [beamai_core](../apps/beamai_core/README.md) - Kernel, Process, Graph, HTTP
+  - [beamai_core](../apps/beamai_core/README.md) - Kernel, Process, HTTP
   - [beamai_llm](../apps/beamai_llm/README.md) - LLM providers
   - [beamai_memory](../apps/beamai_memory/README.md) - Snapshot, Store

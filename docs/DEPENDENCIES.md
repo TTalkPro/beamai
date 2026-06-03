@@ -102,7 +102,7 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
                              ▼
                   ┌───────────────────────────┐
                   │       beamai_core         │  ← 基础层
-                  │ (类型、Graph、Behaviour)   │
+                  │ (类型、Behaviour)   │
                   └───────────────────────────┘
                                  │
                                  ▼
@@ -135,7 +135,6 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 **依赖**: 无内部依赖
 
 **提供功能**:
-- Graph 执行引擎（三层架构：Builder 构建层 / Pregel 算法层 / Runtime 执行层）
 - 类型定义（beamai_types）
 - 通用工具函数（beamai_utils）
 - JSON-RPC 支持（beamai_jsonrpc）

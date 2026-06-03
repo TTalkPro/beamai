@@ -103,7 +103,7 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
                              v
                   +---------------------------+
                   |       beamai_core         |  <- Base Layer
-                  | (Types, Graph, Behaviour) |
+                  | (Types, Behaviour) |
                   +---------------------------+
                                  |
                                  v
@@ -137,7 +137,6 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 **Dependencies**: No internal dependencies
 
 **Provides**:
-- Graph execution engine (three-layer architecture: Builder / Pregel / Runtime)
 - Type definitions (beamai_types)
 - Common utility functions (beamai_utils)
 - JSON-RPC support (beamai_jsonrpc)
@@ -251,10 +250,6 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - Agent lifecycle management (beamai_agent)
 - Agent initialization (beamai_agent_init)
 - Agent runner (beamai_agent_runner)
-- Graph nodes
-  - LLM node (beamai_llm_node)
-  - Tool node (beamai_tool_node)
-  - Middleware integration node (beamai_middleware_nodes)
 - Callback system (beamai_callback_utils)
 
 #### beamai_deepagent (Deep Agent System)

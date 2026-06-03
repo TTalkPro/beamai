@@ -8,7 +8,7 @@ English | [中文](README.md)
 
 A high-performance AI Agent framework core library based on Erlang/OTP, providing foundational capabilities for building Agents.
 
-> **Note**: This project is the core library of the BeamAI framework, providing Kernel, Process Framework, Graph Engine, LLM Client, and Memory Management core features.
+> **Note**: This project is the core library of the BeamAI framework, providing Kernel, Process Framework, LLM Client, and Memory Management core features.
 >
 > Advanced features (Simple Agent, Deep Agent, Tools Library, RAG, A2A/MCP protocols, etc.) have been moved to the [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project.
 
@@ -16,7 +16,7 @@ A high-performance AI Agent framework core library based on Erlang/OTP, providin
 
 ### Core Project (This Repository)
 Foundational infrastructure for building AI Agents:
-- **beamai_core** - Kernel/Tool architecture, Process Framework, Graph Engine, HTTP client
+- **beamai_core** - Kernel/Tool architecture, Process Framework, HTTP client
 - **beamai_llm** - Unified LLM client (supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama)
 - **beamai_memory** - Pure storage engine (snapshots, Store backends, state storage)
 - **beamai_cognition** - Cognitive architecture (semantic/episodic/procedural memory + algorithms)
@@ -41,11 +41,6 @@ Advanced features built on top of the core library:
   - Step definitions, conditional branching, parallel execution
   - Time travel and branch rollback
   - Event-driven with state snapshots
-
-- **Graph Engine**: Graph computation based on LangGraph
-  - Graph Builder/DSL
-  - Pregel distributed computation model
-  - State snapshots and conditional edges
 
 - **Output Parser**: Structured output
   - JSON/XML/CSV parsing
@@ -246,13 +241,6 @@ apps/
 │   │                  # beamai_http_pool
 │   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour,
 │   │                  # beamai_step_behaviour, beamai_process_store_behaviour
-│   ├── Graph          # Three-layer architecture:
-│   │   ├── builder    # graph_builder, graph_dsl, graph_node, graph_edge,
-│   │   │              # graph_command, graph_dispatch
-│   │   ├── pregel     # graph_compute, graph_pool_worker,
-│   │   │              # pregel_graph, pregel_vertex, pregel_utils
-│   │   └── runtime    # graph_engine, graph_engine_task, graph_engine_utils,
-│   │                  # graph_runner, graph_runtime, graph_state, graph_sup
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
 ├── beamai_llm/         # LLM client
@@ -336,28 +324,7 @@ Process1 = beamai_process_builder:add_step(Process, <<"step1">>, #{
 {ok, Result} = beamai_process_executor:run(Built, InitialInput).
 ```
 
-### 3. Graph Execution Engine
-
-Graph computation engine based on LangGraph concepts (in beamai_core app):
-
-```erlang
-%% Create graph
-Builder = graph_builder:new(),
-Builder1 = graph_builder:add_node(Builder, start, fun(State) ->
-    {ok, State#{step => 1}}
-end),
-Builder2 = graph_builder:add_node(Builder1, finish, fun(State) ->
-    {ok, State}
-end),
-Builder3 = graph_builder:add_edge(Builder2, start, finish),
-Builder4 = graph_builder:set_entry_point(Builder3, start),
-Builder5 = graph_builder:set_finish_point(Builder4, finish),
-
-{ok, Graph} = graph_builder:compile(Builder5),
-{ok, Result} = graph_runner:run(Graph, #{}).
-```
-
-### 4. Memory Persistence
+### 3. Memory Persistence
 
 Use beamai_memory for session persistence and time travel:
 
@@ -374,7 +341,7 @@ Use beamai_memory for session persistence and time travel:
 {ok, RestoredState} = beamai_agent:restore_from_memory(#{llm => LLM}, Memory).
 ```
 
-### 5. Callbacks
+### 4. Callbacks
 
 Listen to Agent execution events:
 
@@ -462,7 +429,7 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 
 | Module | Description | Documentation |
 |--------|-------------|---------------|
-| **beamai_core** | Core framework: Kernel, Process Framework, Graph Engine, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
+| **beamai_core** | Core framework: Kernel, Process Framework, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
 | **beamai_llm** | LLM client: supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama | [README](apps/beamai_llm/README_EN.md) |
 | **beamai_memory** | Pure storage engine: snapshot management, Store backends, state storage | [README](apps/beamai_memory/README_EN.md) |
 | **beamai_cognition** | Cognitive architecture: semantic/episodic/procedural memory, retrieval algorithms | - |
@@ -504,7 +471,6 @@ rebar3 dialyzer
 ## Performance
 
 - Based on Erlang/OTP lightweight processes
-- Graph engine optimizes execution paths
 - Concurrent tool invocations
 - HTTP connection pool (Gun, supports HTTP/2)
 - ETS high-speed storage

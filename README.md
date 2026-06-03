@@ -8,7 +8,7 @@
 
 基于 Erlang/OTP 的高性能 AI Agent 应用框架核心库，提供构建 Agent 的基础能力。
 
-> **项目说明**: 本项目是 BeamAI 框架的核心库，提供 Kernel、Process Framework、Graph 引擎、LLM 客户端和 Memory 管理等核心功能。
+> **项目说明**: 本项目是 BeamAI 框架的核心库，提供 Kernel、Process Framework、LLM 客户端和 Memory 管理等核心功能。
 >
 > 高级功能（Simple Agent、Deep Agent、Tools 库、RAG、A2A/MCP 协议等）已迁移到 [beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中。
 
@@ -16,7 +16,7 @@
 
 ### 核心项目 (本项目)
 提供构建 AI Agent 的基础设施：
-- **beamai_core** - Kernel/Tool 架构、Process Framework、Graph 引擎、HTTP 客户端
+- **beamai_core** - Kernel/Tool 架构、Process Framework、HTTP 客户端
 - **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama）
 - **beamai_memory** - 纯存储引擎（快照、Store、状态存储）
 - **beamai_cognition** - 认知架构（语义/情景/程序记忆 + 算法 + 对话缓冲/摘要）
@@ -40,11 +40,6 @@
   - 支持步骤定义、条件分支、并行执行
   - 时间旅行和分支回溯
   - 事件驱动和状态快照
-
-- **Graph 引擎**: 基于 LangGraph 的图计算
-  - Graph Builder/DSL 构建器
-  - Pregel 分布式计算模型
-  - 状态快照和条件边
 
 - **Output Parser**: 结构化输出
   - JSON/XML/CSV 解析
@@ -154,27 +149,7 @@ Spec3 = beamai_process:set_initial_event(Spec2, <<"step1">>, #{data => <<"test"/
 {ok, Result} = beamai_process:run_sync(Built, #{timeout => 30000}).
 ```
 
-### 6. Graph 引擎
-
-```erlang
-%% 使用 DSL 构建图
-{ok, Graph} = beamai_graph:build([
-    {node, start, fun(State, _Ctx) ->
-        {ok, State#{step => 1}}
-    end},
-    {node, finish, fun(State, _Ctx) ->
-        {ok, State}
-    end},
-    {edge, start, finish},
-    {edge, finish, '__end__'},
-    {entry, start}
-]),
-
-%% 运行图
-{ok, Result} = beamai_graph:run_sync(Graph, #{}).
-```
-
-### 7. Memory 快照
+### 6. Memory 快照
 
 ```erlang
 %% 创建存储后端
@@ -193,7 +168,7 @@ StateMap = #{fsm_state => completed, steps => #{<<"step1">> => #{result => ok}}}
 {ok, Loaded} = beamai_process_snapshot:load(Mgr1, beamai_process_snapshot:get_id(Snapshot)).
 ```
 
-### 8. Output Parser（结构化输出）
+### 7. Output Parser（结构化输出）
 
 ```erlang
 %% 创建 JSON 解析器
@@ -230,17 +205,6 @@ apps/
 │   │                  # beamai_http_pool
 │   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour,
 │   │                  # beamai_step_behaviour, beamai_process_store_behaviour
-│   ├── Graph          # 三层架构：
-│   │   ├── builder    # beamai_graph_builder, beamai_graph_dsl,
-│   │   │              # beamai_graph_node, beamai_graph_edge,
-│   │   │              # beamai_graph_command, beamai_graph_dispatch
-│   │   ├── pregel     # beamai_graph_compute, beamai_graph_pool_worker,
-│   │   │              # beamai_pregel_graph, beamai_pregel_vertex,
-│   │   │              # beamai_pregel_utils
-│   │   └── runtime    # beamai_graph_engine, beamai_graph_engine_task,
-│   │                  # beamai_graph_engine_utils, beamai_graph_runner,
-│   │                  # beamai_graph_runtime, beamai_graph_state,
-│   │                  # beamai_graph_sup
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
 ├── beamai_llm/         # LLM 客户端
@@ -253,9 +217,8 @@ apps/
 │   ├── Store          # beamai_store_ets, beamai_store_sqlite,
 │   │                  # beamai_state_store, beamai_store_manager
 │   ├── Snapshot       # beamai_snapshot (通用引擎/behaviour),
-│   │                  # beamai_process_snapshot, beamai_graph_snapshot
-│   ├── Process        # beamai_process_memory_store
-│   └── Graph          # beamai_graph_memory_store
+│   │                  # beamai_process_snapshot
+│   └── Process        # beamai_process_memory_store
 │
 └── beamai_cognition/   # 认知架构
     ├── Memory         # 语义/情景/程序记忆
@@ -336,45 +299,7 @@ Spec2 = beamai_process:set_initial_event(Spec1, <<"step1">>, #{data => <<"hello"
 {ok, Result} = beamai_process:run_sync(Built, #{timeout => 30000}).
 ```
 
-### 3. Graph 执行引擎
-
-基于 LangGraph 理念的图计算引擎（已整合到 beamai_core）：
-
-```erlang
-%% 使用 DSL 构建图
-{ok, Graph} = beamai_graph:build([
-    {node, start, fun(State, _Ctx) ->
-        {ok, State#{step => 1}}
-    end},
-    {node, finish, fun(State, _Ctx) ->
-        {ok, State}
-    end},
-    {edge, start, finish},
-    {edge, finish, '__end__'},
-    {entry, start}
-]),
-
-%% 运行图
-{ok, Result} = beamai_graph:run_sync(Graph, #{}).
-
-%% 条件边路由
-{ok, Graph2} = beamai_graph:build([
-    {node, analyze, AnalyzeFun},
-    {conditional_edge, analyze, fun(State, _Ctx) ->
-        case maps:get(sentiment, State, positive) of
-            positive -> positive_path;
-            negative -> negative_path
-        end
-    end},
-    {node, positive_path, PositiveFun},
-    {node, negative_path, NegativeFun},
-    {edge, positive_path, '__end__'},
-    {edge, negative_path, '__end__'},
-    {entry, analyze}
-]).
-```
-
-### 4. Memory 快照引擎
+### 3. Memory 快照引擎
 
 使用 beamai_memory 实现状态快照、分支和时间旅行：
 
@@ -384,9 +309,8 @@ Spec2 = beamai_process:set_initial_event(Spec1, <<"step1">>, #{data => <<"hello"
 Store = {beamai_store_ets, my_store},
 StateStore = beamai_state_store:new(Store),
 
-%% 创建快照管理器（Process 或 Graph）
+%% 创建 Process 快照管理器
 ProcessMgr = beamai_process_snapshot:new(StateStore),
-GraphMgr = beamai_graph_snapshot:new(StateStore),
 
 %% 保存和加载 Process 快照
 StateMap = #{fsm_state => completed, steps => #{<<"s1">> => #{result => ok}}},
@@ -466,7 +390,7 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 
 | 模块 | 说明 | 文档 |
 |------|------|------|
-| **beamai_core** | 核心框架：Kernel、Process Framework、Graph 引擎、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
+| **beamai_core** | 核心框架：Kernel、Process Framework、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
 | **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
 | **beamai_memory** | 纯存储引擎：快照管理、Store 后端、状态存储 | [README](apps/beamai_memory/README.md) |
 | **beamai_cognition** | 认知架构：语义/情景/程序记忆、检索与整合算法、对话缓冲/摘要 | - |
@@ -507,7 +431,6 @@ rebar3 dialyzer
 ## 性能
 
 - 基于 Erlang/OTP 轻量级进程
-- Graph 引擎优化执行路径
 - 并发工具调用
 - HTTP 连接池（Gun，支持 HTTP/2）
 - ETS 高速存储
