@@ -1,242 +1,84 @@
 %%%-------------------------------------------------------------------
-%%% @doc 过滤器管道：前置/后置拦截
+%%% @doc 洋葱式 Filter
 %%%
-%%% 提供函数调用和 Chat 请求的拦截机制：
-%%% - pre_invocation: 函数执行前拦截（可修改参数或跳过）
-%%% - post_invocation: 函数执行后拦截（可修改结果）
-%%% - pre_chat: Chat 请求前拦截（可修改消息）
-%%% - post_chat: Chat 响应后拦截（可修改响应）
+%%% 一个 filter 是一层洋葱，最多绑定 4 个可选 hook：
+%%% - `pre_chat`  / `post_chat`  ：包裹一次 LLM 调用（chat 链）
+%%% - `pre_tool`  / `post_tool`  ：包裹一次工具执行（tool 链）
+%%%
+%%% 同一 filter 的 pre/post 配成一对，洋狀链保证 pre 在内层之前、post 在
+%%% 内层之后（回程自动逆序）。一个 filter 可只实现其中若干 hook；某条链
+%%% 只会用到该链对应的两个 hook（chat 链用 pre_chat/post_chat，tool 链用
+%%% pre_tool/post_tool），不含相关 hook 的 filter 在该链中被跳过。
+%%%
+%%% hook 形态（对齐 Spring AI 的 before/after）：
+%%% - pre  ：`fun(Request)  -> Request | {halt, Response}`（去程改写请求；
+%%%          返回 {halt, Response} 跳过内层，但仍执行本层 post）
+%%% - post ：`fun(Response) -> Response`（回程改写响应）
+%%%
+%%% Request / Response：
+%%% - chat：Request `#{messages, context, opts}` → Response `#{response, context}`
+%%% - tool：Request `#{tool, args, context}`     → Response `#{result, context}`
+%%%
+%%% order 越小越外层（pre 越先执行、post 越后执行）。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_filter).
 
-%% API
--export([new/3, new/4]).
--export([apply_pre_filters/4]).
--export([apply_post_filters/4]).
--export([apply_pre_chat_filters/3]).
--export([apply_post_chat_filters/3]).
--export([sort_filters/1]).
+%% 构造器
+-export([new/2, new/3]).
+%% 工具
+-export([sort/1, hook/2]).
 
 %% Types
--export_type([filter_spec/0, filter_type/0, filter_context/0, filter_result/0]).
+-export_type([filter/0, hooks/0, hook_type/0, request/0, response/0]).
 
--type filter_spec() :: #{
+-type hook_type() :: pre_chat | post_chat | pre_tool | post_tool.
+-type request() :: map().
+-type response() :: map().
+-type pre_fun() :: fun((request()) -> request() | {halt, response()}).
+-type post_fun() :: fun((response()) -> response()).
+-type hooks() :: #{
+    pre_chat  => pre_fun(),
+    post_chat => post_fun(),
+    pre_tool  => pre_fun(),
+    post_tool => post_fun()
+}.
+
+-type filter() :: #{
+    '__filter__' := true,
     name := binary(),
-    type := filter_type(),
-    handler := fun((filter_context()) -> filter_result()),
-    priority => integer()
+    order := integer(),
+    hooks := hooks()
 }.
 
--type filter_type() :: pre_invocation | post_invocation | pre_chat | post_chat.
-
--type filter_context() :: #{
-    tool => beamai_tool:tool_spec(),
-    args => beamai_tool:args(),
-    result => term(),
-    messages => [beamai_context:message()],
-    context => beamai_context:t(),
-    metadata => map()
-}.
-
--type filter_result() ::
-    {continue, filter_context()}
-    | {skip, term()}
-    | {error, term()}.
-
 %%====================================================================
-%% API
+%% 构造器
 %%====================================================================
 
-%% @doc 创建过滤器（默认优先级 0）
+%% @doc 创建 filter（默认 order 0）
 %%
-%% @param Name 过滤器名称（用于调试标识）
-%% @param Type 过滤器类型（pre_invocation | post_invocation | pre_chat | post_chat）
-%% @param Handler 过滤器处理函数，接收 filter_context，返回 filter_result
-%% @returns 过滤器定义 Map
--spec new(binary(), filter_type(), fun((filter_context()) -> filter_result())) -> filter_spec().
-new(Name, Type, Handler) ->
-    new(Name, Type, Handler, 0).
+%% @param Name 名称（调试标识）
+%% @param Hooks hook map，可含 pre_chat/post_chat/pre_tool/post_tool 任意子集
+-spec new(binary(), hooks()) -> filter().
+new(Name, Hooks) ->
+    new(Name, Hooks, 0).
 
-%% @doc 创建过滤器（指定优先级）
-%%
-%% 优先级数值越小越先执行。同优先级按注册顺序执行。
-%%
-%% @param Name 过滤器名称
-%% @param Type 过滤器类型
-%% @param Handler 处理函数
-%% @param Priority 优先级（整数，越小越先执行）
-%% @returns 过滤器定义 Map
--spec new(binary(), filter_type(), fun((filter_context()) -> filter_result()), integer()) -> filter_spec().
-new(Name, Type, Handler, Priority) ->
-    #{
-        name => Name,
-        type => Type,
-        handler => Handler,
-        priority => Priority
-    }.
-
-%% @doc 执行前置调用过滤器管道
-%%
-%% 依次执行所有 pre_invocation 类型的过滤器。
-%% 过滤器可修改参数（args）和上下文（context），
-%% 也可通过 {skip, Value} 直接跳过函数执行返回结果，
-%% 或通过 {error, Reason} 中止管道。
-%%
-%% @param Filters 过滤器列表
-%% @param FuncDef 即将被调用的函数定义
-%% @param Args 调用参数
-%% @param Context 执行上下文
-%% @returns {ok, 过滤后参数, 过滤后上下文} | {skip, 跳过值} | {error, 原因}
--spec apply_pre_filters([filter_spec()], beamai_tool:tool_spec(), beamai_tool:args(), beamai_context:t()) ->
-    {ok, beamai_tool:args(), beamai_context:t()} | {skip, term()} | {error, term()}.
-apply_pre_filters(Filters, ToolSpec, Args, Context) ->
-    PreFilters = get_filters_by_type(Filters, pre_invocation),
-    FilterCtx = #{
-        tool => ToolSpec,
-        args => Args,
-        context => Context,
-        metadata => #{}
-    },
-    case run_filter_chain(PreFilters, FilterCtx) of
-        {continue, #{args := NewArgs, context := NewCtx}} ->
-            {ok, NewArgs, NewCtx};
-        {continue, #{args := NewArgs}} ->
-            {ok, NewArgs, Context};
-        {continue, FCtx} ->
-            {ok, maps:get(args, FCtx, Args), maps:get(context, FCtx, Context)};
-        {skip, Value} ->
-            {skip, Value};
-        {error, Reason} ->
-            {error, Reason}
-    end.
-
-%% @doc 执行后置调用过滤器管道
-%%
-%% 依次执行所有 post_invocation 类型的过滤器。
-%% 过滤器可修改函数执行结果（result）和上下文（context）。
-%%
-%% @param Filters 过滤器列表
-%% @param FuncDef 已执行的函数定义
-%% @param Result 函数执行结果
-%% @param Context 执行上下文
-%% @returns {ok, 过滤后结果, 过滤后上下文} | {error, 原因}
--spec apply_post_filters([filter_spec()], beamai_tool:tool_spec(), term(), beamai_context:t()) ->
-    {ok, term(), beamai_context:t()} | {error, term()}.
-apply_post_filters(Filters, ToolSpec, Result, Context) ->
-    PostFilters = get_filters_by_type(Filters, post_invocation),
-    FilterCtx = #{
-        tool => ToolSpec,
-        result => Result,
-        context => Context,
-        metadata => #{}
-    },
-    case run_filter_chain(PostFilters, FilterCtx) of
-        {continue, #{result := NewResult, context := NewCtx}} ->
-            {ok, NewResult, NewCtx};
-        {continue, #{result := NewResult}} ->
-            {ok, NewResult, Context};
-        {continue, FCtx} ->
-            {ok, maps:get(result, FCtx, Result), maps:get(context, FCtx, Context)};
-        {skip, Value} ->
-            {ok, Value, Context};
-        {error, Reason} ->
-            {error, Reason}
-    end.
-
-%% @doc 执行前置 Chat 过滤器管道
-%%
-%% 依次执行所有 pre_chat 类型的过滤器。
-%% 过滤器可修改消息列表（如注入 system 消息）和上下文。
-%%
-%% @param Filters 过滤器列表
-%% @param Messages 消息列表
-%% @param Context 执行上下文
-%% @returns {ok, 过滤后消息列表, 过滤后上下文} | {error, 原因}
--spec apply_pre_chat_filters([filter_spec()], [beamai_context:message()], beamai_context:t()) ->
-    {ok, [beamai_context:message()], beamai_context:t()} | {error, term()}.
-apply_pre_chat_filters(Filters, Messages, Context) ->
-    PreChatFilters = get_filters_by_type(Filters, pre_chat),
-    FilterCtx = #{
-        messages => Messages,
-        context => Context,
-        metadata => #{}
-    },
-    case run_filter_chain(PreChatFilters, FilterCtx) of
-        {continue, #{messages := NewMsgs, context := NewCtx}} ->
-            {ok, NewMsgs, NewCtx};
-        {continue, FCtx} ->
-            {ok, maps:get(messages, FCtx, Messages), maps:get(context, FCtx, Context)};
-        {error, Reason} ->
-            {error, Reason};
-        {skip, _} ->
-            {ok, Messages, Context}
-    end.
-
-%% @doc 执行后置 Chat 过滤器管道
-%%
-%% 依次执行所有 post_chat 类型的过滤器。
-%% 过滤器可修改 LLM 响应内容（如内容审计、格式转换）。
-%%
-%% @param Filters 过滤器列表
-%% @param Response LLM 响应 Map
-%% @param Context 执行上下文
-%% @returns {ok, 过滤后响应, 过滤后上下文} | {error, 原因}
--spec apply_post_chat_filters([filter_spec()], term(), beamai_context:t()) ->
-    {ok, term(), beamai_context:t()} | {error, term()}.
-apply_post_chat_filters(Filters, Response, Context) ->
-    PostChatFilters = get_filters_by_type(Filters, post_chat),
-    FilterCtx = #{
-        result => Response,
-        context => Context,
-        metadata => #{}
-    },
-    case run_filter_chain(PostChatFilters, FilterCtx) of
-        {continue, #{result := NewResult, context := NewCtx}} ->
-            {ok, NewResult, NewCtx};
-        {continue, FCtx} ->
-            {ok, maps:get(result, FCtx, Response), maps:get(context, FCtx, Context)};
-        {error, Reason} ->
-            {error, Reason};
-        {skip, Value} ->
-            {ok, Value, Context}
-    end.
-
-%% @doc 按优先级排序过滤器列表
-%%
-%% 优先级缺失时默认为 0。数值越小越先执行。
--spec sort_filters([filter_spec()]) -> [filter_spec()].
-sort_filters(Filters) ->
-    lists:sort(fun(#{priority := P1}, #{priority := P2}) ->
-        P1 =< P2
-    end, [F#{priority => maps:get(priority, F, 0)} || F <- Filters]).
+%% @doc 创建 filter（指定 order，越小越外层）
+-spec new(binary(), hooks(), integer()) -> filter().
+new(Name, Hooks, Order) when is_map(Hooks) ->
+    #{'__filter__' => true, name => Name, order => Order, hooks => Hooks}.
 
 %%====================================================================
-%% 内部函数
+%% 工具
 %%====================================================================
 
-%% @private 按类型筛选并排序过滤器
-get_filters_by_type(Filters, Type) ->
-    Matching = [F || #{type := T} = F <- Filters, T =:= Type],
-    sort_filters(Matching).
+%% @doc 按 order 升序稳定排序（同 order 保持注册顺序）
+-spec sort([filter()]) -> [filter()].
+sort(Filters) ->
+    lists:sort(fun(#{order := O1}, #{order := O2}) -> O1 =< O2 end, Filters).
 
-%% @private 依次执行过滤器链
-%%
-%% 每个过滤器返回 {continue, NewCtx} 时传递给下一个；
-%% 返回 {skip, Value} 或 {error, Reason} 时立即终止链。
-%% 处理器异常时捕获并返回包含错误信息的 {error, ...}。
-run_filter_chain([], FilterCtx) ->
-    {continue, FilterCtx};
-run_filter_chain([#{handler := Handler} | Rest], FilterCtx) ->
-    try Handler(FilterCtx) of
-        {continue, NewCtx} ->
-            run_filter_chain(Rest, NewCtx);
-        {skip, Value} ->
-            {skip, Value};
-        {error, Reason} ->
-            {error, Reason}
-    catch
-        Class:Reason:Stack ->
-            {error, #{class => Class, reason => Reason, stacktrace => Stack}}
-    end.
+%% @doc 取 filter 的某个 hook（不存在返回 undefined）
+-spec hook(filter(), hook_type()) -> pre_fun() | post_fun() | undefined.
+hook(#{hooks := Hooks}, HookType) ->
+    maps:get(HookType, Hooks, undefined).

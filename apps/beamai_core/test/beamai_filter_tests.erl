@@ -1,142 +1,109 @@
+%%%-------------------------------------------------------------------
+%%% @doc Filter 洋葱链测试
+%%%-------------------------------------------------------------------
 -module(beamai_filter_tests).
+
 -include_lib("eunit/include/eunit.hrl").
 
-%%====================================================================
-%% new/3,4 Tests
-%%====================================================================
-
-new_basic_test() ->
-    F = beamai_filter:new(<<"log">>, pre_invocation, fun(Ctx) -> {continue, Ctx} end),
-    ?assertEqual(<<"log">>, maps:get(name, F)),
-    ?assertEqual(pre_invocation, maps:get(type, F)).
-
-new_with_priority_test() ->
-    F = beamai_filter:new(<<"log">>, pre_invocation, fun(Ctx) -> {continue, Ctx} end, 10),
-    ?assertEqual(10, maps:get(priority, F)).
+-define(CHAT, {pre_chat, post_chat}).
+-define(TOOL, {pre_tool, post_tool}).
 
 %%====================================================================
-%% sort_filters/1 Tests
+%% 构造器 / 工具
 %%====================================================================
 
-sort_filters_test() ->
-    F1 = beamai_filter:new(<<"a">>, pre_invocation, fun(C) -> {continue, C} end, 30),
-    F2 = beamai_filter:new(<<"b">>, pre_invocation, fun(C) -> {continue, C} end, 10),
-    F3 = beamai_filter:new(<<"c">>, pre_invocation, fun(C) -> {continue, C} end, 20),
-    Sorted = beamai_filter:sort_filters([F1, F2, F3]),
-    [S1, S2, S3] = Sorted,
-    ?assertEqual(<<"b">>, maps:get(name, S1)),
-    ?assertEqual(<<"c">>, maps:get(name, S2)),
-    ?assertEqual(<<"a">>, maps:get(name, S3)).
+new_shape_test() ->
+    F = beamai_filter:new(<<"a">>, #{pre_chat => fun(R) -> R end}, 5),
+    ?assertEqual(<<"a">>, maps:get(name, F)),
+    ?assertEqual(5, maps:get(order, F)),
+    ?assert(is_function(beamai_filter:hook(F, pre_chat), 1)),
+    ?assertEqual(undefined, beamai_filter:hook(F, post_chat)).
+
+new_default_order_test() ->
+    F = beamai_filter:new(<<"a">>, #{}),
+    ?assertEqual(0, maps:get(order, F)).
+
+sort_test() ->
+    F1 = beamai_filter:new(<<"a">>, #{}, 30),
+    F2 = beamai_filter:new(<<"b">>, #{}, 10),
+    F3 = beamai_filter:new(<<"c">>, #{}, 20),
+    ?assertEqual([<<"b">>, <<"c">>, <<"a">>],
+                 [maps:get(name, F) || F <- beamai_filter:sort([F1, F2, F3])]).
 
 %%====================================================================
-%% apply_pre_filters/4 Tests
+%% 洋葱顺序：外层 pre 先、外层 post 后（回程自动逆序）
 %%====================================================================
 
-apply_pre_filters_empty_test() ->
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    Args = #{key => <<"value">>},
-    Ctx = beamai_context:new(),
-    ?assertMatch({ok, #{key := <<"value">>}, _},
-                 beamai_filter:apply_pre_filters([], FuncDef, Args, Ctx)).
+onion_order_test() ->
+    A = trace_filter(<<"A">>, 1, a_before, a_after),
+    B = trace_filter(<<"B">>, 2, b_before, b_after),
+    Terminal = fun(#{trace := T}) -> #{trace => T ++ [terminal]} end,
+    {ok, #{trace := Final}} =
+        beamai_filter_chain:run([B, A], ?CHAT, Terminal, #{trace => []}),  % 乱序传入靠 order 排
+    ?assertEqual([a_before, b_before, terminal, b_after, a_after], Final).
 
-apply_pre_filters_modify_args_test() ->
-    Filter = beamai_filter:new(<<"modify">>, pre_invocation,
-        fun(#{args := A} = C) ->
-            {continue, C#{args => A#{extra => added}}}
-        end),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    Args = #{key => <<"value">>},
-    Ctx = beamai_context:new(),
-    {ok, NewArgs, _} = beamai_filter:apply_pre_filters([Filter], FuncDef, Args, Ctx),
-    ?assertEqual(added, maps:get(extra, NewArgs)).
-
-apply_pre_filters_skip_test() ->
-    Filter = beamai_filter:new(<<"skip">>, pre_invocation,
-        fun(_) -> {skip, cached} end),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    ?assertEqual({skip, cached},
-                 beamai_filter:apply_pre_filters([Filter], FuncDef, #{}, beamai_context:new())).
-
-apply_pre_filters_error_test() ->
-    Filter = beamai_filter:new(<<"err">>, pre_invocation,
-        fun(_) -> {error, forbidden} end),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    ?assertEqual({error, forbidden},
-                 beamai_filter:apply_pre_filters([Filter], FuncDef, #{}, beamai_context:new())).
-
-apply_pre_filters_chain_test() ->
-    F1 = beamai_filter:new(<<"first">>, pre_invocation,
-        fun(#{args := A} = C) ->
-            {continue, C#{args => A#{step1 => true}}}
-        end, 1),
-    F2 = beamai_filter:new(<<"second">>, pre_invocation,
-        fun(#{args := A} = C) ->
-            {continue, C#{args => A#{step2 => true}}}
-        end, 2),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    {ok, NewArgs, _} = beamai_filter:apply_pre_filters([F2, F1], FuncDef, #{}, beamai_context:new()),
-    ?assertEqual(true, maps:get(step1, NewArgs)),
-    ?assertEqual(true, maps:get(step2, NewArgs)).
-
-apply_pre_filters_only_matching_type_test() ->
-    PreFilter = beamai_filter:new(<<"pre">>, pre_invocation,
-        fun(#{args := A} = C) -> {continue, C#{args => A#{pre => true}}} end),
-    PostFilter = beamai_filter:new(<<"post">>, post_invocation,
-        fun(#{result := R} = C) -> {continue, C#{result => {modified, R}}} end),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    {ok, NewArgs, _} = beamai_filter:apply_pre_filters([PreFilter, PostFilter], FuncDef, #{}, beamai_context:new()),
-    ?assertEqual(true, maps:get(pre, NewArgs)).
+empty_chain_runs_terminal_test() ->
+    Terminal = fun(#{trace := T}) -> #{trace => T ++ [terminal]} end,
+    {ok, #{trace := Final}} = beamai_filter_chain:run([], ?CHAT, Terminal, #{trace => []}),
+    ?assertEqual([terminal], Final).
 
 %%====================================================================
-%% apply_post_filters/4 Tests
+%% 链按 hook 选择：tool-only filter 不参与 chat 链
 %%====================================================================
 
-apply_post_filters_empty_test() ->
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    Ctx = beamai_context:new(),
-    ?assertMatch({ok, 42, _}, beamai_filter:apply_post_filters([], FuncDef, 42, Ctx)).
-
-apply_post_filters_modify_result_test() ->
-    Filter = beamai_filter:new(<<"double">>, post_invocation,
-        fun(#{result := R} = C) ->
-            {continue, C#{result => R * 2}}
-        end),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    ?assertMatch({ok, 84, _},
-                 beamai_filter:apply_post_filters([Filter], FuncDef, 42, beamai_context:new())).
-
-apply_post_filters_error_test() ->
-    Filter = beamai_filter:new(<<"validate">>, post_invocation,
-        fun(#{result := R}) when R < 0 -> {error, negative_result};
-           (C) -> {continue, C}
-        end),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    ?assertEqual({error, negative_result},
-                 beamai_filter:apply_post_filters([Filter], FuncDef, -1, beamai_context:new())).
+irrelevant_filter_skipped_test() ->
+    ChatF = trace_filter(<<"chat">>, 1, c_before, c_after),
+    ToolOnly = beamai_filter:new(<<"tool">>, #{
+        pre_tool => fun(#{trace := T} = R) -> R#{trace => T ++ [t_before]} end
+    }, 0),
+    Terminal = fun(#{trace := T}) -> #{trace => T ++ [terminal]} end,
+    {ok, #{trace := Final}} =
+        beamai_filter_chain:run([ChatF, ToolOnly], ?CHAT, Terminal, #{trace => []}),
+    %% tool-only filter 在 chat 链被跳过
+    ?assertEqual([c_before, terminal, c_after], Final).
 
 %%====================================================================
-%% apply_pre_chat_filters/3 Tests
+%% pre 短路（{halt, Response}）：跳过内层，仍执行本层 post
 %%====================================================================
 
-apply_pre_chat_filters_test() ->
-    Filter = beamai_filter:new(<<"add_system">>, pre_chat,
-        fun(#{messages := Msgs} = C) ->
-            SystemMsg = #{role => system, content => <<"Be helpful">>},
-            {continue, C#{messages => [SystemMsg | Msgs]}}
-        end),
-    Messages = [#{role => user, content => <<"Hello">>}],
-    {ok, NewMsgs, _} = beamai_filter:apply_pre_chat_filters([Filter], Messages, beamai_context:new()),
-    ?assertEqual(2, length(NewMsgs)),
-    [First | _] = NewMsgs,
-    ?assertEqual(system, maps:get(role, First)).
+halt_short_circuits_test() ->
+    Halter = beamai_filter:new(<<"halt">>, #{
+        pre_chat => fun(#{trace := T}) -> {halt, #{trace => T ++ [halted]}} end,
+        post_chat => fun(#{trace := T} = R) -> R#{trace => T ++ [h_after]} end
+    }, 1),
+    Terminal = fun(#{trace := T}) -> #{trace => T ++ [terminal]} end,
+    {ok, #{trace := Final}} = beamai_filter_chain:run([Halter], ?CHAT, Terminal, #{trace => []}),
+    ?assertEqual([halted, h_after], Final).
 
 %%====================================================================
-%% Exception Handling Tests
+%% tool 链
 %%====================================================================
 
-filter_exception_test() ->
-    Filter = beamai_filter:new(<<"crash">>, pre_invocation,
-        fun(_) -> error(boom) end),
-    FuncDef = beamai_tool:new(<<"test">>, fun(_) -> {ok, done} end),
-    ?assertMatch({error, #{class := error, reason := boom}},
-                 beamai_filter:apply_pre_filters([Filter], FuncDef, #{}, beamai_context:new())).
+tool_phase_test() ->
+    F = beamai_filter:new(<<"t">>, #{
+        pre_tool => fun(#{trace := T} = R) -> R#{trace => T ++ [t_before]} end,
+        post_tool => fun(#{trace := T} = R) -> R#{trace => T ++ [t_after]} end
+    }, 0),
+    Terminal = fun(#{trace := T}) -> #{trace => T ++ [terminal]} end,
+    {ok, #{trace := Final}} = beamai_filter_chain:run([F], ?TOOL, Terminal, #{trace => []}),
+    ?assertEqual([t_before, terminal, t_after], Final).
+
+%%====================================================================
+%% terminal throw → {error, Reason}
+%%====================================================================
+
+terminal_error_test() ->
+    F = trace_filter(<<"A">>, 1, a_before, a_after),
+    Terminal = fun(_) -> throw(boom) end,
+    ?assertEqual({error, boom},
+                 beamai_filter_chain:run([F], ?CHAT, Terminal, #{trace => []})).
+
+%%====================================================================
+%% 辅助
+%%====================================================================
+
+trace_filter(Name, Order, BeforeTag, AfterTag) ->
+    beamai_filter:new(Name, #{
+        pre_chat => fun(#{trace := T} = R) -> R#{trace => T ++ [BeforeTag]} end,
+        post_chat => fun(#{trace := T} = R) -> R#{trace => T ++ [AfterTag]} end
+    }, Order).
