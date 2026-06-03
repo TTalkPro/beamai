@@ -21,10 +21,6 @@
         example_process_tools,
         example_process_hooks,
         example_process_parallel,
-        example_graph_simple,
-        example_graph_conditional,
-        example_graph_loop,
-        example_graph_fanout,
         example_tool_refactored
     ]},
     {licenses, ["Apache-2.0"]},
