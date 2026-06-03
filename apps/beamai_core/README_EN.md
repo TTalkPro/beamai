@@ -10,13 +10,22 @@ The core module of the BeamAI framework, providing Kernel architecture, Process 
 
 Core abstraction based on Semantic Kernel concepts, managing Tool registration and invocation:
 
-- **beamai_kernel** - Kernel core, manages Tool registration and invocation
+- **beamai_kernel** - Kernel core, manages Tool registration and invocation (stateless, stores no messages)
 - **beamai_tool** - Tool definitions, wraps callable tool functions
 - **beamai_tool_behaviour** - Tool module behavior interface
-- **beamai_context** - Context management, passes execution environment info
-- **beamai_filter** - Filters for pre/post tool call interception
+- **beamai_context** - Context: carries agent state vars, conversation id, kernel ref, trace (stores no messages/history)
+- **beamai_filter** - Filters for pre/post interception of tool calls and LLM requests
 - **beamai_prompt** - Prompt template management
 - **beamai_result** - Tool call result types
+
+### Conversation Memory Subsystem
+
+History storage and injection, decoupled from the Kernel and keyed by `conversation_id` (see [docs/MEMORY_EN.md](../../docs/MEMORY_EN.md)):
+
+- **beamai_chat_memory** - ChatMemory behaviour + dispatch API (handle `{Module, Ref}`)
+- **beamai_chat_memory_ets** - Default ETS conversation store
+- **beamai_chat_memory_window** - Sliding-window wrapper (count-based trim on read)
+- **beamai_memory_filter** - Memory filters (pre_chat store delta + expand history, post_chat store reply)
 
 ### LLM Subsystem
 
@@ -88,6 +97,7 @@ beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
 %% Add services and filters
 beamai_kernel:add_service(Kernel, Service) -> kernel().
 beamai_kernel:add_filter(Kernel, Filter) -> kernel().
+beamai_kernel:with_memory(Kernel, Store) -> kernel().   %% enable conversation memory, see docs/MEMORY_EN.md
 
 %% Invoke API
 beamai_kernel:invoke(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
@@ -168,10 +178,10 @@ ReadFile = beamai_tool:new(
 %% Register to Kernel
 Kernel1 = beamai_kernel:add_tools(Kernel, [ReadFile]),
 
-%% Invoke
-{ok, Content, _Ctx} = beamai_kernel:invoke(Kernel1, <<"read_file">>, #{
+%% Invoke a single tool
+{ok, Content, _Ctx} = beamai_kernel:invoke_tool(Kernel1, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
-}).
+}, beamai_context:new()).
 ```
 
 ### Load Tool Module
@@ -182,7 +192,24 @@ Kernel = beamai_kernel:new(),
 Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
 
 %% List registered tools
-Tools = beamai_kernel:list_functions(Kernel1).
+Tools = beamai_kernel:get_tool_specs(Kernel1).
+```
+
+### Conversation Memory (multi-turn)
+
+The Kernel is stateless; each invoke passes only the latest message, and history is managed
+by the Memory Filter keyed by `conversation_id`. See [docs/MEMORY_EN.md](../../docs/MEMORY_EN.md).
+
+```erlang
+%% Start a conversation store and enable memory
+{ok, _} = beamai_chat_memory_ets:start_link(my_mem),
+K = beamai_kernel:with_memory(Kernel1, beamai_chat_memory_ets:handle(my_mem)),
+
+%% Identify the conversation with a conversation_id; pass only the latest message
+Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
+{ok, R1, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"My name is Alice">>}], #{context => Ctx}),
+{ok, R2, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"What's my name?">>}], #{context => Ctx}).
+%% The second round's LLM sees the full history; without memory it is a stateless single-shot call
 ```
 
 ### Process Framework
