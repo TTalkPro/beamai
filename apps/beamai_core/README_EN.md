@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-The core module of the BeamAI framework, providing Kernel architecture, Process Framework, Graph Engine, HTTP client, and behavior definitions.
+The core module of the BeamAI framework, providing Kernel architecture, Process Framework, HTTP client, and behavior definitions.
 
 ## Module Overview
 
@@ -38,35 +38,6 @@ Orchestratable process engine supporting step definitions, conditional branching
 - **beamai_process_state** - Process state management
 - **beamai_process_worker** - Process worker
 - **beamai_process_sup** - Process supervisor tree
-
-### Graph Engine Subsystem
-
-Declarative graph-based workflow engine, organized in three layers:
-
-**Builder** — Graph construction and behavior definition:
-- **beamai_graph** - Unified API facade (DSL + Builder + run/run_sync)
-- **beamai_graph_builder** - Graph builder (Builder pattern)
-- **beamai_graph_dsl** - Declarative DSL
-- **beamai_graph_node** - Node definitions
-- **beamai_graph_edge** - Edge definitions (direct, conditional, fan-out)
-- **beamai_graph_command** - Command definitions
-- **beamai_graph_dispatch** - Fan-out dispatch
-
-**Pregel** — Pregel BSP computation primitives:
-- **beamai_pregel_graph** - Graph topology data structure
-- **beamai_pregel_vertex** - Vertex definition and state
-- **beamai_pregel_utils** - Utility functions
-- **beamai_graph_compute** - Compute function factory
-- **beamai_graph_pool_worker** - Poolboy worker process
-
-**Runtime** — Graph execution and lifecycle:
-- **beamai_graph_engine** - Pure function engine core (do_step, execute)
-- **beamai_graph_engine_task** - Task building and parallel execution
-- **beamai_graph_engine_utils** - Vertex management, activation processing
-- **beamai_graph_runner** - High-level run API (snapshot + store management)
-- **beamai_graph_runtime** - gen_server runtime (OTP process shell)
-- **beamai_graph_state** - Graph snapshot serialization/deserialization
-- **beamai_graph_sup** - Graph execution supervisor
 
 ### HTTP Subsystem
 
@@ -241,31 +212,6 @@ Builder3 = beamai_process_builder:add_step(Builder2, <<"save">>, #{
 
 {ok, Process} = beamai_process_builder:build(Builder3),
 {ok, Result} = beamai_process_executor:run(Process, #{}).
-```
-
-### Graph Engine
-
-```erlang
-%% Build a simple graph using DSL
-{ok, Graph} = graph:build([
-    {node, greeting, fun(State, _Ctx) ->
-        Name = graph_state:get(State, name, <<"World">>),
-        Message = <<"Hello, ", Name/binary, "!">>,
-        {ok, graph_state:set(State, message, Message)}
-    end},
-    {node, uppercase, fun(State, _Ctx) ->
-        Message = graph_state:get(State, message, <<>>),
-        Upper = string:uppercase(Message),
-        {ok, graph_state:set(State, message, Upper)}
-    end},
-    {edge, greeting, uppercase},
-    {edge, uppercase, '__end__'},
-    {entry, greeting}
-]),
-
-%% Run the graph
-InitialState = graph:state(#{name => <<"Erlang">>}),
-Result = graph:run(Graph, InitialState).
 ```
 
 ## Dependencies

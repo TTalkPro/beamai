@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | 中文
 
-BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、Graph Engine、HTTP 客户端和行为定义。
+BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP 客户端和行为定义。
 
 ## 模块概览
 
@@ -39,35 +39,6 @@ LLM 响应的统一抽象层：
 - **beamai_process_state** - 流程状态管理
 - **beamai_process_worker** - 流程工作进程
 - **beamai_process_sup** - 流程监督树
-
-### Graph Engine 子系统
-
-基于 LangGraph 理念的声明式图执行引擎，分为三层：
-
-**Builder（构建层）** — 图的构建与行为定义：
-- **beamai_graph** - 统一 API 门面（DSL + Builder + run/run_sync）
-- **beamai_graph_builder** - 图构建器（Builder 模式）
-- **beamai_graph_dsl** - 声明式 DSL
-- **beamai_graph_node** - 节点定义
-- **beamai_graph_edge** - 边定义（普通边、条件边、扇出边）
-- **beamai_graph_command** - 命令定义
-- **beamai_graph_dispatch** - 扇出分发
-
-**Pregel（算法层）** — Pregel BSP 计算原语：
-- **beamai_pregel_graph** - 图拓扑数据结构
-- **beamai_pregel_vertex** - 顶点定义与状态
-- **beamai_pregel_utils** - 工具函数
-- **beamai_graph_compute** - 计算函数工厂
-- **beamai_graph_pool_worker** - Poolboy 工作进程
-
-**Runtime（执行层）** — 图的执行与生命周期：
-- **beamai_graph_engine** - 纯函数引擎核心（do_step、execute）
-- **beamai_graph_engine_task** - 任务构建与并行执行
-- **beamai_graph_engine_utils** - 顶点管理、activation 处理
-- **beamai_graph_runner** - 高级 run API（snapshot + store 管理）
-- **beamai_graph_runtime** - gen_server 运行时（OTP 进程壳）
-- **beamai_graph_state** - 图快照序列化/反序列化
-- **beamai_graph_sup** - 图执行监督树
 
 ### HTTP 子系统
 
@@ -236,30 +207,6 @@ Spec6 = beamai_process:set_initial_event(Spec5, <<"fetch">>, #{}),
 
 %% 同步执行
 {ok, Result} = beamai_process:run_sync(Built, #{timeout => 30000}).
-```
-
-### Graph Engine
-
-```erlang
-%% 使用 DSL 构建简单图
-{ok, Graph} = beamai_graph:build([
-    {node, greeting, fun(State, _Ctx) ->
-        Name = maps:get(name, State, <<"World">>),
-        Message = <<"Hello, ", Name/binary, "!">>,
-        {ok, State#{message => Message}}
-    end},
-    {node, uppercase, fun(State, _Ctx) ->
-        Message = maps:get(message, State, <<>>),
-        Upper = string:uppercase(Message),
-        {ok, State#{message => Upper}}
-    end},
-    {edge, greeting, uppercase},
-    {edge, uppercase, '__end__'},
-    {entry, greeting}
-]),
-
-%% 运行图（同步模式，支持中断/恢复）
-{ok, Result} = beamai_graph:run_sync(Graph, #{name => <<"Erlang">>}).
 ```
 
 ### 加载工具模块

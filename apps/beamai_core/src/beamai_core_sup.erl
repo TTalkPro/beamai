@@ -4,9 +4,7 @@
 %%% 管理 beamai_core 的核心进程：
 %%% - beamai_http_pool: HTTP 连接池（仅当使用 Gun 后端时）
 %%% - beamai_process_pool: Process step worker 池（poolboy）
-%%% - beamai_graph_pool: Graph executor worker 池（poolboy）
 %%% - beamai_process_sup: Process runtime 动态 supervisor
-%%% - beamai_graph_sup: Graph runtime 动态 supervisor
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -60,11 +58,7 @@ get_children() ->
         true -> [process_pool_spec()];
         false -> []
     end,
-    GraphChildren = case should_start_graph_pool() of
-        true -> [graph_pool_spec()];
-        false -> []
-    end,
-    HttpChildren ++ ProcessChildren ++ GraphChildren ++ [process_sup_spec(), graph_sup_spec()].
+    HttpChildren ++ ProcessChildren ++ [process_sup_spec()].
 
 %% @private 默认池大小计算（CPU * 2）
 default_pool_size() ->
@@ -88,13 +82,6 @@ should_start_http_pool() ->
 %% @private 判断是否需要启动 Process pool
 should_start_process_pool() ->
     case application:get_env(beamai_core, process_pool_enabled, true) of
-        false -> false;
-        true -> code:which(poolboy) =/= non_existing
-    end.
-
-%% @private 判断是否需要启动 Graph pool
-should_start_graph_pool() ->
-    case application:get_env(beamai_core, graph_pool_enabled, true) of
         false -> false;
         true -> code:which(poolboy) =/= non_existing
     end.
@@ -125,21 +112,6 @@ process_pool_spec() ->
     ],
     poolboy:child_spec(beamai_process_pool, PoolArgs, []).
 
-%% @private Graph executor worker pool 规格 (poolboy)
-graph_pool_spec() ->
-    PoolConfig = application:get_env(beamai_core, graph_pool, #{}),
-    DefaultSize = default_pool_size(),
-    Size = maps:get(size, PoolConfig, DefaultSize),
-    MaxOverflow = maps:get(max_overflow, PoolConfig, DefaultSize * 2),
-    PoolArgs = [
-        {name, {local, beamai_graph_pool}},
-        {worker_module, beamai_graph_pool_worker},
-        {size, Size},
-        {max_overflow, MaxOverflow},
-        {strategy, fifo}
-    ],
-    poolboy:child_spec(beamai_graph_pool, PoolArgs, []).
-
 %% @private Process runtime supervisor 规格
 process_sup_spec() ->
     #{
@@ -149,15 +121,4 @@ process_sup_spec() ->
         shutdown => infinity,
         type => supervisor,
         modules => [beamai_process_sup]
-    }.
-
-%% @private Graph runtime supervisor 规格
-graph_sup_spec() ->
-    #{
-        id => beamai_graph_sup,
-        start => {beamai_graph_sup, start_link, []},
-        restart => permanent,
-        shutdown => infinity,
-        type => supervisor,
-        modules => [beamai_graph_sup]
     }.

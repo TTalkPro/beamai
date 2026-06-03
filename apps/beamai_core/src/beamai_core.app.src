@@ -1,20 +1,15 @@
 {application, beamai_core, [
-    {description, "BeamAI Core - Kernel, Process, Graph 框架"},
+    {description, "BeamAI Core - Kernel, Process 框架"},
     {vsn, "1.0.0"},
-    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool, beamai_graph_pool, beamai_graph_sup]},
+    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool]},
     {mod, {beamai_core_app, []}},
     {applications, [kernel, stdlib, jsx, uuid, hackney, poolboy]},
     {optional_applications, [gun, beamai_llm]},
     {env, [
         %% Process pool 配置（默认启用，大小 CPU*2）
-        {process_pool_enabled, true},
+        {process_pool_enabled, true}
         %% {process_pool_size, 16},
         %% {process_pool_max_overflow, 32},
-
-        %% Graph pool 配置（默认启用，大小 CPU*2）
-        {graph_pool_enabled, true},
-        %% {graph_pool, #{size => 16, max_overflow => 32}},
-        {graph_pool_timeout, 30000}
     ]},
     {modules, [
         %% OTP 应用
@@ -60,31 +55,7 @@
         beamai_sse,
         %% 工具
         beamai_id,
-        beamai_utils,
-        %% Graph 核心
-        beamai_graph,
-        beamai_graph_node,
-        beamai_graph_edge,
-        %% Graph Builder
-        beamai_graph_builder,
-        beamai_graph_dsl,
-        %% Graph State
-        beamai_context_reducer,
-        beamai_graph_command,
-        beamai_graph_dispatch,
-        %% Graph Engine + Runtime + Supervisor
-        beamai_graph_engine,
-        beamai_graph_runtime,
-        beamai_graph_state,
-        beamai_graph_sup,
-        beamai_graph_engine_task,
-        beamai_graph_engine_utils,
-        beamai_graph_pool_worker,
-        beamai_graph_compute,
-        %% Pregel 数据结构（保留）
-        beamai_pregel_graph,
-        beamai_pregel_vertex,
-        beamai_pregel_utils
+        beamai_utils
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}
