@@ -1,21 +1,25 @@
 %%%-------------------------------------------------------------------
-%%% @doc 执行上下文：变量、消息、历史、跟踪
+%%% @doc 执行上下文：变量、会话标识、跟踪
 %%%
 %%% 在函数调用链中传递的不可变上下文，包含：
 %%% - 变量存储（key-value）
-%%% - 消息缓冲（发给 LLM 的工作上下文，可被 summarize/truncate）
-%%% - 消息历史（完整原始对话日志，只追加不修改）
+%%% - 会话标识（conversation_id，供 Memory Filter 定位会话）
 %%% - Kernel 引用
 %%% - 执行跟踪（调试用）
 %%% - 元数据
+%%%
+%%% 注意：context 不再记录消息/历史。会话历史的存储与注入由
+%%% beamai_memory_filter + beamai_chat_memory store 承担，按
+%%% conversation_id 管理。详见 design/kernel_memory_filter_redesign.md。
 %%%
 %%% Key 标准化规则：
 %%% - '__context__' 保持 atom（类型标记）
 %%% - 其他 atom key → binary（用户变量）
 %%% - binary key 保持不变
 %%%
-%%% 内部字段（messages, history, kernel, trace, metadata）
-%%% 使用 atom key，通过专用访问器操作，不经过 normalize_key。
+%%% 内部字段（kernel, trace, metadata）使用 atom key，
+%%% 通过专用访问器操作，不经过 normalize_key。
+%%% conversation_id 存为保留 binary key `<<"__conversation_id__">>`。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -25,8 +29,7 @@
 -export([new/0, new/1]).
 -export([get/2, get/3]).
 -export([set/3, set_many/2]).
--export([get_messages/1, set_messages/2, append_message/2]).
--export([get_history/1, add_history/2]).
+-export([with_conversation_id/2, conversation_id/1]).
 -export([with_kernel/2, get_kernel/1]).
 -export([add_trace/2, get_trace/1]).
 -export([get_metadata/1, set_metadata/3]).
@@ -43,13 +46,14 @@
 
 -type t() :: #{
     '__context__' := true,
-    messages := [message()],
-    history := [message()],
     kernel := term() | undefined,
     trace := [trace_entry()],
     metadata := map(),
     binary() => term()
 }.
+
+%% conversation_id 的保留存储 key
+-define(CONV_ID_KEY, <<"__conversation_id__">>).
 
 -type trace_entry() :: #{
     timestamp := integer(),
@@ -66,8 +70,6 @@
 new() ->
     #{
         '__context__' => true,
-        messages => [],
-        history => [],
         kernel => undefined,
         trace => [],
         metadata => #{}
@@ -136,44 +138,21 @@ update(Ctx, Key, Fun) ->
     NK = normalize_key(Key),
     set(Ctx, NK, Fun(get(Ctx, NK))).
 
-%% @doc 获取消息缓冲（发给 LLM 的工作上下文）
-%%
-%% 可能是经过 summarize/truncate 处理后的消息列表。
--spec get_messages(t()) -> [message()].
-get_messages(#{messages := Messages}) -> Messages.
-
-%% @doc 替换消息缓冲（用于 summarize/truncate 后重置）
+%% @doc 关联会话标识（供 Memory Filter 定位会话历史）
 %%
 %% @param Ctx 上下文
-%% @param Messages 新的消息列表
-%% @returns 更新后的上下文
--spec set_messages(t(), [message()]) -> t().
-set_messages(Ctx, Messages) ->
-    Ctx#{messages => Messages}.
+%% @param ConvId 会话 ID（binary）
+%% @returns 关联了会话 ID 的新上下文
+-spec with_conversation_id(t(), binary()) -> t().
+with_conversation_id(Ctx, ConvId) ->
+    Ctx#{?CONV_ID_KEY => ConvId}.
 
-%% @doc 追加消息到消息缓冲末尾
+%% @doc 获取上下文的会话标识
 %%
-%% @param Ctx 上下文
-%% @param Message 消息 Map
-%% @returns 更新后的上下文
--spec append_message(t(), message()) -> t().
-append_message(#{messages := Messages} = Ctx, Message) ->
-    Ctx#{messages => Messages ++ [Message]}.
-
-%% @doc 获取完整对话历史（只追加的原始日志）
-%%
-%% 返回上下文中积累的所有原始消息记录，不会被 summarize 影响。
--spec get_history(t()) -> [message()].
-get_history(#{history := History}) -> History.
-
-%% @doc 追加消息到对话历史末尾（只追加，不可修改）
-%%
-%% @param Ctx 上下文
-%% @param Message 消息 Map，至少包含 role 和 content 字段
-%% @returns 包含新消息的上下文
--spec add_history(t(), message()) -> t().
-add_history(#{history := History} = Ctx, Message) ->
-    Ctx#{history => History ++ [Message]}.
+%% 未设置时返回 undefined（Memory Filter 据此退化为无状态调用）。
+-spec conversation_id(t()) -> binary() | undefined.
+conversation_id(Ctx) ->
+    maps:get(?CONV_ID_KEY, Ctx, undefined).
 
 %% @doc 将 Kernel 引用关联到上下文
 %%
