@@ -15,13 +15,20 @@ context 的 `variables` 可携带任意 agent 状态。
 ```erlang
 -type t() :: #{
     '__context__' := true,
-    variables := #{binary() => term()},  %% 存放 agent 状态
-    history := [message()],
     kernel := term() | undefined,
     trace := [trace_entry()],
-    metadata := map()
+    metadata := map(),
+    binary() => term()       %% agent 状态变量（标准化为 binary key 存于顶层）
 }.
 ```
+
+> **注意**：context **不再记录 messages / history**。会话历史的存储与注入由
+> Memory Filter（`beamai_memory_filter`）+ ChatMemory store（`beamai_chat_memory`）
+> 按 `conversation_id` 管理。context 只携带 agent 状态变量、会话标识、kernel 引用、
+> trace 与 metadata。详见 [docs/MEMORY.md](../docs/MEMORY.md)。
+>
+> 会话标识通过 `beamai_context:with_conversation_id/2` 写入、`conversation_id/1` 读取
+> （存为保留 binary key `<<"__conversation_id__">>`）。
 
 ## 状态传递路径
 
