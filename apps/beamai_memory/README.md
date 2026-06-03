@@ -13,17 +13,15 @@
 │                 beamai_snapshot (通用快照引擎/Behaviour)              │
 │                   分支管理 · 时间旅行 · 历史查询                     │
 └─────────────────────────────────────────────────────────────────────┘
-          │                                      │
-┌─────────────────────────┐       ┌─────────────────────────────────┐
-│ beamai_process_snapshot  │       │ beamai_graph_snapshot            │
-│ (Process 执行快照)       │       │ (Graph 执行快照)                 │
-│                          │       │                                  │
-│ - save_from_state/3,4    │       │ - save_from_pregel/3,4           │
-│ - 步骤状态查询           │       │ - 顶点状态查询                   │
-│ - 暂停/恢复信息          │       │ - 中断/恢复信息                  │
-└─────────────────────────┘       └─────────────────────────────────┘
-          │                                      │
-          └──────────────┬───────────────────────┘
+                         │
+            ┌─────────────────────────┐
+            │ beamai_process_snapshot  │
+            │ (Process 执行快照)       │
+            │                          │
+            │ - save_from_state/3,4    │
+            │ - 步骤状态查询           │
+            │ - 暂停/恢复信息          │
+            └─────────────────────────┘
                          │
 ┌────────────────────────┴────────────────────────┐
 │              beamai_state_store                   │
@@ -40,7 +38,7 @@
 
 ## 设计原则
 
-1. **Behaviour 模式** - `beamai_snapshot` 定义通用快照行为，Process/Graph 实现各自特化逻辑
+1. **Behaviour 模式** - `beamai_snapshot` 定义通用快照行为，Process 快照实现特化逻辑
 2. **纯函数式管理器** - 快照管理器为不可变 Map，操作返回新管理器
 3. **分支 + 时间旅行** - 内建分支管理和双向时间旅行
 4. **可插拔后端** - Store 协议支持多种实现（ETS、SQLite 等）
@@ -53,7 +51,6 @@
 |------|------|------|
 | `beamai_snapshot` | 通用快照引擎 | Behaviour 定义 + 分支/时间旅行/历史查询通用实现 |
 | `beamai_process_snapshot` | Process 快照 | 保存/恢复 Process 执行状态（步骤、事件队列、暂停信息） |
-| `beamai_graph_snapshot` | Graph 快照 | 保存/恢复 Graph 执行状态（顶点、Superstep、中断信息） |
 
 ### 存储层
 
@@ -70,7 +67,6 @@
 | 模块 | 职责 | 说明 |
 |------|------|------|
 | `beamai_process_memory_store` | Process 存储适配 | 实现 `beamai_process_store_behaviour`，桥接 Process 和 Snapshot |
-| `beamai_graph_memory_store` | Graph 存储适配 | 桥接 Graph 和 Snapshot |
 
 ## 使用示例
 
@@ -100,21 +96,6 @@ StateMap = #{
 %% 5. 加载快照
 SnapshotId = beamai_process_snapshot:get_id(Snapshot),
 {ok, Loaded} = beamai_process_snapshot:load(Mgr1, SnapshotId).
-```
-
-### 基本用法：Graph 快照
-
-```erlang
-%% 创建 Graph 快照管理器
-GraphMgr = beamai_graph_snapshot:new(StateStore),
-
-%% 从 Pregel 状态保存
-{ok, GraphSnapshot, GraphMgr1} = beamai_graph_snapshot:save_from_pregel(
-    GraphMgr, <<"run-1">>, PregelState, #{snapshot_type => interrupted}
-),
-
-%% 加载快照
-{ok, LoadedGraph} = beamai_graph_snapshot:load(GraphMgr1, SnapshotId).
 ```
 
 ### 时间旅行
@@ -170,24 +151,6 @@ IsPaused = beamai_process_snapshot:is_paused(Snapshot),
 PauseInfo = beamai_process_snapshot:get_pause_info(Snapshot).
 ```
 
-### Graph 专用查询
-
-```erlang
-%% 获取顶点状态
-{ok, VertexState} = beamai_graph_snapshot:get_vertex_state(Snapshot, VertexId),
-
-%% 获取活跃/失败/中断的顶点
-ActiveVertices = beamai_graph_snapshot:get_active_vertices(Snapshot),
-FailedVertices = beamai_graph_snapshot:get_failed_vertices(Snapshot),
-InterruptedVertices = beamai_graph_snapshot:get_interrupted_vertices(Snapshot),
-
-%% 检查是否可恢复
-IsResumable = beamai_graph_snapshot:is_resumable(Snapshot),
-
-%% 获取全局状态
-GlobalState = beamai_graph_snapshot:get_global_state(Snapshot).
-```
-
 ## 快照数量限制
 
 ### 配置选项
@@ -229,7 +192,6 @@ beamai_memory/
 ├── rebar.config
 ├── include/
 │   ├── beamai_process_snapshot.hrl    # Process 快照记录定义
-│   ├── beamai_graph_snapshot.hrl      # Graph 快照记录定义
 │   ├── beamai_state_store.hrl         # 状态存储记录定义
 │   └── beamai_store.hrl              # Store 记录定义
 ├── src/
@@ -237,8 +199,7 @@ beamai_memory/
 │   ├── beamai_memory_sup.erl         # 监督树
 │   ├── snapshot/                     # 快照模块
 │   │   ├── beamai_snapshot.erl       # 通用快照引擎 (Behaviour)
-│   │   ├── beamai_process_snapshot.erl # Process 快照实现
-│   │   └── beamai_graph_snapshot.erl   # Graph 快照实现
+│   │   └── beamai_process_snapshot.erl # Process 快照实现
 │   ├── store/                        # 存储模块
 │   │   ├── beamai_store.erl          # Store 协议
 │   │   ├── beamai_store_ets.erl      # ETS 后端
@@ -247,8 +208,6 @@ beamai_memory/
 │   │   └── beamai_store_manager.erl  # 存储管理器
 │   ├── process/
 │   │   └── beamai_process_memory_store.erl  # Process 存储适配
-│   ├── graph/
-│   │   └── beamai_graph_memory_store.erl    # Graph 存储适配
 │   └── utils/
 │       ├── beamai_memory_helpers.erl  # 辅助函数
 │       └── beamai_memory_utils.erl    # 工具函数
@@ -258,7 +217,7 @@ beamai_memory/
 
 ## 版本历史
 
-- **5.0.0** - 快照架构重构：`beamai_snapshot` Behaviour + Process/Graph 专用快照
+- **5.0.0** - 快照架构重构：`beamai_snapshot` Behaviour + Process 专用快照
 - **4.0.0** - 分层架构重构，双管理器设计
 - **3.0.0** - 双 Store 架构，Checkpointer 使用 Store 接口
 - **2.0.0** - 分离 Checkpointer 和 Store
