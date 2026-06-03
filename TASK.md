@@ -1,68 +1,80 @@
-# TASK: Kernel 消息存储下沉到 Memory Filter
+# TASK: Filter → 洋葱式 Filter 重构（对齐 Spring AI before/after）
 
-> 设计文档：`design/kernel_memory_filter_redesign.md`
-> 目标：kernel/context 不再记录 messages；每次 invoke 只传单条最新 delta；会话存储交给 memory filter。
+> 把分阶段扁平 filter（4 个独立 hook、优先级模拟洋葱）改成真正的洋葱式 filter。
+> 最终决策（用户确认）:
+> ① 名字仍叫 **filter**；② 仍是 **4 个 hook 点**（pre_chat/post_chat/pre_tool/post_tool）；
+> ③ chat 与 tool 的前后**分开**；④ 一个 filter 绑定这 4 个可选 hook，
+>    同一 filter 的 pre/post 配成**一层洋葱**包裹同一次调用（回程自动逆序，非优先级模拟）。
+
+## 设计要点
+- 原语:`compose([A,B], Terminal)` → `A(req, fun->B(req, fun->Terminal(req)))`,回程自动逆序。
+- advisor: `#{'__advisor__', name, type(chat|tool), order, around :: fun(Req, Next) -> Resp}`,order 越小越外层。
+- before/after 便捷:`around = fun(Req, Next) -> AfterFun(Next(BeforeFun(Req)))`;BeforeFun 返回 `{halt, Resp}` 可短路。
+- chat:  Req `#{messages, context, opts}` → Resp `#{response, context}`,terminal = `Module:chat`。
+- tool:  Req `#{tool, args, context}` → Resp `#{result, context}`,terminal = `beamai_tool:invoke`。
+- 错误:terminal `throw`,`beamai_advisor_chain:run/3` try/catch 返回 `{error, Reason}`。
 
 ## 执行步骤
 
-### 步骤 1：behaviour `beamai_chat_memory` ✅
-- [x] 新建 `apps/beamai_core/src/behaviours/beamai_chat_memory.erl`
-- [x] 定义回调 `mem_get/2`、`mem_add/3`、`mem_clear/2`
-- [x] 调度 API：对句柄 `{Module, Ref}` 解包转发
-- [x] 导出 `handle/0` 类型
+### 步骤 1：新增 `beamai_advisor`（behaviour + 构造器）
+- [ ] `apps/beamai_core/src/kernel/beamai_advisor.erl`
+- [ ] 类型 `advisor()/advisor_type()/request()/response()/next()`
+- [ ] `new/4`(around)、`before_after/5`、`before/4`、`after_/4`、`sort/1`
 
-### 步骤 2：默认实现 `beamai_chat_memory_ets` ✅
-- [x] 新建 `apps/beamai_core/src/kernel/beamai_chat_memory_ets.erl`（gen_server）
-- [x] ETS 表 `ConvId => [message()]`，追加语义，`mem_get` 正序返回
-- [x] `start_link/1,2` + `handle/1` 返回句柄 `{beamai_chat_memory_ets, Name}`
-- [x] 实现 behaviour 三个回调 + `stop/1`
+### 步骤 2：新增 `beamai_advisor_chain`（洋葱链）
+- [ ] `apps/beamai_core/src/kernel/beamai_advisor_chain.erl`
+- [ ] `compose/2`、`run/3 -> {ok, Resp} | {error, Reason}`(try/catch terminal throw)
 
-### 步骤 3：memory filter `beamai_memory_filter` ✅
-- [x] 新建 `apps/beamai_core/src/kernel/beamai_memory_filter.erl`
-- [x] `memory_filters/1` 返回 `[PreChat, PostChat]`
-- [x] pre_chat (-1000)：读 conv_id；存 delta + 用全量历史替换 messages；无 conv_id 透传
-- [x] post_chat (+1000)：存 assistant 回复（`response_to_message/1` 转换）
-- [x] 系统提示注入：放到 kernel `system_prompt_filters/1`（pre_chat -500），不存储
+### 步骤 3：memory advisor（合并为单 advisor）
+- [ ] `beamai_memory_filter.erl` → 重写为 `beamai_memory_advisor.erl`
+- [ ] `memory_advisor/1` 返回单个 chat advisor(before 存 delta+展开、after 存回复)
+- [ ] 保留 `response_to_message/1`
 
-### 步骤 4：改造 `beamai_context` ✅
-- [x] 移除 `messages`、`history` 字段
-- [x] 移除 `get_messages/1`、`set_messages/2`、`append_message/2`、`get_history/1`、`add_history/2`
-- [x] 新增 `with_conversation_id/2`、`conversation_id/1`（保留 key `<<"__conversation_id__">>`）
-- [x] 更新模块文档注释
+### 步骤 4：改造 `beamai_kernel`
+- [ ] state `filters` → `advisors`;`add_filter/2` → `add_advisor/2`
+- [ ] `maybe_add_filters`(filters/0) → `maybe_add_advisors`(advisors/0)
+- [ ] `with_memory/2` 挂单个 memory advisor
+- [ ] system_prompts → 单 before advisor(order 大,内层),per-invoke 追加
+- [ ] `invoke_tool` 走 tool advisor 链;chat 调用走 chat advisor 链
+- [ ] 删除 run_invoke_pipeline/run_chat_pipeline/execute_*_filter
 
-### 步骤 5：改造 `beamai_kernel` ✅
-- [x] kernel state 加 `memory => handle() | undefined`，`new/1` 初始化
-- [x] 新增 `with_memory/2`：挂载 memory filters（facade 同步暴露 `beamai:with_memory/2`）
-- [x] 重写 `invoke/3`：解析/生成 conv_id；删拼接累积；delta/full 双模式；ephemeral 清理
-- [x] system_prompts：改为挂临时 pre_chat(-500) filter，不再在 loop 里 `SysPrompts ++ Msgs`
-- [x] 删除 `track_message/2`、`track_new_messages/2`
-- [x] `tool_calling_loop` 改为 Mode 驱动（delta=只传工具结果 / full=本地累积全量）
+### 步骤 5：`beamai_tool_behaviour`
+- [ ] `filters/0` 回调 → `advisors/0`(返回 `[beamai_advisor:advisor()]`)
 
-### 步骤 6：窗口包装 `beamai_chat_memory_window` ✅
-- [x] 新建 `apps/beamai_core/src/kernel/beamai_chat_memory_window.erl`
-- [x] 包装 inner 句柄，`mem_get` 时套条数窗口
-- [x] 保护：丢弃落单 head `tool` 消息
-- ⚠️ 偏差：**未复用 `beamai_conversation_buffer`**（它在 beamai_cognition，依赖 beamai_core，
-  反向依赖会成环）。core 内自实现条数窗口；Token 裁剪/摘要后端留给 beamai_cognition 之后提供。
+### 步骤 6：facade `beamai.erl`
+- [ ] `add_filter/2,4` → `add_advisor/2` + 便捷 `add_advisor/5`(before_after) 或 around
 
-### 步骤 7：注册 + 编译 ✅
-- [x] `beamai_core.app.src` 注册 4 个新模块
-- [x] `rebar3 compile` 通过
+### 步骤 7：删除 + 注册
+- [ ] 删除 `beamai_filter.erl`
+- [ ] `beamai_core.app.src`:移除 beamai_filter/beamai_memory_filter,新增 beamai_advisor/beamai_advisor_chain/beamai_memory_advisor
 
-### 步骤 8：测试 ✅
-- [x] 改写 `beamai_chat_completion_tests.erl`：messages/history 用例 → conversation_id 用例
-- [x] 新增 `beamai_memory_filter_tests.erl`（10 用例）：ETS store、窗口裁剪/孤立 tool、
-      response_to_message、pre/post_chat filter、无 conv_id 透传、跨 invoke 累积(meck)、ephemeral 清理
-- [x] `rebar3 eunit` 全绿（190 tests, 0 failures）
+### 步骤 8：测试
+- [ ] `beamai_filter_tests.erl` → `beamai_advisor_tests.erl`(洋葱顺序、before/after、around、halt 短路、tool 链)
+- [ ] `beamai_memory_filter_tests.erl` → 改用 advisor API
+- [ ] `beamai_kernel_tests.erl` 同步
+- [ ] `rebar3 eunit` 全绿
 
-## 完成情况
+### 步骤 9：文档
+- [ ] `docs/FILTER.md/FILTER_EN.md` → ADVISOR(洋葱模型、before/after/around、order 语义)
+- [ ] `docs/MEMORY.md/_EN`:去掉 -1000/+1000,改为单 advisor + order
+- [ ] `info/filter.md`、core README、根 README 同步
 
-全部 8 步完成。`rebar3 compile` 4 app 通过，`rebar3 eunit` 190 tests / 0 failures。
+## 完成情况（全部完成 ✅）
 
-### 一处设计偏差
-窗口包装未复用 `beamai_conversation_buffer`（依赖方向会成环）。已在 core 内自实现条数窗口，
-基于 Token 的裁剪/摘要可由 beamai_cognition 提供实现同 behaviour 的 store。
+数据模型：`filter = #{'__filter__', name, order, hooks => #{pre_chat?, post_chat?, pre_tool?, post_tool?}}`
+- pre hook：`fun(Req) -> Req | {halt, Resp}`；post hook：`fun(Resp) -> Resp`
+- chat 链用 `(pre_chat,post_chat)`、tool 链用 `(pre_tool,post_tool)`；order 越小越外层
+- chat Req `#{messages,context,opts}`→Resp `#{response,context}`；tool Req `#{tool,args,context}`→Resp `#{result,context}`
 
-### 待办（可选，未做）
-- `beamai_llm_integration_SUITE` 增加「memory 多轮对话」真实 LLM 用例（无环境变量则 skip）。
-- 同步更新 `apps/beamai_core/README*.md`（Context/Kernel 章节关于 messages/history 的描述）。
+- `beamai_filter`：new/2,3（hooks map）、sort/1、hook/2 ✅
+- `beamai_filter_chain`：run/4（Phase={pre,post}）、compose/4，terminal throw→{error} ✅
+- `beamai_memory_filter`：单 filter（pre_chat 存 delta+展开、post_chat 存回复）+ response_to_message ✅
+- `beamai_kernel`：filters 字段、add_filter、with_memory 挂单 filter、system_prompt filter(仅 pre_chat,-500)、
+  invoke_tool 走 {pre_tool,post_tool}、chat 走 {pre_chat,post_chat}、删除旧 pipeline ✅
+- `beamai_tool_behaviour`：filters/0 ✅；facade `beamai:add_filter/2,3` ✅
+- app.src 注册 beamai_filter/beamai_filter_chain/beamai_memory_filter ✅
+- 测试 `beamai_filter_tests`（洋葱顺序/链按 hook 选择/halt/tool 链/error）、`beamai_memory_filter_tests`、
+  `beamai_kernel_tests`（pre_tool/post_tool/halt）；`examples/example_filter.erl` ✅
+- 文档 FILTER.md/_EN（Filter 4-hook 洋葱）、MEMORY.md/_EN、info/filter.md、core README×2、根 README×2 全部同步 ✅
+
+最终：`rebar3 compile` 4 app 通过；`rebar3 eunit` 185 tests / 0 failures；文档无旧 API 残留（仅 Spring AI 对比处提及 advisor 概念）。
