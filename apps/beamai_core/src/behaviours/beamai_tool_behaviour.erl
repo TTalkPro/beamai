@@ -3,7 +3,7 @@
 %%%
 %%% 定义工具模块的接口契约。工具模块必须实现 `tools/0` 回调函数，
 %%% 可以选择性地实现 `tool_info/0` 来提供模块元信息，
-%%% 以及 `filters/0` 来注册 kernel 过滤器。
+%%% 以及 `filters/0` 来注册 kernel filter。
 %%%
 %%% == 示例 ==
 %%%
@@ -45,11 +45,11 @@
 
 %% @doc （可选）返回 kernel filter 列表。
 %%
-%% 如果工具模块需要在 kernel 中注册过滤器（如请求前处理、响应后处理等），
-%% 可以实现此回调来返回过滤器定义列表。
-%% 此回调为可选实现，不实现时模块不会注册任何过滤器。
+%% 如果工具模块需要在 kernel 中注册 filter（如请求前处理、响应后处理等），
+%% 可以实现此回调来返回 filter 定义列表。
+%% 此回调为可选实现，不实现时模块不会注册任何 filter。
 %%
-%% @returns 过滤器定义列表
--callback filters() -> [beamai_filter:filter_spec()].
+%% @returns filter 定义列表
+-callback filters() -> [beamai_filter:filter()].
 
 -optional_callbacks([tool_info/0, filters/0]).

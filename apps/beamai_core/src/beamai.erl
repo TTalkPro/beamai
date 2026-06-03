@@ -22,8 +22,8 @@
 %% Service (LLM)
 -export([add_llm/3, add_llm/2]).
 
-%% Filter
--export([add_filter/2, add_filter/4]).
+%% Filter（洋葱式过滤器）
+-export([add_filter/2, add_filter/3]).
 
 %% Memory（会话记忆）
 -export([with_memory/2]).
@@ -118,26 +118,27 @@ add_llm(Kernel, LlmConfig) ->
     beamai_kernel:add_service(Kernel, LlmConfig).
 
 %%====================================================================
-%% Filter
+%% Filter（洋葱式过滤器）
 %%====================================================================
 
-%% @doc 注册已构建的过滤器到 Kernel
--spec add_filter(beamai_kernel:kernel(), beamai_filter:filter_spec()) -> beamai_kernel:kernel().
+%% @doc 注册已构建的 filter 到 Kernel
+-spec add_filter(beamai_kernel:kernel(), beamai_filter:filter()) -> beamai_kernel:kernel().
 add_filter(Kernel, Filter) ->
     beamai_kernel:add_filter(Kernel, Filter).
 
-%% @doc 快捷创建并注册过滤器
+%% @doc 快捷创建并注册 filter（直接给 hook map）
+%%
+%% 一个 filter 含 pre_chat/post_chat/pre_tool/post_tool 任意子集，
+%% 同一 filter 的 pre/post 配成一层洋葱包裹同一次调用，回程自动逆序。
 %%
 %% @param Kernel Kernel 实例
-%% @param Name 过滤器名称
-%% @param Type 过滤器类型（pre_invocation | post_invocation | pre_chat | post_chat）
-%% @param Handler 过滤器处理函数
+%% @param Name filter 名称
+%% @param Hooks hook map（如 #{pre_chat => F1, post_chat => F2}）
 %% @returns 更新后的 Kernel
--spec add_filter(beamai_kernel:kernel(), binary(), beamai_filter:filter_type(),
-                 fun((beamai_filter:filter_context()) -> beamai_filter:filter_result())) ->
+-spec add_filter(beamai_kernel:kernel(), binary(), beamai_filter:hooks()) ->
     beamai_kernel:kernel().
-add_filter(Kernel, Name, Type, Handler) ->
-    Filter = beamai_filter:new(Name, Type, Handler),
+add_filter(Kernel, Name, Hooks) ->
+    Filter = beamai_filter:new(Name, Hooks),
     beamai_kernel:add_filter(Kernel, Filter).
 
 %%====================================================================

@@ -183,41 +183,43 @@ no_llm_service_chat_test() ->
 %% Filter Integration Tests
 %%====================================================================
 
-invoke_with_pre_filter_test() ->
+invoke_with_pre_tool_filter_test() ->
     K0 = beamai_kernel:new(),
     K1 = beamai_kernel:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    Filter = beamai_filter:new(<<"doubler">>, pre_invocation,
-        fun(#{args := Args} = Ctx) ->
+    %% pre_tool：把参数翻倍
+    Filter = beamai_filter:new(<<"doubler">>, #{
+        pre_tool => fun(#{args := Args} = Req) ->
             NewArgs = maps:map(fun(_K, V) when is_number(V) -> V * 2;
                                  (_K, V) -> V end, Args),
-            {continue, Ctx#{args => NewArgs}}
-        end),
+            Req#{args => NewArgs}
+        end
+    }),
     K2 = beamai_kernel:add_filter(K1, Filter),
     ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
-invoke_with_post_filter_test() ->
+invoke_with_post_tool_filter_test() ->
     K0 = beamai_kernel:new(),
     K1 = beamai_kernel:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    Filter = beamai_filter:new(<<"result_doubler">>, post_invocation,
-        fun(#{result := R} = Ctx) ->
-            {continue, Ctx#{result => R * 2}}
-        end),
+    %% post_tool：把结果翻倍
+    Filter = beamai_filter:new(<<"result_doubler">>, #{
+        post_tool => fun(#{result := R} = Resp) -> Resp#{result => R * 2} end
+    }),
     K2 = beamai_kernel:add_filter(K1, Filter),
     ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
-invoke_with_skip_filter_test() ->
+invoke_with_halt_tool_filter_test() ->
     K0 = beamai_kernel:new(),
     K1 = beamai_kernel:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    Filter = beamai_filter:new(<<"cache">>, pre_invocation,
-        fun(_Ctx) ->
-            {skip, cached_result}
-        end),
+    %% pre_tool 短路：不执行工具，直接返回缓存结果
+    Filter = beamai_filter:new(<<"cache">>, #{
+        pre_tool => fun(#{context := Ctx}) -> {halt, #{result => cached_result, context => Ctx}} end
+    }),
     K2 = beamai_kernel:add_filter(K1, Filter),
     ?assertMatch({ok, cached_result, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 

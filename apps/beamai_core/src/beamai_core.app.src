@@ -23,10 +23,12 @@
         beamai_tool,
         beamai_tool_behaviour,
         beamai_context,
-        beamai_filter,
         beamai_result,
         beamai_prompt,
         beamai_llm_response,
+        %% Filter（洋葱式过滤器）
+        beamai_filter,
+        beamai_filter_chain,
         %% 行为接口
         beamai_chat_behaviour,
         beamai_http_behaviour,

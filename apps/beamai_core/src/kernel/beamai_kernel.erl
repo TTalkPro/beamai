@@ -1,10 +1,10 @@
 %%%-------------------------------------------------------------------
-%%% @doc Kernel 核心：工具管理、LLM 服务、过滤器、工具调用循环
+%%% @doc Kernel 核心：工具管理、LLM 服务、Filter、工具调用循环
 %%%
 %%% Kernel 是框架的中枢，负责：
 %%% - 管理工具注册
 %%% - 持有 LLM 服务配置
-%%% - 执行前置/后置过滤器管道
+%%% - 执行洋葱式 Filter 链（chat / tool 各自前后一对 hook）
 %%% - 驱动工具调用循环（LLM ↔ Tool）
 %%%
 %%% @end
@@ -40,7 +40,7 @@
     '__kernel__' := true,
     tools := #{binary() => beamai_tool:tool_spec()},
     llm_config := beamai_chat_behaviour:config() | undefined,
-    filters := [beamai_filter:filter_spec()],
+    filters := [beamai_filter:filter()],
     memory := beamai_chat_memory:handle() | undefined,
     settings := kernel_settings()
 }.
@@ -116,19 +116,19 @@ add_tools(Kernel, ToolList) ->
 add_tool_module(Kernel, Module) ->
     case beamai_tool:from_module(Module) of
         {ok, Tools} ->
-            %% 如果模块实现了 filters/0，也注册过滤器
+            %% 如果模块实现了 filters/0，也注册 filter
             K1 = add_tools(Kernel, Tools),
             maybe_add_filters(K1, Module);
         {error, Reason} ->
             erlang:error({tool_module_load_failed, Module, Reason})
     end.
 
-%% @private 如果模块实现了 filters/0，添加过滤器
+%% @private 如果模块实现了 filters/0，添加 filter
 maybe_add_filters(Kernel, Module) ->
     case erlang:function_exported(Module, filters, 0) of
         true ->
             Filters = Module:filters(),
-            lists:foldl(fun add_filter/2, Kernel, Filters);
+            lists:foldl(fun(F, K) -> add_filter(K, F) end, Kernel, Filters);
         false ->
             Kernel
     end.
@@ -145,31 +145,33 @@ maybe_add_filters(Kernel, Module) ->
 add_service(Kernel, LlmConfig) ->
     Kernel#{llm_config => LlmConfig}.
 
-%% @doc 注册过滤器到 Kernel
+%% @doc 注册 filter 到 Kernel
 %%
-%% 过滤器追加到现有列表末尾，执行时按 priority 排序。
+%% filter 追加到现有列表，执行时按 order 排序（越小越外层）。
+%% 一个 filter 可含 pre_chat/post_chat/pre_tool/post_tool 任意子集，
+%% chat 链用其 (pre_chat,post_chat)、tool 链用其 (pre_tool,post_tool)。
 %%
 %% @param Kernel Kernel 实例
-%% @param Filter 过滤器定义（通过 beamai_filter:new/3,4 创建）
+%% @param Filter filter 定义（通过 beamai_filter:new/2,3 创建）
 %% @returns 更新后的 Kernel
--spec add_filter(kernel(), beamai_filter:filter_spec()) -> kernel().
+-spec add_filter(kernel(), beamai_filter:filter()) -> kernel().
 add_filter(#{filters := Filters} = Kernel, Filter) ->
     Kernel#{filters => Filters ++ [Filter]}.
 
-%% @doc 启用会话记忆：绑定 store 句柄并挂载 Memory 过滤器
+%% @doc 启用会话记忆：绑定 store 句柄并挂载 Memory filter
 %%
-%% 挂载后，invoke/3 进入 delta 模式：每轮只把新消息交给 pipeline，
-%% 由 Memory 过滤器按 context 的 conversation_id 存储/展开历史。
-%% 未启用记忆时 invoke/3 为单次无状态调用（工具循环内部本地累积）。
+%% 挂载后，invoke/3 进入 delta 模式：每轮只把新消息交给 chat filter 链，
+%% 由 Memory filter（pre_chat 存+展开、post_chat 存回复）按 conversation_id
+%% 管理历史。未启用记忆时 invoke/3 为单次无状态调用（工具循环内部本地累积）。
 %%
 %% @param Kernel Kernel 实例
 %% @param Store 会话存储句柄（beamai_chat_memory:handle/0，如
 %%        beamai_chat_memory_ets:handle(Name)）
 %% @returns 更新后的 Kernel
 -spec with_memory(kernel(), beamai_chat_memory:handle()) -> kernel().
-with_memory(#{filters := Filters} = Kernel, Store) ->
-    MemFilters = beamai_memory_filter:memory_filters(Store),
-    Kernel#{memory => Store, filters => Filters ++ MemFilters}.
+with_memory(Kernel, Store) ->
+    K1 = add_filter(Kernel, beamai_memory_filter:memory_filter(Store)),
+    K1#{memory => Store}.
 
 %%====================================================================
 %% Invoke API
@@ -177,8 +179,8 @@ with_memory(#{filters := Filters} = Kernel, Store) ->
 
 %% @doc 调用 Kernel 中注册的工具
 %%
-%% 执行流程：查找工具 → 前置过滤器 → 工具执行 → 后置过滤器。
-%% 上下文会自动关联当前 Kernel 引用。
+%% 执行流程：查找工具 → tool filter 洋葱链（pre_tool 改写参数 → 工具执行
+%% → post_tool 改写结果）。上下文会自动关联当前 Kernel 引用。
 %%
 %% @param Kernel Kernel 实例
 %% @param ToolName 工具名称
@@ -191,14 +193,14 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
     case get_tool(Kernel, ToolName) of
         {ok, ToolSpec} ->
             Context = beamai_context:with_kernel(Context0, Kernel),
-            run_invoke_pipeline(Filters, ToolSpec, Args, Context);
+            run_tool(Filters, ToolSpec, Args, Context);
         error ->
             {error, {tool_not_found, ToolName}}
     end.
 
 %% @doc 发送 Chat Completion 请求（不含工具调用循环）
 %%
-%% 执行流程：前置 Chat 过滤器 → LLM 调用 → 后置 Chat 过滤器。
+%% 执行流程：chat filter 洋葱链（pre_chat 改写请求 → LLM 调用 → post_chat 改写响应）。
 %% Kernel 需先通过 add_service/2 配置 LLM。
 %%
 %% @param Kernel Kernel 实例
@@ -212,7 +214,7 @@ invoke_chat(Kernel, Messages, Opts) ->
         {ok, LlmConfig} ->
             #{filters := Filters} = Kernel,
             Context = maps:get(context, Opts, beamai_context:new()),
-            run_chat_pipeline(LlmConfig, Filters, Messages, Opts, Context);
+            run_chat(LlmConfig, Filters, Messages, Opts, Context);
         error ->
             {error, no_llm_service}
     end.
@@ -228,7 +230,7 @@ invoke_chat(Kernel, Messages, Opts) ->
 %%   pipeline，由 Memory 过滤器按 conversation_id 存储并展开完整历史。
 %%   context 无 conversation_id 时生成临时 id，invoke 结束后清理。
 %% - 未启用记忆时为 full 模式：工具循环内部本地累积消息，不跨 invoke 持久化。
-%% system_prompts 作为临时 pre_chat(-500) 过滤器注入，不进入存储。
+%% system_prompts 作为临时 chat filter(order -500，内层) 的 pre_chat 注入，不进入存储。
 %%
 %% @param Kernel Kernel 实例（需注册工具和 LLM 服务）
 %% @param Messages 本轮新消息（通常是单条用户消息）
@@ -244,8 +246,8 @@ invoke(Kernel, Messages, Opts) ->
             ChatOpts = Opts#{tools => ToolSpecs, tool_choice => maps:get(tool_choice, Opts, auto)},
             Context0 = maps:get(context, Opts, beamai_context:new()),
             SystemPrompts = maps:get(system_prompts, Opts, []),
-            %% system_prompts 临时注入过滤器（不入存储）
-            Filters = Filters0 ++ system_prompt_filters(SystemPrompts),
+            %% system_prompts 临时注入 filter（不入存储），与已注册 filter 合并
+            Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
             MaxIter = maps:get(max_tool_iterations, Opts,
                 maps:get(max_tool_iterations, maps:get(settings, Kernel, #{}), 10)),
             %% 根据是否启用记忆决定模式与会话标识
@@ -322,19 +324,19 @@ get_service(#{llm_config := Config}) -> {ok, Config}.
 
 %% @private 工具调用循环主体
 %%
-%% 每次迭代通过 run_chat_pipeline 调用 LLM，确保 pre_chat/post_chat 过滤器生效。
+%% 每次迭代通过 chat filter 洋葱链调用 LLM，确保 filter 的 pre_chat/post_chat 生效。
 %% LLM 返回 tool_calls 时：解析调用 → 执行工具 → 拼接结果 → 再次请求 LLM。
 %% 迭代次数耗尽返回 max_tool_iterations 错误。
 %% LLM 返回纯文本响应时终止循环。
 %%
-%% Mode 决定每轮传给 pipeline 的消息：
-%% - delta：只传本轮新消息，由 Memory 过滤器存储并展开完整历史。
-%%   assistant 回复由 post_chat 过滤器存储，下一轮 delta = 工具结果。
+%% Mode 决定每轮传给 chat 链的消息：
+%% - delta：只传本轮新消息，由 Memory filter 存储并展开完整历史。
+%%   assistant 回复由 Memory filter 的 post_chat 存储，下一轮 delta = 工具结果。
 %% - full：本地累积完整对话，每轮传全量（无记忆时保证工具循环上下文连续）。
 tool_calling_loop(_Kernel, _LlmConfig, _Filters, _Msgs, _Opts, _Context, _Mode, 0) ->
     {error, max_tool_iterations};
 tool_calling_loop(Kernel, LlmConfig, Filters, Msgs, Opts, Context, Mode, N) ->
-    case run_chat_pipeline(LlmConfig, Filters, Msgs, Opts, Context) of
+    case run_chat(LlmConfig, Filters, Msgs, Opts, Context) of
         {ok, Response, Ctx0} ->
             %% 使用 beamai_llm_response 访问器统一处理响应
             case beamai_llm_response:has_tool_calls(Response) of
@@ -402,57 +404,59 @@ cleanup_ephemeral(_Memory, _ConvId, false) ->
 cleanup_ephemeral(Memory, ConvId, true) ->
     beamai_chat_memory:mem_clear(Memory, ConvId).
 
-%% @private 构造 system_prompts 临时注入过滤器（pre_chat，优先级 -500）
+%% @private 构造 system_prompts 临时注入 filter（仅 pre_chat，order -500）
 %%
-%% 在 Memory 展开完整历史之后、LLM 之前前置系统消息，且不写入存储。
-system_prompt_filters([]) ->
+%% 在 Memory 展开完整历史之后（memory order 更小，更外层）、LLM 之前前置
+%% 系统消息，且不写入存储。
+system_prompt_filter([]) ->
     [];
-system_prompt_filters(SystemPrompts) ->
-    [beamai_filter:new(<<"system_prompt">>, pre_chat, fun(FilterCtx) ->
-        Msgs = maps:get(messages, FilterCtx, []),
-        {continue, FilterCtx#{messages => SystemPrompts ++ Msgs}}
-    end, -500)].
+system_prompt_filter(SystemPrompts) ->
+    [beamai_filter:new(<<"system_prompt">>, #{
+        pre_chat => fun(#{messages := Msgs} = Req) ->
+            Req#{messages => SystemPrompts ++ Msgs}
+        end
+    }, -500)].
 
-%% @private 执行调用管道：前置过滤 → 工具执行 → 后置过滤
-run_invoke_pipeline(Filters, ToolSpec, Args, Context) ->
-    case beamai_filter:apply_pre_filters(Filters, ToolSpec, Args, Context) of
-        {ok, FilteredArgs, FilteredCtx} ->
-            execute_and_post_filter(Filters, ToolSpec, FilteredArgs, FilteredCtx);
-        {skip, Value} ->
-            {ok, Value, Context};
-        {error, _} = Err ->
-            Err
+%% @private 运行 chat filter 洋葱链（用 pre_chat/post_chat 一对 hook）
+%%
+%% Request `#{messages, context, opts}` → Response `#{response, context}`，
+%% 最内层 terminal 为真正的 LLM 调用。
+run_chat(LlmConfig, Filters, Messages, Opts, Context) ->
+    Req = #{messages => Messages, context => Context, opts => Opts},
+    Terminal = chat_terminal(LlmConfig),
+    case beamai_filter_chain:run(Filters, {pre_chat, post_chat}, Terminal, Req) of
+        {ok, #{response := Response, context := Ctx}} -> {ok, Response, Ctx};
+        {error, _} = Err -> Err
     end.
 
-%% @private 执行工具并应用后置过滤器
-execute_and_post_filter(Filters, ToolSpec, Args, Context) ->
-    case beamai_tool:invoke(ToolSpec, Args, Context) of
-        {ok, Value} ->
-            beamai_filter:apply_post_filters(Filters, ToolSpec, Value, Context);
-        {ok, Value, NewCtx} ->
-            beamai_filter:apply_post_filters(Filters, ToolSpec, Value, NewCtx);
-        {error, _} = Err ->
-            Err
-    end.
-
-%% @private 执行 Chat 管道：前置过滤 → LLM 调用 → 后置过滤
-run_chat_pipeline(LlmConfig, Filters, Messages, Opts, Context) ->
-    case beamai_filter:apply_pre_chat_filters(Filters, Messages, Context) of
-        {ok, FilteredMsgs, FilteredCtx} ->
-            execute_llm_and_post_filter(LlmConfig, Filters, FilteredMsgs, Opts, FilteredCtx);
-        {error, _} = Err ->
-            Err
-    end.
-
-%% @private 执行 LLM 请求并应用后置过滤器
-execute_llm_and_post_filter(LlmConfig, Filters, Messages, Opts, Context) ->
+%% @private chat 链最内层：真正调用 LLM（出错时 throw，由链统一捕获）
+chat_terminal(LlmConfig) ->
     Module = maps:get(module, LlmConfig, beamai_chat_completion),
-    case Module:chat(LlmConfig, Messages, Opts) of
-        {ok, Response} ->
-            case beamai_filter:apply_post_chat_filters(Filters, Response, Context) of
-                {ok, FinalResp, FinalCtx} -> {ok, FinalResp, FinalCtx};
-                {error, _} = Err -> Err
-            end;
-        {error, _} = Err ->
-            Err
+    fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
+        case Module:chat(LlmConfig, Messages, Opts) of
+            {ok, Response} -> #{response => Response, context => Ctx};
+            {error, Reason} -> throw(Reason)
+        end
+    end.
+
+%% @private 运行 tool filter 洋葱链（用 pre_tool/post_tool 一对 hook）
+%%
+%% Request `#{tool, args, context}` → Response `#{result, context}`，
+%% 最内层 terminal 为真正的工具执行。
+run_tool(Filters, ToolSpec, Args, Context) ->
+    Req = #{tool => ToolSpec, args => Args, context => Context},
+    Terminal = tool_terminal(),
+    case beamai_filter_chain:run(Filters, {pre_tool, post_tool}, Terminal, Req) of
+        {ok, #{result := Value, context := Ctx}} -> {ok, Value, Ctx};
+        {error, _} = Err -> Err
+    end.
+
+%% @private tool 链最内层：真正执行工具（出错时 throw，由链统一捕获）
+tool_terminal() ->
+    fun(#{tool := ToolSpec, args := Args, context := Ctx}) ->
+        case beamai_tool:invoke(ToolSpec, Args, Ctx) of
+            {ok, Value} -> #{result => Value, context => Ctx};
+            {ok, Value, NewCtx} -> #{result => Value, context => NewCtx};
+            {error, Reason} -> throw(Reason)
+        end
     end.
