@@ -5,7 +5,8 @@ English | [中文](MEMORY.md)
 beamai_core's conversation memory fully decouples conversation-history storage and
 injection from the Kernel: **the Kernel is stateless and each invoke only takes the
 single latest message**. History is managed by a Memory Filter together with a
-ChatMemory store, keyed by `conversation_id`.
+ChatMemory store, keyed by `conversation_id`. The Memory Filter is a single onion-style
+filter (with a pre_chat/post_chat hook pair, see the [Filter docs](FILTER_EN.md)).
 
 Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_memory_filter_redesign.md).
 
@@ -35,8 +36,8 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 | `beamai_chat_memory` | ChatMemory **behaviour** + dispatch API, handle `{Module, Ref}` |
 | `beamai_chat_memory_ets` | Default ETS gen_server implementation (process owns the ETS table) |
 | `beamai_chat_memory_window` | Sliding-window wrapper: full history kept underneath, windowed on `mem_get` |
-| `beamai_memory_filter` | pre_chat(-1000) store delta + expand history; post_chat(+1000) store reply |
-| `beamai_kernel:with_memory/2` | Bind a store and mount the two filters |
+| `beamai_memory_filter` | A single filter: pre_chat stores delta + expands history; post_chat stores reply |
+| `beamai_kernel:with_memory/2` | Bind a store and mount the Memory Filter |
 
 ## delta mode vs full mode
 
@@ -50,7 +51,7 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 | Uses conversation_id | no | yes (ephemeral id generated if absent, cleared at end) |
 | Context continuous within tool loop | ✅ | ✅ |
 | Memory across invokes | ❌ (stateless single-shot) | ✅ (persisted by conversation_id) |
-| Who records the assistant message | local concatenation | post_chat filter stores into the store |
+| Who records the assistant message | local concatenation | the Memory Filter's post_chat stores into the store |
 
 > **Why full mode exists**: a tool-calling loop is inherently multi-round (LLM → tool →
 > LLM again). Without a store, subsequent LLM calls within a single invoke must still see
@@ -130,16 +131,19 @@ K = beamai_kernel:with_memory(K1, Store).
 invoke(Kernel, [User msg], #{context := Ctx(conv_id=s1)})
 └─ tool_calling_loop, delta = [User msg]
    └─ run_chat_pipeline(delta)
-      ├─ [pre_chat -1000] memory : mem_add(s1, delta); messages := mem_get(s1) full history
-      ├─ [pre_chat  -500] system : messages := [SysPrompt | messages]   (not stored)
-      ├─ LLM call
-      └─ [post_chat +1000] memory: mem_add(s1, assistant reply)
-   ├─ has tool_calls → run tools (pre/post_invocation filters), delta := [tool results], loop
+      ├─ memory.pre_chat (order -1000, outer): mem_add(s1, delta); messages := mem_get(s1) full history
+      ├─ system.pre_chat (order -500, inner): messages := [SysPrompt | messages]  (not stored)
+      ├─ Terminal: LLM call
+      └─ memory.post_chat (outbound): mem_add(s1, assistant reply)
+   ├─ has tool_calls → run tools (tool filter chain, pre_tool/post_tool), delta := [tool results], loop
    └─ plain text → return {ok, Response, Ctx}
 ```
 
-system_prompts are injected as a transient pre_chat(-500) filter, after history expansion
-and before the LLM, and are **not written to the store**.
+memory is a single filter: its `pre_chat` expands history on the outer layer and its
+`post_chat` stores the reply on the way out; the onion chain guarantees the order with no
+priority simulation. system_prompts are injected by a transient filter (pre_chat only,
+order -500, more inner), after history expansion and before the LLM, and are **not
+written to the store**.
 
 ## Key Source Files
 
@@ -148,5 +152,5 @@ and before the LLM, and are **not written to the store**.
 | `apps/beamai_core/src/behaviours/beamai_chat_memory.erl` | behaviour + dispatch API |
 | `apps/beamai_core/src/kernel/beamai_chat_memory_ets.erl` | ETS default implementation |
 | `apps/beamai_core/src/kernel/beamai_chat_memory_window.erl` | windowed wrapper |
-| `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | Memory filters |
+| `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | Memory Filter |
 | `apps/beamai_core/src/kernel/beamai_kernel.erl` | `with_memory/2`, invoke dual-mode |

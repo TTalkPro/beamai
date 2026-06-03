@@ -2,12 +2,13 @@
 
 [English](FILTER_EN.md) | 中文
 
-beamai_core 的 Filter 系统提供了轻量级的管道拦截机制，用于在工具调用和 LLM 请求的前后进行拦截、修改和控制。
+beamai_core 的 Filter 系统提供了真正的**洋葱式（onion）**拦截机制，用于在工具执行和 LLM 调用的前后进行包裹、改写和控制。它对齐 [Spring AI 的 Advisor](https://docs.spring.io/spring-ai/reference/api/advisors.html) 把拦截拆成 before/after 的思路：去程改写请求、回程改写响应，回程顺序自动逆序。区别在于——beamai 的**一个 filter** 同时打包 chat 与 tool 的去程/回程 hook，最多绑定 4 个可选 hook。
 
 ## 目录
 
 - [概述](#概述)
-- [过滤器类型](#过滤器类型)
+- [4 个 hook 点](#4-个-hook-点)
+- [洋葱执行顺序](#洋葱执行顺序)
 - [API 参考](#api-参考)
 - [使用方法](#使用方法)
 - [完整示例](#完整示例)
@@ -17,119 +18,101 @@ beamai_core 的 Filter 系统提供了轻量级的管道拦截机制，用于在
 
 ## 概述
 
-Filter 是 Kernel 工具调用和 Chat 请求的拦截器，可以：
+Filter 是 Kernel 工具执行和 Chat 调用的洋葱式拦截器，可以：
 
-- **修改参数/结果**: 在工具调用前后修改参数和返回值
-- **修改消息**: 在 LLM 调用前后修改消息列表和响应
-- **拦截执行**: 跳过工具执行直接返回结果，或中止管道返回错误
+- **改写请求**: 去程修改参数、消息列表、调用选项
+- **改写响应**: 回程修改工具结果或 LLM 响应
+- **短路**: 在去程 hook 返回 `{halt, Response}`，跳过内层（包括真正的工具执行/LLM 调用）直接返回结果，但仍执行本层回程 hook
 - **日志/审计**: 记录调用日志、统计响应长度等
 
-### 执行流程
-
-```
-┌──────────────────────────────────────────────────────┐
-│                  Kernel 调用流程                       │
-├──────────────────────────────────────────────────────┤
-│                                                       │
-│  工具调用 (invoke_tool):                              │
-│  ┌─────────────────┐                                 │
-│  │ pre_invocation   │  ← 可修改参数、跳过、拒绝       │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │  Tool Execution  │                                │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │ post_invocation  │  ← 可修改结果                   │
-│  └─────────────────┘                                 │
-│                                                       │
-│  Chat 请求 (invoke_chat):                             │
-│  ┌─────────────────┐                                 │
-│  │   pre_chat       │  ← 可修改消息列表               │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │   LLM Call       │                                │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │   post_chat      │  ← 可修改响应                   │
-│  └─────────────────┘                                 │
-│                                                       │
-└──────────────────────────────────────────────────────┘
-```
+每个 filter 就是**一层洋葱**——它最多绑定 4 个可选 hook：chat 链的去程/回程（`pre_chat`/`post_chat`）和 tool 链的去程/回程（`pre_tool`/`post_tool`）。同一 filter 的 pre/post 配成**同一层洋葱**包裹同一次调用：去程 pre 在内层之前执行，回程 post 在内层之后执行，回程自动逆序。filter 链由 `beamai_filter_chain` 合成为嵌套调用，最内层是 **terminal**（真正的 LLM 调用或工具执行）。
 
 ### 核心模块
 
 | 模块 | 位置 | 说明 |
 |------|------|------|
-| `beamai_filter` | `apps/beamai_core/src/kernel/` | 过滤器定义和管道执行 |
-| `beamai_kernel` | `apps/beamai_core/src/kernel/` | Kernel 集成（注册和调用过滤器） |
+| `beamai_filter` | `apps/beamai_core/src/kernel/` | Filter 构造器与工具函数 |
+| `beamai_filter_chain` | `apps/beamai_core/src/kernel/` | 洋葱链合成与运行 |
+| `beamai_kernel` | `apps/beamai_core/src/kernel/` | Kernel 集成（注册 filter） |
 | `beamai` | `apps/beamai_core/src/` | 顶层 Facade（便捷 API） |
 
 ---
 
-## 过滤器类型
+## 4 个 hook 点
 
-### 四种过滤器
+一个 filter 可定义以下 4 个 hook 的任意子集：
 
-| 类型 | 触发时机 | 典型用途 |
-|------|----------|----------|
-| `pre_invocation` | 工具执行前 | 参数验证、日志记录、权限检查 |
-| `post_invocation` | 工具执行后 | 结果转换、日志记录 |
-| `pre_chat` | LLM 调用前 | 注入 system 消息、内容过滤、**会话历史注入** |
-| `post_chat` | LLM 响应后 | 内容审计、响应转换、**会话历史存储** |
+| hook | 含义 | 形态 |
+|------|------|------|
+| `pre_chat` | chat 去程：LLM 调用前改写请求 | `fun(Request) -> Request \| {halt, Response}` |
+| `post_chat` | chat 回程：LLM 调用后改写响应 | `fun(Response) -> Response` |
+| `pre_tool` | tool 去程：工具执行前改写参数 | `fun(Request) -> Request \| {halt, Response}` |
+| `post_tool` | tool 回程：工具执行后改写结果 | `fun(Response) -> Response` |
 
-> **会话记忆**正是基于 `pre_chat` / `post_chat` 实现的：`beamai_memory_filter` 用
-> pre_chat(-1000) 存 delta 并展开完整历史、post_chat(+1000) 存储回复，按
-> `conversation_id` 管理对话。详见 [MEMORY.md](MEMORY.md)。
+**两条链分别只用各自的一对 hook：**
 
-### 过滤器上下文 (filter_context)
+- **chat 链**用每个 filter 的 `(pre_chat, post_chat)` 这一对，包裹一次 LLM 调用。
+- **tool 链**用每个 filter 的 `(pre_tool, post_tool)` 这一对，包裹一次工具执行。
 
-过滤器通过 `filter_context` Map 接收和传递数据：
+某 filter 若对某条链不含相关 hook（chat 链既无 `pre_chat` 也无 `post_chat`，或 tool 链既无 `pre_tool` 也无 `post_tool`），则在该链中被**跳过**。缺失的单个 hook 用恒等函数补齐。
 
-```erlang
-%% pre_invocation / post_invocation
-#{
-    tool => ToolSpec,           %% 工具定义
-    args => Args,               %% 调用参数（pre 可修改）
-    result => Result,           %% 执行结果（仅 post 可用）
-    context => Context,         %% 执行上下文
-    metadata => #{}             %% 附加元数据
-}
+### 各链的 Request / Response
 
-%% pre_chat
-#{
-    messages => [Message],      %% 消息列表（可修改）
-    context => Context,         %% 执行上下文
-    metadata => #{}
-}
+| 链 | Request | Response |
+|----|---------|----------|
+| chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_llm_response） |
+| tool | `#{tool, args, context}` | `#{result, context}` |
 
-%% post_chat
-#{
-    result => Response,         %% LLM 响应（可修改）
-    context => Context,
-    metadata => #{}
-}
-```
+> **会话记忆**正是一个 filter：`beamai_memory_filter:memory_filter(Store)` 返回**单个** filter，其 `pre_chat` 把本轮 delta 存入 store 并用 store 里的完整历史替换 messages（按 `conversation_id`）、其 `post_chat` 把 assistant 回复存入 store。前后逻辑同处一层，由洋葱链天然保证 `pre_chat` 在内层之前、`post_chat` 在内层之后。详见 [MEMORY.md](MEMORY.md)。
 
-### 过滤器返回值 (filter_result)
+### order 字段
+
+`order` 决定洋葱的层次：**越小越外层**——它的 pre hook 越先执行、post hook 越后执行。默认 `order` 为 0。同 `order` 按注册顺序排列（稳定排序）。
+
+### Filter 规格 Map
+
+filter 是一个标记 map：
 
 ```erlang
-%% 继续执行，传递修改后的上下文给下一个过滤器
-{continue, UpdatedFilterCtx}
-
-%% 跳过后续处理（包括工具执行），直接返回值
-{skip, Value}
-
-%% 中止管道，返回错误
-{error, Reason}
+-type filter() :: #{
+    '__filter__' := true,
+    name := binary(),                                  %% 名称（调试标识）
+    order := integer(),                                %% 层次（越小越外层）
+    hooks := #{                                        %% 4 个 hook 的任意子集
+        pre_chat  => fun((Request)  -> Request | {halt, Response}),
+        post_chat => fun((Response) -> Response),
+        pre_tool  => fun((Request)  -> Request | {halt, Response}),
+        post_tool => fun((Response) -> Response)
+    }
+}.
 ```
+
+---
+
+## 洋葱执行顺序
+
+对 filter A（order 1）和 B（order 2）在 chat 链上包裹 terminal（LLM）：
+
+```
+A.pre_chat → B.pre_chat → Terminal → B.post_chat → A.post_chat
+```
+
+合成方式（`beamai_filter_chain:compose/4`，Phase = `{pre_chat, post_chat}`）：
+
+```
+compose([A, B], Phase, Terminal)
+  = fun(Req) -> A_wrap(Req, fun(R) -> B_wrap(R, Terminal) end) end
+```
+
+其中 `X_wrap` 即「先跑 X 的 pre、再进内层、回程跑 X 的 post」。
+
+- **去程**：按 order 升序执行各层 pre hook（A 先、B 后）。
+- **terminal**：最内层执行真正的 LLM 调用 / 工具执行。
+- **回程**：post hook **自动逆序**（B 先、A 后）——这是嵌套调用栈天然的展开顺序，无需手工指定。
+
+filter 的 pre hook 若返回 `{halt, Response}` 即为短路（跳过所有内层），但**仍执行本层的 post hook**。
+
+tool 链同理，把上面的 `pre_chat/post_chat` 换成 `pre_tool/post_tool`（Phase = `{pre_tool, post_tool}`）。
 
 ---
 
@@ -137,108 +120,104 @@ Filter 是 Kernel 工具调用和 Chat 请求的拦截器，可以：
 
 ### beamai_filter 模块
 
-#### 创建过滤器
+#### 构造器
 
 ```erlang
-%% 创建过滤器（默认优先级 0）
--spec new(Name :: binary(), Type :: filter_type(), Handler :: fun()) -> filter_spec().
-beamai_filter:new(<<"my_filter">>, pre_invocation, fun(Ctx) -> {continue, Ctx} end).
+%% 创建 filter（默认 order 0）。
+%% Hooks 为 hook map，可含 pre_chat/post_chat/pre_tool/post_tool 任意子集。
+-spec new(Name :: binary(), Hooks :: hooks()) -> filter().
 
-%% 创建过滤器（指定优先级，数值越小越先执行）
--spec new(Name :: binary(), Type :: filter_type(), Handler :: fun(), Priority :: integer()) -> filter_spec().
-beamai_filter:new(<<"my_filter">>, pre_invocation, Handler, 10).
+%% 创建 filter（指定 order，越小越外层）
+-spec new(Name :: binary(), Hooks :: hooks(), Order :: integer()) -> filter().
 ```
 
-#### 执行过滤器管道
+其中 hook 形态：
 
 ```erlang
-%% 执行前置调用过滤器
--spec apply_pre_filters(Filters, ToolSpec, Args, Context) ->
-    {ok, FilteredArgs, FilteredContext} | {skip, Value} | {error, Reason}.
-
-%% 执行后置调用过滤器
--spec apply_post_filters(Filters, ToolSpec, Result, Context) ->
-    {ok, FilteredResult, FilteredContext} | {error, Reason}.
-
-%% 执行前置 Chat 过滤器
--spec apply_pre_chat_filters(Filters, Messages, Context) ->
-    {ok, FilteredMessages, FilteredContext} | {error, Reason}.
-
-%% 执行后置 Chat 过滤器
--spec apply_post_chat_filters(Filters, Response, Context) ->
-    {ok, FilteredResponse, FilteredContext} | {error, Reason}.
-
-%% 按优先级排序过滤器
--spec sort_filters(Filters) -> SortedFilters.
-```
-
-#### 过滤器定义类型
-
-```erlang
--type filter_spec() :: #{
-    name := binary(),                                      %% 过滤器名称（调试标识）
-    type := filter_type(),                                 %% 过滤器类型
-    handler := fun((filter_context()) -> filter_result()), %% 处理函数
-    priority => integer()                                  %% 优先级（默认 0）
+-type hook_type() :: pre_chat | post_chat | pre_tool | post_tool.
+-type hooks() :: #{
+    pre_chat  => fun((Request)  -> Request | {halt, Response}),
+    post_chat => fun((Response) -> Response),
+    pre_tool  => fun((Request)  -> Request | {halt, Response}),
+    post_tool => fun((Response) -> Response)
 }.
+```
 
--type filter_type() :: pre_invocation | post_invocation | pre_chat | post_chat.
+pre hook 返回 `{halt, Response}` 则短路（跳过内层），但仍执行本层对应的 post hook。
 
--type filter_result() ::
-    {continue, filter_context()}   %% 传递给下一个过滤器
-    | {skip, term()}               %% 跳过执行
-    | {error, term()}.             %% 中止管道
+#### 工具函数
+
+```erlang
+%% 按 order 升序稳定排序（同 order 保持注册顺序）
+-spec sort([filter()]) -> [filter()].
+
+%% 取 filter 的某个 hook（不存在返回 undefined）
+-spec hook(filter(), hook_type()) -> fun() | undefined.
+```
+
+### beamai_filter_chain 模块
+
+```erlang
+%% 运行某条链的 filter 洋葱。
+%% Phase 指定该链用哪一对 hook：chat 链传 {pre_chat, post_chat}，
+%% tool 链传 {pre_tool, post_tool}。只参与该链（含至少一个相关 hook）的
+%% filter 进入洋葱，其余跳过。Terminal 产出最内层响应，出错时 throw；
+%% run/4 用 try/catch 捕获，统一返回 {ok, Response} | {error, Reason}。
+-spec run(Filters :: [filter()],
+          Phase :: {pre_chat, post_chat} | {pre_tool, post_tool},
+          Terminal :: fun((Request) -> Response),
+          Request :: map()) -> {ok, Response} | {error, Reason}.
+
+%% 把 filter 列表与 terminal 合成为单个洋葱函数（内部用，外部传 identity）
+-spec compose(Filters :: [filter()], Phase :: phase(),
+              Terminal :: fun(), identity) -> fun((Request) -> Response).
 ```
 
 ### beamai_kernel 集成
 
 ```erlang
-%% 注册过滤器到 Kernel
-beamai_kernel:add_filter(Kernel, FilterDef) -> UpdatedKernel.
+%% 注册 filter 到 Kernel（追加到 filters 列表，运行时按 order 排序）
+beamai_kernel:add_filter(Kernel, Filter) -> UpdatedKernel.
 
-%% 从工具模块自动加载过滤器（模块需实现可选的 filters/0 回调）
+%% 从工具模块自动加载 filter（模块需实现可选的 filters/0 回调）
 beamai_kernel:add_tool_module(Kernel, Module) -> UpdatedKernel.
-
-%% 调用工具（自动执行 pre/post invocation 过滤器管道）
-beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
-
-%% Chat 请求（自动执行 pre/post chat 过滤器管道）
-beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
 ```
 
 ### beamai 便捷 API
 
 ```erlang
-%% 注册已构建的过滤器
-beamai:add_filter(Kernel, FilterDef) -> UpdatedKernel.
+%% 注册已构建的 filter
+beamai:add_filter(Kernel, Filter) -> UpdatedKernel.
 
-%% 快捷创建并注册过滤器（自动调用 beamai_filter:new/3）
-beamai:add_filter(Kernel, Name, Type, Handler) -> UpdatedKernel.
+%% 快捷创建并注册 filter（直接给 hook map，order 固定为 0）
+beamai:add_filter(Kernel, Name, Hooks) -> UpdatedKernel.
 ```
 
 ---
 
 ## 使用方法
 
-### 1. 注册过滤器到 Kernel
+### 1. 注册 filter 到 Kernel
 
 ```erlang
-%% 方式一：使用 beamai 便捷 API（推荐）
+%% 方式一：使用 beamai 便捷 API（hook map，order 0）
 K0 = beamai:kernel(),
-K1 = beamai:add_filter(K0, <<"logger">>, pre_invocation,
-    fun(#{tool := #{name := Name}} = Ctx) ->
-        io:format("Calling tool: ~ts~n", [Name]),
-        {continue, Ctx}
-    end).
+K1 = beamai:add_filter(K0, <<"logger">>, #{
+    %% pre_tool：去程记录工具名
+    pre_tool => fun(#{tool := #{name := Name}, args := Args} = Req) ->
+        io:format("Calling tool: ~ts(~p)~n", [Name, Args]),
+        Req
+    end
+}).
 
-%% 方式二：手动创建过滤器并注册
-Filter = beamai_filter:new(<<"logger">>, pre_invocation, Handler, 10),
+%% 方式二：手动创建 filter 并注册（可指定 order）
+Filter = beamai_filter:new(<<"logger">>, #{pre_tool => PreFn}, 10),
 K1 = beamai_kernel:add_filter(K0, Filter).
 ```
 
-### 2. 工具模块自动注册过滤器
+### 2. 工具模块自动注册 filter
 
-工具模块可以通过实现可选的 `filters/0` 回调自动注册过滤器：
+工具模块可通过实现可选的 `filters/0` 回调自动注册 filter：
 
 ```erlang
 -module(my_tool_module).
@@ -250,49 +229,50 @@ tools() ->
     [#{name => <<"my_tool">>, handler => fun handle/2,
        description => <<"My tool">>}].
 
-%% 可选回调：返回过滤器列表
+%% 可选回调：返回 filter 列表
 filters() ->
     [
-        beamai_filter:new(<<"audit">>, post_invocation,
-            fun(#{tool := #{name := Name}, result := Result} = Ctx) ->
-                logger:info("Tool ~ts returned: ~p", [Name, Result]),
-                {continue, Ctx}
-            end)
+        beamai_filter:new(<<"audit">>, #{
+            post_tool => fun(#{result := Result} = Resp) ->
+                logger:info("Tool returned: ~p", [Result]),
+                Resp
+            end
+        })
     ].
 ```
 
-加载模块时，Kernel 会自动注册这些过滤器：
+加载模块时，Kernel 会自动注册这些 filter：
 
 ```erlang
 K1 = beamai_kernel:add_tool_module(K0, my_tool_module).
-%% 工具和过滤器都已注册
+%% 工具和 filter 都已注册
 ```
 
-### 3. 过滤器优先级
+### 3. Filter 层次（order）
 
-优先级数值越小越先执行。同优先级按注册顺序执行。
+`order` 数值越小越外层：它的 pre hook 越先执行、post hook 越后执行。同 `order` 按注册顺序排列。
 
 ```erlang
-%% 验证器（优先级 -10，最先执行）
+%% 校验器（order -10，最外层 → pre_tool 最先执行）
 K1 = beamai_kernel:add_filter(K0,
-    beamai_filter:new(<<"validator">>, pre_invocation, ValidateFn, -10)),
+    beamai_filter:new(<<"validator">>, #{pre_tool => ValidateFn}, -10)),
 
-%% 日志器（优先级 0，默认）
+%% 日志器（order 0，默认）
 K2 = beamai_kernel:add_filter(K1,
-    beamai_filter:new(<<"logger">>, pre_invocation, LogFn, 0)),
+    beamai_filter:new(<<"logger">>, #{pre_tool => LogFn}, 0)),
 
-%% 转换器（优先级 10，最后执行）
+%% 转换器（order 10，最内层 → pre_tool 最后执行、post_tool 最先执行）
 K3 = beamai_kernel:add_filter(K2,
-    beamai_filter:new(<<"transformer">>, pre_invocation, TransformFn, 10)).
+    beamai_filter:new(<<"transformer">>, #{post_tool => TransformFn}, 10)).
 
-%% 执行顺序：validator → logger → transformer
+%% pre_tool 执行顺序：validator → logger → transformer → Terminal
 ```
 
 ---
 
 ## 完整示例
 
-### 示例 1：参数验证 + 日志记录
+### 示例 1：tool filter —— 日志 + 结果翻倍（同一 filter 的 pre_tool + post_tool）
 
 ```erlang
 %% 创建 Kernel 并注册工具
@@ -305,107 +285,114 @@ K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
           b => #{type => integer, required => true}
       }})),
 
-%% 前置过滤器：记录调用日志
-K2 = beamai:add_filter(K1, <<"log">>, pre_invocation,
-    fun(#{tool := #{name := Name}, args := Args} = Ctx) ->
+%% 同一 filter 同时绑定 pre_tool（去程日志）与 post_tool（回程翻倍）
+K2 = beamai:add_filter(K1, <<"log_and_double">>, #{
+    %% pre_tool：去程记录调用
+    pre_tool => fun(#{tool := #{name := Name}, args := Args} = Req) ->
         io:format("[LOG] ~ts(~p)~n", [Name, Args]),
-        {continue, Ctx}
-    end),
+        Req
+    end,
+    %% post_tool：回程改写 result
+    post_tool => fun(#{result := Result} = Resp) ->
+        Resp#{result => Result * 2}
+    end
+}).
 
-%% 前置过滤器：参数验证（拒绝过大的值）
-K3 = beamai:add_filter(K2, <<"validate">>, pre_invocation,
-    fun(#{args := #{a := A}} = _Ctx) when A > 1000 ->
-        {error, {validation_failed, <<"a exceeds limit">>}};
-       (Ctx) ->
-        {continue, Ctx}
-    end),
-
-%% 后置过滤器：结果翻倍
-K4 = beamai:add_filter(K3, <<"double">>, post_invocation,
-    fun(#{result := Result} = Ctx) ->
-        {continue, Ctx#{result => Result * 2}}
-    end),
-
-%% 调用（3 + 5 = 8，翻倍后 = 16）
-{ok, 16, _} = beamai:invoke_tool(K4, <<"add">>, #{a => 3, b => 5}, beamai:context()).
-
-%% 调用被拒绝
-{error, {validation_failed, _}} = beamai:invoke_tool(K4, <<"add">>, #{a => 2000, b => 1}, beamai:context()).
+%% 调用（3 + 5 = 8，回程翻倍后 = 16）
+%% （工具执行经 Kernel 的 tool filter 洋葱链）
 ```
 
-### 示例 2：Chat 消息注入 + 响应审计
+### 示例 2：chat filter —— 注入 system 消息 + 审计（同一 filter 的 pre_chat + post_chat）
 
 ```erlang
 K0 = beamai:kernel(),
 K1 = beamai:add_llm(K0, LLMConfig),
 
-%% pre_chat：自动注入 system 消息
-K2 = beamai:add_filter(K1, <<"inject_system">>, pre_chat,
-    fun(#{messages := Msgs} = Ctx) ->
+%% 同一 filter：pre_chat 去程注入 system 消息、post_chat 回程记录响应长度
+K2 = beamai:add_filter(K1, <<"system_and_audit">>, #{
+    %% pre_chat：自动注入 system 消息
+    pre_chat => fun(#{messages := Msgs} = Req) ->
         HasSystem = lists:any(
             fun(#{role := R}) -> R =:= system; (_) -> false end,
             Msgs),
         case HasSystem of
             true ->
-                {continue, Ctx};
+                Req;
             false ->
                 SystemMsg = #{role => system,
                               content => <<"请用简洁的中文回答。"/utf8>>},
-                {continue, Ctx#{messages => [SystemMsg | Msgs]}}
+                Req#{messages => [SystemMsg | Msgs]}
         end
-    end),
+    end,
+    %% post_chat：记录响应内容长度
+    post_chat => fun(#{response := Response} = Resp) ->
+        case beamai_llm_response:content(Response) of
+            Content when is_binary(Content) ->
+                logger:info("Response length: ~B bytes", [byte_size(Content)]);
+            _ ->
+                ok
+        end,
+        Resp
+    end
+}).
 
-%% post_chat：记录响应长度
-K3 = beamai:add_filter(K2, <<"audit">>, post_chat,
-    fun(#{result := #{content := Content}} = Ctx) when is_binary(Content) ->
-        logger:info("Response length: ~B bytes", [byte_size(Content)]),
-        {continue, Ctx};
-       (Ctx) ->
-        {continue, Ctx}
-    end),
-
-%% 发送请求（过滤器自动注入 system 消息）
-{ok, Response, _Ctx} = beamai:chat(K3, [
-    #{role => user, content => <<"什么是 GenServer？"/utf8>>}
-]).
+%% 发送请求时，chat filter 链自动注入 system 消息并审计响应。
 ```
 
-### 示例 3：使用 skip 实现缓存
+### 示例 3：短路 —— pre_tool 返回 `{halt, Response}`
 
 ```erlang
-%% pre_invocation 中跳过执行，返回缓存结果
-K1 = beamai:add_filter(K0, <<"cache">>, pre_invocation,
-    fun(#{tool := #{name := Name}, args := Args} = Ctx) ->
-        case lookup_cache(Name, Args) of
-            {ok, Cached} ->
-                {skip, Cached};     %% 跳过工具执行，直接返回缓存值
-            miss ->
-                {continue, Ctx}     %% 缓存未命中，继续正常执行
+%% tool filter：参数校验失败时短路（跳过真正的工具执行），仍走本层 post_tool
+K1 = beamai:add_filter(K0, <<"guard">>, #{
+    %% pre_tool：命中守卫条件则 halt，直接以错误结果短路
+    pre_tool => fun(#{args := #{a := A}, context := Ctx} = Req) ->
+        case A > 1000 of
+            true  -> {halt, #{result => {error, <<"a exceeds limit">>},
+                              context => Ctx}};
+            false -> Req
         end
-    end).
+    end,
+    %% post_tool：halt 与正常返回都会经过这里（统一收尾）
+    post_tool => fun(Resp) ->
+        logger:info("tool finished: ~p", [Resp]),
+        Resp
+    end
+}).
 ```
+
+> pre hook 返回 `{halt, Response}` 时跳过所有内层，但**仍执行本层的 post hook**——便于在短路路径上做统一的收尾处理（如缓存写回、计数）。
 
 更多示例参见 [examples/src/example_filter.erl](../examples/src/example_filter.erl)。
 
 ---
 
+## 与 Spring AI Advisor 的对应
+
+本系统镜像 Spring AI 的 Advisor 把拦截拆成 before/after 的思路：
+
+- Spring AI 的 `before(request, chain)` / `after(response, chain)` 分解 ⇄ beamai filter 的 pre/post hook。
+- 不同点：Spring AI 一个 advisor 对应一条链；beamai 的**一个 filter** 同时打包 chat 与 tool 的去程/回程 hook（最多 4 个），chat 链取 `(pre_chat, post_chat)`、tool 链取 `(pre_tool, post_tool)`。
+- 无独立的「around」形式——需要短路时由 pre hook 返回 `{halt, Response}` 实现。
+
+两者都以「pre/post 包裹同一次调用、回程自动逆序」为核心。
+
+---
+
 ## 与 Middleware 的关系
 
-[beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中提供了更高级的 Middleware 系统（位于 beamai_tools），支持有状态管理、预设配置、调用限制、人工审批、重试和降级等功能。
-
-Middleware 内部通过 `beamai_middleware_runner:to_filters/1` 转换为 Filter 注册到 Kernel，两者最终在同一个过滤器管道中执行。
+[beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中提供了更高级的 Middleware 系统（位于 beamai_tools），支持有状态管理、预设配置、调用限制、人工审批、重试和降级等功能。Middleware 内部转换为 filter 注册到 Kernel，两者最终在同一条洋葱链中执行。
 
 | 特性 | Filter（本文档） | Middleware（beamai_extra） |
-|------|------------------|---------------------------|
+|------|-------------------|---------------------------|
 | 复杂度 | 轻量级，无状态 | 完整框架，有状态管理 |
 | 预设配置 | 无 | 提供 production/development 等预设 |
 | 内置功能 | 无 | 调用限制、人工审批、重试、降级 |
-| 适用场景 | 简单拦截：日志、验证、转换 | 复杂控制：限流、重试、降级 |
+| 适用场景 | 简单包裹：日志、校验、注入、缓存 | 复杂控制：限流、重试、降级 |
 
 ---
 
 ## 更多资源
 
 - [beamai_core README](../apps/beamai_core/README.md) - Kernel 架构文档
+- [MEMORY.md](MEMORY.md) - 会话记忆（Memory filter）
 - [API 参考](API_REFERENCE.md) - API 参考文档
-- [示例代码](../examples/src/example_filter.erl) - Filter 完整示例

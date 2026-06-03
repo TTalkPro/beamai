@@ -2,12 +2,13 @@
 
 English | [中文](FILTER.md)
 
-The beamai_core Filter system provides a lightweight pipeline interception mechanism for intercepting, modifying, and controlling tool invocations and LLM requests.
+The beamai_core Filter system provides a true **onion-style** interception mechanism for wrapping, rewriting, and controlling tool execution and LLM calls. It mirrors the before/after decomposition of [Spring AI's Advisor](https://docs.spring.io/spring-ai/reference/api/advisors.html): rewrite the request on the way in, rewrite the response on the way out, and the outbound order reverses automatically. The difference: in beamai a **single filter** bundles the chat and tool before/after hooks, binding up to 4 optional hooks.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Filter Types](#filter-types)
+- [4 Hook Points](#4-hook-points)
+- [Onion Execution Order](#onion-execution-order)
 - [API Reference](#api-reference)
 - [Usage](#usage)
 - [Complete Examples](#complete-examples)
@@ -17,120 +18,101 @@ The beamai_core Filter system provides a lightweight pipeline interception mecha
 
 ## Overview
 
-Filters are interceptors for Kernel tool invocations and Chat requests that can:
+Filters are onion-style interceptors for Kernel tool execution and Chat calls that can:
 
-- **Modify arguments/results**: Modify parameters and return values before/after tool invocations
-- **Modify messages**: Modify message lists and responses before/after LLM calls
-- **Intercept execution**: Skip tool execution and return a value directly, or abort the pipeline with an error
-- **Logging/auditing**: Record invocation logs, measure response length, etc.
+- **Rewrite the request**: modify args, message lists, and options on the way in
+- **Rewrite the response**: modify tool results or LLM responses on the way out
+- **Short-circuit**: return `{halt, Response}` from a pre hook to skip the inner layers (including the real tool execution / LLM call) and return a result directly, while still running this layer's post hook
+- **Logging/auditing**: record invocation logs, measure response length, etc.
 
-### Execution Flow
-
-```
-┌──────────────────────────────────────────────────────┐
-│                  Kernel Call Flow                      │
-├──────────────────────────────────────────────────────┤
-│                                                       │
-│  Tool Invocation (invoke_tool):                       │
-│  ┌─────────────────┐                                 │
-│  │ pre_invocation   │  ← modify args, skip, reject   │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │  Tool Execution  │                                │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │ post_invocation  │  ← modify result               │
-│  └─────────────────┘                                 │
-│                                                       │
-│  Chat Request (invoke_chat):                          │
-│  ┌─────────────────┐                                 │
-│  │   pre_chat       │  ← modify message list         │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │   LLM Call       │                                │
-│  └────────┬────────┘                                 │
-│           │                                           │
-│           ▼                                           │
-│  ┌─────────────────┐                                 │
-│  │   post_chat      │  ← modify response             │
-│  └─────────────────┘                                 │
-│                                                       │
-└──────────────────────────────────────────────────────┘
-```
+Each filter is **one layer of the onion** — it binds up to 4 optional hooks: the chat chain's in/out (`pre_chat`/`post_chat`) and the tool chain's in/out (`pre_tool`/`post_tool`). A filter's pre/post form **one onion layer** wrapping the same call: the pre hook runs before the inner layers on the way in, and the post hook runs after them on the way out, reversing automatically. The filter list is composed into nested calls by `beamai_filter_chain`, with the **terminal** (the real LLM call or tool execution) at the very center.
 
 ### Core Modules
 
 | Module | Location | Description |
 |--------|----------|-------------|
-| `beamai_filter` | `apps/beamai_core/src/kernel/` | Filter definition and pipeline execution |
-| `beamai_kernel` | `apps/beamai_core/src/kernel/` | Kernel integration (register and invoke filters) |
+| `beamai_filter` | `apps/beamai_core/src/kernel/` | Filter constructors and helper functions |
+| `beamai_filter_chain` | `apps/beamai_core/src/kernel/` | Onion chain composition and execution |
+| `beamai_kernel` | `apps/beamai_core/src/kernel/` | Kernel integration (filter registration) |
 | `beamai` | `apps/beamai_core/src/` | Top-level Facade (convenience API) |
 
 ---
 
-## Filter Types
+## 4 Hook Points
 
-### Four Filter Types
+A single filter can define any subset of these 4 hooks:
 
-| Type | Trigger | Typical Use |
-|------|---------|-------------|
-| `pre_invocation` | Before tool execution | Parameter validation, logging, permission checks |
-| `post_invocation` | After tool execution | Result transformation, logging |
-| `pre_chat` | Before LLM call | Inject system messages, content filtering, **conversation history injection** |
-| `post_chat` | After LLM response | Content auditing, response transformation, **conversation history storage** |
+| Hook | Meaning | Shape |
+|------|---------|-------|
+| `pre_chat` | chat inbound: rewrite the request before the LLM call | `fun(Request) -> Request \| {halt, Response}` |
+| `post_chat` | chat outbound: rewrite the response after the LLM call | `fun(Response) -> Response` |
+| `pre_tool` | tool inbound: rewrite tool args before tool execution | `fun(Request) -> Request \| {halt, Response}` |
+| `post_tool` | tool outbound: rewrite the tool result after tool execution | `fun(Response) -> Response` |
 
-> **Conversation memory** is built precisely on `pre_chat` / `post_chat`:
-> `beamai_memory_filter` uses pre_chat(-1000) to store the delta and expand the full
-> history, and post_chat(+1000) to store the reply, keyed by `conversation_id`.
-> See [MEMORY_EN.md](MEMORY_EN.md).
+**Each chain uses only its own hook pair:**
 
-### Filter Context (filter_context)
+- The **chat chain** uses each filter's `(pre_chat, post_chat)` pair, wrapping one LLM call.
+- The **tool chain** uses each filter's `(pre_tool, post_tool)` pair, wrapping one tool execution.
 
-Filters receive and pass data through a `filter_context` map:
+A filter with no relevant hooks for a given chain (neither `pre_chat` nor `post_chat` for the chat chain, or neither `pre_tool` nor `post_tool` for the tool chain) is **skipped** in that chain. A missing single hook is filled with the identity function.
 
-```erlang
-%% pre_invocation / post_invocation
-#{
-    tool => ToolSpec,           %% Tool definition
-    args => Args,               %% Invocation arguments (modifiable in pre)
-    result => Result,           %% Execution result (only available in post)
-    context => Context,         %% Execution context
-    metadata => #{}             %% Additional metadata
-}
+### Request / Response per Chain
 
-%% pre_chat
-#{
-    messages => [Message],      %% Message list (modifiable)
-    context => Context,         %% Execution context
-    metadata => #{}
-}
+| Chain | Request | Response |
+|-------|---------|----------|
+| chat | `#{messages, context, opts}` | `#{response, context}` (response is a beamai_llm_response) |
+| tool | `#{tool, args, context}` | `#{result, context}` |
 
-%% post_chat
-#{
-    result => Response,         %% LLM response (modifiable)
-    context => Context,
-    metadata => #{}
-}
-```
+> **Conversation memory** is exactly one filter: `beamai_memory_filter:memory_filter(Store)` returns a **single** filter whose `pre_chat` stores the round's delta messages and replaces `messages` with the full history from the store (keyed by `conversation_id`), and whose `post_chat` stores the assistant reply. Both halves live in one layer, and the onion chain naturally guarantees `pre_chat` runs ahead of the inner layers and `post_chat` runs after them. See [MEMORY_EN.md](MEMORY_EN.md).
 
-### Filter Results (filter_result)
+### The `order` Field
+
+`order` determines the onion layering: **smaller = more outer** — its pre hook runs earlier and its post hook runs later. The default `order` is 0. Filters with equal `order` keep their registration order (stable sort).
+
+### The Filter Spec Map
+
+A filter is a tagged map:
 
 ```erlang
-%% Continue execution, pass modified context to next filter
-{continue, UpdatedFilterCtx}
-
-%% Skip subsequent processing (including tool execution), return value directly
-{skip, Value}
-
-%% Abort pipeline, return error
-{error, Reason}
+-type filter() :: #{
+    '__filter__' := true,
+    name := binary(),                                  %% Name (debug identifier)
+    order := integer(),                                %% Layer (smaller = more outer)
+    hooks := #{                                        %% any subset of the 4 hooks
+        pre_chat  => fun((Request)  -> Request | {halt, Response}),
+        post_chat => fun((Response) -> Response),
+        pre_tool  => fun((Request)  -> Request | {halt, Response}),
+        post_tool => fun((Response) -> Response)
+    }
+}.
 ```
+
+---
+
+## Onion Execution Order
+
+For filters A (order 1) and B (order 2) wrapping the terminal (LLM) on the chat chain:
+
+```
+A.pre_chat → B.pre_chat → Terminal → B.post_chat → A.post_chat
+```
+
+Composition (`beamai_filter_chain:compose/4`, Phase = `{pre_chat, post_chat}`):
+
+```
+compose([A, B], Phase, Terminal)
+  = fun(Req) -> A_wrap(Req, fun(R) -> B_wrap(R, Terminal) end) end
+```
+
+where `X_wrap` means "run X's pre, descend into the inner layers, then run X's post on the way out."
+
+- **Inbound**: each layer's pre hook runs in ascending `order` (A first, then B).
+- **Terminal**: the innermost layer performs the real LLM call / tool execution.
+- **Outbound**: post hooks run in **reverse order** automatically (B first, then A) — this is simply how the nested call stack unwinds; no manual ordering required.
+
+A filter's pre hook returning `{halt, Response}` short-circuits (skips all inner layers), but **still runs this layer's post hook**.
+
+The tool chain works the same way, replacing `pre_chat/post_chat` with `pre_tool/post_tool` (Phase = `{pre_tool, post_tool}`).
 
 ---
 
@@ -138,102 +120,102 @@ Filters receive and pass data through a `filter_context` map:
 
 ### beamai_filter Module
 
-#### Creating Filters
+#### Constructors
 
 ```erlang
-%% Create filter (default priority 0)
--spec new(Name :: binary(), Type :: filter_type(), Handler :: fun()) -> filter_spec().
-beamai_filter:new(<<"my_filter">>, pre_invocation, fun(Ctx) -> {continue, Ctx} end).
+%% Create a filter (order defaults to 0).
+%% Hooks is a hook map with any subset of pre_chat/post_chat/pre_tool/post_tool.
+-spec new(Name :: binary(), Hooks :: hooks()) -> filter().
 
-%% Create filter (with priority; lower values execute first)
--spec new(Name :: binary(), Type :: filter_type(), Handler :: fun(), Priority :: integer()) -> filter_spec().
-beamai_filter:new(<<"my_filter">>, pre_invocation, Handler, 10).
+%% Create a filter (explicit order, smaller = more outer)
+-spec new(Name :: binary(), Hooks :: hooks(), Order :: integer()) -> filter().
 ```
 
-#### Executing Filter Pipelines
+Hook shapes:
 
 ```erlang
-%% Execute pre-invocation filters
--spec apply_pre_filters(Filters, ToolSpec, Args, Context) ->
-    {ok, FilteredArgs, FilteredContext} | {skip, Value} | {error, Reason}.
-
-%% Execute post-invocation filters
--spec apply_post_filters(Filters, ToolSpec, Result, Context) ->
-    {ok, FilteredResult, FilteredContext} | {error, Reason}.
-
-%% Execute pre-chat filters
--spec apply_pre_chat_filters(Filters, Messages, Context) ->
-    {ok, FilteredMessages, FilteredContext} | {error, Reason}.
-
-%% Execute post-chat filters
--spec apply_post_chat_filters(Filters, Response, Context) ->
-    {ok, FilteredResponse, FilteredContext} | {error, Reason}.
-
-%% Sort filters by priority
--spec sort_filters(Filters) -> SortedFilters.
-```
-
-#### Filter Definition Types
-
-```erlang
--type filter_spec() :: #{
-    name := binary(),                                      %% Filter name (debug identifier)
-    type := filter_type(),                                 %% Filter type
-    handler := fun((filter_context()) -> filter_result()), %% Handler function
-    priority => integer()                                  %% Priority (default 0)
+-type hook_type() :: pre_chat | post_chat | pre_tool | post_tool.
+-type hooks() :: #{
+    pre_chat  => fun((Request)  -> Request | {halt, Response}),
+    post_chat => fun((Response) -> Response),
+    pre_tool  => fun((Request)  -> Request | {halt, Response}),
+    post_tool => fun((Response) -> Response)
 }.
+```
 
--type filter_type() :: pre_invocation | post_invocation | pre_chat | post_chat.
+A pre hook returning `{halt, Response}` short-circuits (skips inner layers) but still runs this layer's corresponding post hook.
 
--type filter_result() ::
-    {continue, filter_context()}   %% Pass to next filter
-    | {skip, term()}               %% Skip execution
-    | {error, term()}.             %% Abort pipeline
+#### Helper Functions
+
+```erlang
+%% Stable sort ascending by order (equal order keeps registration order)
+-spec sort([filter()]) -> [filter()].
+
+%% Get one of a filter's hooks (undefined if absent)
+-spec hook(filter(), hook_type()) -> fun() | undefined.
+```
+
+### beamai_filter_chain Module
+
+```erlang
+%% Run the filter onion chain for one chain.
+%% Phase selects which hook pair the chain uses: pass {pre_chat, post_chat}
+%% for chat, {pre_tool, post_tool} for tool. Only filters with at least one
+%% relevant hook enter the onion; the rest are skipped. Terminal produces the
+%% innermost response and throws on error; run/4 catches the throw and returns
+%% {ok, Response} | {error, Reason} uniformly.
+-spec run(Filters :: [filter()],
+          Phase :: {pre_chat, post_chat} | {pre_tool, post_tool},
+          Terminal :: fun((Request) -> Response),
+          Request :: map()) -> {ok, Response} | {error, Reason}.
+
+%% Compose the filter list and terminal into a single onion function
+%% (internal; external callers pass identity)
+-spec compose(Filters :: [filter()], Phase :: phase(),
+              Terminal :: fun(), identity) -> fun((Request) -> Response).
 ```
 
 ### beamai_kernel Integration
 
 ```erlang
-%% Register filter with Kernel
-beamai_kernel:add_filter(Kernel, FilterDef) -> UpdatedKernel.
+%% Register a filter with the Kernel (appended to the filters list,
+%% sorted by order at run time)
+beamai_kernel:add_filter(Kernel, Filter) -> UpdatedKernel.
 
-%% Auto-load filters from tool module (module implements optional filters/0 callback)
+%% Auto-load filters from a tool module (module implements the optional
+%% filters/0 callback)
 beamai_kernel:add_tool_module(Kernel, Module) -> UpdatedKernel.
-
-%% Invoke tool (automatically executes pre/post invocation filter pipeline)
-beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
-
-%% Chat request (automatically executes pre/post chat filter pipeline)
-beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
 ```
 
 ### beamai Convenience API
 
 ```erlang
 %% Register a pre-built filter
-beamai:add_filter(Kernel, FilterDef) -> UpdatedKernel.
+beamai:add_filter(Kernel, Filter) -> UpdatedKernel.
 
-%% Create and register a filter in one step (calls beamai_filter:new/3 internally)
-beamai:add_filter(Kernel, Name, Type, Handler) -> UpdatedKernel.
+%% Create and register a filter in one step (pass a hook map, order fixed at 0)
+beamai:add_filter(Kernel, Name, Hooks) -> UpdatedKernel.
 ```
 
 ---
 
 ## Usage
 
-### 1. Register Filters with Kernel
+### 1. Register a Filter with the Kernel
 
 ```erlang
-%% Method 1: Using beamai convenience API (recommended)
+%% Method 1: Using the beamai convenience API (hook map, order 0)
 K0 = beamai:kernel(),
-K1 = beamai:add_filter(K0, <<"logger">>, pre_invocation,
-    fun(#{tool := #{name := Name}} = Ctx) ->
-        io:format("Calling tool: ~ts~n", [Name]),
-        {continue, Ctx}
-    end).
+K1 = beamai:add_filter(K0, <<"logger">>, #{
+    %% pre_tool: log the tool name on the way in
+    pre_tool => fun(#{tool := #{name := Name}, args := Args} = Req) ->
+        io:format("Calling tool: ~ts(~p)~n", [Name, Args]),
+        Req
+    end
+}).
 
-%% Method 2: Manually create and register
-Filter = beamai_filter:new(<<"logger">>, pre_invocation, Handler, 10),
+%% Method 2: Manually create and register (order can be specified)
+Filter = beamai_filter:new(<<"logger">>, #{pre_tool => PreFn}, 10),
 K1 = beamai_kernel:add_filter(K0, Filter).
 ```
 
@@ -251,52 +233,53 @@ tools() ->
     [#{name => <<"my_tool">>, handler => fun handle/2,
        description => <<"My tool">>}].
 
-%% Optional callback: return list of filters
+%% Optional callback: return a list of filters
 filters() ->
     [
-        beamai_filter:new(<<"audit">>, post_invocation,
-            fun(#{tool := #{name := Name}, result := Result} = Ctx) ->
-                logger:info("Tool ~ts returned: ~p", [Name, Result]),
-                {continue, Ctx}
-            end)
+        beamai_filter:new(<<"audit">>, #{
+            post_tool => fun(#{result := Result} = Resp) ->
+                logger:info("Tool returned: ~p", [Result]),
+                Resp
+            end
+        })
     ].
 ```
 
-When loading the module, Kernel automatically registers these filters:
+When loading the module, the Kernel automatically registers these filters:
 
 ```erlang
 K1 = beamai_kernel:add_tool_module(K0, my_tool_module).
 %% Both tools and filters are now registered
 ```
 
-### 3. Filter Priority
+### 3. Filter Layering (order)
 
-Lower priority values execute first. Filters with equal priority execute in registration order.
+A smaller `order` is more outer: its pre hook runs earlier and its post hook runs later. Filters with equal `order` keep registration order.
 
 ```erlang
-%% Validator (priority -10, executes first)
+%% Validator (order -10, outermost -> pre_tool runs first)
 K1 = beamai_kernel:add_filter(K0,
-    beamai_filter:new(<<"validator">>, pre_invocation, ValidateFn, -10)),
+    beamai_filter:new(<<"validator">>, #{pre_tool => ValidateFn}, -10)),
 
-%% Logger (priority 0, default)
+%% Logger (order 0, default)
 K2 = beamai_kernel:add_filter(K1,
-    beamai_filter:new(<<"logger">>, pre_invocation, LogFn, 0)),
+    beamai_filter:new(<<"logger">>, #{pre_tool => LogFn}, 0)),
 
-%% Transformer (priority 10, executes last)
+%% Transformer (order 10, innermost -> pre_tool runs last, post_tool runs first)
 K3 = beamai_kernel:add_filter(K2,
-    beamai_filter:new(<<"transformer">>, pre_invocation, TransformFn, 10)).
+    beamai_filter:new(<<"transformer">>, #{post_tool => TransformFn}, 10)).
 
-%% Execution order: validator -> logger -> transformer
+%% pre_tool execution order: validator -> logger -> transformer -> Terminal
 ```
 
 ---
 
 ## Complete Examples
 
-### Example 1: Parameter Validation + Logging
+### Example 1: tool filter — logging + double the result (pre_tool + post_tool in ONE filter)
 
 ```erlang
-%% Create Kernel and register tool
+%% Create Kernel and register a tool
 K0 = beamai:kernel(),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
@@ -306,107 +289,116 @@ K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
           b => #{type => integer, required => true}
       }})),
 
-%% Pre-invocation filter: log calls
-K2 = beamai:add_filter(K1, <<"log">>, pre_invocation,
-    fun(#{tool := #{name := Name}, args := Args} = Ctx) ->
+%% One filter binds both pre_tool (inbound logging) and post_tool (outbound doubling)
+K2 = beamai:add_filter(K1, <<"log_and_double">>, #{
+    %% pre_tool: record the call on the way in
+    pre_tool => fun(#{tool := #{name := Name}, args := Args} = Req) ->
         io:format("[LOG] ~ts(~p)~n", [Name, Args]),
-        {continue, Ctx}
-    end),
+        Req
+    end,
+    %% post_tool: rewrite result on the way out
+    post_tool => fun(#{result := Result} = Resp) ->
+        Resp#{result => Result * 2}
+    end
+}).
 
-%% Pre-invocation filter: validate parameters (reject large values)
-K3 = beamai:add_filter(K2, <<"validate">>, pre_invocation,
-    fun(#{args := #{a := A}} = _Ctx) when A > 1000 ->
-        {error, {validation_failed, <<"a exceeds limit">>}};
-       (Ctx) ->
-        {continue, Ctx}
-    end),
-
-%% Post-invocation filter: double the result
-K4 = beamai:add_filter(K3, <<"double">>, post_invocation,
-    fun(#{result := Result} = Ctx) ->
-        {continue, Ctx#{result => Result * 2}}
-    end),
-
-%% Invoke (3 + 5 = 8, doubled = 16)
-{ok, 16, _} = beamai:invoke_tool(K4, <<"add">>, #{a => 3, b => 5}, beamai:context()).
-
-%% Invoke rejected
-{error, {validation_failed, _}} = beamai:invoke_tool(K4, <<"add">>, #{a => 2000, b => 1}, beamai:context()).
+%% Invoke (3 + 5 = 8, doubled on the way out = 16),
+%% tool execution passing through the Kernel's tool filter onion chain.
 ```
 
-### Example 2: Chat Message Injection + Response Auditing
+### Example 2: chat filter — inject a system message + audit (pre_chat + post_chat in ONE filter)
 
 ```erlang
 K0 = beamai:kernel(),
 K1 = beamai:add_llm(K0, LLMConfig),
 
-%% pre_chat: auto-inject system message
-K2 = beamai:add_filter(K1, <<"inject_system">>, pre_chat,
-    fun(#{messages := Msgs} = Ctx) ->
+%% One filter: pre_chat injects a system message on the way in,
+%% post_chat logs the response length on the way out
+K2 = beamai:add_filter(K1, <<"system_and_audit">>, #{
+    %% pre_chat: auto-inject a system message
+    pre_chat => fun(#{messages := Msgs} = Req) ->
         HasSystem = lists:any(
             fun(#{role := R}) -> R =:= system; (_) -> false end,
             Msgs),
         case HasSystem of
             true ->
-                {continue, Ctx};
+                Req;
             false ->
                 SystemMsg = #{role => system,
                               content => <<"Answer concisely.">>},
-                {continue, Ctx#{messages => [SystemMsg | Msgs]}}
+                Req#{messages => [SystemMsg | Msgs]}
         end
-    end),
+    end,
+    %% post_chat: log the response content length
+    post_chat => fun(#{response := Response} = Resp) ->
+        case beamai_llm_response:content(Response) of
+            Content when is_binary(Content) ->
+                logger:info("Response length: ~B bytes", [byte_size(Content)]);
+            _ ->
+                ok
+        end,
+        Resp
+    end
+}).
 
-%% post_chat: log response length
-K3 = beamai:add_filter(K2, <<"audit">>, post_chat,
-    fun(#{result := #{content := Content}} = Ctx) when is_binary(Content) ->
-        logger:info("Response length: ~B bytes", [byte_size(Content)]),
-        {continue, Ctx};
-       (Ctx) ->
-        {continue, Ctx}
-    end),
-
-%% Send request (filter auto-injects system message)
-{ok, Response, _Ctx} = beamai:chat(K3, [
-    #{role => user, content => <<"What is a GenServer?">>}
-]).
+%% On send, the chat filter chain auto-injects the system message and audits the response.
 ```
 
-### Example 3: Caching with Skip
+### Example 3: short-circuit — pre_tool returns `{halt, Response}`
 
 ```erlang
-%% pre_invocation: skip execution and return cached result
-K1 = beamai:add_filter(K0, <<"cache">>, pre_invocation,
-    fun(#{tool := #{name := Name}, args := Args} = Ctx) ->
-        case lookup_cache(Name, Args) of
-            {ok, Cached} ->
-                {skip, Cached};     %% Skip tool execution, return cached value
-            miss ->
-                {continue, Ctx}     %% Cache miss, continue normal execution
+%% tool filter: on a failed guard, short-circuit (skip the real tool execution),
+%% still run this layer's post_tool
+K1 = beamai:add_filter(K0, <<"guard">>, #{
+    %% pre_tool: when the guard condition matches, halt with an error result
+    pre_tool => fun(#{args := #{a := A}, context := Ctx} = Req) ->
+        case A > 1000 of
+            true  -> {halt, #{result => {error, <<"a exceeds limit">>},
+                              context => Ctx}};
+            false -> Req
         end
-    end).
+    end,
+    %% post_tool: both halt and normal paths pass here (uniform finalization)
+    post_tool => fun(Resp) ->
+        logger:info("tool finished: ~p", [Resp]),
+        Resp
+    end
+}).
 ```
+
+> A pre hook returning `{halt, Response}` skips all inner layers but **still runs this layer's post hook** — convenient for uniform finalization on the short-circuit path (e.g. cache write-back, counting).
 
 See [examples/src/example_filter.erl](../examples/src/example_filter.erl) for more examples.
 
 ---
 
+## Mapping to Spring AI Advisor
+
+This system mirrors the before/after decomposition of Spring AI's Advisor:
+
+- Spring AI's `before(request, chain)` / `after(response, chain)` decomposition ⇄ beamai filter's pre/post hooks.
+- Difference: in Spring AI one advisor maps to one chain; in beamai a **single filter** bundles the chat and tool before/after hooks (up to 4), with the chat chain taking `(pre_chat, post_chat)` and the tool chain taking `(pre_tool, post_tool)`.
+- There is no standalone "around" form — short-circuit is achieved by returning `{halt, Response}` from a pre hook.
+
+Both center on "pre/post wrap the same call, the outbound order reverses automatically."
+
+---
+
 ## Relationship with Middleware
 
-The [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project provides an advanced Middleware system (in beamai_tools) with stateful management, presets, call limits, human approval, retry, and fallback features.
-
-Middleware internally converts to Filters via `beamai_middleware_runner:to_filters/1` and registers with Kernel, so both execute in the same filter pipeline.
+The [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project provides an advanced Middleware system (in beamai_tools) with stateful management, presets, call limits, human approval, retry, and fallback features. Middleware internally converts to filters and registers with the Kernel, so both execute in the same onion chain.
 
 | Feature | Filter (this document) | Middleware (beamai_extra) |
-|---------|----------------------|--------------------------|
+|---------|------------------------|---------------------------|
 | Complexity | Lightweight, stateless | Full framework with state management |
 | Presets | None | Provides production/development presets |
 | Built-in Features | None | Call limits, human approval, retry, fallback |
-| Use Cases | Simple interception: logging, validation, transformation | Complex control: rate limiting, retry, fallback |
+| Use Cases | Simple wrapping: logging, validation, injection, caching | Complex control: rate limiting, retry, fallback |
 
 ---
 
 ## More Resources
 
 - [beamai_core README](../apps/beamai_core/README_EN.md) - Kernel architecture documentation
+- [MEMORY_EN.md](MEMORY_EN.md) - Conversation memory (Memory filter)
 - [API Reference](API_REFERENCE_EN.md) - API reference
-- [Example Code](../examples/src/example_filter.erl) - Complete Filter example
