@@ -82,8 +82,12 @@ Filter 是 Kernel 工具调用和 Chat 请求的拦截器，可以：
 |------|----------|----------|
 | `pre_invocation` | 工具执行前 | 参数验证、日志记录、权限检查 |
 | `post_invocation` | 工具执行后 | 结果转换、日志记录 |
-| `pre_chat` | LLM 调用前 | 注入 system 消息、内容过滤 |
-| `post_chat` | LLM 响应后 | 内容审计、响应转换 |
+| `pre_chat` | LLM 调用前 | 注入 system 消息、内容过滤、**会话历史注入** |
+| `post_chat` | LLM 响应后 | 内容审计、响应转换、**会话历史存储** |
+
+> **会话记忆**正是基于 `pre_chat` / `post_chat` 实现的：`beamai_memory_filter` 用
+> pre_chat(-1000) 存 delta 并展开完整历史、post_chat(+1000) 存储回复，按
+> `conversation_id` 管理对话。详见 [MEMORY.md](MEMORY.md)。
 
 ### 过滤器上下文 (filter_context)
 

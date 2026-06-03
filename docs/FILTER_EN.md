@@ -82,8 +82,13 @@ Filters are interceptors for Kernel tool invocations and Chat requests that can:
 |------|---------|-------------|
 | `pre_invocation` | Before tool execution | Parameter validation, logging, permission checks |
 | `post_invocation` | After tool execution | Result transformation, logging |
-| `pre_chat` | Before LLM call | Inject system messages, content filtering |
-| `post_chat` | After LLM response | Content auditing, response transformation |
+| `pre_chat` | Before LLM call | Inject system messages, content filtering, **conversation history injection** |
+| `post_chat` | After LLM response | Content auditing, response transformation, **conversation history storage** |
+
+> **Conversation memory** is built precisely on `pre_chat` / `post_chat`:
+> `beamai_memory_filter` uses pre_chat(-1000) to store the delta and expand the full
+> history, and post_chat(+1000) to store the reply, keyed by `conversation_id`.
+> See [MEMORY_EN.md](MEMORY_EN.md).
 
 ### Filter Context (filter_context)
 
