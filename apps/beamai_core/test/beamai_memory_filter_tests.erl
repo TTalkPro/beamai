@@ -77,46 +77,57 @@ response_to_message_null_test() ->
     ?assertEqual(undefined, beamai_memory_filter:response_to_message(Resp)).
 
 %%====================================================================
-%% Memory Filter（pre/post_chat）单元测试
+%% Memory Filter（单 filter：pre_chat 存 delta+展开，post_chat 存回复）
 %%====================================================================
 
+%% 终端回显收到的 messages，并产出一个 assistant 响应
+echo_terminal() ->
+    fun(#{messages := Msgs, context := C}) ->
+        #{response => beamai_llm_response:new(#{content => <<"reply">>}),
+          context => C, seen => Msgs}
+    end.
+
+run_chat_filter(Filter, Messages, Ctx) ->
+    beamai_filter_chain:run([Filter], {pre_chat, post_chat}, echo_terminal(),
+                            #{messages => Messages, context => Ctx, opts => #{}}).
+
 pre_chat_stores_and_expands_test() ->
-    Name = unique_name(pre_filter),
+    Name = unique_name(mem_pre),
     {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
     Store = beamai_chat_memory_ets:handle(Name),
-    [Pre, _Post] = beamai_memory_filter:memory_filters(Store),
+    Filter = beamai_memory_filter:memory_filter(Store),
     Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"c">>),
-    %% 预置一条历史
     Old = #{role => user, content => <<"old">>},
+    New = #{role => user, content => <<"new">>},
     ok = beamai_chat_memory:mem_add(Store, <<"c">>, [Old]),
-    %% pre_chat：存 delta + 用完整历史替换 messages
-    Delta = [#{role => user, content => <<"new">>}],
-    {ok, Msgs, _Ctx2} = beamai_filter:apply_pre_chat_filters([Pre], Delta, Ctx),
-    ?assertEqual([Old, #{role => user, content => <<"new">>}], Msgs),
-    %% store 现在含两条
-    ?assertEqual(2, length(beamai_chat_memory:mem_get(Store, <<"c">>))),
+    {ok, Resp} = run_chat_filter(Filter, [New], Ctx),
+    %% pre_chat：存 delta + 用完整历史替换 → 终端看到 [Old, New]
+    ?assertEqual([Old, New], maps:get(seen, Resp)),
+    %% post_chat：把 assistant 回复也存入 → store 共 3 条
+    ?assertEqual(3, length(beamai_chat_memory:mem_get(Store, <<"c">>))),
     gen_server:stop(Pid).
 
-pre_chat_no_conv_id_passthrough_test() ->
-    Name = unique_name(pre_pass),
+no_conv_id_passthrough_test() ->
+    Name = unique_name(mem_pass),
     {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
     Store = beamai_chat_memory_ets:handle(Name),
-    [Pre, _Post] = beamai_memory_filter:memory_filters(Store),
+    Filter = beamai_memory_filter:memory_filter(Store),
     Ctx = beamai_context:new(),  %% 无 conversation_id
-    Delta = [#{role => user, content => <<"x">>}],
-    {ok, Msgs, _} = beamai_filter:apply_pre_chat_filters([Pre], Delta, Ctx),
-    %% 原样透传，store 不变
-    ?assertEqual(Delta, Msgs),
+    New = #{role => user, content => <<"x">>},
+    {ok, Resp} = run_chat_filter(Filter, [New], Ctx),
+    %% 原样透传，终端只看到 delta，store 不变
+    ?assertEqual([New], maps:get(seen, Resp)),
+    ?assertEqual([], beamai_chat_memory:mem_get(Store, <<"c">>)),
     gen_server:stop(Pid).
 
 post_chat_stores_response_test() ->
-    Name = unique_name(post_filter),
+    Name = unique_name(mem_post),
     {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
     Store = beamai_chat_memory_ets:handle(Name),
-    [_Pre, Post] = beamai_memory_filter:memory_filters(Store),
+    Filter = beamai_memory_filter:memory_filter(Store),
     Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"c">>),
-    Resp = beamai_llm_response:new(#{content => <<"reply">>}),
-    {ok, _R, _Ctx2} = beamai_filter:apply_post_chat_filters([Post], Resp, Ctx),
+    {ok, _Resp} = run_chat_filter(Filter, [], Ctx),
+    %% pre_chat 存了空 delta（无），post_chat 存 assistant 回复
     ?assertEqual([#{role => assistant, content => <<"reply">>}],
                  beamai_chat_memory:mem_get(Store, <<"c">>)),
     gen_server:stop(Pid).
