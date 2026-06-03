@@ -32,9 +32,14 @@
 ## 特性
 
 - **Kernel/Tool 架构**: 语义化的工具注册和调用系统
-  - 基于 Semantic Kernel 理念的 Kernel 核心
+  - 基于 Semantic Kernel 理念的 Kernel 核心（无状态，不记录消息）
   - 统一的 Tool 定义和管理
   - Filter 过滤器和安全验证
+
+- **会话记忆 (Memory Filter)**: 对话历史与 Kernel 解耦
+  - 每次 invoke 只传单条最新消息，历史由 Memory 过滤器按 `conversation_id` 管理
+  - 可插拔存储后端（ETS 默认实现 / 滑动窗口包装 / 自定义 behaviour）
+  - 详见 [docs/MEMORY.md](docs/MEMORY.md)
 
 - **Process Framework**: 可编排的流程引擎
   - 支持步骤定义、条件分支、并行执行
@@ -90,8 +95,8 @@ SearchTool = #{
 %% 注册工具
 Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 
-%% 调用工具
-{ok, Result, _NewCtx} = beamai_kernel:invoke(Kernel1, <<"search">>, #{
+%% 调用单个工具
+{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel1, <<"search">>, #{
     <<"query">> => <<"Erlang"/utf8>>
 }, beamai_context:new()).
 ```

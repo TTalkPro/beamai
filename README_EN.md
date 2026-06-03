@@ -32,6 +32,11 @@ Advanced features built on top of the core library:
 
 ## Features
 
+- **Conversation Memory (Memory Filter)**: history decoupled from the Kernel
+  - Each invoke passes only the latest message; history managed by the Memory Filter keyed by `conversation_id`
+  - Pluggable storage backends (default ETS / sliding-window wrapper / custom behaviour)
+  - See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
+
 - **Kernel/Tool Architecture**: Semantic function registration and invocation system
   - Kernel core based on Semantic Kernel concepts
   - Tool management and Middleware pipeline
@@ -302,10 +307,10 @@ Kernel = beamai_kernel:new(),
 %% Load tool from module
 Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
 
-%% Invoke registered tool
-{ok, Result, _Ctx} = beamai_kernel:invoke(Kernel1, <<"file_read">>, #{
+%% Invoke a single registered tool
+{ok, Result, _Ctx} = beamai_kernel:invoke_tool(Kernel1, <<"file_read">>, #{
     <<"path">> => <<"/tmp/test.txt">>
-}, #{}).
+}, beamai_context:new()).
 ```
 
 ### 2. Process Framework
