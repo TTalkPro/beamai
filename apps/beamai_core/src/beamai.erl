@@ -25,6 +25,9 @@
 %% Filter
 -export([add_filter/2, add_filter/4]).
 
+%% Memory（会话记忆）
+-export([with_memory/2]).
+
 %% Invoke
 -export([invoke_tool/4]).
 -export([chat/2, chat/3]).
@@ -136,6 +139,26 @@ add_filter(Kernel, Filter) ->
 add_filter(Kernel, Name, Type, Handler) ->
     Filter = beamai_filter:new(Name, Type, Handler),
     beamai_kernel:add_filter(Kernel, Filter).
+
+%%====================================================================
+%% Memory（会话记忆）
+%%====================================================================
+
+%% @doc 启用会话记忆：绑定 store 句柄并挂载 Memory 过滤器
+%%
+%% 启用后，invoke（chat_with_tools）按 context 的 conversation_id
+%% 自动存储与展开会话历史；context 无 conversation_id 时使用临时会话。
+%%
+%% 示例:
+%%   {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
+%%   K1 = beamai:with_memory(K0, beamai_chat_memory_ets:handle(my_mem))
+%%
+%% @param Kernel Kernel 实例
+%% @param Store 会话存储句柄（beamai_chat_memory:handle/0）
+%% @returns 更新后的 Kernel
+-spec with_memory(beamai_kernel:kernel(), beamai_chat_memory:handle()) -> beamai_kernel:kernel().
+with_memory(Kernel, Store) ->
+    beamai_kernel:with_memory(Kernel, Store).
 
 %%====================================================================
 %% Invoke

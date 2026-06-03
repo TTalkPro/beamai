@@ -31,6 +31,11 @@
         beamai_chat_behaviour,
         beamai_http_behaviour,
         beamai_step_behaviour,
+        beamai_chat_memory,
+        %% 会话记忆（Memory Filter 机制）
+        beamai_chat_memory_ets,
+        beamai_chat_memory_window,
+        beamai_memory_filter,
         %% HTTP 客户端
         beamai_http,
         beamai_http_hackney,
