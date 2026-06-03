@@ -34,10 +34,10 @@
 - **Kernel/Tool 架构**: 语义化的工具注册和调用系统
   - 基于 Semantic Kernel 理念的 Kernel 核心（无状态，不记录消息）
   - 统一的 Tool 定义和管理
-  - Filter 过滤器和安全验证
+  - Filter 洋葱式拦截和安全验证
 
 - **会话记忆 (Memory Filter)**: 对话历史与 Kernel 解耦
-  - 每次 invoke 只传单条最新消息，历史由 Memory 过滤器按 `conversation_id` 管理
+  - 每次 invoke 只传单条最新消息，历史由 Memory Filter 按 `conversation_id` 管理
   - 可插拔存储后端（ETS 默认实现 / 滑动窗口包装 / 自定义 behaviour）
   - 详见 [docs/MEMORY.md](docs/MEMORY.md)
 
@@ -101,10 +101,11 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 }, beamai_context:new()).
 ```
 
-### 4. Filter 过滤器
+### 4. Filter（洋葱式拦截）
 
 ```erlang
-%% 在 Kernel 上注册前置/后置过滤器
+%% 一个 filter 含 4 个可选 hook（pre_chat/post_chat/pre_tool/post_tool）
+%% 同一 filter 的 pre/post 配成一层洋葱，包裹同一次调用，回程自动逆序
 K0 = beamai:kernel(),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
@@ -114,22 +115,24 @@ K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
           b => #{type => integer, required => true}
       }})),
 
-%% 前置过滤器：参数验证
-K2 = beamai:add_filter(K1, <<"validate">>, pre_invocation,
-    fun(#{args := #{a := A}} = _Ctx) when A > 1000 ->
-        {error, {validation_failed, <<"a exceeds limit">>}};
-       (Ctx) ->
-        {continue, Ctx}
-    end),
+%% pre_tool 校验参数（短路）+ post_tool 结果翻倍，同一层洋葱
+K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
+    %% pre_tool：参数校验，超限则短路（halt）跳过工具执行
+    pre_tool => fun(#{args := #{a := A}, context := Ctx}) when A > 1000 ->
+        {halt, #{result => {error, <<"a exceeds limit">>}, context => Ctx}};
+       (Req) ->
+        Req
+    end,
+    %% post_tool：结果翻倍
+    post_tool => fun(#{result := Result} = Resp) when is_number(Result) ->
+        Resp#{result => Result * 2};
+       (Resp) ->
+        Resp
+    end
+}),
 
-%% 后置过滤器：结果转换
-K3 = beamai:add_filter(K2, <<"transform">>, post_invocation,
-    fun(#{result := Result} = Ctx) ->
-        {continue, Ctx#{result => Result * 2}}
-    end),
-
-%% 调用（3 + 5 = 8，过滤器翻倍后 = 16）
-{ok, 16, _} = beamai:invoke_tool(K3, <<"add">>, #{a => 3, b => 5}, beamai:context()).
+%% 调用（3 + 5 = 8，post_tool 翻倍后 = 16）
+{ok, 16, _} = beamai:invoke_tool(K2, <<"add">>, #{a => 3, b => 5}, beamai:context()).
 ```
 
 详见 [Filter 文档](docs/FILTER.md)。
@@ -387,7 +390,7 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 ### 核心文档
 
 - **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API 参考文档
-- **[docs/FILTER.md](docs/FILTER.md)** - Filter 过滤器系统文档
+- **[docs/FILTER.md](docs/FILTER.md)** - Filter 洋葱系统文档
 - **[docs/OUTPUT_PARSER.md](docs/OUTPUT_PARSER.md)** - Output Parser 指南
 - **[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)** - 依赖关系详解
 
