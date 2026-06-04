@@ -79,16 +79,9 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 |  (RAG)    |   |  (LLM)    |  |  memory   |  | (Tools+Middleware)|
 +-----+-----+   +-----+-----+  +-----+-----+  +---------+---------+
       |               |              |                  |
-      |               |              |  +----------------+
-      |               |              |  |beamai_cognition |
-      |               |              |  | (Cognition)     |
-      |               |              |  | deps: memory    |
-      |               |              |  | optional: llm   |
-      |               |              |  +--+------+--+---+
-      |               |              |     |      |  |
-      |               | implements   |     |      |  |(optional)
-      |               | Behaviour   |<----+      |  +---+
-      |               +------+------+------------+      |
+      |               | implements   |                  |
+      |               | Behaviour   |                  |
+      |               +------+------+                  |
       |                      |                          |
       |                      v                          |
       |         +------------------------+              |
@@ -115,7 +108,6 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
         - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         Runtime Optional Dependencies (injected via Adapter, not compile-time):
         beamai_tools ···> beamai_llm (llm_client)
-        beamai_tools ···> beamai_cognition (beamai_conversation_buffer)
 ```
 
 **Dependency Direction Notes**:
@@ -125,7 +117,6 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - `beamai_a2a` depends on `beamai_agent` (for Agent execution)
 - `beamai_mcp` **optionally depends on** `beamai_agent` at the adapter layer (for tool conversion)
 - `beamai_tools`, `beamai_llm`, `beamai_memory` are at the same level, all only depend on `beamai_core`
-- `beamai_cognition` depends on `beamai_core` + `beamai_memory`, with optional dependency on `beamai_llm`
 - `beamai_core` defines Behaviour interfaces (`beamai_chat_behaviour`, `beamai_process_store_behaviour`, etc.), upper-layer modules implement these interfaces
 - `beamai_core` does not depend on `beamai_memory`, decoupled via `{Module, Ref}` dynamic dispatch
 - `beamai_tools` uses beamai_llm/context at **runtime** via Adapter pattern, no compile-time dependency
@@ -162,21 +153,6 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - Snapshot management (beamai_process_snapshot)
 - Process store (beamai_process_memory_store) — implements beamai_process_store_behaviour
 - State store (beamai_state_store)
-
-#### beamai_cognition (Cognitive Architecture)
-
-**Dependencies**: beamai_core, beamai_memory
-
-**Optional Dependencies**: beamai_llm
-
-**Provides**:
-- Semantic memory (beamai_semantic_memory)
-- Episodic memory (beamai_episodic_memory)
-- Procedural memory (beamai_procedural_memory)
-- Skill memory (beamai_skill_memory)
-- Memory retrieval and integration algorithms
-- Conversation buffer (beamai_conversation_buffer)
-- Context summarization (beamai_context_summarizer)
 
 #### beamai_tools (Tool System + Middleware System)
 

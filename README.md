@@ -19,7 +19,6 @@
 - **beamai_core** - Kernel/Tool 架构、Process Framework、HTTP 客户端
 - **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama）
 - **beamai_memory** - 纯存储引擎（快照、Store、状态存储）
-- **beamai_cognition** - 认知架构（语义/情景/程序记忆 + 算法 + 对话缓冲/摘要）
 
 ### 扩展项目 ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 基于核心库构建的高级功能：
@@ -224,35 +223,23 @@ apps/
 │   ├── Adapters       # beamai_llm_message_adapter, beamai_beamai_llm_response_parser, beamai_llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
-├── beamai_memory/      # 纯存储引擎
-│   ├── Store          # beamai_store_ets, beamai_store_sqlite,
-│   │                  # beamai_state_store, beamai_store_manager
-│   ├── Snapshot       # beamai_snapshot (通用引擎/behaviour),
-│   │                  # beamai_process_snapshot
-│   └── Process        # beamai_process_memory_store
-│
-└── beamai_cognition/   # 认知架构
-    ├── Memory         # 语义/情景/程序记忆
-    ├── Algorithms     # 记忆检索与整合算法
-    └── Context        # 对话缓冲、上下文摘要
+└── beamai_memory/      # 纯存储引擎
+    ├── Store          # beamai_store_ets, beamai_store_sqlite,
+    │                  # beamai_state_store, beamai_store_manager
+    ├── Snapshot       # beamai_snapshot (通用引擎/behaviour),
+    │                  # beamai_process_snapshot
+    └── Process        # beamai_process_memory_store
 ```
 
 ### 依赖关系
 
 ```
-┌─────────────────────────────────────────────────┐
-│   认知层                                         │
-│  (beamai_cognition)                              │
-│   依赖: beamai_core, beamai_memory               │
-│   可选依赖: beamai_llm                            │
-└───────────┬─────────────────────┬───────────────┘
-            │                     │
-┌───────────┴──────────┐ ┌───────┴───────────────┐
+┌───────────────────────┐ ┌───────────────────────┐
 │   存储层              │ │   LLM 层              │
 │  (beamai_memory)      │ │  (beamai_llm)         │
-└───────────┬──────────┘ └───────┬───────────────┘
-            │                     │
-┌───────────┴─────────────────────┴───────────────┐
+└───────────┬───────────┘ └───────────┬───────────┘
+            │                         │
+┌───────────┴─────────────────────────┴───────────┐
 │   核心层                                         │
 │  (beamai_core)                                   │
 └─────────────────────────────────────────────────┘
@@ -404,7 +391,6 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 | **beamai_core** | 核心框架：Kernel、Process Framework、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
 | **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
 | **beamai_memory** | 纯存储引擎：快照管理、Store 后端、状态存储 | [README](apps/beamai_memory/README.md) |
-| **beamai_cognition** | 认知架构：语义/情景/程序记忆、检索与整合算法、对话缓冲/摘要 | - |
 
 ## 运行示例
 

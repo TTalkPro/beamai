@@ -11,8 +11,8 @@
 %%% - 裁剪后丢弃落在头部的孤立 tool 消息（避免 tool 结果找不到对应调用）。
 %%%
 %%% 句柄：`{beamai_chat_memory_window, {InnerHandle, MaxMessages}}`。
-%%% 注：基于条数的窗口；基于 Token 的裁剪/摘要可由 beamai_cognition
-%%% 提供的 store 实现（其可依赖 beamai_conversation_buffer）。
+%%% 注：基于条数的窗口；基于 Token 的裁剪/摘要可由上层的对话缓冲
+%%% （conversation buffer）store 实现。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------

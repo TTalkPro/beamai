@@ -122,7 +122,7 @@ K = beamai_kernel:with_memory(K1, Store).
 ```
 
 > Token-based trimming/summarization is intentionally not in core (to avoid a reverse
-> dependency on `beamai_conversation_buffer`); it can be provided by a beamai_cognition
+> dependency on `beamai_conversation_buffer`); it can be provided by an upper-layer
 > store implementing the same behaviour.
 
 ## Data Flow (with tool loop, delta mode)

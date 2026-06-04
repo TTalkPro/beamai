@@ -19,8 +19,6 @@ Foundational infrastructure for building AI Agents:
 - **beamai_core** - Kernel/Tool architecture, Process Framework, HTTP client
 - **beamai_llm** - Unified LLM client (supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama)
 - **beamai_memory** - Pure storage engine (snapshots, Store backends, state storage)
-- **beamai_cognition** - Cognitive architecture (semantic/episodic/procedural memory + algorithms)
-- **beamai_context** - LLM context management (conversation buffer, summarizer)
 
 ### Extension Project ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 Advanced features built on top of the core library:
@@ -254,30 +252,15 @@ apps/
 │   ├── Adapters       # beamai_llm_message_adapter, beamai_beamai_llm_response_parser, beamai_llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
-├── beamai_memory/      # Pure storage engine
-│   ├── Store          # ETS/SQLite storage backends
-│   └── Snapshot       # Snapshots, branching, time travel
-│
-├── beamai_cognition/   # Cognitive architecture
-│   ├── Memory         # Semantic/episodic/procedural memory
-│   └── Algorithms     # Memory retrieval and integration algorithms
-│
-└── beamai_context/     # LLM context management
-    ├── Buffer         # Conversation buffer
-    └── Summarizer     # Context summarization
+└── beamai_memory/      # Pure storage engine
+    ├── Store          # ETS/SQLite storage backends
+    └── Snapshot       # Snapshots, branching, time travel
 ```
 
 ### Dependency Relationships
 
 ```
-┌─────────────────────────────────────────────────────┐
-│   Cognition Layer                                    │
-│  (beamai_cognition)                                  │
-│   Depends on: beamai_core, beamai_memory             │
-│   Optional: beamai_llm                               │
-└─────────────┬───────────────────────┬───────────────┘
-              │                       │
-┌─────────────┴────────────┐ ┌────────┴──────────────┐
+┌──────────────────────────┐ ┌───────────────────────┐
 │   Storage Layer           │ │   LLM Layer           │
 │  (beamai_memory)          │ │  (beamai_llm)         │
 └─────────────┬────────────┘ └────────┬──────────────┘
@@ -437,8 +420,6 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 | **beamai_core** | Core framework: Kernel, Process Framework, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
 | **beamai_llm** | LLM client: supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama | [README](apps/beamai_llm/README_EN.md) |
 | **beamai_memory** | Pure storage engine: snapshot management, Store backends, state storage | [README](apps/beamai_memory/README_EN.md) |
-| **beamai_cognition** | Cognitive architecture: semantic/episodic/procedural memory, retrieval algorithms | - |
-| **beamai_context** | LLM context management: conversation buffer, context summarization | - |
 
 ## Running Examples
 

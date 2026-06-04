@@ -116,7 +116,7 @@ K = beamai_kernel:with_memory(K1, Store).
 ```
 
 > 基于 Token 的裁剪/摘要不在 core 内（避免反向依赖 `beamai_conversation_buffer`），
-> 可由 beamai_cognition 提供实现同 behaviour 的 store。
+> 可由上层提供实现同 behaviour 的 store。
 
 ## 数据流（带工具循环，delta 模式）
 

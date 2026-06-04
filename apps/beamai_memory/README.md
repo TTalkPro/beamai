@@ -4,7 +4,7 @@
 
 纯存储引擎，提供快照管理（Snapshot）、Store 后端和状态存储的统一接口。
 
-> **注意**: 认知架构（语义/情景/程序记忆）和对话缓冲已迁移至 `beamai_cognition` 应用。
+> **注意**: 认知架构（语义/情景/程序记忆）和对话缓冲已迁移至 [beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目。
 
 ## 架构概览
 
