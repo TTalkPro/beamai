@@ -5,24 +5,30 @@
 以 ReAct 模式为核心的有状态多轮对话 Agent。封装 `beamai_kernel`，自实现工具循环
 （Tool Loop），确保每次 LLM 调用与工具调用都经过完整的 Filter 洋葱链。
 
+**上下文记忆由 Filter 实现**：跨轮会话历史不再由 agent 自累积，而是交给 kernel 的
+Memory Filter（`with_memory/2` + `beamai_memory_filter`）按 `conversation_id` 管理。
+工具循环以 **delta 模式** 运行——每轮只把新消息（用户消息 / 工具结果）交给 LLM，
+由 Memory Filter 存储并展开完整历史。
+
 > 仅依赖 `beamai_core` 与 `beamai_llm`。持久化、middleware、Process-native Agent
 > 等扩展能力位于 [beamai_extra](https://github.com/TTalkPro/beamai_extra)。
 
 ## 特性
 
 - ReAct 模式的工具循环（Tool Loop）
+- 用 Filter 实现的上下文记忆（filter-memory，按 conversation_id 管理历史）
 - 完整的回调系统（Callbacks，观察 + 控制）
 - 中断与恢复（Interrupt / Resume）
-- 多轮对话（消息历史自动累积）
-- 流式输出（stream）
+- 多轮对话（历史由 filter-memory 维护，跨轮自动携带）
+- 流式输出（stream，经 on_token 推送最终回复）
 
 ## 模块概览
 
 | 模块 | 说明 |
 |------|------|
 | `beamai_agent` | 主 API（new/run/stream/resume/查询/修改） |
-| `beamai_agent_state` | Agent 状态构建与 kernel 集成（含 callback filter 注入） |
-| `beamai_agent_tool_loop` | 统一的 ReAct 工具循环执行器 |
+| `beamai_agent_state` | Agent 状态构建与 kernel 集成（callback filter 注入 + filter-memory 挂载） |
+| `beamai_agent_tool_loop` | ReAct 工具循环执行器（delta 模式 + filter-memory） |
 | `beamai_agent_callbacks` | 回调系统 |
 | `beamai_agent_interrupt` | 中断与恢复机制 |
 | `beamai_agent_utils` | 共享工具函数 |
@@ -63,6 +69,14 @@ beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_message
     %% 最大工具循环迭代次数（默认见 beamai_common.hrl）
     max_tool_iterations => 10,
 
+    %% 会话记忆（filter-memory）：
+    %%   缺省          —— 使用懒启动的共享默认 store（单例，按 conversation_id 分区）
+    %%   {Mod, Ref}    —— 使用自管 store 句柄（如 beamai_chat_memory_ets:handle(my_mem)），生命周期自负责
+    %%   false | none  —— 不启用记忆（不挂 Memory filter，messages/1 退化为 []）
+    memory => {beamai_chat_memory_ets, my_mem},
+    %% 复用同一会话历史可显式指定 conversation_id（缺省自动生成）
+    conversation_id => <<"conv-123">>,
+
     %% 中断工具（命中即暂停，等待 resume）
     interrupt_tools => [#{name => <<"ask_human">>, description => <<"Ask">>, parameters => #{}}],
 
@@ -97,11 +111,17 @@ Kernel = beamai_kernel:add_tool_module(beamai_kernel:new(), my_tool_module),
 
 ### 多轮对话
 
+历史由 filter-memory 按 `conversation_id` 维护，跨轮自动携带（无需 agent 自累积消息）：
+
 ```erlang
 {ok, S0} = beamai_agent:new(#{llm => LLM}),
 {ok, _, S1} = beamai_agent:run(S0, <<"我叫张三"/utf8>>),
 {ok, R, _}  = beamai_agent:run(S1, <<"我叫什么？"/utf8>>).
 ```
+
+> `messages/1` 从 store 读取完整历史（正序），含工具循环中的 assistant(tool_calls)
+> 与 tool 结果消息；`system_prompt` 每次动态注入、不入存储。`memory => false` 时
+> `messages/1` 返回 `[]`。
 
 ### 中断与恢复
 
@@ -124,7 +144,7 @@ end.
 | `on_turn_error` | turn 执行出错 | `(Reason, Meta)` |
 | `on_llm_call`   | 每次 LLM 调用前（around_chat 注入） | `(Messages, Meta)` |
 | `on_tool_call`  | 每次工具调用前，可返回 `{interrupt, Reason}` | `(Name, Args)` |
-| `on_token`      | 流式模式每个 token | `(Token, Meta)` |
+| `on_token`      | 流式模式推送最终回复内容（与 filter-memory 一致，单块推送） | `(Content, Meta)` |
 | `on_interrupt`  | 进入中断状态 | `(IntState, Meta)` |
 | `on_resume`     | 从中断恢复 | `(IntState, Meta)` |
 

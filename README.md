@@ -17,7 +17,7 @@
 ### 核心项目 (本项目)
 提供构建 AI Agent 的基础设施（三大核心职责）：
 - **beamai_core** - Kernel 基座：Context、Filter（洋葱式 around 模型）、Tool 的构建与调用
-- **beamai_agent** - SimpleAgent：以 ReAct 为主的 Agent 框架（多轮对话、回调、中断/恢复）
+- **beamai_agent** - SimpleAgent：以 ReAct 为主的 Agent 框架（上下文记忆由 filter-memory 实现、多轮对话、回调、中断/恢复）
 - **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama）
 
 ### 扩展项目 ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
