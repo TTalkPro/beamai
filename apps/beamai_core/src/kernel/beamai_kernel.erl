@@ -203,6 +203,9 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
 %% 执行流程：chat filter 洋葱链（around_chat：前置改写请求 → LLM 调用 → 后置改写响应）。
 %% Kernel 需先通过 add_service/2 配置 LLM。
 %%
+%% Opts 可含 system_prompts：作为临时内层 filter 注入（不入存储），与 invoke/3 行为一致，
+%% 便于在启用 Memory（with_memory/2）时让系统提示在历史展开后前置。
+%%
 %% @param Kernel Kernel 实例
 %% @param Messages 消息列表（[#{role => ..., content => ...}]）
 %% @param Opts Chat 选项
@@ -212,8 +215,12 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
 invoke_chat(Kernel, Messages, Opts) ->
     case get_service(Kernel) of
         {ok, LlmConfig} ->
-            #{filters := Filters} = Kernel,
+            #{filters := Filters0} = Kernel,
             Context = maps:get(context, Opts, beamai_context:new()),
+            %% system_prompts 作为临时内层 chat filter 注入（与 invoke/3 一致），
+            %% 在 Memory 展开历史之后前置系统消息，且不写入存储。
+            SystemPrompts = maps:get(system_prompts, Opts, []),
+            Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
             run_chat(LlmConfig, Filters, Messages, Opts, Context);
         error ->
             {error, no_llm_service}

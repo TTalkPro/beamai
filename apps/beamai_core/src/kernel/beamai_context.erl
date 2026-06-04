@@ -50,7 +50,8 @@
     kernel := term() | undefined,
     trace := [trace_entry()],
     metadata := map(),
-    filter_states := #{binary() => map()},
+    %% filter 私有上下文槽，存于内部 atom key '__filter_states__'（见 ?FILTER_STATES_KEY）
+    '__filter_states__' := #{binary() => map()},
     binary() => term()
 }.
 

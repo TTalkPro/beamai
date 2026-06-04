@@ -16,20 +16,25 @@
 %%%-------------------------------------------------------------------
 -module(beamai_agent_state).
 
--export([create/1, build_kernel/1, build_messages/2, inject_callback_filters/2]).
+-export([create/1, build_kernel/1, inject_callback_filters/2]).
+-export([store/1, conversation_id/1]).
 
 -export_type([agent_state/0]).
+
+%% 默认共享会话存储（单例）的注册名。各 agent 用各自的 conversation_id
+%% 在同一 store 内分区，避免每个 agent 占用一个进程/动态原子。
+-define(DEFAULT_STORE_NAME, beamai_agent_default_memory).
 
 -type agent_state() :: #{
     '__agent__' := true,            %% 标识这是一个 agent 状态 map
     id := binary(),                 %% agent 唯一标识（自动生成或用户指定）
     name := binary(),               %% agent 显示名称
-    kernel := beamai_kernel:kernel(), %% kernel 实例（含 LLM、plugins、filters）
-    messages := [map()],            %% 对话消息历史
+    kernel := beamai_kernel:kernel(), %% kernel 实例（含 LLM、plugins、filters、memory filter）
+    store := beamai_chat_memory:handle() | undefined, %% 会话历史存储句柄（filter-memory）
+    conversation_id := binary(),    %% 本 agent 的会话标识，用于在 store 内定位历史
     system_prompt := binary() | undefined, %% 系统提示词
     max_tool_iterations := pos_integer(),  %% tool loop 最大迭代次数
     callbacks := beamai_agent_callbacks:callbacks(), %% 回调函数表
-    memory := term() | undefined,   %% 持久化后端实例
     auto_save := boolean(),         %% 是否每轮自动保存
     turn_count := non_neg_integer(),%% 已完成的对话轮数
     metadata := map(),              %% 用户自定义元数据
@@ -90,17 +95,21 @@ create(Config) ->
     try
         Callbacks = maps:get(callbacks, Config, #{}),
         Kernel0 = build_kernel(Config),
-        Kernel = inject_callback_filters(Kernel0, Callbacks),
+        Kernel1 = inject_callback_filters(Kernel0, Callbacks),
+        %% 解析会话存储并挂载 filter-memory：跨轮对话历史由 Memory filter
+        %% 按 conversation_id 管理（不再用 agent_state.messages 自累积）。
+        {Store, Kernel} = setup_memory(Kernel1, Config),
+        Id = maps:get(id, Config, beamai_id:gen_id(<<"agent">>)),
         State = #{
             '__agent__' => true,
-            id => maps:get(id, Config, beamai_id:gen_id(<<"agent">>)),
+            id => Id,
             name => maps:get(name, Config, <<"agent">>),
             kernel => Kernel,
-            messages => [],
+            store => Store,
+            conversation_id => maps:get(conversation_id, Config, beamai_id:gen_id(<<"conv">>)),
             system_prompt => maps:get(system_prompt, Config, undefined),
             max_tool_iterations => maps:get(max_tool_iterations, Config, 10),
             callbacks => Callbacks,
-            memory => maps:get(memory, Config, undefined),
             auto_save => maps:get(auto_save, Config, false),
             turn_count => 0,
             metadata => maps:get(metadata, Config, #{}),
@@ -115,6 +124,14 @@ create(Config) ->
         error:Reason:Stack ->
             {error, {init_failed, Reason, Stack}}
     end.
+
+%% @doc 获取 agent 的会话存储句柄
+-spec store(agent_state()) -> beamai_chat_memory:handle() | undefined.
+store(#{store := Store}) -> Store.
+
+%% @doc 获取 agent 的会话标识
+-spec conversation_id(agent_state()) -> binary().
+conversation_id(#{conversation_id := ConvId}) -> ConvId.
 
 %% @doc 从 Config 构建 Kernel 实例
 %%
@@ -194,28 +211,50 @@ inject_callback_filters(Kernel, Callbacks) ->
             K1
     end.
 
-%% @doc 组装发送给 kernel 的消息列表
-%%
-%% 按以下顺序拼接消息：
-%%   1. system_prompt（如果存在且非空，包装为 system 角色消息）
-%%   2. 历史消息（之前各轮的 user + assistant 消息）
-%%   3. 当前用户消息
-%%
-%% @param State agent 状态（从中提取 system_prompt 和 messages）
-%% @param UserMsg 当前用户消息 map（#{role => user, content => ...}）
-%% @returns 完整的消息列表，可直接传给 kernel:invoke_chat
--spec build_messages(agent_state(), map()) -> [map()].
-build_messages(#{system_prompt := SysPrompt, messages := History}, UserMsg) ->
-    MaybeSys = case SysPrompt of
-        undefined -> [];
-        <<>> -> [];
-        P -> [#{role => system, content => P}]
-    end,
-    MaybeSys ++ History ++ [UserMsg].
-
 %%====================================================================
 %% 内部函数
 %%====================================================================
+
+%% @private 解析会话存储并挂载 filter-memory
+%%
+%% Config 的 memory 选项：
+%%   - 缺省：使用懒启动的共享默认 store（注册名 ?DEFAULT_STORE_NAME）
+%%   - false | none：不启用记忆（不挂 Memory filter，store=undefined）
+%%   - 句柄 {Module, Ref}：使用调用方自管的 store（可多 agent 共享，生命周期自负责）
+%%
+%% 在 build_kernel + inject_callback_filters 之后挂载，确保即便传入预构建
+%% kernel（build_kernel 原样返回）也能获得会话记忆。
+-spec setup_memory(beamai_kernel:kernel(), map()) ->
+    {beamai_chat_memory:handle() | undefined, beamai_kernel:kernel()}.
+setup_memory(Kernel, Config) ->
+    case maps:get(memory, Config, default) of
+        false -> {undefined, Kernel};
+        none -> {undefined, Kernel};
+        default ->
+            Store = ensure_default_store(),
+            {Store, beamai_kernel:with_memory(Kernel, Store)};
+        Handle when is_tuple(Handle) ->
+            {Handle, beamai_kernel:with_memory(Kernel, Handle)}
+    end.
+
+%% @private 懒启动共享默认会话 store（幂等、单例）
+%%
+%% 用固定注册名避免动态原子增长；各 agent 以各自 conversation_id 在其中分区。
+%% 已启动则复用；未启动则启动并 unlink，使其作为独立单例存活、不随调用进程退出
+%% 而终止（需要可监督/可控生命周期的调用方应通过 Config 的 memory 选项传入自管 store）。
+-spec ensure_default_store() -> beamai_chat_memory:handle().
+ensure_default_store() ->
+    Name = ?DEFAULT_STORE_NAME,
+    case whereis(Name) of
+        undefined ->
+            case beamai_chat_memory_ets:start_link(Name) of
+                {ok, Pid} -> unlink(Pid);
+                {error, {already_started, _Pid}} -> ok
+            end;
+        _Pid ->
+            ok
+    end,
+    beamai_chat_memory_ets:handle(Name).
 
 %% @private 添加 LLM 服务到 kernel
 %%
