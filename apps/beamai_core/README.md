@@ -100,10 +100,9 @@ beamai_kernel:add_service(Kernel, Service) -> kernel().
 beamai_kernel:add_filter(Kernel, Filter) -> kernel().    %% 洋葱式 filter，详见 docs/FILTER.md
 beamai_kernel:with_memory(Kernel, Store) -> kernel().    %% 启用会话记忆，详见 docs/MEMORY.md
 
-%% 调用
-%% invoke/3：Chat + 工具调用循环。Messages 为本轮新消息（单条 delta），
-%% 历史由 Memory Filter 按 context 的 conversation_id 管理。
-beamai_kernel:invoke(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
+%% 调用（kernel 只提供单次能力；ReAct 工具调用循环属于 Agent 层，见 beamai_agent）
+%% invoke_chat/3：单次 Chat Completion（经 around_chat 链）。Messages 为本轮新消息；
+%% 若 context 带 conversation_id 且挂了 Memory Filter，则按 id 存储并展开历史。
 beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
 beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
 
@@ -244,9 +243,10 @@ K = beamai_kernel:with_memory(Kernel1, beamai_chat_memory_ets:handle(my_mem)),
 
 %% 用 conversation_id 标识会话，每次只传最新消息
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
-{ok, R1, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"我叫张三">>}], #{context => Ctx}),
-{ok, R2, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"我叫什么？">>}], #{context => Ctx}).
+{ok, R1, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"我叫张三">>}], #{context => Ctx}),
+{ok, R2, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"我叫什么？">>}], #{context => Ctx}).
 %% 第二轮 LLM 能看到完整历史；未挂 memory 则为单次无状态调用
+%% 需要"自动执行工具并多轮循环"请用 beamai_agent（ReAct）
 ```
 
 ## 依赖

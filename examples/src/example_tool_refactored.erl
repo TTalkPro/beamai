@@ -97,16 +97,16 @@ run(Opts) ->
     K2 = beamai:add_llm(K1, LLMConfig),
     io:format("    LLM configured~n~n"),
 
-    %% 6. 使用 chat_with_tools 进行对话
-    io:format("[6] Testing chat_with_tools...~n"),
-    Messages = [
-        #{role => system, content => <<"You are a helpful assistant. Use the provided tools to answer questions. Always respond in Chinese.">>},
-        #{role => user, content => <<"北京现在的天气怎么样？">>}
-    ],
+    %% 6. 用 beamai_agent 进行对话（ReAct 工具循环属于 Agent 层，kernel 只提供单次能力）
+    io:format("[6] Testing ReAct agent (tool loop)...~n"),
+    {ok, Agent} = beamai_agent:new(#{
+        kernel => K2,
+        system_prompt => <<"You are a helpful assistant. Use the provided tools to answer questions. Always respond in Chinese.">>
+    }),
 
     io:format("    User: 北京现在的天气怎么样？~n"),
-    case beamai:chat_with_tools(K2, Messages) of
-        {ok, #{content := Content}, _Context} ->
+    case beamai_agent:run(Agent, <<"北京现在的天气怎么样？">>) of
+        {ok, #{content := Content}, _Agent1} ->
             io:format("    Assistant: ~ts~n~n", [Content]),
             io:format("[SUCCESS] Tool calling loop completed!~n");
         {error, Reason} ->

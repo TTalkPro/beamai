@@ -99,8 +99,7 @@ beamai_kernel:add_service(Kernel, Service) -> kernel().
 beamai_kernel:add_filter(Kernel, Filter) -> kernel().  %% onion-style filter, see docs/FILTER_EN.md
 beamai_kernel:with_memory(Kernel, Store) -> kernel().   %% enable conversation memory, see docs/MEMORY_EN.md
 
-%% Invoke API
-beamai_kernel:invoke(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
+%% Invoke API (kernel is single-shot only; the ReAct tool-calling loop lives in beamai_agent)
 beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
 beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
 
@@ -207,9 +206,10 @@ K = beamai_kernel:with_memory(Kernel1, beamai_chat_memory_ets:handle(my_mem)),
 
 %% Identify the conversation with a conversation_id; pass only the latest message
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
-{ok, R1, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"My name is Alice">>}], #{context => Ctx}),
-{ok, R2, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"What's my name?">>}], #{context => Ctx}).
-%% The second round's LLM sees the full history; without memory it is a stateless single-shot call
+{ok, R1, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"My name is Alice">>}], #{context => Ctx}),
+{ok, R2, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"What's my name?">>}], #{context => Ctx}).
+%% The second round's LLM sees the full history; without memory it is a stateless single-shot call.
+%% For automatic tool execution with a multi-round loop, use beamai_agent (ReAct).
 ```
 
 ### Process Framework

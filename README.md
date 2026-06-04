@@ -274,7 +274,7 @@ Tool = #{
 Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
 
 %% 调用注册的工具
-{ok, Result, _NewCtx} = beamai_kernel:invoke(Kernel2, <<"read_file">>, #{
+{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel2, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
