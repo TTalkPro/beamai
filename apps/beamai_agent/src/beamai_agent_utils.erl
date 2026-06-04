@@ -14,6 +14,7 @@
     extract_content/1,
     build_chat_opts/2,
     execute_tools/2,
+    execute_tools/3,
     parse_tool_results_messages/1
 ]).
 
@@ -65,9 +66,18 @@ build_chat_opts(Kernel, Opts) ->
 %% @returns {ToolResultMsgs, CallRecords}
 -spec execute_tools(beamai_kernel:kernel(), [map()]) -> {[map()], [map()]}.
 execute_tools(Kernel, ToolCalls) ->
+    execute_tools(Kernel, ToolCalls, beamai_context:new()).
+
+%% @doc 执行 tool calls 并收集结果（指定执行上下文）
+%%
+%% 与 execute_tools/2 相同，但用传入的 Context（含 conversation_id 等）执行工具，
+%% 使 around_tool filter 能读到当轮上下文。工具对 context 的修改不回写（结果以
+%% tool 消息累积）。
+-spec execute_tools(beamai_kernel:kernel(), [map()], beamai_context:t()) -> {[map()], [map()]}.
+execute_tools(Kernel, ToolCalls, Context) ->
     lists:foldl(fun(TC, {ResultsAcc, CallsAcc}) ->
         {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
-        Result = case beamai_kernel:invoke_tool(Kernel, Name, Args, beamai_context:new()) of
+        Result = case beamai_kernel:invoke_tool(Kernel, Name, Args, Context) of
             {ok, Value, _Ctx} -> beamai_tool:encode_result(Value);
             {error, Reason} -> beamai_tool:encode_result(#{error => Reason})
         end,

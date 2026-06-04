@@ -1,16 +1,21 @@
 %%%-------------------------------------------------------------------
-%%% @doc 有状态多轮对话 Agent
+%%% @doc 有状态多轮对话 Agent（ReAct）
 %%%
 %%% 封装 beamai_kernel，提供：
-%%%   - 多轮对话管理（消息历史自动累积）
-%%%   - 自实现 tool loop（确保 filters 完整触发）
+%%%   - 多轮对话管理（跨轮历史由 filter-memory 按 conversation_id 维护）
+%%%   - 自实现 tool loop（delta 模式，确保 filters 完整触发）
 %%%   - 6 个观察性回调（on_turn_start/end/error, on_llm_call, on_tool_call, on_token）
 %%%
 %%% 核心设计决策：
-%%%   - 不使用 kernel 的 invoke_chat_with_tools（它绕过 pre/post_chat filters）
-%%%   - Agent 自己实现 tool loop，每次 LLM 调用和函数调用都经过完整 filter 管道
+%%%   - 上下文记忆用 Filter 实现：kernel 经 with_memory/2 挂载 beamai_memory_filter，
+%%%     工具循环以 delta 模式运行——每轮只提交新消息（用户消息 / 工具结果），
+%%%     由 Memory filter 存储 delta 并展开完整历史。agent 状态不再持有 messages，
+%%%     仅持有 store 句柄与 conversation_id。
+%%%   - Agent 自己实现 tool loop（每次 LLM 调用 invoke_chat、工具调用 invoke_tool
+%%%     都经过完整 filter 管道），以支撑中断检测与流式。
 %%%   - 回调通过 kernel filter 注入（on_llm_call → around_chat, on_tool_call → around_tool）
-%%%   - Map-based 状态，无 Record 依赖，方便序列化和扩展
+%%%   - Map-based 状态，无 Record 依赖，方便序列化和扩展（store 句柄为 {Mod, 注册名}，
+%%%     conversation_id 为 binary，均可序列化）
 %%%
 %%% 使用示例：
 %%% ```
@@ -48,7 +53,7 @@
 -type run_result() :: #{
     content := binary(),                  %% LLM 最终回复文本
     tool_calls_made => [map()],           %% 本轮执行的所有 tool 调用记录
-    finish_reason => binary(),            %% LLM 停止原因（如 <<"stop">>）
+    finish_reason => beamai_llm_response:finish_reason(), %% LLM 停止原因（如 complete）
     usage => map(),                       %% token 使用统计
     iterations => non_neg_integer()       %% tool loop 迭代次数
 }.
@@ -93,23 +98,24 @@ new(Config) ->
 %% @returns {ok, RunResult, NewState} 执行成功
 %% @returns {error, Reason} 执行失败
 -spec run(beamai_agent_state:agent_state(), binary()) ->
-    {ok, run_result(), beamai_agent_state:agent_state()} | {error, term()}.
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
 run(State, UserMessage) ->
     run(State, UserMessage, #{}).
 
 %% @doc 执行一轮对话（带选项）
 %%
-%% 执行流程：
+%% 执行流程（delta 模式 + filter-memory）：
 %%   1. 触发 on_turn_start 回调
-%%   2. 组装消息（system_prompt + 历史 + 当前用户消息）
-%%   3. 进入 tool loop:
-%%      a. 调用 kernel:invoke_chat 发送给 LLM（经过 pre/post_chat filters）
-%%      b. 若 LLM 返回 tool_calls: 逐个 kernel:invoke 执行（经过 pre/post_invocation filters）
-%%      c. 拼接 tool results 到消息，回到 (a)
-%%      d. 若 LLM 返回文本: 终止循环
-%%   4. 追加 user_msg + assistant_msg 到历史
-%%   5. 触发 on_turn_end 回调
-%%   6. 可选 auto_save
+%%   2. 进入 tool loop（本轮 delta 起始 = 用户消息）:
+%%      a. kernel:invoke_chat 发送本轮 delta；Memory filter 存 delta、展开完整历史、
+%%         调 LLM、存回 assistant 回复（经过完整 around_chat 链）
+%%      b. 若 LLM 返回 tool_calls: 逐个 kernel:invoke_tool 执行（经过 around_tool 链），
+%%         工具结果作为下一轮 delta，回到 (a)
+%%      c. 若 LLM 返回文本: 终止循环
+%%   3. turn_count + 1（历史已由 Memory filter 写入 store，无需 agent 追加）
+%%   4. 触发 on_turn_end 回调
 %%
 %% 选项：
 %%   chat_opts — 传递给 kernel invoke_chat 的额外选项
@@ -120,10 +126,11 @@ run(State, UserMessage) ->
 %% @returns {ok, RunResult, NewState} 执行成功
 %% @returns {error, Reason} 执行失败
 -spec run(beamai_agent_state:agent_state(), binary(), map()) ->
-    {ok, run_result(), beamai_agent_state:agent_state()} | {error, term()}.
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
 run(State, UserMessage, Opts) ->
-    #{callbacks := Callbacks, kernel := Kernel,
-      max_tool_iterations := MaxIter} = State,
+    #{callbacks := Callbacks} = State,
 
     %% 生成本轮 run_id
     RunId = beamai_id:gen_id(<<"run">>),
@@ -132,19 +139,11 @@ run(State, UserMessage, Opts) ->
     Meta = beamai_agent_callbacks:build_metadata(State0),
     beamai_agent_callbacks:invoke(on_turn_start, [Meta], Callbacks),
 
+    %% delta 模式：本轮只提交用户消息，跨轮历史由 Memory filter 维护。
     UserMsg = #{role => user, content => UserMessage},
-    Messages = beamai_agent_state:build_messages(State0, UserMsg),
-
-    ChatOpts = build_chat_opts(State0, Opts),
-
-    LoopOpts = #{
-        kernel => Kernel, messages => Messages, chat_opts => ChatOpts,
-        callbacks => Callbacks, meta => Meta, max_iterations => MaxIter,
-        agent => State0, mode => normal
-    },
-    case beamai_agent_tool_loop:run(LoopOpts, []) of
+    case run_loop(State0, [UserMsg], [], Opts) of
         {ok, Response, ToolCallsMade, Iterations} ->
-            finalize_turn(State0, Response, ToolCallsMade, Iterations, [UserMsg]);
+            finalize_turn(State0, Response, ToolCallsMade, Iterations);
         {interrupt, Type, Context} ->
             handle_new_interrupt(State0, Type, Context, UserMsg, Callbacks, Meta);
         {error, Reason} ->
@@ -162,15 +161,20 @@ run(State, UserMessage, Opts) ->
 %% @returns {ok, RunResult, NewState} 执行成功
 %% @returns {error, Reason} 执行失败
 -spec stream(beamai_agent_state:agent_state(), binary()) ->
-    {ok, run_result(), beamai_agent_state:agent_state()} | {error, term()}.
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
 stream(State, UserMessage) ->
     stream(State, UserMessage, #{}).
 
 %% @doc 流式执行一轮对话（带选项）
 %%
-%% Tool-call 迭代使用普通 chat（需完整 response 解析 tool_calls），
-%% 最后一次 LLM 调用（确认无更多 tool calls 后）使用 streaming。
-%% Token 通过 on_token callback 传递给用户。
+%% 与 run/3 同样经过 filter-memory（delta 模式）完成工具循环，得到最终回复后
+%% 通过 on_token callback 将回复内容分块推送给用户。
+%%
+%% 说明：为与 filter-memory 一致并避免重复存储/重复 LLM 调用，流式不再对最终
+%% 调用单独发起 provider 级 streaming，而是在最终回复产生后经 on_token 分块输出。
+%% on_token 回调语义（逐块接收最终回复）保持不变。
 %%
 %% @param State 当前 agent 状态
 %% @param UserMessage 用户输入文本
@@ -178,35 +182,18 @@ stream(State, UserMessage) ->
 %% @returns {ok, RunResult, NewState} 执行成功
 %% @returns {error, Reason} 执行失败
 -spec stream(beamai_agent_state:agent_state(), binary(), map()) ->
-    {ok, run_result(), beamai_agent_state:agent_state()} | {error, term()}.
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
 stream(State, UserMessage, Opts) ->
-    #{callbacks := Callbacks, kernel := Kernel,
-      max_tool_iterations := MaxIter} = State,
-
-    RunId = beamai_id:gen_id(<<"run">>),
-    State0 = State#{run_id => RunId},
-
-    Meta = beamai_agent_callbacks:build_metadata(State0),
-    beamai_agent_callbacks:invoke(on_turn_start, [Meta], Callbacks),
-
-    UserMsg = #{role => user, content => UserMessage},
-    Messages = beamai_agent_state:build_messages(State0, UserMsg),
-
-    ChatOpts = build_chat_opts(State0, Opts),
-
-    LoopOpts = #{
-        kernel => Kernel, messages => Messages, chat_opts => ChatOpts,
-        callbacks => Callbacks, meta => Meta, max_iterations => MaxIter,
-        agent => State0, mode => stream
-    },
-    case beamai_agent_tool_loop:run(LoopOpts, []) of
-        {ok, Response, ToolCallsMade, Iterations} ->
-            finalize_turn(State0, Response, ToolCallsMade, Iterations, [UserMsg]);
-        {interrupt, Type, Context} ->
-            handle_new_interrupt(State0, Type, Context, UserMsg, Callbacks, Meta);
-        {error, Reason} ->
-            beamai_agent_callbacks:invoke(on_turn_error, [Reason, Meta], Callbacks),
-            {error, Reason}
+    #{callbacks := Callbacks} = State,
+    case run(State, UserMessage, Opts) of
+        {ok, #{content := Content} = Result, NewState} ->
+            Meta = beamai_agent_callbacks:build_metadata(NewState),
+            emit_tokens(Content, Meta, Callbacks),
+            {ok, Result, NewState};
+        Other ->
+            Other
     end.
 
 %%====================================================================
@@ -215,24 +202,30 @@ stream(State, UserMessage, Opts) ->
 
 %% @doc 获取对话消息历史
 %%
-%% 返回所有已累积的 user 和 assistant 消息列表。
-%% 不包含 system_prompt（system_prompt 在每次调用时动态拼接）。
+%% 从 filter-memory store 按 conversation_id 读取完整历史（正序）。
+%% 历史含 user / assistant 消息，以及工具循环中的 assistant(tool_calls) 与
+%% tool 结果消息。不包含 system_prompt（每次调用时动态拼接、不入存储）。
+%% 未启用记忆（memory => false）时返回 []。
 %%
 %% @param State agent 状态
-%% @returns 消息列表 [#{role => user|assistant, content => binary()}]
+%% @returns 消息列表
 -spec messages(beamai_agent_state:agent_state()) -> [map()].
-messages(#{messages := Msgs}) -> Msgs.
+messages(State) ->
+    case beamai_agent_state:store(State) of
+        undefined -> [];
+        Store -> beamai_chat_memory:mem_get(Store, beamai_agent_state:conversation_id(State))
+    end.
 
-%% @doc 获取最后一条 assistant 响应
+%% @doc 获取最后一条 assistant 文本响应
 %%
-%% 从消息历史末尾向前查找第一条 role=assistant 的消息内容。
-%% 如果历史中没有 assistant 消息，返回 undefined。
+%% 从历史末尾向前查找第一条 role=assistant 且 content 非 null 的消息内容
+%% （跳过仅含 tool_calls 的 assistant 消息）。无则返回 undefined。
 %%
 %% @param State agent 状态
 %% @returns 最后回复内容（binary）或 undefined
 -spec last_response(beamai_agent_state:agent_state()) -> binary() | undefined.
-last_response(#{messages := Msgs}) ->
-    find_last_assistant(lists:reverse(Msgs)).
+last_response(State) ->
+    find_last_assistant(lists:reverse(messages(State))).
 
 %% @doc 获取已完成的对话 turn 数
 %%
@@ -290,28 +283,37 @@ set_system_prompt(State, Prompt) ->
 
 %% @doc 手动追加消息到历史
 %%
-%% 将一条消息追加到消息历史末尾。可用于注入上下文信息，
-%% 如添加 assistant 角色的引导消息。
+%% 将一条消息追加到 store 中本会话历史末尾。可用于注入上下文信息，
+%% 如添加 assistant 角色的引导消息。未启用记忆时为 no-op。
+%% agent 状态本身不可变，历史变更落在 store，故返回原 State。
 %%
 %% @param State agent 状态
 %% @param Msg 消息 map（需包含 role 和 content 键）
-%% @returns 更新后的 agent 状态
+%% @returns agent 状态（不变）
 -spec add_message(beamai_agent_state:agent_state(), map()) ->
     beamai_agent_state:agent_state().
-add_message(#{messages := Msgs} = State, Msg) ->
-    State#{messages => Msgs ++ [Msg]}.
+add_message(State, Msg) ->
+    case beamai_agent_state:store(State) of
+        undefined -> ok;
+        Store -> beamai_chat_memory:mem_add(Store, beamai_agent_state:conversation_id(State), [Msg])
+    end,
+    State.
 
 %% @doc 清空消息历史
 %%
-%% 重置对话上下文，agent 将从全新对话开始。
-%% 注意：不会重置 turn_count。
+%% 清空 store 中本会话历史，agent 将从全新对话开始。未启用记忆时为 no-op。
+%% 注意：不会重置 turn_count；agent 状态不可变，故返回原 State。
 %%
 %% @param State agent 状态
-%% @returns 清空历史后的 agent 状态
+%% @returns agent 状态（不变）
 -spec clear_messages(beamai_agent_state:agent_state()) ->
     beamai_agent_state:agent_state().
 clear_messages(State) ->
-    State#{messages => []}.
+    case beamai_agent_state:store(State) of
+        undefined -> ok;
+        Store -> beamai_chat_memory:mem_clear(Store, beamai_agent_state:conversation_id(State))
+    end,
+    State.
 
 %% @doc 更新用户元数据（合并方式）
 %%
@@ -352,31 +354,23 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
     case beamai_agent_interrupt:validate_resume_input(IntState, HumanInput) of
         {error, _} = Err -> Err;
         ok ->
-            #{callbacks := Callbacks, kernel := Kernel,
-              max_tool_iterations := MaxIter} = Agent,
+            #{callbacks := Callbacks, max_tool_iterations := MaxIter} = Agent,
 
             Meta = beamai_agent_callbacks:build_metadata(Agent),
             beamai_agent_callbacks:invoke(on_resume, [IntState, Meta], Callbacks),
 
-            %% 2. 构建恢复消息
-            ResumeMessages = beamai_agent_interrupt:build_resume_messages(IntState, HumanInput),
+            %% 2. 构建恢复 delta（已完成工具结果 + 人类输入；历史在 store）
+            ResumeDelta = beamai_agent_interrupt:build_resume_messages(IntState, HumanInput),
 
             %% 3. 清除中断状态
             Agent1 = Agent#{interrupt_state => undefined},
 
-            %% 4. 继续 tool loop
+            %% 4. 继续 tool loop（剩余迭代数）
             #{iteration := Iter, tool_calls_made := PrevCalls} = IntState,
             RemainingIter = MaxIter - Iter,
-            ChatOpts = build_chat_opts(Agent1, #{}),
-
-            LoopOpts = #{
-                kernel => Kernel, messages => ResumeMessages, chat_opts => ChatOpts,
-                callbacks => Callbacks, meta => Meta, max_iterations => RemainingIter,
-                agent => Agent1, mode => normal
-            },
-            case beamai_agent_tool_loop:run(LoopOpts, PrevCalls) of
+            case run_loop(Agent1, ResumeDelta, PrevCalls, #{max_iterations => RemainingIter}) of
                 {ok, Response, AllToolCalls, Iterations} ->
-                    finalize_turn(Agent1, Response, AllToolCalls, Iterations, []);
+                    finalize_turn(Agent1, Response, AllToolCalls, Iterations);
                 {interrupt, Type, Context} ->
                     UserMsg = #{role => user, content => <<"[resume]">>},
                     handle_new_interrupt(Agent1, Type, Context, UserMsg, Callbacks, Meta);
@@ -419,26 +413,39 @@ get_interrupt_info(_) ->
 %% 内部函数 - 辅助
 %%====================================================================
 
+%% @private 运行一轮 tool loop（delta 模式）
+%%
+%% 统一 run / resume 的 LoopOpts 组装：注入带 conversation_id 的 context 与
+%% system_prompts 的 chat_opts，交给 tool_loop 在 filter-memory 下驱动循环。
+%% Opts 可含 max_iterations 覆盖（resume 用剩余迭代数）。
+run_loop(State, Delta, PrevCalls, Opts) ->
+    #{callbacks := Callbacks, kernel := Kernel} = State,
+    MaxIter = maps:get(max_iterations, Opts, maps:get(max_tool_iterations, State)),
+    LoopOpts = #{
+        kernel => Kernel,
+        messages => Delta,
+        chat_opts => build_chat_opts(State, Opts),
+        callbacks => Callbacks,
+        max_iterations => MaxIter,
+        agent => State
+    },
+    beamai_agent_tool_loop:run(LoopOpts, PrevCalls).
+
 %% @private 完成一轮对话：构建结果、更新状态、触发回调
 %%
-%% 统一 run/stream/resume 三处相同的结果构建逻辑。
+%% 跨轮历史已由 Memory filter 存入 store（含本轮用户消息与 assistant 回复），
+%% 此处不再向 agent 状态追加消息，仅累加 turn_count 并构建结果。
 %%
 %% @param State0 执行前的 agent 状态
 %% @param Response LLM 最终响应
 %% @param ToolCallsMade 本轮所有 tool 调用记录
 %% @param Iterations 迭代次数
-%% @param UserMsgs 需追加到历史的用户消息列表
 %% @returns {ok, RunResult, FinalState}
-finalize_turn(State0, Response, ToolCallsMade, Iterations, UserMsgs) ->
+finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
     #{callbacks := Callbacks} = State0,
     Meta = beamai_agent_callbacks:build_metadata(State0),
     Content = beamai_agent_utils:extract_content(Response),
-    AssistantMsg = #{role => assistant, content => Content},
-    NewMessages = maps:get(messages, State0) ++ UserMsgs ++ [AssistantMsg],
-    NewState = State0#{
-        messages => NewMessages,
-        turn_count => maps:get(turn_count, State0) + 1
-    },
+    NewState = State0#{turn_count => maps:get(turn_count, State0) + 1},
     Result = #{
         content => Content,
         tool_calls_made => ToolCallsMade,
@@ -450,22 +457,45 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations, UserMsgs) ->
     beamai_agent_callbacks:invoke(on_turn_end, [EndMeta], Callbacks),
     {ok, Result, NewState}.
 
-%% @private 构建 chat 选项（基于共享工具模块，附加中断 tool specs）
+%% @private 构建 chat 选项
+%%
+%% 在共享工具模块基础上，附加：
+%%   - 带 conversation_id 的 context（供 Memory / 回调等 filter 定位会话）
+%%   - system_prompts（system_prompt 包装为 system 消息，经内层 filter 注入、不入存储）
+%%   - 中断 tool specs（如有）
 build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
-    BaseOpts = beamai_agent_utils:build_chat_opts(Kernel, Opts),
+    BaseOpts0 = beamai_agent_utils:build_chat_opts(Kernel, Opts),
+    Ctx = beamai_context:with_conversation_id(
+            beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
+    BaseOpts1 = BaseOpts0#{
+        context => Ctx,
+        system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined))
+    },
     InterruptSpecs = beamai_agent_interrupt:get_interrupt_tool_specs(Agent),
     case InterruptSpecs of
-        [] -> BaseOpts;
+        [] -> BaseOpts1;
         _ ->
-            ExistingTools = maps:get(tools, BaseOpts, []),
-            BaseOpts#{tools => ExistingTools ++ InterruptSpecs}
+            ExistingTools = maps:get(tools, BaseOpts1, []),
+            BaseOpts1#{tools => ExistingTools ++ InterruptSpecs}
     end.
 
-%% @private 从消息列表中查找最后一条 assistant 消息
+%% @private 把 system_prompt 包装为 system 消息列表（空/未设返回 []）
+system_prompts(undefined) -> [];
+system_prompts(<<>>) -> [];
+system_prompts(P) when is_binary(P) -> [#{role => system, content => P}].
+
+%% @private 经 on_token 回调分块推送内容（用于 stream/2,3）
+emit_tokens(<<>>, _Meta, _Callbacks) ->
+    ok;
+emit_tokens(Content, Meta, Callbacks) ->
+    beamai_agent_callbacks:invoke(on_token, [Content, Meta], Callbacks).
+
+%% @private 从消息列表中查找最后一条带文本内容的 assistant 消息
 %%
-%% 从列表末尾（已反转）向前查找 role=assistant 的消息。
+%% 从列表末尾（已反转）向前查找 role=assistant 且 content 为 binary 的消息，
+%% 跳过仅含 tool_calls（content=null）的 assistant 消息。
 find_last_assistant([]) -> undefined;
-find_last_assistant([#{role := assistant, content := C} | _]) -> C;
+find_last_assistant([#{role := assistant, content := C} | _]) when is_binary(C) -> C;
 find_last_assistant([_ | Rest]) -> find_last_assistant(Rest).
 
 %%====================================================================
