@@ -393,31 +393,23 @@ state_create_test() ->
     ?assertEqual(true, maps:get('__agent__', State)),
     ?assert(is_binary(maps:get(id, State))),
     ?assertEqual(<<"agent">>, maps:get(name, State)),
-    ?assertEqual([], maps:get(messages, State)),
+    %% 跨轮历史改由 filter-memory store 维护，agent 状态不再持有 messages，
+    %% 而是持有 store 句柄与 conversation_id。
+    ?assert(is_binary(beamai_agent_state:conversation_id(State))),
+    ?assertNotEqual(undefined, beamai_agent_state:store(State)),
+    ?assertEqual([], beamai_agent:messages(State)),
     ?assertEqual(0, maps:get(turn_count, State)),
     ?assertEqual(10, maps:get(max_tool_iterations, State)).
+
+state_create_memory_disabled_test() ->
+    %% memory => false 时不启用记忆：无 store，messages 退化为 []
+    {ok, State} = beamai_agent_state:create(#{llm => {mock, #{}}, memory => false}),
+    ?assertEqual(undefined, beamai_agent_state:store(State)),
+    ?assertEqual([], beamai_agent:messages(State)).
 
 state_build_kernel_with_existing_test() ->
     K = beamai_kernel:new(),
     ?assertEqual(K, beamai_agent_state:build_kernel(#{kernel => K})).
-
-state_build_messages_test() ->
-    State = #{
-        system_prompt => <<"System">>,
-        messages => [#{role => user, content => <<"Old">>},
-                     #{role => assistant, content => <<"Reply">>}]
-    },
-    UserMsg = #{role => user, content => <<"New">>},
-    Result = beamai_agent_state:build_messages(State, UserMsg),
-    ?assertEqual(4, length(Result)),
-    ?assertEqual(system, maps:get(role, hd(Result))),
-    ?assertEqual(<<"New">>, maps:get(content, lists:last(Result))).
-
-state_build_messages_no_system_test() ->
-    State = #{system_prompt => undefined, messages => []},
-    UserMsg = #{role => user, content => <<"Hi">>},
-    Result = beamai_agent_state:build_messages(State, UserMsg),
-    ?assertEqual([UserMsg], Result).
 
 state_inject_callback_filters_test() ->
     K0 = beamai_kernel:new(),

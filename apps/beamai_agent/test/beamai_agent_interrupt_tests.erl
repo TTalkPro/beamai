@@ -64,16 +64,14 @@ handle_interrupt_test() ->
 
 build_resume_messages_test() ->
     IntState = #{
-        pending_messages => [#{role => user, content => <<"delete files">>}],
-        assistant_response => #{role => assistant, content => null,
-                               tool_calls => [#{id => <<"c1">>}]},
         completed_tool_results => [#{role => tool, tool_call_id => <<"c0">>,
                                     content => <<"done">>}],
         interrupted_tool_call => #{id => <<"c1">>, function => #{name => <<"ask">>}}
     },
     Msgs = beamai_agent_interrupt:build_resume_messages(IntState, <<"yes, approved">>),
-    %% [user msg] ++ [assistant] ++ [completed tool result] ++ [human tool result]
-    ?assertEqual(4, length(Msgs)),
+    %% delta 模式：[已完成 tool 结果] ++ [人类输入作为 tool 结果]
+    %% （历史与触发中断的 assistant(tool_calls) 由 Memory filter 维护，不在 delta 内）
+    ?assertEqual(2, length(Msgs)),
     LastMsg = lists:last(Msgs),
     ?assertEqual(tool, maps:get(role, LastMsg)),
     ?assertEqual(<<"c1">>, maps:get(tool_call_id, LastMsg)),
