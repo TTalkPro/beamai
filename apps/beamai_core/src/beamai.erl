@@ -3,8 +3,9 @@
 %%%
 %%% 提供简洁的顶层 API，涵盖：
 %%% - 构建 Kernel（工具 + LLM 服务）
-%%% - 调用工具和 Chat Completion
-%%% - 工具调用循环（LLM + 工具执行）
+%%% - 单次工具调用（invoke_tool）与单次 Chat Completion（chat）
+%%%
+%%% 注：ReAct 工具调用循环（LLM ↔ Tool 多轮编排）属于 Agent 层，见 beamai_agent。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -31,7 +32,6 @@
 %% Invoke
 -export([invoke_tool/4]).
 -export([chat/2, chat/3]).
--export([chat_with_tools/2, chat_with_tools/3]).
 
 %% Prompt
 -export([render/2]).
@@ -148,8 +148,8 @@ add_filter(Kernel, Name, Hooks) ->
 
 %% @doc 启用会话记忆：绑定 store 句柄并挂载 Memory 过滤器
 %%
-%% 启用后，invoke（chat_with_tools）按 context 的 conversation_id
-%% 自动存储与展开会话历史；context 无 conversation_id 时使用临时会话。
+%% 启用后，凡 context 带 conversation_id 的 chat/3（invoke_chat）调用会按该 id
+%% 自动存储与展开会话历史；无 conversation_id 时原样透传（单次无状态调用）。
 %%
 %% 示例:
 %%   {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
@@ -180,25 +180,12 @@ chat(Kernel, Messages) ->
 
 %% @doc 发送 Chat Completion 请求（自定义选项）
 %%
-%% 执行前置/后置 Chat 过滤器管道。
+%% 执行 around_chat 过滤器洋葱链（单次调用，不含工具循环）。
+%% ReAct 工具循环请使用 beamai_agent。
 -spec chat(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 chat(Kernel, Messages, Opts) ->
     beamai_kernel:invoke_chat(Kernel, Messages, Opts).
-
-%% @doc 发送带工具调用循环的 Chat 请求（默认选项）
-%%
-%% 自动注册 Kernel 中所有工具为 tools，驱动 LLM ↔ Tool 循环。
--spec chat_with_tools(beamai_kernel:kernel(), [map()]) ->
-    {ok, map(), beamai_context:t()} | {error, term()}.
-chat_with_tools(Kernel, Messages) ->
-    chat_with_tools(Kernel, Messages, #{}).
-
-%% @doc 发送带工具调用循环的 Chat 请求（自定义选项）
--spec chat_with_tools(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
-    {ok, map(), beamai_context:t()} | {error, term()}.
-chat_with_tools(Kernel, Messages, Opts) ->
-    beamai_kernel:invoke(Kernel, Messages, Opts).
 
 %%====================================================================
 %% Prompt

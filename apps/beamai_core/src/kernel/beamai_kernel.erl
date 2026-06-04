@@ -1,11 +1,17 @@
 %%%-------------------------------------------------------------------
-%%% @doc Kernel 核心：工具管理、LLM 服务、Filter、工具调用循环
+%%% @doc Kernel 核心：基础设施（工具管理、LLM 服务、Filter）
 %%%
-%%% Kernel 是框架的中枢，负责：
+%%% Kernel 是框架的基础设施层，只提供两类原子能力——单次 LLM 调用
+%%% （invoke_chat）与单次工具调用（invoke_tool），各自经过洋葱式 Filter 链。
+%%% 它**不**负责 ReAct 工具调用循环（LLM ↔ Tool 的多轮编排是 Agent 的职责，
+%%% 见 beamai_agent / beamai_agent_tool_loop）。
+%%%
+%%% 职责：
 %%% - 管理工具注册
 %%% - 持有 LLM 服务配置
 %%% - 执行洋葱式 Filter 链（chat / tool 各自前后一对 hook）
-%%% - 驱动工具调用循环（LLM ↔ Tool）
+%%% - invoke_chat：单次 Chat Completion（经 around_chat 链）
+%%% - invoke_tool：单次工具执行（经 around_tool 链）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -20,8 +26,7 @@
 -export([add_filter/2]).
 -export([with_memory/2]).
 
-%% Invoke API
--export([invoke/3]).
+%% Invoke API（仅单次 chat / tool；ReAct 循环属于 Agent 层）
 -export([invoke_tool/4]).
 -export([invoke_chat/3]).
 
@@ -41,12 +46,10 @@
     tools := #{binary() => beamai_tool:tool_spec()},
     llm_config := beamai_chat_behaviour:config() | undefined,
     filters := [beamai_filter:filter()],
-    memory := beamai_chat_memory:handle() | undefined,
     settings := kernel_settings()
 }.
 
 -type kernel_settings() :: #{
-    max_tool_iterations => pos_integer(),
     default_timeout => pos_integer(),
     atom() => term()
 }.
@@ -54,7 +57,6 @@
 -type chat_opts() :: #{
     tools => [map()],
     tool_choice => auto | none | required,
-    max_tool_iterations => pos_integer(),
     context => beamai_context:t(),
     system_prompts => [map()],
     atom() => term()
@@ -71,7 +73,7 @@ new() ->
 
 %% @doc 创建 Kernel（自定义配置）
 %%
-%% @param Settings 配置项（如 #{max_tool_iterations => 5}）
+%% @param Settings 配置项（如 #{default_timeout => 30000}）
 %% @returns Kernel 实例
 -spec new(kernel_settings()) -> kernel().
 new(Settings) ->
@@ -80,7 +82,6 @@ new(Settings) ->
         tools => #{},
         llm_config => undefined,
         filters => [],
-        memory => undefined,
         settings => Settings
     }.
 
@@ -136,7 +137,7 @@ maybe_add_filters(Kernel, Module) ->
 %% @doc 设置 LLM 服务配置
 %%
 %% 配置通过 beamai_chat_completion:create/2 创建。
-%% 设置后可使用 invoke_chat/3 和 invoke/3。
+%% 设置后可使用 invoke_chat/3。
 %%
 %% @param Kernel Kernel 实例
 %% @param LlmConfig LLM 配置 Map
@@ -160,9 +161,11 @@ add_filter(#{filters := Filters} = Kernel, Filter) ->
 
 %% @doc 启用会话记忆：绑定 store 句柄并挂载 Memory filter
 %%
-%% 挂载后，invoke/3 进入 delta 模式：每轮只把新消息交给 chat filter 链，
-%% 由 Memory filter（around_chat：存+展开历史、调 LLM、存回复）按 conversation_id
-%% 管理历史。未启用记忆时 invoke/3 为单次无状态调用（工具循环内部本地累积）。
+%% 挂载后，凡是 context 带 conversation_id 的 invoke_chat 调用都会经 Memory filter
+%% 的 around_chat：前置存入本轮消息并用完整历史替换 messages、调 LLM、后置存回复，
+%% 从而按 conversation_id 管理历史。context 无 conversation_id 时 Memory filter 原样
+%% 透传（退化为单次无状态调用）。ReAct 多轮编排由 Agent 层（beamai_agent_tool_loop）
+%% 以 delta 方式驱动。
 %%
 %% @param Kernel Kernel 实例
 %% @param Store 会话存储句柄（beamai_chat_memory:handle/0，如
@@ -170,8 +173,7 @@ add_filter(#{filters := Filters} = Kernel, Filter) ->
 %% @returns 更新后的 Kernel
 -spec with_memory(kernel(), beamai_chat_memory:handle()) -> kernel().
 with_memory(Kernel, Store) ->
-    K1 = add_filter(Kernel, beamai_memory_filter:memory_filter(Store)),
-    K1#{memory => Store}.
+    add_filter(Kernel, beamai_memory_filter:memory_filter(Store)).
 
 %%====================================================================
 %% Invoke API
@@ -203,8 +205,8 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
 %% 执行流程：chat filter 洋葱链（around_chat：前置改写请求 → LLM 调用 → 后置改写响应）。
 %% Kernel 需先通过 add_service/2 配置 LLM。
 %%
-%% Opts 可含 system_prompts：作为临时内层 filter 注入（不入存储），与 invoke/3 行为一致，
-%% 便于在启用 Memory（with_memory/2）时让系统提示在历史展开后前置。
+%% Opts 可含 system_prompts：作为临时内层 filter 注入（不入存储），便于在启用
+%% Memory（with_memory/2）时让系统提示在历史展开后前置。
 %%
 %% @param Kernel Kernel 实例
 %% @param Messages 消息列表（[#{role => ..., content => ...}]）
@@ -217,53 +219,11 @@ invoke_chat(Kernel, Messages, Opts) ->
         {ok, LlmConfig} ->
             #{filters := Filters0} = Kernel,
             Context = maps:get(context, Opts, beamai_context:new()),
-            %% system_prompts 作为临时内层 chat filter 注入（与 invoke/3 一致），
+            %% system_prompts 作为临时内层 chat filter 注入（不入存储），
             %% 在 Memory 展开历史之后前置系统消息，且不写入存储。
             SystemPrompts = maps:get(system_prompts, Opts, []),
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
             run_chat(LlmConfig, Filters, Messages, Opts, Context);
-        error ->
-            {error, no_llm_service}
-    end.
-
-%% @doc 发送 Chat Completion 请求并驱动工具调用循环
-%%
-%% 自动将 Kernel 中所有注册工具转为 tool specs 传给 LLM。
-%% LLM 返回 tool_calls 时自动执行对应工具，将结果拼入消息后再次请求 LLM，
-%% 循环直到 LLM 返回文本响应或达到最大迭代次数。
-%%
-%% Kernel 不再累积消息：每次只传入本轮新消息（delta）。
-%% - 启用记忆（with_memory/2）时进入 delta 模式：每轮只把新消息交给
-%%   pipeline，由 Memory 过滤器按 conversation_id 存储并展开完整历史。
-%%   context 无 conversation_id 时生成临时 id，invoke 结束后清理。
-%% - 未启用记忆时为 full 模式：工具循环内部本地累积消息，不跨 invoke 持久化。
-%% system_prompts 作为临时 chat filter(order -500，内层) 的 around_chat 注入，不进入存储。
-%%
-%% @param Kernel Kernel 实例（需注册工具和 LLM 服务）
-%% @param Messages 本轮新消息（通常是单条用户消息）
-%% @param Opts Chat 选项（可设置 system_prompts、max_tool_iterations、tool_choice、context）
-%% @returns {ok, 最终响应 Map, 更新后上下文} | {error, 原因}
--spec invoke(kernel(), [map()], chat_opts()) ->
-    {ok, map(), beamai_context:t()} | {error, term()}.
-invoke(Kernel, Messages, Opts) ->
-    case get_service(Kernel) of
-        {ok, LlmConfig} ->
-            #{filters := Filters0, memory := Memory} = Kernel,
-            ToolSpecs = get_tool_specs(Kernel),
-            ChatOpts = Opts#{tools => ToolSpecs, tool_choice => maps:get(tool_choice, Opts, auto)},
-            Context0 = maps:get(context, Opts, beamai_context:new()),
-            SystemPrompts = maps:get(system_prompts, Opts, []),
-            %% system_prompts 临时注入 filter（不入存储），与已注册 filter 合并
-            Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
-            MaxIter = maps:get(max_tool_iterations, Opts,
-                maps:get(max_tool_iterations, maps:get(settings, Kernel, #{}), 10)),
-            %% 根据是否启用记忆决定模式与会话标识
-            {Mode, Context, ConvId, Ephemeral} = resolve_conversation(Context0, Memory),
-            try
-                tool_calling_loop(Kernel, LlmConfig, Filters, Messages, ChatOpts, Context, Mode, MaxIter)
-            after
-                cleanup_ephemeral(Memory, ConvId, Ephemeral)
-            end;
         error ->
             {error, no_llm_service}
     end.
@@ -326,90 +286,8 @@ get_service(#{llm_config := undefined}) -> error;
 get_service(#{llm_config := Config}) -> {ok, Config}.
 
 %%====================================================================
-%% 内部函数 - 工具调用循环
-%%====================================================================
-
-%% @private 工具调用循环主体
-%%
-%% 每次迭代通过 chat filter 洋葱链调用 LLM，确保 filter 的 around_chat 生效。
-%% LLM 返回 tool_calls 时：解析调用 → 执行工具 → 拼接结果 → 再次请求 LLM。
-%% 迭代次数耗尽返回 max_tool_iterations 错误。
-%% LLM 返回纯文本响应时终止循环。
-%%
-%% Mode 决定每轮传给 chat 链的消息：
-%% - delta：只传本轮新消息，由 Memory filter 存储并展开完整历史。
-%%   assistant 回复由 Memory filter 的 around_chat 存储，下一轮 delta = 工具结果。
-%% - full：本地累积完整对话，每轮传全量（无记忆时保证工具循环上下文连续）。
-tool_calling_loop(_Kernel, _LlmConfig, _Filters, _Msgs, _Opts, _Context, _Mode, 0) ->
-    {error, max_tool_iterations};
-tool_calling_loop(Kernel, LlmConfig, Filters, Msgs, Opts, Context, Mode, N) ->
-    case run_chat(LlmConfig, Filters, Msgs, Opts, Context) of
-        {ok, Response, Ctx0} ->
-            %% 使用 beamai_llm_response 访问器统一处理响应
-            case beamai_llm_response:has_tool_calls(Response) of
-                true ->
-                    TCs = beamai_llm_response:tool_calls(Response),
-                    {ToolResults, Ctx1} = execute_tool_calls(Kernel, TCs, Ctx0),
-                    NextMsgs = next_messages(Mode, Msgs, Response, ToolResults),
-                    tool_calling_loop(Kernel, LlmConfig, Filters, NextMsgs, Opts, Ctx1, Mode, N - 1);
-                false ->
-                    {ok, Response, Ctx0}
-            end;
-        {error, _} = Err ->
-            Err
-    end.
-
-%% @private 计算下一轮消息
-%% - delta 模式：下一轮只需工具结果（assistant 回复已由 Memory 过滤器存储）
-%% - full 模式：本地拼接 assistant 回复 + 工具结果到完整对话末尾
-next_messages(delta, _Msgs, _Response, ToolResults) ->
-    ToolResults;
-next_messages(full, Msgs, Response, ToolResults) ->
-    AssistantMsg = beamai_message:tool_calls(beamai_llm_response:tool_calls(Response)),
-    Msgs ++ [AssistantMsg | ToolResults].
-
-%% @private 批量执行 tool_calls 列表
-%%
-%% 逐个解析 tool_call 结构并调用对应工具，
-%% 将结果编码为 tool 角色消息并累积返回。context 在工具间透传
-%% （工具可修改 context），但消息不再写回 context。
-execute_tool_calls(Kernel, ToolCalls, Context) ->
-    lists:foldl(fun(TC, {ResultsAcc, CtxAcc}) ->
-        {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
-        {ResultContent, NewCtx} = case invoke_tool(Kernel, Name, Args, CtxAcc) of
-            {ok, Value, UpdatedCtx} -> {beamai_tool:encode_result(Value), UpdatedCtx};
-            {error, Reason} -> {beamai_tool:encode_result(#{error => Reason}), CtxAcc}
-        end,
-        Msg = beamai_message:tool_result(Id, Name, ResultContent),
-        {ResultsAcc ++ [Msg], NewCtx}
-    end, {[], Context}, ToolCalls).
-
-%%====================================================================
 %% 内部函数 - 辅助
 %%====================================================================
-
-%% @private 解析会话模式与标识
-%%
-%% 返回 {Mode, Context, ConvId, Ephemeral}：
-%% - 无记忆：{full, Context0, undefined, false}
-%% - 有记忆 + context 已有 conv_id：{delta, Context0, ConvId, false}
-%% - 有记忆 + context 无 conv_id：生成临时 id {delta, Context', ConvId, true}
-resolve_conversation(Context0, undefined) ->
-    {full, Context0, undefined, false};
-resolve_conversation(Context0, _Memory) ->
-    case beamai_context:conversation_id(Context0) of
-        undefined ->
-            ConvId = beamai_id:gen_id(<<"conv">>),
-            {delta, beamai_context:with_conversation_id(Context0, ConvId), ConvId, true};
-        ConvId ->
-            {delta, Context0, ConvId, false}
-    end.
-
-%% @private 清理临时会话
-cleanup_ephemeral(_Memory, _ConvId, false) ->
-    ok;
-cleanup_ephemeral(Memory, ConvId, true) ->
-    beamai_chat_memory:mem_clear(Memory, ConvId).
 
 %% @private 构造 system_prompts 临时注入 filter（仅 around_chat，order -500）
 %%
