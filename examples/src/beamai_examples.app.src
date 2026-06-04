@@ -16,11 +16,6 @@
         example_streaming,
         example_filter,
         example_prompt,
-        example_process_steps,
-        example_process_simple,
-        example_process_tools,
-        example_process_hooks,
-        example_process_parallel,
         example_tool_refactored
     ]},
     {licenses, ["Apache-2.0"]},

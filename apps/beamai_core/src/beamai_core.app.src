@@ -1,16 +1,11 @@
 {application, beamai_core, [
-    {description, "BeamAI Core - Kernel, Process 框架"},
+    {description, "BeamAI Core - Kernel 框架"},
     {vsn, "1.0.0"},
-    {registered, [beamai_core_sup, beamai_http_pool, beamai_process_sup, beamai_process_pool]},
+    {registered, [beamai_core_sup, beamai_http_pool]},
     {mod, {beamai_core_app, []}},
-    {applications, [kernel, stdlib, jsx, uuid, hackney, poolboy]},
+    {applications, [kernel, stdlib, jsx, uuid, hackney]},
     {optional_applications, [gun, beamai_llm]},
-    {env, [
-        %% Process pool 配置（默认启用，大小 CPU*2）
-        {process_pool_enabled, true}
-        %% {process_pool_size, 16},
-        %% {process_pool_max_overflow, 32},
-    ]},
+    {env, []},
     {modules, [
         %% OTP 应用
         beamai_core_app,
@@ -32,7 +27,6 @@
         %% 行为接口
         beamai_chat_behaviour,
         beamai_http_behaviour,
-        beamai_step_behaviour,
         beamai_chat_memory,
         %% 会话记忆（Memory Filter 机制）
         beamai_chat_memory_ets,
@@ -43,19 +37,6 @@
         beamai_http_hackney,
         beamai_http_gun,
         beamai_http_pool,
-        %% Process Framework
-        beamai_process,
-        beamai_process_builder,
-        beamai_process_engine,
-        beamai_process_event,
-        beamai_process_executor,
-        beamai_process_runtime,
-        beamai_process_step,
-        beamai_process_step_transform,
-        beamai_process_worker,
-        beamai_process_state,
-        beamai_process_store_behaviour,
-        beamai_process_sup,
         %% JSON-RPC
         beamai_jsonrpc,
         %% SSE
