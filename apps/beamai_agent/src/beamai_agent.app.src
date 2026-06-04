@@ -1,0 +1,9 @@
+{application, beamai_agent, [
+    {description, "SimpleAgent - ReAct agent framework"},
+    {vsn, "1.0.0"},
+    {registered, []},
+    {applications, [kernel, stdlib, jsx, beamai_core, beamai_llm]},
+    {env, []},
+    {modules, [beamai_agent, beamai_agent_state, beamai_agent_callbacks, beamai_agent_interrupt, beamai_agent_utils, beamai_agent_tool_loop]},
+    {licenses, ["Apache-2.0"]}
+]}.
