@@ -1,11 +1,12 @@
 %%%-------------------------------------------------------------------
 %%% @doc Filter 洋葱链示例
 %%%
-%%% 演示 beamai 的洋葱式 filter 机制：一个 filter 最多绑定 4 个 hook
-%%% （pre_chat/post_chat/pre_tool/post_tool），同一 filter 的 pre/post 配成
-%%% 一层洋葱包裹同一次调用，回程自动逆序。
-%%%   - tool filter: pre_tool 改写参数 / post_tool 改写结果 / pre_tool 短路(halt)
-%%%   - chat filter: pre_chat 注入 system 消息 / post_chat 审计响应
+%%% 演示 beamai 的洋葱式 filter 机制：一个 filter 最多绑定 2 个 around hook
+%%% （around_chat/around_tool），每个 around 用单个闭包
+%%% `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用，前置/后置
+%%% 同处一处，不调 Next 即短路。
+%%%   - tool filter: around_tool 前置改写参数 / 后置改写结果 / 短路拒绝
+%%%   - chat filter: around_chat 注入 system 消息 + 审计响应
 %%%
 %%% 使用方法:
 %%% ```
@@ -41,17 +42,18 @@ run_invoke() ->
               }})
     ]),
 
-    %% 2. 一个 filter 同时管前后（洋葱同层）：pre_tool 记日志、post_tool 翻倍
+    %% 2. 一个 around_tool 同时管前后：记日志（前置）+ 结果翻倍（后置）
     K2 = beamai:add_filter(K1, <<"log_double">>, #{
-        pre_tool => fun(#{tool := #{name := Name}, args := Args} = Req) ->
-            io:format("  [pre_tool] calling ~ts with ~p~n", [Name, Args]),
-            Req
-        end,
-        post_tool => fun(#{result := Result} = Resp) when is_number(Result) ->
-            io:format("  [post_tool] result ~p -> ~p~n", [Result, Result * 2]),
-            Resp#{result => Result * 2};
-           (Resp) ->
-            Resp
+        around_tool => fun(#{tool := #{name := Name}, args := Args} = Req, _FCtx, Next) ->
+            io:format("  [前置] calling ~ts with ~p~n", [Name, Args]),
+            Resp = Next(Req),
+            case Resp of
+                #{result := Result} when is_number(Result) ->
+                    io:format("  [后置] result ~p -> ~p~n", [Result, Result * 2]),
+                    Resp#{result => Result * 2};
+                _ ->
+                    Resp
+            end
         end
     }),
 
@@ -61,13 +63,16 @@ run_invoke() ->
         {error, Reason} -> io:format("  Error: ~p~n~n", [Reason])
     end,
 
-    %% 3. pre_tool 短路(halt)：参数校验拒绝，跳过工具执行
+    %% 3. around_tool 短路：参数校验拒绝（不调 Next，跳过工具执行）
     K3 = beamai:add_filter(K2, <<"validate">>, #{
-        pre_tool => fun(#{args := #{a := A}, context := Ctx}) when A > 100 ->
-            io:format("  [pre_tool] rejected: a=~p exceeds limit~n", [A]),
-            {halt, #{result => {error, too_large}, context => Ctx}};
-           (Req) ->
-            Req
+        around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
+            case A > 100 of
+                true ->
+                    io:format("  [短路] rejected: a=~p exceeds limit~n", [A]),
+                    #{result => {error, too_large}, context => Ctx};
+                false ->
+                    Next(Req)
+            end
         end
     }),
 
@@ -85,7 +90,7 @@ run_chat() ->
 
 %% @doc 演示 chat filter
 %%
-%% pre_chat: 自动注入 system 消息；post_chat: 记录响应统计
+%% around_chat: 前置自动注入 system 消息；后置记录响应统计
 -spec run_chat(beamai_chat_completion:config()) -> ok.
 run_chat(LLMConfig) ->
     io:format("=== BeamAI Filter Example (Chat) ===~n~n"),
@@ -93,23 +98,22 @@ run_chat(LLMConfig) ->
     K0 = beamai:kernel(),
     K1 = beamai:add_llm(K0, LLMConfig),
 
-    %% chat filter：pre_chat 注入 system、post_chat 打印响应字数（洋葱同层）
+    %% chat filter：around_chat 前置注入 system、后置打印响应字数（同一闭包）
     K2 = beamai:add_filter(K1, <<"system_audit">>, #{
-        pre_chat => fun(#{messages := Msgs} = Req) ->
+        around_chat => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
             HasSystem = lists:any(fun(#{role := R}) -> R =:= system; (_) -> false end, Msgs),
-            case HasSystem of
+            Req1 = case HasSystem of
                 true ->
                     Req;
                 false ->
                     SystemMsg = #{role => system, content => <<"请用一句话简洁回答。"/utf8>>},
-                    io:format("  [pre_chat] injected system message~n"),
+                    io:format("  [前置] injected system message~n"),
                     Req#{messages => [SystemMsg | Msgs]}
-            end
-        end,
-        post_chat => fun(#{response := Response} = Resp) ->
+            end,
+            #{response := Response} = Resp = Next(Req1),
             Content = beamai_llm_response:content(Response),
             case is_binary(Content) of
-                true -> io:format("  [post_chat] response length: ~B bytes~n", [byte_size(Content)]);
+                true -> io:format("  [后置] response length: ~B bytes~n", [byte_size(Content)]);
                 false -> ok
             end,
             Resp

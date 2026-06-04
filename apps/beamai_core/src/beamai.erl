@@ -128,12 +128,13 @@ add_filter(Kernel, Filter) ->
 
 %% @doc 快捷创建并注册 filter（直接给 hook map）
 %%
-%% 一个 filter 含 pre_chat/post_chat/pre_tool/post_tool 任意子集，
-%% 同一 filter 的 pre/post 配成一层洋葱包裹同一次调用，回程自动逆序。
+%% 一个 filter 含 around_chat/around_tool 任意子集，每个 around 用单个闭包
+%% `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用：前置改写
+%% 请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next 即短路。
 %%
 %% @param Kernel Kernel 实例
 %% @param Name filter 名称
-%% @param Hooks hook map（如 #{pre_chat => F1, post_chat => F2}）
+%% @param Hooks hook map（如 #{around_chat => F}）
 %% @returns 更新后的 Kernel
 -spec add_filter(beamai_kernel:kernel(), binary(), beamai_filter:hooks()) ->
     beamai_kernel:kernel().

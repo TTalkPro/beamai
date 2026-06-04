@@ -1,16 +1,16 @@
 %%%-------------------------------------------------------------------
 %%% @doc Memory Filter：会话历史的存储与注入（洋葱式）
 %%%
-%%% 把会话历史管理收敛到**单个** filter 的 pre_chat / post_chat 一对 hook：
+%%% 把会话历史管理收敛到**单个** filter 的 around_chat hook：
 %%%
-%%% - pre_chat（去程）：读 context 的 conversation_id，把本轮 delta 存入 store，
+%%% - 前置（调 LLM 前）：读 context 的 conversation_id，把本轮 delta 存入 store，
 %%%   再用 store 里的完整历史替换 messages 发给 LLM。
-%%% - post_chat（回程）：把 LLM 的 assistant 回复存入 store。
+%%% - 后置（调 LLM 后）：把 LLM 的 assistant 回复存入 store。
 %%%
 %%% 无 conversation_id 时原样透传（退化为单次无状态调用）。前后逻辑同处一个
-%%% filter，洋葱链天然保证 pre_chat 在内层之前、post_chat 在内层之后。
-%%% order 越小越外层，memory 用较小 order 即可包在其它 filter（如 system
-%%% prompt 注入）外层。
+%%% around 闭包，只需查一次 conversation_id；洋葱链天然保证前置在内层之前、
+%%% 后置在内层之后。order 越小越外层，memory 用较小 order 即可包在其它 filter
+%%% （如 system prompt 注入）外层。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -27,7 +27,7 @@
 %% API
 %%====================================================================
 
-%% @doc 构造绑定 store 的 memory filter（pre_chat + post_chat）
+%% @doc 构造绑定 store 的 memory filter（around_chat）
 -spec memory_filter(beamai_chat_memory:handle()) -> beamai_filter:filter().
 memory_filter(Store) ->
     memory_filter(Store, ?DEFAULT_ORDER).
@@ -36,29 +36,23 @@ memory_filter(Store) ->
 -spec memory_filter(beamai_chat_memory:handle(), integer()) -> beamai_filter:filter().
 memory_filter(Store, Order) ->
     beamai_filter:new(<<"memory">>, #{
-        %% pre_chat：存 delta + 用完整历史替换 messages
-        pre_chat => fun(#{messages := Delta, context := Ctx} = Req) ->
+        around_chat => fun(#{messages := Delta, context := Ctx} = Req, _FCtx, Next) ->
             case beamai_context:conversation_id(Ctx) of
                 undefined ->
-                    Req;
+                    %% 无 conversation_id：原样透传，退化为单次无状态调用
+                    Next(Req);
                 ConvId ->
+                    %% 前置：存 delta + 用完整历史替换 messages
                     ok = beamai_chat_memory:mem_add(Store, ConvId, Delta),
                     Full = beamai_chat_memory:mem_get(Store, ConvId),
-                    Req#{messages => Full}
-            end
-        end,
-        %% post_chat：存 assistant 回复
-        post_chat => fun(#{response := Response, context := Ctx} = Resp) ->
-            case beamai_context:conversation_id(Ctx) of
-                undefined ->
-                    ok;
-                ConvId ->
+                    #{response := Response} = Resp = Next(Req#{messages => Full}),
+                    %% 后置：存 assistant 回复
                     case response_to_message(Response) of
                         undefined -> ok;
                         Msg -> ok = beamai_chat_memory:mem_add(Store, ConvId, [Msg])
-                    end
-            end,
-            Resp
+                    end,
+                    Resp
+            end
         end
     }, Order).
 

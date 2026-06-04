@@ -6,7 +6,7 @@ beamai_core's conversation memory fully decouples conversation-history storage a
 injection from the Kernel: **the Kernel is stateless and each invoke only takes the
 single latest message**. History is managed by a Memory Filter together with a
 ChatMemory store, keyed by `conversation_id`. The Memory Filter is a single onion-style
-filter (with a pre_chat/post_chat hook pair, see the [Filter docs](FILTER_EN.md)).
+filter (with a single around_chat hook, see the [Filter docs](FILTER_EN.md)).
 
 Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_memory_filter_redesign.md).
 
@@ -36,7 +36,7 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 | `beamai_chat_memory` | ChatMemory **behaviour** + dispatch API, handle `{Module, Ref}` |
 | `beamai_chat_memory_ets` | Default ETS gen_server implementation (process owns the ETS table) |
 | `beamai_chat_memory_window` | Sliding-window wrapper: full history kept underneath, windowed on `mem_get` |
-| `beamai_memory_filter` | A single filter: pre_chat stores delta + expands history; post_chat stores reply |
+| `beamai_memory_filter` | A single filter: around_chat stores delta + expands history (before), stores reply (after) |
 | `beamai_kernel:with_memory/2` | Bind a store and mount the Memory Filter |
 
 ## delta mode vs full mode
@@ -51,7 +51,7 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 | Uses conversation_id | no | yes (ephemeral id generated if absent, cleared at end) |
 | Context continuous within tool loop | ✅ | ✅ |
 | Memory across invokes | ❌ (stateless single-shot) | ✅ (persisted by conversation_id) |
-| Who records the assistant message | local concatenation | the Memory Filter's post_chat stores into the store |
+| Who records the assistant message | local concatenation | the Memory Filter's around_chat stores into the store (after) |
 
 > **Why full mode exists**: a tool-calling loop is inherently multi-round (LLM → tool →
 > LLM again). Without a store, subsequent LLM calls within a single invoke must still see
@@ -131,19 +131,19 @@ K = beamai_kernel:with_memory(K1, Store).
 invoke(Kernel, [User msg], #{context := Ctx(conv_id=s1)})
 └─ tool_calling_loop, delta = [User msg]
    └─ run_chat_pipeline(delta)
-      ├─ memory.pre_chat (order -1000, outer): mem_add(s1, delta); messages := mem_get(s1) full history
-      ├─ system.pre_chat (order -500, inner): messages := [SysPrompt | messages]  (not stored)
+      ├─ memory.around_chat before (order -1000, outer): mem_add(s1, delta); messages := mem_get(s1) full history
+      ├─ system.around_chat before (order -500, inner): messages := [SysPrompt | messages]  (not stored)
       ├─ Terminal: LLM call
-      └─ memory.post_chat (outbound): mem_add(s1, assistant reply)
-   ├─ has tool_calls → run tools (tool filter chain, pre_tool/post_tool), delta := [tool results], loop
+      └─ memory.around_chat after (outbound): mem_add(s1, assistant reply)
+   ├─ has tool_calls → run tools (tool filter chain, around_tool), delta := [tool results], loop
    └─ plain text → return {ok, Response, Ctx}
 ```
 
-memory is a single filter: its `pre_chat` expands history on the outer layer and its
-`post_chat` stores the reply on the way out; the onion chain guarantees the order with no
-priority simulation. system_prompts are injected by a transient filter (pre_chat only,
-order -500, more inner), after history expansion and before the LLM, and are **not
-written to the store**.
+memory is a single filter: the same `around_chat` closure expands history (before) on the
+outer layer and stores the reply (after) on the way out; the onion chain guarantees the
+order with no priority simulation. system_prompts are injected by a transient filter
+(around_chat only, order -500, more inner), after history expansion and before the LLM,
+and are **not written to the store**.
 
 ## Key Source Files
 

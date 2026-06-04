@@ -14,7 +14,7 @@ Core abstraction based on Semantic Kernel concepts, managing Tool registration a
 - **beamai_tool** - Tool definitions, wraps callable tool functions
 - **beamai_tool_behaviour** - Tool module behavior interface
 - **beamai_context** - Context: carries agent state vars, conversation id, kernel ref, trace (stores no messages/history)
-- **beamai_filter** / **beamai_filter_chain** - Onion-style filters (one filter bundles pre_chat/post_chat/pre_tool/post_tool hooks) wrapping tool execution and LLM calls (see [docs/FILTER_EN.md](../../docs/FILTER_EN.md))
+- **beamai_filter** / **beamai_filter_chain** - Onion-style filters (one filter bundles around_chat/around_tool hooks, with a per-filter isolated private context) wrapping tool execution and LLM calls (see [docs/FILTER_EN.md](../../docs/FILTER_EN.md))
 - **beamai_prompt** - Prompt template management
 - **beamai_result** - Tool call result types
 
@@ -25,7 +25,7 @@ History storage and injection, decoupled from the Kernel and keyed by `conversat
 - **beamai_chat_memory** - ChatMemory behaviour + dispatch API (handle `{Module, Ref}`)
 - **beamai_chat_memory_ets** - Default ETS conversation store
 - **beamai_chat_memory_window** - Sliding-window wrapper (count-based trim on read)
-- **beamai_memory_filter** - Memory Filter (single filter: pre_chat stores delta + expands history, post_chat stores reply)
+- **beamai_memory_filter** - Memory Filter (single filter: around_chat stores delta + expands history before the call, stores reply after)
 
 ### LLM Subsystem
 

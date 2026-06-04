@@ -77,7 +77,7 @@ response_to_message_null_test() ->
     ?assertEqual(undefined, beamai_memory_filter:response_to_message(Resp)).
 
 %%====================================================================
-%% Memory Filter（单 filter：pre_chat 存 delta+展开，post_chat 存回复）
+%% Memory Filter（单 filter：around_chat 前置存 delta+展开、后置存回复）
 %%====================================================================
 
 %% 终端回显收到的 messages，并产出一个 assistant 响应
@@ -88,7 +88,7 @@ echo_terminal() ->
     end.
 
 run_chat_filter(Filter, Messages, Ctx) ->
-    beamai_filter_chain:run([Filter], {pre_chat, post_chat}, echo_terminal(),
+    beamai_filter_chain:run([Filter], around_chat, echo_terminal(),
                             #{messages => Messages, context => Ctx, opts => #{}}).
 
 pre_chat_stores_and_expands_test() ->
@@ -101,9 +101,9 @@ pre_chat_stores_and_expands_test() ->
     New = #{role => user, content => <<"new">>},
     ok = beamai_chat_memory:mem_add(Store, <<"c">>, [Old]),
     {ok, Resp} = run_chat_filter(Filter, [New], Ctx),
-    %% pre_chat：存 delta + 用完整历史替换 → 终端看到 [Old, New]
+    %% 前置：存 delta + 用完整历史替换 → 终端看到 [Old, New]
     ?assertEqual([Old, New], maps:get(seen, Resp)),
-    %% post_chat：把 assistant 回复也存入 → store 共 3 条
+    %% 后置：把 assistant 回复也存入 → store 共 3 条
     ?assertEqual(3, length(beamai_chat_memory:mem_get(Store, <<"c">>))),
     gen_server:stop(Pid).
 
@@ -127,7 +127,7 @@ post_chat_stores_response_test() ->
     Filter = beamai_memory_filter:memory_filter(Store),
     Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"c">>),
     {ok, _Resp} = run_chat_filter(Filter, [], Ctx),
-    %% pre_chat 存了空 delta（无），post_chat 存 assistant 回复
+    %% 前置存了空 delta（无），后置存 assistant 回复
     ?assertEqual([#{role => assistant, content => <<"reply">>}],
                  beamai_chat_memory:mem_get(Store, <<"c">>)),
     gen_server:stop(Pid).

@@ -1,42 +1,39 @@
 # Filter 系统（洋葱式拦截）
 
-对齐 Spring AI Advisor 的 before/after 分解思路：去程改写请求、进内层、回程改写响应，回程顺序由嵌套调用栈天然逆序，无需手工指定。区别在于——beamai 的**一个 filter** 同时打包 chat 与 tool 的去程/回程 hook（最多 4 个），chat 链取 `(pre_chat, post_chat)`、tool 链取 `(pre_tool, post_tool)`。
+采用 **around（环绕）middleware** 形态：每个 filter 用一个单独闭包同时承担「前置 → 调内层 → 后置」，前后逻辑同处一处、用闭包局部变量桥接，回程顺序由嵌套调用栈天然逆序，短路只需「不调内层」。beamai 的**一个 filter** 同时打包 chat 与 tool 两条链的 around（最多 2 个），chat 链取 `around_chat`、tool 链取 `around_tool`。每个 filter 另有一份按名字隔离的私有上下文。
 
 ## 核心类型
 
-filter 是一个标记 map，最多绑定 4 个可选 hook：
+filter 是一个标记 map，最多绑定 2 个可选 around hook：
 
 ```erlang
--type hook_type() :: pre_chat | post_chat | pre_tool | post_tool.
--type pre_fun()   :: fun((Request)  -> Request | {halt, Response}).
--type post_fun()  :: fun((Response) -> Response).
+-type hook_type()  :: around_chat | around_tool.
+-type next()       :: fun((Request) -> Response).
+-type around_fun() :: fun((Request, FCtx, Next) -> Response | {Response, NewFCtx}).
 -type hooks() :: #{
-    pre_chat  => pre_fun(),
-    post_chat => post_fun(),
-    pre_tool  => pre_fun(),
-    post_tool => post_fun()
+    around_chat => around_fun(),
+    around_tool => around_fun()
 }.
 
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),
     order := integer(),
-    hooks := hooks()        %% 4 个 hook 的任意子集
+    hooks := hooks(),       %% 2 个 around hook 的任意子集
+    init := map()           %% 私有上下文初值（缺省 #{}）
 }.
 ```
 
-## 4 个 hook 点 / 两条链
+## 2 个 around hook / 两条链
 
 | hook | 含义 |
 |------|------|
-| `pre_chat`  | chat 去程：LLM 调用前改写请求 |
-| `post_chat` | chat 回程：LLM 调用后改写响应 |
-| `pre_tool`  | tool 去程：工具执行前改写参数 |
-| `post_tool` | tool 回程：工具执行后改写结果 |
+| `around_chat` | 环绕一次 LLM 调用 |
+| `around_tool` | 环绕一次工具执行 |
 
-- **chat 链**用每个 filter 的 `(pre_chat, post_chat)` 这一对，包裹一次 LLM 调用。
-- **tool 链**用每个 filter 的 `(pre_tool, post_tool)` 这一对，包裹一次工具执行。
-- filter 对某条链不含相关 hook 则在该链中被跳过；缺失的单个 hook 用恒等函数补齐。
+- **chat 链**用每个 filter 的 `around_chat`，包裹一次 LLM 调用。
+- **tool 链**用每个 filter 的 `around_tool`，包裹一次工具执行。
+- filter 对某条链不含对应 around 则在该链中被跳过。
 
 各链的 Request / Response：
 
@@ -45,82 +42,100 @@ filter 是一个标记 map，最多绑定 4 个可选 hook：
 | chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_llm_response） |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 
-pre hook 返回 `{halt, Response}` 则短路（跳过内层），但仍执行本层对应的 post hook。
+`context` 是贯穿全链的**共享上下文**（`beamai_context`），与 filter **私有上下文**（FCtx）分离。
+
+around 闭包：前置改写 `Request` → `Next(Req1)` 进内层（不调即短路、多调即重试）→ 后置改写 `Response` → 返回 `Response`（私有状态不变）或 `{Response, NewFCtx}`（更新私有状态）。
+
+## 私有上下文（FCtx）
+
+每个 filter 一份私有上下文，按 filter 名字隔离，与共享 context 分离：
+
+- around 经第 2 参 `FCtx` 读、经返回 `{Resp, NewFCtx}` 写。
+- 不同 filter 互不可见（同内部键也不冲突）。
+- 随共享 context 透传，贯穿一次 invoke（工具循环各轮、同名 filter 的 chat/tool around 之间）。
+- `new/4` 第 4 参指定初值（缺省 `#{}`），首次进入时种入。
+- 仅单次 invoke 内存活，不跨 invoke 持久化。
 
 ## order 语义
 
-`order` 越小越外层：其 pre hook 越先执行、post hook 越后执行。默认 0。同 order 稳定保持注册顺序。
+`order` 越小越外层：其前置越先执行、后置越后执行。默认 0。同 order 稳定保持注册顺序。
 
 ## 构造器（beamai_filter）
 
 ```erlang
-%% 创建 filter（默认 order 0）；Hooks 含 4 个 hook 任意子集
+%% 创建 filter（默认 order 0，私有状态初值 #{}）；Hooks 含 around_chat/around_tool 任意子集
 new(Name, Hooks) -> filter().
 
 %% 创建 filter（指定 order，越小越外层）
 new(Name, Hooks, Order) -> filter().
 
+%% 创建 filter（指定 order 与私有状态初值 Init）
+new(Name, Hooks, Order, Init) -> filter().
+
 %% 工具
-sort(Filters) -> SortedFilters.        %% 按 order 升序稳定排序
-hook(Filter, HookType) -> Fun | undefined.  %% 取某个 hook
+sort(Filters) -> SortedFilters.                  %% 按 order 升序稳定排序
+hook(Filter, HookType) -> Fun | undefined.       %% 取某个 around hook
+init(Filter) -> map().                           %% 取私有上下文初值
 ```
 
 源码（构造器极简，仅组装标记 map）：
 
 ```erlang
-new(Name, Hooks) ->
-    new(Name, Hooks, 0).
+new(Name, Hooks) -> new(Name, Hooks, 0).
+new(Name, Hooks, Order) -> new(Name, Hooks, Order, #{}).
+new(Name, Hooks, Order, Init) when is_map(Hooks), is_map(Init) ->
+    #{'__filter__' => true, name => Name, order => Order, hooks => Hooks, init => Init}.
 
-new(Name, Hooks, Order) when is_map(Hooks) ->
-    #{'__filter__' => true, name => Name, order => Order, hooks => Hooks}.
-
-hook(#{hooks := Hooks}, HookType) ->
-    maps:get(HookType, Hooks, undefined).
+hook(#{hooks := Hooks}, HookType) -> maps:get(HookType, Hooks, undefined).
+init(#{init := Init}) -> Init.
 ```
 
 ## 洋葱链（beamai_filter_chain）
 
-把 filter 列表按某条链的 `(pre, post)` hook compose 成嵌套调用，最内层是 terminal（真正的 LLM 调用 / 工具执行）。Phase 指定该链用哪一对 hook。
+把 filter 列表按某条链的 around hook compose 成嵌套调用，最内层是 terminal（真正的 LLM 调用 / 工具执行）。Phase 是单个 hook atom（`around_chat` | `around_tool`）。每个 filter 进入时从共享 context 投影出其私有上下文作为 FCtx，around 返回 `{Resp, NewFCtx}` 时合并回响应的 context。
 
 ```erlang
-%% Phase = {pre_chat, post_chat} 或 {pre_tool, post_tool}
 run(Filters, Phase, Terminal, Request) ->
     Relevant = relevant(beamai_filter:sort(Filters), Phase),
-    Run = compose(Relevant, Phase, Terminal, identity),
+    Run = compose(Relevant, Phase, Terminal),
     try {ok, Run(Request)}
     catch throw:Reason -> {error, Reason} end.
 
-compose([], _Phase, Terminal, _) ->
+compose([], _Phase, Terminal) ->
     Terminal;
-compose([Filter | Rest], {PreKey, PostKey} = Phase, Terminal, _) ->
-    Next = compose(Rest, Phase, Terminal, identity),
-    Pre  = hook_or_identity(Filter, PreKey),
-    Post = hook_or_identity(Filter, PostKey),
-    fun(Req) ->
-        case Pre(Req) of
-            {halt, Resp} -> Post(Resp);          %% 短路：跳过 Next，仍走 post
-            Req1         -> Post(Next(Req1))      %% 正常：进入内层再回程改写
+compose([Filter | Rest], Phase, Terminal) ->
+    Next   = compose(Rest, Phase, Terminal),
+    Around = beamai_filter:hook(Filter, Phase),
+    Name   = maps:get(name, Filter),
+    Init   = beamai_filter:init(Filter),
+    fun(#{context := Ctx} = Req) ->
+        FCtx = beamai_context:filter_state(Ctx, Name, Init),
+        case Around(Req, FCtx, Next) of
+            {#{context := RCtx} = Resp, NewFCtx} ->
+                Resp#{context => beamai_context:set_filter_state(RCtx, Name, NewFCtx)};
+            Resp ->
+                Resp
         end
     end.
 ```
 
-即（Phase = `{pre_chat, post_chat}`）：
+即（Phase = `around_chat`）：
 
 ```
 compose([A, B], Phase, Terminal)
-  = fun(Req) -> A_wrap(Req, fun(R) -> B_wrap(R, Terminal) end) end
+  = fun(Req) -> A_around(Req, fun(R) -> B_around(R, Terminal) end) end
 ```
 
 执行顺序（A order 1、B order 2 在 chat 链包裹 Terminal）：
 
 ```
-A.pre_chat → B.pre_chat → Terminal → B.post_chat → A.post_chat
+A 前置 → B 前置 → Terminal → B 后置 → A 后置
 ```
 
-- 去程 pre 按 order 升序；回程 post 自动逆序（嵌套栈展开）。
-- filter 的 pre 返回 `{halt, Response}` 即短路（跳过内层），仍执行本层 post。
+- 前置按 order 升序；后置自动逆序（嵌套栈展开）。
+- around 不调 `Next` 即短路（跳过内层），直接返回 `Response`；外层后置仍执行。
 - terminal 出错用 `throw`；`run/4` 用 try/catch 捕获，统一返回 `{ok, Response} | {error, Reason}`。
-- `relevant/2`：仅保留对该链有至少一个相关 hook 的 filter；`hook_or_identity/2`：缺失 hook 用恒等函数。
+- `relevant/2`：仅保留对该链有对应 around 的 filter。
 
 ## 注册到 Kernel
 
@@ -160,81 +175,79 @@ maybe_add_filters(Kernel, Module) ->
 
 ## 典型用例
 
-### 工具日志 + 结果翻倍（单个 filter：pre_tool + post_tool）
+### 工具日志 + 结果翻倍（一个 around_tool）
 
 ```erlang
 beamai_filter:new(<<"log_and_double">>, #{
-    pre_tool => fun(#{tool := #{name := Name}, args := Args} = Req) ->
+    around_tool => fun(#{tool := #{name := Name}, args := Args} = Req, _FCtx, Next) ->
         io:format("[LOG] ~ts(~p)~n", [Name, Args]),
-        Req
-    end,
-    post_tool => fun(#{result := Result} = Resp) ->
+        #{result := Result} = Resp = Next(Req),
         Resp#{result => Result * 2}
     end
 })
 ```
 
-### 注入系统提示词 + 审计（单个 filter：pre_chat + post_chat）
+### 注入系统提示词 + 审计（一个 around_chat）
 
 ```erlang
 beamai_filter:new(<<"system_and_audit">>, #{
-    pre_chat => fun(#{messages := Msgs} = Req) ->
+    around_chat => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
         SystemMsg = #{role => system, content => <<"You are helpful.">>},
-        Req#{messages => [SystemMsg | Msgs]}
-    end,
-    post_chat => fun(#{response := Response} = Resp) ->
+        #{response := Response} = Resp = Next(Req#{messages => [SystemMsg | Msgs]}),
         logger:info("response: ~p", [Response]),
         Resp
     end
 })
 ```
 
-### 短路（tool / pre_tool 返回 {halt, Response}）
+### 短路（around_tool 不调 Next）
 
 ```erlang
 beamai_filter:new(<<"guard">>, #{
-    pre_tool => fun(#{args := #{a := A}, context := Ctx} = Req) ->
+    around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
         case A > 1000 of
-            true  -> {halt, #{result => {error, <<"a exceeds limit">>},
-                              context => Ctx}};
-            false -> Req
+            true  -> #{result => {error, <<"a exceeds limit">>}, context => Ctx};
+            false -> Next(Req)
         end
-    end,
-    post_tool => fun(Resp) ->
-        logger:info("tool finished: ~p", [Resp]),
-        Resp
+    end
+})
+```
+
+### 私有上下文（跨工具循环各轮累积）
+
+```erlang
+beamai_filter:new(<<"counter">>, #{
+    around_chat => fun(Req, FCtx, Next) ->
+        N = maps:get(calls, FCtx, 0),
+        Resp = Next(Req),
+        {Resp, FCtx#{calls => N + 1}}
     end
 })
 ```
 
 ## Memory filter（会话记忆，规范示例）
 
-`beamai_memory_filter:memory_filter(Store)` 返回**单个** filter，前后逻辑同处一层（洋葱链保证 pre_chat 在内层之前、post_chat 在内层之后）：
+`beamai_memory_filter:memory_filter(Store)` 返回**单个** filter，前后逻辑同处一个 around 闭包，只需查一次 `conversation_id`：
 
 ```erlang
 memory_filter(Store, Order) ->
     beamai_filter:new(<<"memory">>, #{
-        %% pre_chat：按 conversation_id 存 delta + 用完整历史替换 messages
-        pre_chat => fun(#{messages := Delta, context := Ctx} = Req) ->
+        around_chat => fun(#{messages := Delta, context := Ctx} = Req, _FCtx, Next) ->
             case beamai_context:conversation_id(Ctx) of
-                undefined -> Req;
+                undefined ->
+                    Next(Req);
                 ConvId ->
+                    %% 前置：存 delta + 用完整历史替换 messages
                     ok = beamai_chat_memory:mem_add(Store, ConvId, Delta),
                     Full = beamai_chat_memory:mem_get(Store, ConvId),
-                    Req#{messages => Full}
-            end
-        end,
-        %% post_chat：存 assistant 回复
-        post_chat => fun(#{response := Response, context := Ctx} = Resp) ->
-            case beamai_context:conversation_id(Ctx) of
-                undefined -> ok;
-                ConvId ->
+                    #{response := Response} = Resp = Next(Req#{messages => Full}),
+                    %% 后置：存 assistant 回复
                     case response_to_message(Response) of
                         undefined -> ok;
                         Msg -> ok = beamai_chat_memory:mem_add(Store, ConvId, [Msg])
-                    end
-            end,
-            Resp
+                    end,
+                    Resp
+            end
         end
     }, Order).
 ```
@@ -245,8 +258,9 @@ memory_filter(Store, Order) ->
 
 | 文件 | 职责 |
 |------|------|
-| `apps/beamai_core/src/kernel/beamai_filter.erl` | filter 构造器、排序、取 hook |
-| `apps/beamai_core/src/kernel/beamai_filter_chain.erl` | 洋葱链 compose 与 run（throw 捕获、按链筛选 relevant） |
+| `apps/beamai_core/src/kernel/beamai_filter.erl` | filter 构造器、排序、取 hook/init |
+| `apps/beamai_core/src/kernel/beamai_filter_chain.erl` | 洋葱链 compose 与 run（throw 捕获、按链筛选 relevant、私有上下文投影/合并） |
+| `apps/beamai_core/src/kernel/beamai_context.erl` | 共享上下文 + filter 私有上下文槽（filter_state/3、set_filter_state/3） |
 | `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | 会话记忆 filter（规范示例） |
 | `apps/beamai_core/src/kernel/beamai_kernel.erl` | 注册 filter、filters/0 自动加载 |
 | `apps/beamai_core/src/beamai.erl` | facade 便捷 API（add_filter/2,3） |

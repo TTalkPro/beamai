@@ -104,8 +104,9 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 ### 4. Filter（洋葱式拦截）
 
 ```erlang
-%% 一个 filter 含 4 个可选 hook（pre_chat/post_chat/pre_tool/post_tool）
-%% 同一 filter 的 pre/post 配成一层洋葱，包裹同一次调用，回程自动逆序
+%% 一个 filter 含 2 个可选 around hook（around_chat/around_tool）
+%% 每个 around 用单个闭包 fun(Req, FCtx, Next) -> Resp 包裹同一次调用，
+%% 前置/后置同处一处，不调 Next 即短路
 K0 = beamai:kernel(),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
@@ -115,23 +116,25 @@ K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
           b => #{type => integer, required => true}
       }})),
 
-%% pre_tool 校验参数（短路）+ post_tool 结果翻倍，同一层洋葱
+%% 一个 around_tool：参数校验（短路）+ 结果翻倍
 K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
-    %% pre_tool：参数校验，超限则短路（halt）跳过工具执行
-    pre_tool => fun(#{args := #{a := A}, context := Ctx}) when A > 1000 ->
-        {halt, #{result => {error, <<"a exceeds limit">>}, context => Ctx}};
-       (Req) ->
-        Req
-    end,
-    %% post_tool：结果翻倍
-    post_tool => fun(#{result := Result} = Resp) when is_number(Result) ->
-        Resp#{result => Result * 2};
-       (Resp) ->
-        Resp
+    around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
+        case A > 1000 of
+            true ->
+                %% 参数超限：不调 Next，短路跳过工具执行
+                #{result => {error, <<"a exceeds limit">>}, context => Ctx};
+            false ->
+                %% 正常：进入内层后把结果翻倍
+                #{result := Result} = Resp = Next(Req),
+                case is_number(Result) of
+                    true  -> Resp#{result => Result * 2};
+                    false -> Resp
+                end
+        end
     end
 }),
 
-%% 调用（3 + 5 = 8，post_tool 翻倍后 = 16）
+%% 调用（3 + 5 = 8，后置翻倍后 = 16）
 {ok, 16, _} = beamai:invoke_tool(K2, <<"add">>, #{a => 3, b => 5}, beamai:context()).
 ```
 

@@ -30,6 +30,7 @@
 -export([get/2, get/3]).
 -export([set/3, set_many/2]).
 -export([with_conversation_id/2, conversation_id/1]).
+-export([filter_state/3, set_filter_state/3]).
 -export([with_kernel/2, get_kernel/1]).
 -export([add_trace/2, get_trace/1]).
 -export([get_metadata/1, set_metadata/3]).
@@ -49,11 +50,15 @@
     kernel := term() | undefined,
     trace := [trace_entry()],
     metadata := map(),
+    filter_states := #{binary() => map()},
     binary() => term()
 }.
 
 %% conversation_id 的保留存储 key
 -define(CONV_ID_KEY, <<"__conversation_id__">>).
+
+%% filter 私有上下文槽（内部 atom key，按 filter 名字隔离，不经 normalize_key）
+-define(FILTER_STATES_KEY, '__filter_states__').
 
 -type trace_entry() :: #{
     timestamp := integer(),
@@ -72,7 +77,8 @@ new() ->
         '__context__' => true,
         kernel => undefined,
         trace => [],
-        metadata => #{}
+        metadata => #{},
+        ?FILTER_STATES_KEY => #{}
     }.
 
 %% @doc 创建带初始变量的执行上下文
@@ -153,6 +159,23 @@ with_conversation_id(Ctx, ConvId) ->
 -spec conversation_id(t()) -> binary() | undefined.
 conversation_id(Ctx) ->
     maps:get(?CONV_ID_KEY, Ctx, undefined).
+
+%% @doc 读取某 filter 的私有上下文（按名字隔离，缺省返回 Default）
+%%
+%% 供 filter 洋葱链投影使用；filter 代码经 around 的 FCtx 参数间接读取，
+%% 不直接调用本函数。
+-spec filter_state(t(), binary(), map()) -> map().
+filter_state(Ctx, Name, Default) ->
+    States = maps:get(?FILTER_STATES_KEY, Ctx, #{}),
+    maps:get(Name, States, Default).
+
+%% @doc 写回某 filter 的私有上下文（按名字隔离）
+%%
+%% 供 filter 洋葱链合并使用；filter 代码经 around 返回 {Resp, NewFCtx} 间接写。
+-spec set_filter_state(t(), binary(), map()) -> t().
+set_filter_state(Ctx, Name, State) ->
+    States = maps:get(?FILTER_STATES_KEY, Ctx, #{}),
+    Ctx#{?FILTER_STATES_KEY => States#{Name => State}}.
 
 %% @doc 将 Kernel 引用关联到上下文
 %%

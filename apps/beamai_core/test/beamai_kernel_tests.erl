@@ -188,12 +188,12 @@ invoke_with_pre_tool_filter_test() ->
     K1 = beamai_kernel:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    %% pre_tool：把参数翻倍
+    %% around_tool 前置：把参数翻倍
     Filter = beamai_filter:new(<<"doubler">>, #{
-        pre_tool => fun(#{args := Args} = Req) ->
+        around_tool => fun(#{args := Args} = Req, _FCtx, Next) ->
             NewArgs = maps:map(fun(_K, V) when is_number(V) -> V * 2;
                                  (_K, V) -> V end, Args),
-            Req#{args => NewArgs}
+            Next(Req#{args => NewArgs})
         end
     }),
     K2 = beamai_kernel:add_filter(K1, Filter),
@@ -204,9 +204,12 @@ invoke_with_post_tool_filter_test() ->
     K1 = beamai_kernel:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    %% post_tool：把结果翻倍
+    %% around_tool 后置：把结果翻倍
     Filter = beamai_filter:new(<<"result_doubler">>, #{
-        post_tool => fun(#{result := R} = Resp) -> Resp#{result => R * 2} end
+        around_tool => fun(Req, _FCtx, Next) ->
+            #{result := R} = Resp = Next(Req),
+            Resp#{result => R * 2}
+        end
     }),
     K2 = beamai_kernel:add_filter(K1, Filter),
     ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
@@ -216,9 +219,11 @@ invoke_with_halt_tool_filter_test() ->
     K1 = beamai_kernel:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    %% pre_tool 短路：不执行工具，直接返回缓存结果
+    %% around_tool 短路：不调 Next，直接返回缓存结果
     Filter = beamai_filter:new(<<"cache">>, #{
-        pre_tool => fun(#{context := Ctx}) -> {halt, #{result => cached_result, context => Ctx}} end
+        around_tool => fun(#{context := Ctx}, _FCtx, _Next) ->
+            #{result => cached_result, context => Ctx}
+        end
     }),
     K2 = beamai_kernel:add_filter(K1, Filter),
     ?assertMatch({ok, cached_result, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
