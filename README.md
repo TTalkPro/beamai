@@ -15,14 +15,13 @@
 ## 核心功能与扩展
 
 ### 核心项目 (本项目)
-提供构建 AI Agent 的基础设施：
-- **beamai_core** - Kernel/Tool 架构、Process Framework、HTTP 客户端
+提供构建 AI Agent 的基础设施（三大核心职责）：
+- **beamai_core** - Kernel 基座：Context、Filter（洋葱式 around 模型）、Tool 的构建与调用
+- **beamai_agent** - SimpleAgent：以 ReAct 为主的 Agent 框架（多轮对话、回调、中断/恢复）
 - **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama）
-- **beamai_memory** - 纯存储引擎（快照、Store、状态存储）
 
 ### 扩展项目 ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 基于核心库构建的高级功能：
-- **Simple Agent** - 基于 ReAct 模式的对话 Agent
 - **Deep Agent** - 基于 SubAgent 架构的递归规划 Agent
 - **Tools 库** - 文件、Shell、HTTP 等常用工具集合
 - **RAG** - 检索增强生成
@@ -388,9 +387,9 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 
 | 模块 | 说明 | 文档 |
 |------|------|------|
-| **beamai_core** | 核心框架：Kernel、Process Framework、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
+| **beamai_core** | 核心框架：Kernel、Context、Filter、Tool、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
+| **beamai_agent** | SimpleAgent：ReAct Agent 框架（多轮对话、回调、中断/恢复） | [README](apps/beamai_agent/README.md) |
 | **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
-| **beamai_memory** | 纯存储引擎：快照管理、Store 后端、状态存储 | [README](apps/beamai_memory/README.md) |
 
 ## 运行示例
 
@@ -406,7 +405,7 @@ rebar3 shell
 
 | 指标 | 数量 |
 |------|------|
-| **OTP 应用** | 4 个 |
+| **OTP 应用** | 3 个（beamai_core、beamai_agent、beamai_llm） |
 | **源代码模块** | ~60 个 |
 | **测试文件** | ~20 个 |
 | **代码行数 | ~20,000 行 |
