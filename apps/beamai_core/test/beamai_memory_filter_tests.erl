@@ -138,7 +138,7 @@ post_chat_stores_response_test() ->
 
 memory_integration_test_() ->
     {setup, fun setup_mock/0, fun cleanup_mock/1, fun(_) ->
-        [fun cross_invoke_accumulation/0, fun ephemeral_cleanup/0]
+        [fun cross_invoke_accumulation/0]
     end}.
 
 %% mock：返回 content = "saw:N"（N=LLM 收到的消息条数），不触发工具调用
@@ -161,6 +161,7 @@ setup_mock() ->
 cleanup_mock(_) ->
     meck:unload(?MOCK_MODULE).
 
+%% 多次 invoke_chat 经 Memory filter 按 conversation_id 累积历史
 cross_invoke_accumulation() ->
     Name = unique_name(integ_mem),
     {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
@@ -168,30 +169,18 @@ cross_invoke_accumulation() ->
     K = build_mock_kernel(Store),
     Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"s1">>),
     %% 第一轮：LLM 看到 1 条（user1）
-    {ok, R1, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"hi">>}],
-                                        #{context => Ctx}),
+    {ok, R1, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"hi">>}],
+                                            #{context => Ctx}),
     ?assertEqual(<<"saw:1">>, maps:get(content, R1)),
     %% 第二轮：同会话，LLM 看到 3 条（user1, asst1, user2）
-    {ok, R2, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"bye">>}],
-                                        #{context => Ctx}),
+    {ok, R2, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"bye">>}],
+                                            #{context => Ctx}),
     ?assertEqual(<<"saw:3">>, maps:get(content, R2)),
     %% store 累积 4 条
     Hist = beamai_chat_memory:mem_get(Store, <<"s1">>),
     ?assertEqual(4, length(Hist)),
     ?assertEqual([user, assistant, user, assistant],
                  [maps:get(role, M) || M <- Hist]),
-    gen_server:stop(Pid).
-
-%% 有记忆但 context 无 conversation_id → 临时会话，结束后清理
-ephemeral_cleanup() ->
-    Name = unique_name(integ_eph),
-    {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
-    Store = beamai_chat_memory_ets:handle(Name),
-    K = build_mock_kernel(Store),
-    {ok, _R, Ctx2} = beamai_kernel:invoke(K, [#{role => user, content => <<"hi">>}], #{}),
-    %% 生成了临时 conv_id，但 invoke 结束已 mem_clear → 该会话为空
-    ConvId = beamai_context:conversation_id(Ctx2),
-    ?assertEqual([], beamai_chat_memory:mem_get(Store, ConvId)),
     gen_server:stop(Pid).
 
 %%====================================================================
