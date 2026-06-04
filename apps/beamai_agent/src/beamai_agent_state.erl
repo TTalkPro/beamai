@@ -35,7 +35,6 @@
     system_prompt := binary() | undefined, %% 系统提示词
     max_tool_iterations := pos_integer(),  %% tool loop 最大迭代次数
     callbacks := beamai_agent_callbacks:callbacks(), %% 回调函数表
-    auto_save := boolean(),         %% 是否每轮自动保存
     turn_count := non_neg_integer(),%% 已完成的对话轮数
     metadata := map(),              %% 用户自定义元数据
     created_at := integer(),        %% 创建时间戳（毫秒）
@@ -76,12 +75,12 @@
 %%   kernel — 预构建的 kernel 实例（与 llm/plugins 互斥）
 %%   llm — LLM 配置，支持 {Provider, Opts} 元组或 config() map
 %%   plugins — 要加载的 plugin 模块列表 [module()]
-%%   middlewares — middleware 配置列表 [{Module, Opts}]
 %%   system_prompt — 系统提示词（binary）
 %%   max_tool_iterations — 最大 tool loop 迭代次数（默认 10）
 %%   callbacks — 观察性回调 map（参见 beamai_agent_callbacks:callbacks()）
-%%   memory — 持久化后端实例
-%%   auto_save — 是否每轮结束后自动保存（默认 false）
+%%   memory — 会话记忆（filter-memory）：缺省用共享默认 store；{Mod,Ref} 句柄用自管 store；
+%%            false|none 关闭记忆。详见 setup_memory/2
+%%   conversation_id — 会话标识（默认自动生成）
 %%   id — agent ID（默认自动生成）
 %%   name — agent 名称（默认 <<"agent">>）
 %%   metadata — 用户自定义元数据 map
@@ -110,7 +109,6 @@ create(Config) ->
             system_prompt => maps:get(system_prompt, Config, undefined),
             max_tool_iterations => maps:get(max_tool_iterations, Config, 10),
             callbacks => Callbacks,
-            auto_save => maps:get(auto_save, Config, false),
             turn_count => 0,
             metadata => maps:get(metadata, Config, #{}),
             created_at => erlang:system_time(millisecond),
@@ -137,10 +135,10 @@ conversation_id(#{conversation_id := ConvId}) -> ConvId.
 %%
 %% 支持两种模式：
 %%   1. 直接使用预构建的 kernel（Config 中包含 kernel 键）
-%%   2. 从组件自动构建（依次添加 LLM 服务、plugins、middlewares）
+%%   2. 从组件自动构建（依次添加 LLM 服务、plugins）
 %%
 %% 自动构建顺序：
-%%   new(Settings) → add_llm → add_plugins → add_middlewares
+%%   new(Settings) → add_llm → add_plugins
 %%
 %% @param Config 配置 map
 %% @returns 构建完成的 kernel 实例
@@ -151,9 +149,7 @@ build_kernel(Config) ->
     Settings = maps:get(kernel_settings, Config, #{}),
     K0 = beamai_kernel:new(Settings),
     K1 = add_llm(K0, Config),
-    K2 = add_plugins(K1, Config),
-    K3 = add_middlewares(K2, Config),
-    K3.
+    add_plugins(K1, Config).
 
 %% @doc 注入 callback filters 到 kernel
 %%
@@ -291,15 +287,4 @@ load_plugin(Module, Kernel) ->
                         K1, Module:filters());
         false ->
             K1
-    end.
-
-%% @private middlewares 在 SimpleAgent 中不支持
-%%
-%% middleware 子系统属于 beamai_extra 扩展能力。本核心 agent 仅做忽略并告警。
-add_middlewares(Kernel, Config) ->
-    case maps:get(middlewares, Config, []) of
-        [] -> Kernel;
-        _ ->
-            logger:warning("beamai_agent: middlewares 已忽略（需 beamai_extra 扩展支持）"),
-            Kernel
     end.
