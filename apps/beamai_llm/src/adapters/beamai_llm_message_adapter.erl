@@ -27,7 +27,8 @@
     content := binary() | null,
     name => binary(),
     tool_call_id => binary(),
-    tool_calls => [map()]
+    tool_calls => [map()],
+    prefix => boolean()    %% DeepSeek Chat Prefix Completion（beta）
 }.
 
 -export_type([role_atom/0, role/0, message/0]).
@@ -68,7 +69,14 @@ to_openai_message(#{role := Role, content := Content} = Msg) ->
     Base = #{<<"role">> => to_binary_role(Role), <<"content">> => Content},
     Base1 = maybe_add_field(Base, <<"name">>, Msg, name),
     Base2 = maybe_add_field(Base1, <<"tool_call_id">>, Msg, tool_call_id),
-    maybe_add_tool_calls_openai(Base2, Msg).
+    Base3 = maybe_add_prefix(Base2, Msg),
+    maybe_add_tool_calls_openai(Base3, Msg).
+
+%% @private 透传 prefix 标志（DeepSeek Chat Prefix Completion，beta）
+%% 末尾 assistant 消息标记 prefix => true 表示强制模型从该内容续写。
+%% 仅在显式设置为 true 时透传，其他 Provider 的消息不受影响。
+maybe_add_prefix(Base, #{prefix := true}) -> Base#{<<"prefix">> => true};
+maybe_add_prefix(Base, _) -> Base.
 
 maybe_add_tool_calls_openai(Base, #{tool_calls := Calls}) when is_list(Calls), Calls =/= [] ->
     Base#{<<"tool_calls">> => [format_tool_call_openai(C) || C <- Calls]};
@@ -104,7 +112,8 @@ from_openai_message(#{<<"role">> := RoleBin} = Msg) ->
     Base = #{role => Role, content => maps:get(<<"content">>, Msg, null)},
     Base1 = maybe_parse_field(Base, name, Msg, <<"name">>),
     Base2 = maybe_parse_field(Base1, tool_call_id, Msg, <<"tool_call_id">>),
-    maybe_parse_tool_calls_openai(Base2, Msg).
+    Base3 = maybe_parse_field(Base2, prefix, Msg, <<"prefix">>),
+    maybe_parse_tool_calls_openai(Base3, Msg).
 
 maybe_parse_tool_calls_openai(Base, #{<<"tool_calls">> := Calls}) when is_list(Calls) ->
     Base#{tool_calls => [parse_tool_call_openai(C) || C <- Calls]};
