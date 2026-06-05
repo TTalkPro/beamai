@@ -76,6 +76,8 @@
     finalize_openai_stream/2,
     accumulate_anthropic_event/2,
     finalize_anthropic_stream/1,
+    accumulate_completions_event/2,
+    finalize_completions_stream/2,
 
     %% 响应解析
     parse_tool_calls/1,
@@ -379,6 +381,58 @@ build_raw_tool_calls(ToolCallMap) ->
              <<"function">> => #{<<"name">> => Name, <<"arguments">> => Args}
          }
      end || I <- Indexes].
+
+%%====================================================================
+%% Completions（文本补全）流式响应累加
+%%====================================================================
+
+%% @doc OpenAI 兼容 Completions 格式流式事件累加器
+%%
+%% 用于文本补全类接口（如 DeepSeek FIM /beta/completions）。
+%% 与 Chat 格式的区别：文本片段直接在 choices[0].text，没有 delta 包装。
+%%
+%% @param Event 解析后的 SSE 事件 map
+%% @param Acc 当前累加器 map
+%% @returns 更新后的累加器 map
+-spec accumulate_completions_event(map(), map()) -> map().
+accumulate_completions_event(#{<<"choices">> := [Choice | _]} = Event, Acc) when is_map(Choice) ->
+    Acc1 = merge_openai_event_meta(Event, Acc),
+    Acc2 = append_delta_text(content, maps:get(<<"text">>, Choice, <<>>), Acc1),
+    Acc3 = update_finish_reason(maps:get(<<"finish_reason">>, Choice, null), Acc2),
+    capture_raw_usage(Event, Acc3);
+accumulate_completions_event(#{<<"usage">> := Usage} = Event, Acc) when is_map(Usage) ->
+    capture_raw_usage(Event, merge_openai_event_meta(Event, Acc));
+accumulate_completions_event(_, Acc) ->
+    Acc.
+
+%% @doc 将 Completions 流式累加结果转换为统一响应
+%%
+%% 重建为 Completions 原始响应格式（choices[0].text），
+%% 再交给传入的解析器函数解析为统一响应。
+%%
+%% @param Acc 流式累加器
+%% @param Parser 响应解析器函数（如 beamai_llm_response_parser:parser_deepseek_fim()）
+%% @returns {ok, 统一响应} | {error, Reason}
+-spec finalize_completions_stream(map(), fun((map()) -> {ok, map()} | {error, term()})) ->
+    {ok, map()} | {error, term()}.
+finalize_completions_stream(Acc, Parser) ->
+    FinishReason = case maps:get(finish_reason, Acc, <<>>) of
+        <<>> -> <<"stop">>;
+        FR when is_binary(FR) -> FR;
+        _ -> <<"stop">>
+    end,
+    Raw = #{
+        <<"id">> => maps:get(id, Acc, <<>>),
+        <<"model">> => maps:get(model, Acc, <<>>),
+        <<"object">> => <<"text_completion">>,
+        <<"choices">> => [#{
+            <<"index">> => 0,
+            <<"text">> => maps:get(content, Acc, <<>>),
+            <<"finish_reason">> => FinishReason
+        }],
+        <<"usage">> => maps:get(usage_raw, Acc, #{})
+    },
+    Parser(Raw).
 
 %%====================================================================
 %% Anthropic 流式响应累加

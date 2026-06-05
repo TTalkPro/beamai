@@ -11,11 +11,11 @@
 
 %% 构造函数
 -export([from_provider/2, from_openai/1, from_anthropic/1]).
--export([from_ollama/1, from_dashscope/1, from_zhipu/1, from_deepseek/1]).
+-export([from_ollama/1, from_dashscope/1, from_zhipu/1, from_deepseek/1, from_deepseek_fim/1]).
 
 %% HTTP Client 解析器（可直接传给 beamai_llm_http_client:request/5）
 -export([parser_openai/0, parser_anthropic/0, parser/1]).
--export([parser_ollama/0, parser_dashscope/0, parser_zhipu/0, parser_deepseek/0]).
+-export([parser_ollama/0, parser_dashscope/0, parser_zhipu/0, parser_deepseek/0, parser_deepseek_fim/0]).
 
 %%====================================================================
 %% HTTP Client 解析器
@@ -61,6 +61,11 @@ parser_zhipu() ->
 -spec parser_deepseek() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
 parser_deepseek() ->
     fun from_deepseek/1.
+
+%% @doc 返回 DeepSeek FIM（填空补全）格式的解析器函数
+-spec parser_deepseek_fim() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+parser_deepseek_fim() ->
+    fun from_deepseek_fim/1.
 
 %%====================================================================
 %% 构造函数
@@ -181,7 +186,7 @@ from_deepseek(#{<<"choices">> := [Choice | _]} = Raw) ->
         content_blocks => build_content_blocks_openai(Message),
         tool_calls => ToolCalls,
         finish_reason => normalize_finish_reason_openai(maps:get(<<"finish_reason">>, Choice, <<>>)),
-        usage => parse_usage_openai(maps:get(<<"usage">>, Raw, #{}), Raw),
+        usage => parse_usage_deepseek(maps:get(<<"usage">>, Raw, #{}), Raw),
         raw => Raw,
         metadata => #{
             created => maps:get(<<"created">>, Raw, undefined),
@@ -192,6 +197,36 @@ from_deepseek(#{<<"choices">> := [Choice | _]} = Raw) ->
 from_deepseek(#{<<"error">> := Error}) ->
     {error, {api_error, Error}};
 from_deepseek(Raw) ->
+    {error, {invalid_response, Raw}}.
+
+%% @doc 从 DeepSeek FIM（填空补全）格式响应创建
+%% FIM 接口（/beta/completions）使用文本补全格式：
+%% 补全文本在 choices[0].text，没有 message 包装。
+-spec from_deepseek_fim(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+from_deepseek_fim(#{<<"choices">> := [Choice | _]} = Raw) ->
+    Text = case maps:get(<<"text">>, Choice, <<>>) of
+        T when is_binary(T) -> T;
+        _ -> <<>>
+    end,
+    {ok, beamai_llm_response:new(#{
+        id => maps:get(<<"id">>, Raw, <<>>),
+        model => maps:get(<<"model">>, Raw, <<>>),
+        provider => deepseek,
+        content => normalize_content(Text),
+        content_blocks => case Text of <<>> -> []; _ -> [#{type => text, text => Text}] end,
+        tool_calls => [],
+        finish_reason => normalize_finish_reason_openai(maps:get(<<"finish_reason">>, Choice, <<>>)),
+        usage => parse_usage_deepseek(maps:get(<<"usage">>, Raw, #{}), Raw),
+        raw => Raw,
+        metadata => #{
+            created => maps:get(<<"created">>, Raw, undefined),
+            object => maps:get(<<"object">>, Raw, undefined),
+            logprobs => maps:get(<<"logprobs">>, Choice, undefined)
+        }
+    })};
+from_deepseek_fim(#{<<"error">> := Error}) ->
+    {error, {api_error, Error}};
+from_deepseek_fim(Raw) ->
     {error, {invalid_response, Raw}}.
 
 %% @doc 从 Ollama 格式响应创建
@@ -314,6 +349,26 @@ extract_openai_usage_details(Usage, _Raw) ->
     case maps:get(<<"prompt_tokens_details">>, Usage, undefined) of
         undefined -> Details1;
         PromptDetails -> Details1#{prompt_details => PromptDetails}
+    end.
+
+%% @private 解析 DeepSeek usage（OpenAI 格式 + 硬盘缓存统计）
+%% DeepSeek 上下文缓存自动启用，usage 顶层额外返回
+%% prompt_cache_hit_tokens / prompt_cache_miss_tokens，提取到 details。
+parse_usage_deepseek(Usage, Raw) ->
+    Base = parse_usage_openai(Usage, Raw),
+    CacheFields = [
+        {<<"prompt_cache_hit_tokens">>, prompt_cache_hit_tokens},
+        {<<"prompt_cache_miss_tokens">>, prompt_cache_miss_tokens}
+    ],
+    Extra = lists:foldl(fun({JsonKey, AtomKey}, Acc) ->
+        case maps:get(JsonKey, Usage, undefined) of
+            undefined -> Acc;
+            Value -> Acc#{AtomKey => Value}
+        end
+    end, #{}, CacheFields),
+    case maps:size(Extra) of
+        0 -> Base;
+        _ -> Base#{details => maps:merge(maps:get(details, Base, #{}), Extra)}
     end.
 
 %% @private 标准化 OpenAI finish_reason
