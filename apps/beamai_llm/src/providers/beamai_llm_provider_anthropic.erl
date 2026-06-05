@@ -6,11 +6,12 @@
 %%%
 %%% 支持的功能：
 %%%   - 基本对话 (chat/stream_chat)
-%%%   - 工具调用 (tools + tool_choice)
-%%%   - Extended Thinking (thinking 配置)
+%%%   - 工具调用 (tools + tool_choice)，流式 input_json_delta 累加
+%%%   - Extended Thinking (thinking 配置)，流式 thinking/signature delta 累加
 %%%   - 采样参数 (temperature, top_p, top_k)
 %%%   - 停止序列 (stop_sequences)
-%%%   - 用户元数据 (metadata)
+%%%   - 用户元数据 (metadata) / 服务层级 (service_tier) / 数据驻留 (inference_geo)
+%%%   - 流式 usage 统计（message_start 的 input_tokens + message_delta 的 output_tokens）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -67,12 +68,20 @@ chat(Config, Request) ->
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_anthropic()).
 
 %% @doc 发送流式聊天请求
+%% 使用公共模块的 Anthropic 事件累加器，完整处理
+%% content_block_start/delta/stop、message_start/delta 事件，
+%% 流式结束后重建为与同步模式一致的统一响应
+%% （含 tool_use 块、thinking 块和 usage 统计）。
 stream_chat(Config, Request, Callback) ->
     Url = build_url(Config, ?ANTHROPIC_ENDPOINT),
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request#{stream => true}),
-    Opts = #{timeout => maps:get(timeout, Config, ?ANTHROPIC_TIMEOUT)},
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback, fun accumulate_event/2).
+    Opts = #{
+        timeout => maps:get(timeout, Config, ?ANTHROPIC_TIMEOUT),
+        finalizer => fun beamai_llm_provider_common:finalize_anthropic_stream/1
+    },
+    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
+                                          fun beamai_llm_provider_common:accumulate_anthropic_event/2).
 
 %%====================================================================
 %% 请求构建（Provider 特定）
@@ -109,6 +118,10 @@ build_request_body(Config, Request) ->
         fun(B) -> maybe_add_top_k(B, Config) end,
         fun(B) -> maybe_add_stop_sequences(B, Config, Request) end,
         fun(B) -> maybe_add_metadata(B, Config) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_params(B, Config, [
+            {service_tier, <<"service_tier">>},
+            {inference_geo, <<"inference_geo">>}
+        ]) end,
         fun(B) -> maybe_add_stream(B, Request) end
     ]).
 
@@ -195,30 +208,3 @@ maybe_add_metadata(Body, _) ->
 %% @private 添加流式标志
 maybe_add_stream(Body, #{stream := true}) -> Body#{<<"stream">> => true};
 maybe_add_stream(Body, _) -> Body.
-
-%%====================================================================
-%% 流式事件累加（Anthropic 特有格式）
-%%====================================================================
-
-%% @private Anthropic 格式事件累加器
-%% Anthropic 使用不同的事件类型：message_start, content_block_delta, message_delta
-accumulate_event(#{<<"type">> := <<"content_block_delta">>, <<"delta">> := Delta}, Acc) ->
-    case maps:get(<<"type">>, Delta, <<"text_delta">>) of
-        <<"text_delta">> ->
-            Text = maps:get(<<"text">>, Delta, <<>>),
-            Acc#{content => <<(maps:get(content, Acc, <<>>))/binary, Text/binary>>};
-        <<"thinking_delta">> ->
-            Thinking = maps:get(<<"thinking">>, Delta, <<>>),
-            Acc#{thinking => <<(maps:get(thinking, Acc, <<>>))/binary, Thinking/binary>>};
-        _ ->
-            Acc
-    end;
-accumulate_event(#{<<"type">> := <<"message_start">>, <<"message">> := Msg}, Acc) ->
-    Acc#{
-        id => maps:get(<<"id">>, Msg, <<>>),
-        model => maps:get(<<"model">>, Msg, <<>>)
-    };
-accumulate_event(#{<<"type">> := <<"message_delta">>, <<"delta">> := Delta}, Acc) ->
-    Acc#{finish_reason => maps:get(<<"stop_reason">>, Delta, <<>>)};
-accumulate_event(_, Acc) ->
-    Acc.
