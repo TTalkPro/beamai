@@ -130,6 +130,30 @@ Messages = [
 - OpenAI 兼容 API，响应格式与 OpenAI 一致
 - deepseek-reasoner 的思维链内容通过 `beamai_llm_response:reasoning_content/1` 访问（同步与流式均支持）
 - 支持 `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` 配置参数
+- deepseek-reasoner 自动剔除不支持的参数（temperature/top_p/penalty/logprobs），避免 400 错误
+- 上下文硬盘缓存统计：`usage.details` 中的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+
+**DeepSeek 特有机制（beta）：**
+
+```erlang
+%% Chat Prefix Completion：末尾 assistant 消息标 prefix => true，
+%% 强制模型从该内容续写（自动路由到 /beta 端点）
+Messages = [
+    #{role => user, content => <<"写一段 Python 快排"/utf8>>},
+    #{role => assistant, content => <<"```python\n">>, prefix => true}
+],
+{ok, Resp} = llm_client:chat(LLM, Messages),
+
+%% FIM 填空补全：根据前缀 + 后缀补全中间内容（代码补全场景）
+{ok, Resp2} = beamai_llm_provider_deepseek:fim(Config, #{
+    prompt => <<"def fib(n):">>,
+    suffix => <<"    return fib(n-1) + fib(n-2)">>
+}),
+Completion = beamai_llm_response:content(Resp2),
+
+%% 流式 FIM
+{ok, Resp3} = beamai_llm_provider_deepseek:stream_fim(Config, #{prompt => P}, Callback).
+```
 
 ### 使用阿里云百炼 (DashScope 原生 API)
 

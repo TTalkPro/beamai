@@ -129,6 +129,30 @@ Messages = [
 - OpenAI compatible API, response format consistent with OpenAI
 - Chain-of-thought from deepseek-reasoner is exposed via `beamai_llm_response:reasoning_content/1` (both sync and streaming)
 - Supports `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` config options
+- deepseek-reasoner automatically strips unsupported params (temperature/top_p/penalty/logprobs) to avoid 400 errors
+- Context disk-cache stats exposed in `usage.details` (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`)
+
+**DeepSeek-specific mechanisms (beta):**
+
+```erlang
+%% Chat Prefix Completion: mark the trailing assistant message with prefix => true
+%% to force the model to continue from it (auto-routed to the /beta endpoint)
+Messages = [
+    #{role => user, content => <<"Write a Python quicksort">>},
+    #{role => assistant, content => <<"```python\n">>, prefix => true}
+],
+{ok, Resp} = llm_client:chat(LLM, Messages),
+
+%% FIM (Fill-In-the-Middle) completion: complete code between a prefix and suffix
+{ok, Resp2} = beamai_llm_provider_deepseek:fim(Config, #{
+    prompt => <<"def fib(n):">>,
+    suffix => <<"    return fib(n-1) + fib(n-2)">>
+}),
+Completion = beamai_llm_response:content(Resp2),
+
+%% Streaming FIM
+{ok, Resp3} = beamai_llm_provider_deepseek:stream_fim(Config, #{prompt => P}, Callback).
+```
 
 ### Using Alibaba Cloud Bailian (DashScope Native API)
 
