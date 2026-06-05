@@ -433,6 +433,31 @@ from_deepseek_error_test() ->
     Raw = #{<<"error">> => #{<<"message">> => <<"Invalid API key">>}},
     ?assertMatch({error, {api_error, _}}, beamai_llm_response_parser:from_deepseek(Raw)).
 
+from_deepseek_fim_test() ->
+    %% FIM（/beta/completions）文本补全格式：text 直接在 choice 下
+    Raw = #{
+        <<"id">> => <<"fim-sync-1">>,
+        <<"model">> => <<"deepseek-chat">>,
+        <<"object">> => <<"text_completion">>,
+        <<"choices">> => [#{
+            <<"index">> => 0,
+            <<"text">> => <<"    return n * 2">>,
+            <<"finish_reason">> => <<"stop">>
+        }],
+        <<"usage">> => #{<<"prompt_tokens">> => 6, <<"completion_tokens">> => 7,
+                         <<"total_tokens">> => 13}
+    },
+    {ok, Resp} = beamai_llm_response_parser:from_deepseek_fim(Raw),
+    ?assertEqual(deepseek, beamai_llm_response:provider(Resp)),
+    ?assertEqual(<<"    return n * 2">>, beamai_llm_response:content(Resp)),
+    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
+    ?assertEqual([], beamai_llm_response:tool_calls(Resp)),
+    ?assertEqual(13, beamai_llm_response:total_tokens(Resp)).
+
+from_deepseek_fim_error_test() ->
+    Raw = #{<<"error">> => #{<<"message">> => <<"model not supported">>}},
+    ?assertMatch({error, {api_error, _}}, beamai_llm_response_parser:from_deepseek_fim(Raw)).
+
 %%====================================================================
 %% Ollama 格式测试
 %%====================================================================
