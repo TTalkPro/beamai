@@ -254,8 +254,9 @@ from_provider_test() ->
     {ok, Resp1} = beamai_llm_response_parser:from_provider(OpenAIRaw, openai),
     ?assertEqual(openai, beamai_llm_response:provider(Resp1)),
 
+    %% DeepSeek 有专用解析器（OpenAI 兼容 + reasoning_content），设置正确的 provider
     {ok, Resp2} = beamai_llm_response_parser:from_provider(OpenAIRaw, deepseek),
-    ?assertEqual(openai, beamai_llm_response:provider(Resp2)),  % 使用 OpenAI 解析器
+    ?assertEqual(deepseek, beamai_llm_response:provider(Resp2)),
 
     %% Zhipu 有专用解析器，设置正确的 provider
     {ok, Resp3} = beamai_llm_response_parser:from_provider(OpenAIRaw, zhipu),
@@ -351,6 +352,86 @@ from_zhipu_with_reasoning_content_test() ->
     ?assertEqual(<<"This is the thinking process...">>, beamai_llm_response:content(Resp)),
     %% 可以通过 reasoning_content/1 访问
     ?assertEqual(<<"This is the thinking process...">>, beamai_llm_response:reasoning_content(Resp)).
+
+%%====================================================================
+%% DeepSeek 格式测试
+%%====================================================================
+
+from_deepseek_basic_test() ->
+    Raw = #{
+        <<"id">> => <<"ds-123">>,
+        <<"model">> => <<"deepseek-chat">>,
+        <<"choices">> => [#{
+            <<"message">> => #{
+                <<"role">> => <<"assistant">>,
+                <<"content">> => <<"Hello from DeepSeek!">>
+            },
+            <<"finish_reason">> => <<"stop">>
+        }],
+        <<"usage">> => #{
+            <<"prompt_tokens">> => 10,
+            <<"completion_tokens">> => 20,
+            <<"total_tokens">> => 30
+        }
+    },
+    {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
+    ?assertEqual(deepseek, beamai_llm_response:provider(Resp)),
+    ?assertEqual(<<"deepseek-chat">>, beamai_llm_response:model(Resp)),
+    ?assertEqual(<<"Hello from DeepSeek!">>, beamai_llm_response:content(Resp)),
+    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
+    ?assertEqual(null, beamai_llm_response:reasoning_content(Resp)).
+
+from_deepseek_with_reasoning_content_test() ->
+    %% deepseek-reasoner：reasoning_content 与最终回答 content 并存
+    Raw = #{
+        <<"id">> => <<"ds-456">>,
+        <<"model">> => <<"deepseek-reasoner">>,
+        <<"choices">> => [#{
+            <<"message">> => #{
+                <<"role">> => <<"assistant">>,
+                <<"content">> => <<"The answer is 42.">>,
+                <<"reasoning_content">> => <<"Let me think step by step...">>
+            },
+            <<"finish_reason">> => <<"stop">>
+        }],
+        <<"usage">> => #{}
+    },
+    {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
+    %% content 保持最终回答不变，思维链通过 reasoning_content/1 访问
+    ?assertEqual(<<"The answer is 42.">>, beamai_llm_response:content(Resp)),
+    ?assertEqual(<<"Let me think step by step...">>, beamai_llm_response:reasoning_content(Resp)).
+
+from_deepseek_with_tool_calls_test() ->
+    Raw = #{
+        <<"id">> => <<"ds-789">>,
+        <<"model">> => <<"deepseek-chat">>,
+        <<"choices">> => [#{
+            <<"message">> => #{
+                <<"role">> => <<"assistant">>,
+                <<"content">> => null,
+                <<"tool_calls">> => [#{
+                    <<"id">> => <<"call_ds_1">>,
+                    <<"type">> => <<"function">>,
+                    <<"function">> => #{
+                        <<"name">> => <<"get_weather">>,
+                        <<"arguments">> => <<"{\"city\":\"Hangzhou\"}">>
+                    }
+                }]
+            },
+            <<"finish_reason">> => <<"tool_calls">>
+        }],
+        <<"usage">> => #{}
+    },
+    {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
+    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)),
+    [TC] = beamai_llm_response:tool_calls(Resp),
+    ?assertEqual(<<"call_ds_1">>, maps:get(id, TC)),
+    ?assertEqual(<<"get_weather">>, maps:get(name, TC)),
+    ?assertEqual(#{<<"city">> => <<"Hangzhou">>}, maps:get(arguments, TC)).
+
+from_deepseek_error_test() ->
+    Raw = #{<<"error">> => #{<<"message">> => <<"Invalid API key">>}},
+    ?assertMatch({error, {api_error, _}}, beamai_llm_response_parser:from_deepseek(Raw)).
 
 %%====================================================================
 %% Ollama 格式测试

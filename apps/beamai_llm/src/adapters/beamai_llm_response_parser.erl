@@ -11,11 +11,11 @@
 
 %% 构造函数
 -export([from_provider/2, from_openai/1, from_anthropic/1]).
--export([from_ollama/1, from_dashscope/1, from_zhipu/1]).
+-export([from_ollama/1, from_dashscope/1, from_zhipu/1, from_deepseek/1]).
 
 %% HTTP Client 解析器（可直接传给 beamai_llm_http_client:request/5）
 -export([parser_openai/0, parser_anthropic/0, parser/1]).
--export([parser_ollama/0, parser_dashscope/0, parser_zhipu/0]).
+-export([parser_ollama/0, parser_dashscope/0, parser_zhipu/0, parser_deepseek/0]).
 
 %%====================================================================
 %% HTTP Client 解析器
@@ -36,7 +36,7 @@ parser_anthropic() ->
 -spec parser(beamai_llm_response:provider()) -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
 parser(openai) -> parser_openai();
 parser(anthropic) -> parser_anthropic();
-parser(deepseek) -> parser_openai();
+parser(deepseek) -> parser_deepseek();
 parser(zhipu) -> parser_zhipu();
 parser(ollama) -> parser_ollama();
 parser(bailian) -> parser_dashscope();
@@ -57,6 +57,11 @@ parser_dashscope() ->
 parser_zhipu() ->
     fun from_zhipu/1.
 
+%% @doc 返回 DeepSeek 格式的解析器函数（OpenAI兼容 + reasoning_content）
+-spec parser_deepseek() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+parser_deepseek() ->
+    fun from_deepseek/1.
+
 %%====================================================================
 %% 构造函数
 %%====================================================================
@@ -65,7 +70,7 @@ parser_zhipu() ->
 -spec from_provider(map(), beamai_llm_response:provider()) -> {ok, beamai_llm_response:response()} | {error, term()}.
 from_provider(Raw, openai) -> from_openai(Raw);
 from_provider(Raw, anthropic) -> from_anthropic(Raw);
-from_provider(Raw, deepseek) -> from_openai(Raw);  % DeepSeek 使用 OpenAI 格式
+from_provider(Raw, deepseek) -> from_deepseek(Raw); % DeepSeek 使用 OpenAI 格式 + reasoning_content
 from_provider(Raw, zhipu) -> from_zhipu(Raw);      % 智谱使用 OpenAI 格式 + reasoning_content
 from_provider(Raw, ollama) -> from_ollama(Raw);    % Ollama 支持原生和 OpenAI 格式
 from_provider(Raw, bailian) -> from_dashscope(Raw); % 百炼使用 DashScope 格式
@@ -158,6 +163,35 @@ from_zhipu(#{<<"choices">> := [Choice | _]} = Raw) ->
 from_zhipu(#{<<"error">> := Error}) ->
     {error, {api_error, Error}};
 from_zhipu(Raw) ->
+    {error, {invalid_response, Raw}}.
+
+%% @doc 从 DeepSeek 格式响应创建
+%% DeepSeek 使用 OpenAI 兼容格式，deepseek-reasoner 模型额外返回
+%% reasoning_content 字段（思维链内容，与最终回答 content 并存）。
+-spec from_deepseek(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+from_deepseek(#{<<"choices">> := [Choice | _]} = Raw) ->
+    Message = maps:get(<<"message">>, Choice, #{}),
+    ToolCalls = parse_tool_calls_openai(Message),
+    ReasoningContent = maps:get(<<"reasoning_content">>, Message, null),
+    {ok, beamai_llm_response:new(#{
+        id => maps:get(<<"id">>, Raw, <<>>),
+        model => maps:get(<<"model">>, Raw, <<>>),
+        provider => deepseek,
+        content => maps:get(<<"content">>, Message, null),
+        content_blocks => build_content_blocks_openai(Message),
+        tool_calls => ToolCalls,
+        finish_reason => normalize_finish_reason_openai(maps:get(<<"finish_reason">>, Choice, <<>>)),
+        usage => parse_usage_openai(maps:get(<<"usage">>, Raw, #{}), Raw),
+        raw => Raw,
+        metadata => #{
+            created => maps:get(<<"created">>, Raw, undefined),
+            system_fingerprint => maps:get(<<"system_fingerprint">>, Raw, undefined),
+            reasoning_content => ReasoningContent
+        }
+    })};
+from_deepseek(#{<<"error">> := Error}) ->
+    {error, {api_error, Error}};
+from_deepseek(Raw) ->
     {error, {invalid_response, Raw}}.
 
 %% @doc 从 Ollama 格式响应创建
