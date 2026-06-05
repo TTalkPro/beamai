@@ -34,14 +34,17 @@
 -type request_opts() :: #{
     timeout => pos_integer(),
     connect_timeout => pos_integer(),
-    stream_timeout => pos_integer()
+    stream_timeout => pos_integer(),
+    finalizer => stream_finalizer()
 }.
 
 -type response_parser() :: fun((map()) -> {ok, map()} | {error, term()}).
 -type event_accumulator() :: fun((map(), map()) -> map()).
 -type stream_callback() :: fun((map()) -> any()).
+-type stream_finalizer() :: fun((map()) -> {ok, map()} | {error, term()}).
 
--export_type([request_opts/0, response_parser/0, event_accumulator/0, stream_callback/0]).
+-export_type([request_opts/0, response_parser/0, event_accumulator/0,
+              stream_callback/0, stream_finalizer/0]).
 
 %%====================================================================
 %% 同步请求 API
@@ -99,10 +102,15 @@ stream_request(Url, Headers, Body, Opts, Callback) ->
 
 %% @doc 发送流式 HTTP 请求（带自定义事件累加器）
 %% 使用 beamai_http:stream_request 作为底层，添加 SSE 解析
+%%
+%% Opts 中可包含 finalizer，用于将累加结果转换为最终响应
+%% （如转成与同步模式一致的 beamai_llm_response 结构）。
+%% 未指定时使用默认的 finalize_stream/1。
 -spec stream_request(binary(), [{binary(), binary()}], map(), request_opts(),
                      stream_callback(), event_accumulator()) ->
     {ok, map()} | {error, term()}.
 stream_request(Url, Headers, Body, Opts, Callback, Accumulator) ->
+    Finalizer = maps:get(finalizer, Opts, fun finalize_stream/1),
     StreamBody = Body#{<<"stream">> => true},
     HttpOpts = #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
@@ -113,7 +121,7 @@ stream_request(Url, Headers, Body, Opts, Callback, Accumulator) ->
     %% 使用 beamai_http 的流式请求，传入 SSE 处理器
     case beamai_http:stream_request(post, Url, [], StreamBody, HttpOpts, fun sse_chunk_handler/2) of
         {ok, #{acc := FinalAcc}} ->
-            finalize_stream(FinalAcc);
+            Finalizer(FinalAcc);
         {error, Reason} ->
             {error, Reason}
     end.
