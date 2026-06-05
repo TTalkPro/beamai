@@ -125,9 +125,11 @@ Messages = [
 | `deepseek-reasoner` | 推理增强模型 | 复杂推理、数学问题 |
 
 **特性：**
-- 完整支持工具调用（Function Calling）
+- 完整支持工具调用（Function Calling），流式分片工具调用自动累加
 - 支持流式输出
 - OpenAI 兼容 API，响应格式与 OpenAI 一致
+- deepseek-reasoner 的思维链内容通过 `beamai_llm_response:reasoning_content/1` 访问（同步与流式均支持）
+- 支持 `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` 配置参数
 
 ### 使用阿里云百炼 (DashScope 原生 API)
 
@@ -377,10 +379,20 @@ beamai_llm_provider_common:build_bearer_auth_headers(Config) -> Headers.
 %% 可选参数处理
 beamai_llm_provider_common:maybe_add_stream(Body, Request) -> NewBody.
 beamai_llm_provider_common:maybe_add_tools(Body, Request) -> NewBody.
+beamai_llm_provider_common:maybe_add_tool_choice(Body, Request) -> NewBody.
 beamai_llm_provider_common:maybe_add_top_p(Body, Request) -> NewBody.
+beamai_llm_provider_common:maybe_add_params(Body, Source, Specs) -> NewBody.
 
 %% OpenAI 格式事件累加（流式响应）
+%% 支持 content / reasoning_content / 分片 tool_calls / usage 累加
 beamai_llm_provider_common:accumulate_openai_event(Event, Acc) -> NewAcc.
+beamai_llm_provider_common:finalize_openai_stream(Acc, Provider) -> {ok, Response}.
+
+%% Anthropic 格式事件累加（流式响应）
+%% 支持 message_start / content_block_* / message_delta 事件流，
+%% 包括 tool_use 块的 input_json_delta 拼接和 thinking 块累加
+beamai_llm_provider_common:accumulate_anthropic_event(Event, Acc) -> NewAcc.
+beamai_llm_provider_common:finalize_anthropic_stream(Acc) -> {ok, Response}.
 
 %% 工具调用解析
 beamai_llm_provider_common:parse_tool_calls(Message) -> [ToolCall].
@@ -398,8 +410,9 @@ beamai_llm_provider_common:parse_usage(Usage) -> #{prompt_tokens, completion_tok
 
 ```erlang
 %% 通过 Parser 函数解析响应（由 beamai_llm_http_client 内部使用）
-beamai_llm_response_parser:parser_openai()      %% OpenAI/DeepSeek/Zhipu 格式
+beamai_llm_response_parser:parser_openai()      %% OpenAI 格式
 beamai_llm_response_parser:parser_anthropic()   %% Anthropic 格式
+beamai_llm_response_parser:parser_deepseek()    %% DeepSeek 格式（含 reasoning_content）
 beamai_llm_response_parser:parser_dashscope()   %% 阿里云百炼 DashScope 格式
 beamai_llm_response_parser:parser_ollama()      %% Ollama 格式
 beamai_llm_response_parser:parser_zhipu()       %% 智谱特定格式（含 reasoning_content）

@@ -124,9 +124,11 @@ Messages = [
 | `deepseek-reasoner` | Reasoning-enhanced model | Complex reasoning, math problems |
 
 **Features:**
-- Full support for tool calling (Function Calling)
+- Full support for tool calling (Function Calling), with automatic accumulation of streamed tool-call fragments
 - Streaming output support
 - OpenAI compatible API, response format consistent with OpenAI
+- Chain-of-thought from deepseek-reasoner is exposed via `beamai_llm_response:reasoning_content/1` (both sync and streaming)
+- Supports `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` config options
 
 ### Using Alibaba Cloud Bailian (DashScope Native API)
 
