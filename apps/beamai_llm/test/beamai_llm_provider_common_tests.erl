@@ -121,6 +121,58 @@ maybe_add_top_p_test_() ->
     ].
 
 %%====================================================================
+%% maybe_add_params/3 测试
+%%====================================================================
+
+maybe_add_params_test_() ->
+    Specs = [
+        {frequency_penalty, <<"frequency_penalty">>},
+        {seed, <<"seed">>},
+        {stop, <<"stop">>}
+    ],
+    [
+        %% 仅添加存在的参数
+        ?_assertEqual(
+            #{<<"frequency_penalty">> => 0.5, <<"seed">> => 42},
+            beamai_llm_provider_common:maybe_add_params(
+                #{}, #{frequency_penalty => 0.5, seed => 42, other => x}, Specs)
+        ),
+        %% 来源为空时不变
+        ?_assertEqual(
+            #{<<"model">> => <<"gpt-4">>},
+            beamai_llm_provider_common:maybe_add_params(
+                #{<<"model">> => <<"gpt-4">>}, #{}, Specs)
+        )
+    ].
+
+%%====================================================================
+%% maybe_add_tool_choice/2 测试（OpenAI 格式）
+%%====================================================================
+
+maybe_add_tool_choice_test_() ->
+    [
+        ?_assertEqual(#{<<"tool_choice">> => <<"auto">>},
+                      beamai_llm_provider_common:maybe_add_tool_choice(#{}, #{tool_choice => auto})),
+        ?_assertEqual(#{<<"tool_choice">> => <<"none">>},
+                      beamai_llm_provider_common:maybe_add_tool_choice(#{}, #{tool_choice => none})),
+        ?_assertEqual(#{<<"tool_choice">> => <<"required">>},
+                      beamai_llm_provider_common:maybe_add_tool_choice(#{}, #{tool_choice => required})),
+        %% 指定函数
+        ?_assertEqual(
+            #{<<"tool_choice">> => #{<<"type">> => <<"function">>,
+                                     <<"function">> => #{<<"name">> => <<"get_weather">>}}},
+            beamai_llm_provider_common:maybe_add_tool_choice(#{}, #{tool_choice => {tool, <<"get_weather">>}})
+        ),
+        %% map 高级用法直接透传
+        ?_assertEqual(
+            #{<<"tool_choice">> => #{<<"type">> => <<"function">>}},
+            beamai_llm_provider_common:maybe_add_tool_choice(#{}, #{tool_choice => #{<<"type">> => <<"function">>}})
+        ),
+        %% 未指定时不变
+        ?_assertEqual(#{}, beamai_llm_provider_common:maybe_add_tool_choice(#{}, #{}))
+    ].
+
+%%====================================================================
 %% parse_tool_calls/1 测试
 %%====================================================================
 
