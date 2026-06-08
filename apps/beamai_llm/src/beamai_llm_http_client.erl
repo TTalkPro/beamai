@@ -35,8 +35,13 @@
     timeout => pos_integer(),
     connect_timeout => pos_integer(),
     stream_timeout => pos_integer(),
-    finalizer => stream_finalizer()
+    finalizer => stream_finalizer(),
+    on_headers => header_handler()
 }.
+
+%% 响应头处理器：从响应头提取要合并进 response.metadata 的 map
+%% （如速率限制信息）。返回空 map 表示无需注入。
+-type header_handler() :: fun(([{binary(), binary()}]) -> map()).
 
 -type response_parser() :: fun((map()) -> {ok, map()} | {error, term()}).
 -type event_accumulator() :: fun((map(), map()) -> map()).
@@ -44,7 +49,7 @@
 -type stream_finalizer() :: fun((map()) -> {ok, map()} | {error, term()}).
 
 -export_type([request_opts/0, response_parser/0, event_accumulator/0,
-              stream_callback/0, stream_finalizer/0]).
+              stream_callback/0, stream_finalizer/0, header_handler/0]).
 
 %%====================================================================
 %% 同步请求 API
@@ -68,26 +73,66 @@ request(Url, Headers, Body, Opts, ResponseParser) ->
     },
     %% 使用 beamai_http:request 直接传入 headers，避免 post_json 重复添加 Content-Type
     JsonBody = jsx:encode(Body),
-    case beamai_http:request(post, Url, Headers, JsonBody, HttpOpts) of
-        {ok, Response} when is_map(Response) ->
-            ResponseParser(Response);
-        {ok, Response} when is_binary(Response) ->
-            %% 如果是 binary，尝试解析 JSON
-            case beamai_utils:parse_json(Response) of
-                Parsed when map_size(Parsed) > 0 -> ResponseParser(Parsed);
-                Empty ->
-                    error_logger:warning_msg("Failed to parse response JSON: ~ts~n", [Response]),
-                    {error, {parse_error, Empty}}
+    case maps:get(on_headers, Opts, undefined) of
+        OnHeaders when is_function(OnHeaders, 1) ->
+            request_with_headers(Url, Headers, JsonBody, HttpOpts, ResponseParser, OnHeaders);
+        _ ->
+            case beamai_http:request(post, Url, Headers, JsonBody, HttpOpts) of
+                {ok, Response} ->
+                    parse_response_body(Response, ResponseParser);
+                {error, {http_error, Code, RespBody}} ->
+                    {error, {http_error, Code, RespBody}};
+                {error, Reason} ->
+                    {error, {request_failed, Reason}}
+            end
+    end.
+
+%% @private 请求并把响应头提取的元信息合并进 response.metadata
+request_with_headers(Url, Headers, JsonBody, HttpOpts, ResponseParser, OnHeaders) ->
+    case beamai_http:request_meta(post, Url, Headers, JsonBody, HttpOpts) of
+        {ok, Response, Meta} ->
+            case parse_response_body(Response, ResponseParser) of
+                {ok, Resp} ->
+                    RespHeaders = maps:get(headers, Meta, []),
+                    HeaderMeta = safe_extract_headers(OnHeaders, RespHeaders),
+                    {ok, inject_metadata(Resp, HeaderMeta)};
+                Other ->
+                    Other
             end;
-        {ok, Response} ->
-            %% 其他类型，记录并返回错误
-            error_logger:warning_msg("Unexpected response type: ~p~n", [Response]),
-            {error, {unexpected_response, Response}};
         {error, {http_error, Code, RespBody}} ->
             {error, {http_error, Code, RespBody}};
         {error, Reason} ->
             {error, {request_failed, Reason}}
     end.
+
+%% @private 解析响应体（map 直接解析；binary 先解 JSON）
+parse_response_body(Response, ResponseParser) when is_map(Response) ->
+    ResponseParser(Response);
+parse_response_body(Response, ResponseParser) when is_binary(Response) ->
+    case beamai_utils:parse_json(Response) of
+        Parsed when map_size(Parsed) > 0 -> ResponseParser(Parsed);
+        Empty ->
+            error_logger:warning_msg("Failed to parse response JSON: ~ts~n", [Response]),
+            {error, {parse_error, Empty}}
+    end;
+parse_response_body(Response, _ResponseParser) ->
+    error_logger:warning_msg("Unexpected response type: ~p~n", [Response]),
+    {error, {unexpected_response, Response}}.
+
+%% @private 安全调用响应头处理器（异常或非 map 返回时降级为空）
+safe_extract_headers(Fun, Headers) ->
+    try Fun(Headers) of
+        Map when is_map(Map) -> Map;
+        _ -> #{}
+    catch _:_ -> #{}
+    end.
+
+%% @private 把响应头元信息合并进 response 的 metadata 字段
+inject_metadata(Resp, HeaderMeta) when is_map(Resp), is_map(HeaderMeta), map_size(HeaderMeta) > 0 ->
+    Existing = maps:get(metadata, Resp, #{}),
+    Resp#{metadata => maps:merge(Existing, HeaderMeta)};
+inject_metadata(Resp, _HeaderMeta) ->
+    Resp.
 
 %%====================================================================
 %% 流式请求 API
