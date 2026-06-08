@@ -99,6 +99,12 @@ request_with_headers(Url, Headers, JsonBody, HttpOpts, ResponseParser, OnHeaders
                 Other ->
                     Other
             end;
+        {error, {http_error, Code, RespBody, RespHeaders}} ->
+            %% 4xx/5xx 带响应头：若有 Retry-After 则附带，供重试层按服务端建议退避
+            case beamai_llm_provider_common:retry_after_ms(RespHeaders) of
+                undefined -> {error, {http_error, Code, RespBody}};
+                Ms -> {error, {http_error, Code, RespBody, #{retry_after_ms => Ms}}}
+            end;
         {error, {http_error, Code, RespBody}} ->
             {error, {http_error, Code, RespBody}};
         {error, Reason} ->

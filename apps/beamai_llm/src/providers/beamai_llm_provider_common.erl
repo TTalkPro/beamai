@@ -85,7 +85,8 @@
     parse_usage/1,
 
     %% 响应头
-    rate_limit_metadata/1
+    rate_limit_metadata/1,
+    retry_after_ms/1
 ]).
 
 %%====================================================================
@@ -648,6 +649,32 @@ rate_limit_metadata(Headers) when is_list(Headers) ->
     end;
 rate_limit_metadata(_) ->
     #{}.
+
+%% @doc 从响应头解析 Retry-After，返回毫秒数（无或不可解析时返回 undefined）
+%%
+%% Retry-After 通常为整数秒（也可能是 HTTP-date，此处仅支持整数秒，
+%% 其它格式回退 undefined 由上层走默认退避）。用于 429/503 时按服务端
+%% 建议的等待时间退避。
+-spec retry_after_ms([{binary(), binary()}]) -> non_neg_integer() | undefined.
+retry_after_ms(Headers) when is_list(Headers) ->
+    case find_header(<<"retry-after">>, Headers) of
+        undefined -> undefined;
+        Value ->
+            case string:to_integer(string:trim(to_header_binary(Value))) of
+                {Int, <<>>} when Int >= 0 -> Int * 1000;
+                _ -> undefined
+            end
+    end;
+retry_after_ms(_) ->
+    undefined.
+
+%% @private 大小写不敏感查找响应头值
+find_header(Name, Headers) ->
+    LName = string:lowercase(Name),
+    case lists:search(fun({K, _}) -> string:lowercase(to_header_binary(K)) =:= LName end, Headers) of
+        {value, {_, V}} -> V;
+        false -> undefined
+    end.
 
 %% @private 归一化速率限制响应头名（去掉厂商前缀，保留语义后缀）
 rate_limit_key(<<"anthropic-ratelimit-", Rest/binary>>) -> Rest;
