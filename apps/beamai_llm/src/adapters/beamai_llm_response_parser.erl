@@ -121,7 +121,8 @@ from_anthropic(#{<<"content">> := ContentBlocks} = Raw) when is_list(ContentBloc
         role => maps:get(<<"role">>, Raw, undefined),
         stop_sequence => maps:get(<<"stop_sequence">>, Raw, undefined)
     },
-    Metadata = maybe_add_anthropic_citations(Metadata0, ContentBlocks),
+    Metadata1 = maybe_add_anthropic_citations(Metadata0, ContentBlocks),
+    Metadata = maybe_add_anthropic_web_search(Metadata1, ContentBlocks),
     {ok, beamai_llm_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
@@ -429,6 +430,21 @@ maybe_add_anthropic_citations(Metadata, ContentBlocks) ->
     case Citations of
         [] -> Metadata;
         _ -> Metadata#{citations => Citations}
+    end.
+
+%% @private 从 web_search_tool_result 块提取搜索结果注入 metadata
+%% 内置 Web Search 工具的结果以 web_search_tool_result 块返回，
+%% 每块 content 为搜索结果列表（title / url / encrypted_content / page_age 等）。
+%% server_tool_use 的调用次数已在 usage.details.server_tool_use 中体现。
+maybe_add_anthropic_web_search(Metadata, ContentBlocks) ->
+    Results = lists:flatten(
+        [maps:get(<<"content">>, B, [])
+         || B <- ContentBlocks,
+            maps:get(<<"type">>, B, <<>>) =:= <<"web_search_tool_result">>,
+            is_list(maps:get(<<"content">>, B, undefined))]),
+    case Results of
+        [] -> Metadata;
+        _ -> Metadata#{web_search_results => Results}
     end.
 
 %% @private 解析 Anthropic usage
