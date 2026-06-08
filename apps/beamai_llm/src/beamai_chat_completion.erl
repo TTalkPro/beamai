@@ -22,6 +22,10 @@
 %% Types
 -export_type([config/0, provider/0]).
 
+-ifdef(TEST).
+-export([is_retryable/1, compute_delay/3]).
+-endif.
+
 -type provider() :: openai | anthropic | ollama | zhipu | bailian | deepseek | mock | {custom, module()}.
 -type config() :: #{
     provider := provider(),
@@ -141,7 +145,7 @@ do_chat_with_retry(Module, Config, Request, RetryOpts, Attempt) ->
         {error, Reason} = Error ->
             case is_retryable(Reason) of
                 true ->
-                    Delay = maps:get(retry_delay, RetryOpts) * (Attempt + 1),
+                    Delay = compute_delay(RetryOpts, Attempt, Reason),
                     invoke_retry_callback(RetryOpts, #{
                         attempt => Attempt + 1,
                         max_retries => maps:get(max_retries, RetryOpts),
@@ -155,11 +159,23 @@ do_chat_with_retry(Module, Config, Request, RetryOpts, Attempt) ->
             end
     end.
 
-is_retryable({http_error, Code, _}) when Code >= 500 -> true;
-is_retryable({http_error, 429, _}) -> true;
-is_retryable({request_failed, timeout}) -> true;
-is_retryable({request_failed, {closed, _}}) -> true;
-is_retryable(_) -> false.
+%% 重试上限退避（避免 Retry-After 过大时长时间阻塞）
+-define(MAX_RETRY_DELAY, 60000).
+
+%% @private 是否可重试（统一委托给 beamai_llm_error 分类，单一事实源）
+is_retryable(Reason) ->
+    beamai_llm_error:retryable(beamai_llm_error:from_reason(Reason)).
+
+%% @private 计算退避时长
+%% 错误携带 Retry-After（服务端建议）时按其退避（上限 ?MAX_RETRY_DELAY），
+%% 否则使用指数退避 retry_delay * (Attempt + 1)。
+compute_delay(RetryOpts, Attempt, Reason) ->
+    case beamai_llm_error:retry_after_ms(beamai_llm_error:from_reason(Reason)) of
+        Ms when is_integer(Ms), Ms > 0 ->
+            min(Ms, ?MAX_RETRY_DELAY);
+        _ ->
+            maps:get(retry_delay, RetryOpts) * (Attempt + 1)
+    end.
 
 invoke_retry_callback(#{on_retry := undefined}, _) -> ok;
 invoke_retry_callback(#{on_retry := Callback}, RetryState) when is_function(Callback) ->
