@@ -22,16 +22,27 @@
 %% 类型
 -type role_atom() :: user | assistant | system | tool.
 -type role() :: role_atom() | binary().  %% 支持 atom 和 binary
+
+%% 多模态内容部件（content 为列表时的元素）
+%% - text:     #{type => text, text => binary()}
+%% - image:    #{type => image, source => media_source()}
+%% - audio:    #{type => audio, data => binary(), format => binary()}（OpenAI 输入音频）
+%% - document: #{type => document, source => media_source(), citations => boolean()}（Anthropic PDF）
+-type media_source() ::
+    #{type := base64, media_type := binary(), data := binary()} |
+    #{type := url, url := binary()}.
+-type content_part() :: #{type := atom(), _ => _}.
+-type content() :: binary() | null | [content_part()].
 -type message() :: #{
     role := role(),
-    content := binary() | null,
+    content := content(),
     name => binary(),
     tool_call_id => binary(),
     tool_calls => [map()],
     prefix => boolean()    %% DeepSeek Chat Prefix Completion（beta）
 }.
 
--export_type([role_atom/0, role/0, message/0]).
+-export_type([role_atom/0, role/0, message/0, content/0, content_part/0, media_source/0]).
 
 %% 预定义的角色类型（白名单）
 -define(ALLOWED_ROLES, [<<"user">>, <<"assistant">>, <<"system">>, <<"tool">>]).
@@ -66,7 +77,7 @@ to_openai(Messages) ->
     [to_openai_message(M) || M <- Messages].
 
 to_openai_message(#{role := Role, content := Content} = Msg) ->
-    Base = #{<<"role">> => to_binary_role(Role), <<"content">> => Content},
+    Base = #{<<"role">> => to_binary_role(Role), <<"content">> => format_content_openai(Content)},
     Base1 = maybe_add_field(Base, <<"name">>, Msg, name),
     Base2 = maybe_add_field(Base1, <<"tool_call_id">>, Msg, tool_call_id),
     Base3 = maybe_add_prefix(Base2, Msg),
@@ -101,6 +112,39 @@ format_tool_call_openai(#{id := Id, name := Name, arguments := Args}) ->
             <<"arguments">> => beamai_utils:to_binary(Args)
         }
     }.
+
+%% @private 格式化消息内容为 OpenAI 格式
+%% 纯文本（binary / null）原样透传；列表视为多模态内容部件，逐个转换。
+format_content_openai(Content) when is_binary(Content); Content =:= null -> Content;
+format_content_openai(Parts) when is_list(Parts) -> [format_part_openai(P) || P <- Parts];
+format_content_openai(Other) -> Other.
+
+%% @private 转换单个多模态部件为 OpenAI 格式
+format_part_openai(#{type := text, text := T}) ->
+    #{<<"type">> => <<"text">>, <<"text">> => T};
+format_part_openai(#{type := image, source := Src}) ->
+    #{<<"type">> => <<"image_url">>, <<"image_url">> => #{<<"url">> => media_url_openai(Src)}};
+format_part_openai(#{type := audio, data := Data, format := Fmt}) ->
+    #{<<"type">> => <<"input_audio">>,
+      <<"input_audio">> => #{<<"data">> => Data, <<"format">> => Fmt}};
+format_part_openai(#{type := document, source := Src} = Part) ->
+    File0 = #{<<"file_data">> => media_url_openai(Src)},
+    File1 = case maps:get(filename, Part, undefined) of
+        undefined -> File0;
+        Name -> File0#{<<"filename">> => Name}
+    end,
+    #{<<"type">> => <<"file">>, <<"file">> => File1};
+format_part_openai(#{<<"type">> := _} = Already) ->
+    %% 已是 API 格式（binary key），原样透传
+    Already;
+format_part_openai(_) ->
+    #{<<"type">> => <<"text">>, <<"text">> => <<>>}.
+
+%% @private 构建 OpenAI 媒体 URL（base64 转 data URI，或直接 url）
+media_url_openai(#{type := base64, media_type := MT, data := Data}) ->
+    <<"data:", MT/binary, ";base64,", Data/binary>>;
+media_url_openai(#{type := url, url := U}) ->
+    U.
 
 %% @doc 从 OpenAI 消息格式转换
 -spec from_openai([map()]) -> [message()].
@@ -168,11 +212,53 @@ to_anthropic_message(#{role := Role, content := Content} = Msg) ->
                     #{<<"role">> => format_role_anthropic(Role),
                       <<"content">> => [format_content_block_anthropic(B) || B <- Blocks]};
                 false ->
-                    #{<<"role">> => format_role_anthropic(Role), <<"content">> => Content}
+                    #{<<"role">> => format_role_anthropic(Role),
+                      <<"content">> => format_content_anthropic(Content)}
             end;
         _ ->
-            #{<<"role">> => format_role_anthropic(Role), <<"content">> => Content}
+            #{<<"role">> => format_role_anthropic(Role),
+              <<"content">> => format_content_anthropic(Content)}
     end.
+
+%% @private 格式化消息内容为 Anthropic 格式
+%% 纯文本（binary / null）原样透传；列表视为多模态内容部件，逐个转换。
+%% Anthropic 不支持音频输入，audio 部件会被丢弃。
+format_content_anthropic(Content) when is_binary(Content); Content =:= null -> Content;
+format_content_anthropic(Parts) when is_list(Parts) ->
+    lists:filtermap(fun(P) ->
+        case format_part_anthropic(P) of
+            skip -> false;
+            Block -> {true, Block}
+        end
+    end, Parts);
+format_content_anthropic(Other) -> Other.
+
+%% @private 转换单个多模态部件为 Anthropic 格式
+format_part_anthropic(#{type := text, text := T}) ->
+    #{<<"type">> => <<"text">>, <<"text">> => T};
+format_part_anthropic(#{type := image, source := Src}) ->
+    #{<<"type">> => <<"image">>, <<"source">> => media_source_anthropic(Src)};
+format_part_anthropic(#{type := document, source := Src} = Part) ->
+    Block = #{<<"type">> => <<"document">>,
+              <<"source">> => media_source_anthropic(Src)},
+    case maps:get(citations, Part, false) of
+        true -> Block#{<<"citations">> => #{<<"enabled">> => true}};
+        _ -> Block
+    end;
+format_part_anthropic(#{type := audio}) ->
+    %% Anthropic 暂不支持音频输入，丢弃
+    skip;
+format_part_anthropic(#{<<"type">> := _} = Already) ->
+    %% 已是 API 格式（binary key），原样透传
+    Already;
+format_part_anthropic(_) ->
+    #{<<"type">> => <<"text">>, <<"text">> => <<>>}.
+
+%% @private 构建 Anthropic 媒体 source（base64 或 url）
+media_source_anthropic(#{type := base64, media_type := MT, data := Data}) ->
+    #{<<"type">> => <<"base64">>, <<"media_type">> => MT, <<"data">> => Data};
+media_source_anthropic(#{type := url, url := U}) ->
+    #{<<"type">> => <<"url">>, <<"url">> => U}.
 
 format_role_anthropic(user) -> <<"user">>;
 format_role_anthropic(assistant) -> <<"assistant">>;

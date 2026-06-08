@@ -116,6 +116,12 @@ from_openai(Raw) ->
 -spec from_anthropic(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
 from_anthropic(#{<<"content">> := ContentBlocks} = Raw) when is_list(ContentBlocks) ->
     {Content, ToolCalls, Blocks} = extract_anthropic_content(ContentBlocks),
+    Metadata0 = #{
+        type => maps:get(<<"type">>, Raw, undefined),
+        role => maps:get(<<"role">>, Raw, undefined),
+        stop_sequence => maps:get(<<"stop_sequence">>, Raw, undefined)
+    },
+    Metadata = maybe_add_anthropic_citations(Metadata0, ContentBlocks),
     {ok, beamai_llm_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
@@ -126,11 +132,7 @@ from_anthropic(#{<<"content">> := ContentBlocks} = Raw) when is_list(ContentBloc
         finish_reason => normalize_finish_reason_anthropic(maps:get(<<"stop_reason">>, Raw, <<>>)),
         usage => parse_usage_anthropic(maps:get(<<"usage">>, Raw, #{}), Raw),
         raw => Raw,
-        metadata => #{
-            type => maps:get(<<"type">>, Raw, undefined),
-            role => maps:get(<<"role">>, Raw, undefined),
-            stop_sequence => maps:get(<<"stop_sequence">>, Raw, undefined)
-        }
+        metadata => Metadata
     })};
 from_anthropic(#{<<"error">> := Error}) ->
     {error, {api_error, Error}};
@@ -414,6 +416,20 @@ extract_anthropic_content([#{<<"type">> := <<"tool_use">>} = B | Rest], Content,
     extract_anthropic_content(Rest, Content, [ToolCall | ToolCalls], [Block | Blocks]);
 extract_anthropic_content([_ | Rest], Content, ToolCalls, Blocks) ->
     extract_anthropic_content(Rest, Content, ToolCalls, Blocks).
+
+%% @private 从 text block 提取 citations 注入 metadata
+%% Claude 启用引用后，text block 会携带 citations 数组（char/page/content_block
+%% location 等），汇总到 metadata.citations 便于上层使用。
+maybe_add_anthropic_citations(Metadata, ContentBlocks) ->
+    Citations = lists:flatten(
+        [maps:get(<<"citations">>, B, [])
+         || B <- ContentBlocks,
+            maps:get(<<"type">>, B, <<>>) =:= <<"text">>,
+            is_list(maps:get(<<"citations">>, B, undefined))]),
+    case Citations of
+        [] -> Metadata;
+        _ -> Metadata#{citations => Citations}
+    end.
 
 %% @private 解析 Anthropic usage
 parse_usage_anthropic(Usage, _Raw) ->
