@@ -92,8 +92,9 @@ request_meta(Method, Url, Headers, Body, Opts) ->
         {ok, StatusCode, RespHeaders, RespBody} when StatusCode >= 200, StatusCode < 300 ->
             {ok, beamai_utils:decode_json_response(RespBody),
              #{status => StatusCode, headers => RespHeaders}};
-        {ok, StatusCode, _RespHeaders, RespBody} when StatusCode >= 400 ->
-            {error, {http_error, StatusCode, RespBody}};
+        {ok, StatusCode, RespHeaders, RespBody} when StatusCode >= 400 ->
+            %% 4xx/5xx：携带响应头，供上层提取 Retry-After
+            {error, {http_error, StatusCode, RespBody, RespHeaders}};
         {ok, StatusCode, RespHeaders, RespBody} ->
             {ok, beamai_utils:decode_json_response(RespBody),
              #{status => StatusCode, headers => RespHeaders}};

@@ -209,15 +209,15 @@ receive_response_meta(ConnPid, StreamRef, Acc, S, H, Timeout) ->
         {gun_response, ConnPid, StreamRef, fin, Status, Headers}
           when Status >= 200, Status < 300 ->
             {ok, beamai_utils:decode_json_response(Acc), mk_meta(Status, Headers)};
-        {gun_response, ConnPid, StreamRef, fin, Status, _Headers}
+        {gun_response, ConnPid, StreamRef, fin, Status, Headers}
           when Status >= 400 ->
-            {error, {http_error, Status, Acc}};
+            {error, {http_error, Status, Acc, Headers}};
         {gun_response, ConnPid, StreamRef, fin, Status, Headers} ->
             {ok, beamai_utils:decode_json_response(Acc), mk_meta(Status, Headers)};
 
-        {gun_response, ConnPid, StreamRef, nofin, Status, _Headers}
+        {gun_response, ConnPid, StreamRef, nofin, Status, Headers}
           when Status >= 400 ->
-            receive_error_body(ConnPid, StreamRef, Status, Acc, Timeout);
+            receive_error_body_meta(ConnPid, StreamRef, Status, Acc, Headers, Timeout);
         {gun_response, ConnPid, StreamRef, nofin, Status, Headers} ->
             %% 2xx / 其他：记录状态码与响应头，继续接收 body
             receive_response_meta(ConnPid, StreamRef, Acc, Status, Headers, Timeout);
@@ -238,6 +238,20 @@ receive_response_meta(ConnPid, StreamRef, Acc, S, H, Timeout) ->
 
 %% @private 构造响应元信息
 mk_meta(Status, Headers) -> #{status => Status, headers => Headers}.
+
+%% @private 接收错误响应 body（保留响应头）
+%% 返回 {error, {http_error, Status, Body, Headers}}，供上层提取 Retry-After。
+receive_error_body_meta(ConnPid, StreamRef, Status, Acc, Headers, Timeout) ->
+    receive
+        {gun_data, ConnPid, StreamRef, fin, Data} ->
+            {error, {http_error, Status, <<Acc/binary, Data/binary>>, Headers}};
+        {gun_data, ConnPid, StreamRef, nofin, Data} ->
+            receive_error_body_meta(ConnPid, StreamRef, Status, <<Acc/binary, Data/binary>>, Headers, Timeout);
+        {gun_error, ConnPid, StreamRef, Reason} ->
+            {error, {gun_error, Reason}}
+    after Timeout ->
+        {error, {http_error, Status, Acc, Headers}}
+    end.
 
 %% @private 接收错误响应的 body 数据
 %%
