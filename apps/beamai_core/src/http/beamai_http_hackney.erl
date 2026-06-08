@@ -16,7 +16,7 @@
 -behaviour(beamai_http_behaviour).
 
 %% Behaviour 回调
--export([request/5, stream_request/6, ensure_started/0]).
+-export([request/5, request_meta/5, stream_request/6, ensure_started/0]).
 
 %%====================================================================
 %% 默认配置
@@ -62,6 +62,41 @@ request(Method, Url, Headers, Body, Opts) ->
             {error, {http_error, StatusCode, RespBody}};
         {ok, _StatusCode, _RespHeaders, RespBody} ->
             {ok, beamai_utils:decode_json_response(RespBody)};
+        {error, Reason} ->
+            {error, {request_failed, Reason}}
+    end.
+
+%% @doc 发送 HTTP 请求并返回响应元信息（状态码 + 响应头）
+-spec request_meta(atom(), binary() | string(), [{binary(), binary()}],
+                   binary(), map()) ->
+    {ok, term(), #{status => non_neg_integer(), headers => [{binary(), binary()}]}} |
+    {error, term()}.
+request_meta(Method, Url, Headers, Body, Opts) ->
+    ensure_started(),
+
+    Timeout = maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
+    ConnectTimeout = maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
+    Pool = maps:get(pool, Opts, default),
+
+    HackneyOpts = [
+        {recv_timeout, Timeout},
+        {connect_timeout, ConnectTimeout},
+        {pool, Pool},
+        with_body
+    ],
+
+    UrlBin = beamai_utils:to_binary(Url),
+    BodyBin = beamai_utils:to_binary(Body),
+
+    case hackney:request(Method, UrlBin, Headers, BodyBin, HackneyOpts) of
+        {ok, StatusCode, RespHeaders, RespBody} when StatusCode >= 200, StatusCode < 300 ->
+            {ok, beamai_utils:decode_json_response(RespBody),
+             #{status => StatusCode, headers => RespHeaders}};
+        {ok, StatusCode, _RespHeaders, RespBody} when StatusCode >= 400 ->
+            {error, {http_error, StatusCode, RespBody}};
+        {ok, StatusCode, RespHeaders, RespBody} ->
+            {ok, beamai_utils:decode_json_response(RespBody),
+             #{status => StatusCode, headers => RespHeaders}};
         {error, Reason} ->
             {error, {request_failed, Reason}}
     end.

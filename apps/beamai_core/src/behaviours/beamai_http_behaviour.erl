@@ -43,11 +43,13 @@
 }.
 
 -type response() :: {ok, term()} | {error, term()}.
+-type meta() :: #{status => non_neg_integer() | undefined, headers => headers()}.
+-type response_meta() :: {ok, term(), meta()} | {error, term()}.
 -type chunk_handler() :: fun((binary(), term()) -> {continue, term()} | {done, term()}).
 -type stream_response() :: {ok, term()} | {error, term()}.
 
 -export_type([method/0, url/0, headers/0, body/0, opts/0]).
--export_type([response/0, chunk_handler/0, stream_response/0]).
+-export_type([response/0, meta/0, response_meta/0, chunk_handler/0, stream_response/0]).
 
 %%====================================================================
 %% 行为回调定义
@@ -95,4 +97,17 @@
 %% @doc 关闭连接（可选）
 -callback close(Ref :: term()) -> ok.
 
--optional_callbacks([close/1]).
+%% @doc 发送 HTTP 请求并返回响应元信息（状态码 + 响应头）（可选）
+%%
+%% 与 request/5 相同，但额外返回 #{status => 状态码, headers => 响应头}，
+%% 供上层提取速率限制等响应头信息。未实现该回调的后端，
+%% beamai_http:request_meta/5 会回退到 request/5 并返回空 headers。
+%%
+%% @returns {ok, Response, Meta} | {error, Reason}
+-callback request_meta(Method :: method(),
+                       Url :: url(),
+                       Headers :: headers(),
+                       Body :: body(),
+                       Opts :: opts()) -> response_meta().
+
+-optional_callbacks([close/1, request_meta/5]).

@@ -21,7 +21,7 @@
 -behaviour(beamai_http_behaviour).
 
 %% Behaviour 回调
--export([request/5, stream_request/6, ensure_started/0]).
+-export([request/5, request_meta/5, stream_request/6, ensure_started/0]).
 
 %% 额外 API（用于高级场景）
 -export([request_async/5, await_response/3]).
@@ -55,6 +55,25 @@ request(Method, Url, Headers, Body, Opts) ->
         {ok, ConnPid, StreamRef} ->
             Result = await_response(ConnPid, StreamRef, Timeout),
             %% 归还连接
+            beamai_http_pool:return_connection(ConnPid),
+            Result;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @doc 发送 HTTP 请求并返回响应元信息（状态码 + 响应头）
+-spec request_meta(atom(), binary() | string(), [{binary(), binary()}],
+                   binary(), map()) ->
+    {ok, term(), #{status => non_neg_integer(), headers => [{binary(), binary()}]}} |
+    {error, term()}.
+request_meta(Method, Url, Headers, Body, Opts) ->
+    ensure_started(),
+
+    Timeout = maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
+
+    case request_async(Method, Url, Headers, Body, Opts) of
+        {ok, ConnPid, StreamRef} ->
+            Result = receive_response_meta(ConnPid, StreamRef, <<>>, undefined, [], Timeout),
             beamai_http_pool:return_connection(ConnPid),
             Result;
         {error, Reason} ->
@@ -177,6 +196,45 @@ receive_response(ConnPid, StreamRef, Acc, Timeout) ->
         gun:cancel(ConnPid, StreamRef),
         {error, timeout}
     end.
+
+%% @private 接收 HTTP 响应并保留状态码与响应头
+%%
+%% 与 receive_response/4 相同，但额外把首个 gun_response 携带的 Status 和
+%% Headers 透传出去，成功时返回 {ok, Body, #{status, headers}}。
+receive_response_meta(ConnPid, StreamRef, Acc, S, H, Timeout) ->
+    receive
+        {gun_response, ConnPid, StreamRef, fin, Status, Headers}
+          when Status >= 200, Status < 300 ->
+            {ok, beamai_utils:decode_json_response(Acc), mk_meta(Status, Headers)};
+        {gun_response, ConnPid, StreamRef, fin, Status, _Headers}
+          when Status >= 400 ->
+            {error, {http_error, Status, Acc}};
+        {gun_response, ConnPid, StreamRef, fin, Status, Headers} ->
+            {ok, beamai_utils:decode_json_response(Acc), mk_meta(Status, Headers)};
+
+        {gun_response, ConnPid, StreamRef, nofin, Status, _Headers}
+          when Status >= 400 ->
+            receive_error_body(ConnPid, StreamRef, Status, Acc, Timeout);
+        {gun_response, ConnPid, StreamRef, nofin, Status, Headers} ->
+            %% 2xx / 其他：记录状态码与响应头，继续接收 body
+            receive_response_meta(ConnPid, StreamRef, Acc, Status, Headers, Timeout);
+
+        {gun_data, ConnPid, StreamRef, fin, Data} ->
+            {ok, beamai_utils:decode_json_response(<<Acc/binary, Data/binary>>), mk_meta(S, H)};
+        {gun_data, ConnPid, StreamRef, nofin, Data} ->
+            receive_response_meta(ConnPid, StreamRef, <<Acc/binary, Data/binary>>, S, H, Timeout);
+
+        {gun_error, ConnPid, StreamRef, Reason} ->
+            {error, {gun_error, Reason}};
+        {gun_error, ConnPid, Reason} ->
+            {error, {gun_error, Reason}}
+    after Timeout ->
+        gun:cancel(ConnPid, StreamRef),
+        {error, timeout}
+    end.
+
+%% @private 构造响应元信息
+mk_meta(Status, Headers) -> #{status => Status, headers => Headers}.
 
 %% @private 接收错误响应的 body 数据
 %%

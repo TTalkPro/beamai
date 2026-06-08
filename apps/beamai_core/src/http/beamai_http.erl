@@ -43,6 +43,7 @@
 -export([put/3, put/4]).
 -export([delete/1, delete/2, delete/3]).
 -export([request/5, request/6]).
+-export([request_meta/5]).
 
 %% 流式请求 API
 -export([stream_request/5, stream_request/6]).
@@ -179,6 +180,15 @@ request(Method, Url, ExtraHeaders, Body, Opts) ->
 request(Method, Url, ExtraHeaders, Body, Opts, _Attempt) ->
     do_request(Method, Url, ExtraHeaders, Body, Opts, 0).
 
+%% @doc 发送 HTTP 请求并返回响应元信息（状态码 + 响应头）
+%%
+%% 返回 {ok, Body, #{status, headers}}，供上层提取速率限制等响应头。
+%% 后端未实现 request_meta/5 时，回退到 request/5 并返回空 headers。
+-spec request_meta(atom(), url(), headers(), body(), options()) ->
+    {ok, body(), beamai_http_behaviour:meta()} | {error, term()}.
+request_meta(Method, Url, ExtraHeaders, Body, Opts) ->
+    do_request_meta(Method, Url, ExtraHeaders, Body, Opts, 0).
+
 %%====================================================================
 %% 流式请求 API
 %%====================================================================
@@ -282,6 +292,41 @@ do_request(Method, Url, ExtraHeaders, Body, Opts, Attempt) ->
         {error, _} when Attempt < Retry ->
             timer:sleep(RetryDelay * (Attempt + 1)),
             do_request(Method, Url, ExtraHeaders, Body, Opts, Attempt + 1);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% @private 执行 HTTP 请求并返回响应元信息
+-spec do_request_meta(atom(), url(), headers(), body(), options(), non_neg_integer()) ->
+    {ok, body(), beamai_http_behaviour:meta()} | {error, term()}.
+do_request_meta(Method, Url, ExtraHeaders, Body, Opts, Attempt) ->
+    Backend = get_backend(),
+    Backend:ensure_started(),
+
+    Retry = maps:get(retry, Opts, ?DEFAULT_RETRY),
+    RetryDelay = maps:get(retry_delay, Opts, ?DEFAULT_RETRY_DELAY),
+    CustomHeaders = maps:get(headers, Opts, []),
+
+    Headers = default_headers() ++ CustomHeaders ++ ExtraHeaders,
+    UrlBin = beamai_utils:to_binary(Url),
+    BodyBin = beamai_utils:encode_body(Body),
+
+    Result = case erlang:function_exported(Backend, request_meta, 5) of
+        true ->
+            Backend:request_meta(Method, UrlBin, Headers, BodyBin, Opts);
+        false ->
+            %% 后端未实现 request_meta，回退到 request/5（无响应头）
+            case Backend:request(Method, UrlBin, Headers, BodyBin, Opts) of
+                {ok, RespBody} -> {ok, RespBody, #{status => undefined, headers => []}};
+                Other -> Other
+            end
+    end,
+    case Result of
+        {ok, _, _} = Success ->
+            Success;
+        {error, _} when Attempt < Retry ->
+            timer:sleep(RetryDelay * (Attempt + 1)),
+            do_request_meta(Method, Url, ExtraHeaders, Body, Opts, Attempt + 1);
         {error, Reason} ->
             {error, Reason}
     end.
