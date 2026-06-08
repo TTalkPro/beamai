@@ -87,15 +87,22 @@ chat(Config, Request) ->
     Url = build_url(Config, get_endpoint(Config)),
     Headers = build_headers(Config, false),
     Body = build_request_body(Config, Request),
-    Opts = build_request_opts(Config),
+    Opts = (build_request_opts(Config))#{
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_dashscope()).
 
 %% @doc 发送流式聊天请求
+%% 流式累加结果经 finalize_dashscope_stream 重建为 DashScope 原始格式后解析，
+%% 使流式响应与同步模式一致（统一 beamai_llm_response，含工具调用与 usage）。
 stream_chat(Config, Request, Callback) ->
     Url = build_url(Config, get_endpoint(Config)),
     Headers = build_headers(Config, true),
     Body = build_request_body(Config, Request#{stream => true}),
-    Opts = build_request_opts(Config),
+    Opts = (build_request_opts(Config))#{
+        finalizer => fun finalize_dashscope_stream/1,
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback, fun accumulate_event/2).
 
 %%====================================================================
@@ -330,3 +337,53 @@ extract_usage(#{<<"usage">> := Usage}, _Acc) ->
     };
 extract_usage(_, Acc) ->
     maps:get(usage, Acc, #{}).
+
+%%====================================================================
+%% 流式终结（重建 DashScope 原始格式 → 统一响应）
+%%====================================================================
+
+%% @private 将流式累加结果转换为统一响应
+%% 把累加的 content / tool_calls / finish_reason / usage 重建为 DashScope
+%% 原始响应结构，再交给 from_dashscope 解析，使流式与同步结构完全一致。
+-spec finalize_dashscope_stream(map()) -> {ok, map()} | {error, term()}.
+finalize_dashscope_stream(Acc) ->
+    Message0 = #{
+        <<"role">> => <<"assistant">>,
+        <<"content">> => maps:get(content, Acc, <<>>)
+    },
+    Message = case maps:get(tool_calls, Acc, []) of
+        [] -> Message0;
+        Calls -> Message0#{<<"tool_calls">> => [rebuild_raw_tool_call(C) || C <- Calls]}
+    end,
+    FinishReason = case maps:get(finish_reason, Acc, <<>>) of
+        <<>> -> <<"stop">>;
+        FR when is_binary(FR) -> FR;
+        _ -> <<"stop">>
+    end,
+    AccUsage = maps:get(usage, Acc, #{}),
+    Raw = #{
+        <<"request_id">> => maps:get(id, Acc, <<>>),
+        <<"output">> => #{
+            <<"choices">> => [#{
+                <<"message">> => Message,
+                <<"finish_reason">> => FinishReason
+            }]
+        },
+        <<"usage">> => #{
+            <<"input_tokens">> => maps:get(prompt_tokens, AccUsage, 0),
+            <<"output_tokens">> => maps:get(completion_tokens, AccUsage, 0),
+            <<"total_tokens">> => maps:get(total_tokens, AccUsage, 0)
+        }
+    },
+    beamai_llm_response_parser:from_dashscope(Raw).
+
+%% @private 将累加器中的工具调用（#{id, name, arguments}）重建为 OpenAI 原始格式
+rebuild_raw_tool_call(#{id := Id, name := Name, arguments := Args}) ->
+    #{
+        <<"id">> => Id,
+        <<"type">> => <<"function">>,
+        <<"function">> => #{<<"name">> => Name, <<"arguments">> => Args}
+    };
+rebuild_raw_tool_call(Call) when is_map(Call) ->
+    %% 兼容已是原始格式的情况
+    Call.

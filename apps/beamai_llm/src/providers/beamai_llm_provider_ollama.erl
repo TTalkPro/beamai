@@ -62,15 +62,27 @@ chat(Config, Request) ->
     Url = build_url(Config, ?OLLAMA_ENDPOINT),
     Headers = build_headers(),
     Body = build_request_body(Config, Request),
-    Opts = #{timeout => maps:get(timeout, Config, ?OLLAMA_TIMEOUT)},
+    Opts = #{
+        timeout => maps:get(timeout, Config, ?OLLAMA_TIMEOUT),
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_ollama()).
 
 %% @doc 发送流式聊天请求
+%% 默认端点为 OpenAI 兼容（/v1/chat/completions），流式经 finalize_openai_stream
+%% 转为统一 beamai_llm_response（与同步一致）；原生格式分片也累加到同一 content 字段。
 stream_chat(Config, Request, Callback) ->
     Url = build_url(Config, ?OLLAMA_ENDPOINT),
     Headers = build_headers(),
     Body = build_request_body(Config, Request),
-    Opts = #{timeout => maps:get(timeout, Config, ?OLLAMA_TIMEOUT), stream_timeout => 120000},
+    Opts = #{
+        timeout => maps:get(timeout, Config, ?OLLAMA_TIMEOUT),
+        stream_timeout => 120000,
+        finalizer => fun(Acc) ->
+            beamai_llm_provider_common:finalize_openai_stream(Acc, ollama)
+        end,
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback, fun accumulate_event/2).
 
 %%====================================================================
@@ -130,9 +142,10 @@ maybe_add_tools(Body, Request) ->
 %% 流式事件累加（支持两种格式）
 %%====================================================================
 
-%% @private Ollama 原生格式事件累加
+%% @private Ollama 原生格式事件累加（累加到与 OpenAI 累加器一致的 content 字段，
+%% 便于统一 finalize_openai_stream 重建）
 accumulate_event(#{<<"message">> := #{<<"content">> := Content}}, Acc) ->
-    Acc#{content => <<(maps:get(content, Acc))/binary, Content/binary>>};
+    Acc#{content => <<(maps:get(content, Acc, <<>>))/binary, Content/binary>>};
 %% @private OpenAI 兼容格式事件累加（使用公共模块）
 accumulate_event(#{<<"choices">> := _} = Event, Acc) ->
     beamai_llm_provider_common:accumulate_openai_event(Event, Acc);

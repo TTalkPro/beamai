@@ -140,32 +140,49 @@ chat_openai(Config, Request) ->
     Url = build_openai_url(Config),
     Headers = build_headers(Config),
     Body = build_openai_request_body(Config, Request),
-    Opts = build_request_opts(Config),
+    Opts = (build_request_opts(Config))#{
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_zhipu()).
 
 %% @private OpenAI 兼容模式流式聊天
+%% 复用公共 OpenAI 累加器 + finalizer，使流式响应与同步一致
+%% （统一 beamai_llm_response，含分片工具调用、reasoning_content、usage）。
 stream_chat_openai(Config, Request, Callback) ->
     Url = build_openai_url(Config),
     Headers = build_headers(Config),
     Body = build_openai_request_body(Config, Request#{stream => true}),
-    Opts = build_request_opts(Config),
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback, fun accumulate_event_openai/2).
+    Opts = (build_request_opts(Config))#{
+        finalizer => fun(Acc) ->
+            beamai_llm_provider_common:finalize_openai_stream(Acc, zhipu)
+        end,
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
+    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
+                                          fun beamai_llm_provider_common:accumulate_openai_event/2).
 
 %% @private Anthropic 兼容模式聊天
 chat_anthropic(Config, Request) ->
     Url = build_anthropic_url(Config),
     Headers = build_anthropic_headers(Config),
     Body = build_anthropic_request_body(Config, Request),
-    Opts = build_request_opts(Config),
+    Opts = (build_request_opts(Config))#{
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_anthropic()).
 
 %% @private Anthropic 兼容模式流式聊天
+%% 复用公共 Anthropic 事件累加器 + finalizer（统一响应，含 tool_use / thinking / usage）。
 stream_chat_anthropic(Config, Request, Callback) ->
     Url = build_anthropic_url(Config),
     Headers = build_anthropic_headers(Config),
     Body = build_anthropic_request_body(Config, Request#{stream => true}),
-    Opts = build_request_opts(Config),
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback, fun accumulate_event_anthropic/2).
+    Opts = (build_request_opts(Config))#{
+        finalizer => fun beamai_llm_provider_common:finalize_anthropic_stream/1,
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
+    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
+                                          fun beamai_llm_provider_common:accumulate_anthropic_event/2).
 
 %%====================================================================
 %% 扩展 API - 异步调用
@@ -317,58 +334,3 @@ maybe_add_anthropic_tools(Body, _) ->
 %% @private 添加流式标志
 maybe_add_anthropic_stream(Body, #{stream := true}) -> Body#{<<"stream">> => true};
 maybe_add_anthropic_stream(Body, _) -> Body.
-
-%%====================================================================
-%% 流式事件累加
-%%====================================================================
-
-%% @private OpenAI 兼容格式事件累加器
-%% 支持 GLM-4.6+ 的 reasoning_content 字段
-accumulate_event_openai(#{<<"choices">> := [#{<<"delta">> := Delta} | _]} = Event, Acc) ->
-    Content = maps:get(<<"content">>, Delta, <<>>),
-    ReasoningContent = maps:get(<<"reasoning_content">>, Delta, <<>>),
-    FinishReason = extract_finish_reason_openai(Event, Acc),
-
-    %% 累加 content 和 reasoning_content
-    AccContent = maps:get(content, Acc, <<>>),
-    AccReasoning = maps:get(reasoning_content, Acc, <<>>),
-
-    NewContent = <<AccContent/binary, (beamai_utils:ensure_binary(Content))/binary>>,
-    NewReasoning = <<AccReasoning/binary, (beamai_utils:ensure_binary(ReasoningContent))/binary>>,
-
-    %% 如果 content 为空但有 reasoning_content，使用 reasoning_content 作为 content
-    FinalContent = case NewContent of
-        <<>> -> NewReasoning;
-        _ -> NewContent
-    end,
-
-    Acc#{
-        id => maps:get(<<"id">>, Event, maps:get(id, Acc)),
-        model => maps:get(<<"model">>, Event, maps:get(model, Acc)),
-        content => FinalContent,
-        reasoning_content => NewReasoning,
-        finish_reason => beamai_utils:ensure_binary(FinishReason)
-    };
-accumulate_event_openai(_, Acc) ->
-    Acc.
-
-%% @private Anthropic 兼容格式事件累加器
-accumulate_event_anthropic(#{<<"type">> := <<"content_block_delta">>, <<"delta">> := Delta}, Acc) ->
-    Text = maps:get(<<"text">>, Delta, <<>>),
-    AccContent = maps:get(content, Acc, <<>>),
-    Acc#{content => <<AccContent/binary, Text/binary>>};
-accumulate_event_anthropic(#{<<"type">> := <<"message_start">>, <<"message">> := Msg}, Acc) ->
-    Acc#{
-        id => maps:get(<<"id">>, Msg, <<>>),
-        model => maps:get(<<"model">>, Msg, <<>>)
-    };
-accumulate_event_anthropic(#{<<"type">> := <<"message_delta">>, <<"delta">> := Delta}, Acc) ->
-    Acc#{finish_reason => maps:get(<<"stop_reason">>, Delta, <<>>)};
-accumulate_event_anthropic(_, Acc) ->
-    Acc.
-
-%% @private 提取完成原因（OpenAI 格式）
-extract_finish_reason_openai(#{<<"choices">> := [Choice | _]}, Acc) ->
-    maps:get(<<"finish_reason">>, Choice, maps:get(finish_reason, Acc));
-extract_finish_reason_openai(_, Acc) ->
-    maps:get(finish_reason, Acc).
