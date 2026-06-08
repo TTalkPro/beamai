@@ -418,7 +418,7 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 | Module | Description | Documentation |
 |--------|-------------|---------------|
 | **beamai_core** | Core framework: Kernel, Process Framework, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
-| **beamai_llm** | LLM client: supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama | [README](apps/beamai_llm/README_EN.md) |
+| **beamai_llm** | LLM client: 6 providers with unified sync/streaming; multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure | [README](apps/beamai_llm/README_EN.md) |
 | **beamai_memory** | Pure storage engine: snapshot management, Store backends, state storage | [README](apps/beamai_memory/README_EN.md) |
 
 ## Running Examples

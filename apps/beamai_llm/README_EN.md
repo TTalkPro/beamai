@@ -35,11 +35,17 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 
 ### Adapters
 
-- **beamai_llm_message_adapter** - Message format adaptation
+- **beamai_llm_message_adapter** - Message format adaptation (incl. multimodal: image/audio/PDF)
 - **beamai_llm_tool_adapter** - Tool format adaptation
 - **beamai_llm_response_parser** - Provider response parsing (OpenAI/Anthropic/DashScope formats → unified `beamai_llm_response` structure)
 
+### Error Handling
+
+- **beamai_llm_error** - Unified error structure. Normalizes the assorted Provider/HTTP errors (`{http_error, ...}` / `{api_error, ...}` / `{request_failed, ...}`, etc.) into a structured map with type / status / retryability / suggested backoff.
+
 > **Note:** The core response data structure `beamai_llm_response` is in `beamai_core`, providing unified type definitions and accessors.
+
+> **Streaming consistency:** All providers (incl. zhipu/bailian/ollama) return the unified `beamai_llm_response` structure for both sync and streaming calls, with streamed tool-call accumulation, usage stats, and reasoning/thinking content.
 
 ## API Documentation
 
@@ -286,6 +292,119 @@ end,
 
 llm_client:stream_chat(LLM, Messages, Callback).
 ```
+
+> The callback receives each provider's **raw SSE events** (for live token display); the value returned by `stream_chat` is the unified `beamai_llm_response`, consistent with sync calls.
+
+## Advanced Capabilities
+
+### Multimodal Input (Image / Audio / PDF)
+
+A message's `content` may be a **list of content parts** in addition to a binary string. `beamai_llm_message_adapter` converts them to each provider's format (OpenAI `image_url` / `input_audio`, Anthropic `image` / `document`). Plain binary text is fully backward-compatible.
+
+```erlang
+Messages = [
+    #{role => user, content => [
+        #{type => text, text => <<"What is in this image?">>},
+        %% Image: base64
+        #{type => image, source => #{type => base64,
+            media_type => <<"image/png">>, data => Base64Png}},
+        %% Image: url (also supports #{type => url, url => <<"https://...">>})
+        #{type => image, source => #{type => url, url => <<"https://x/y.jpg">>}}
+    ]}
+],
+{ok, Resp} = llm_client:chat(LLM, Messages).
+```
+
+- **Image**: OpenAI (gpt-4o, etc.) / Anthropic / DeepSeek
+- **Audio** (`#{type => audio, data => Data, format => <<"wav">>}`): OpenAI `input_audio` (ignored for Anthropic)
+- **PDF document** (`#{type => document, source => ...}`): Anthropic `document`; add `citations => true` to enable citations
+
+### Anthropic Prompt Caching (cache_control)
+
+Inject `cache_control: ephemeral` breakpoints on the system prompt / tool definitions / conversation history to cut the cost of repeated context.
+
+```erlang
+LLM = llm_client:create(anthropic, #{
+    model => <<"claude-sonnet-4-5-20250929">>,
+    api_key => ApiKey,
+    %% strategy: none | system_only | tools_only | system_and_tools | conversation
+    cache_control => system_and_tools
+    %% or with TTL: #{strategy => system_only, ttl => <<"1h">>}
+}).
+```
+
+Cache hit stats are in `usage.details` (`cache_creation_input_tokens` / `cache_read_input_tokens`).
+
+### Anthropic Built-in Web Search
+
+Enable the server-side built-in search tool; Claude searches the web and produces the answer within a single call.
+
+```erlang
+LLM = llm_client:create(anthropic, #{
+    model => <<"claude-sonnet-4-5-20250929">>,
+    api_key => ApiKey,
+    %% true or #{max_uses => N, allowed_domains => [...], blocked_domains => [...]}
+    web_search => #{max_uses => 3}
+}),
+{ok, Resp} = llm_client:chat(LLM, Messages),
+%% Search results (title/url/page_age, etc.) land in metadata
+Results = maps:get(web_search_results, beamai_llm_response:metadata(Resp), []).
+```
+
+### Anthropic Citations
+
+With `citations => true` on a document part, citations in the response are collected into `metadata.citations`.
+
+```erlang
+Citations = maps:get(citations, beamai_llm_response:metadata(Resp), []).
+```
+
+### Rate-limit Response Headers
+
+Both sync and streaming calls parse rate-limit info from response headers (`anthropic-ratelimit-*` / `x-ratelimit-*` / `retry-after`) into `metadata.rate_limit`.
+
+```erlang
+case maps:get(rate_limit, beamai_llm_response:metadata(Resp), undefined) of
+    undefined -> ok;
+    RL -> io:format("remaining requests: ~p~n", [maps:get(<<"requests-remaining">>, RL, undefined)])
+end.
+```
+
+### Automatic Retry & Retry-After
+
+`beamai_chat_completion:chat/3` has built-in exponential-backoff retry. On 429 / 5xx, if the server returns a `Retry-After` header it **backs off accordingly** (capped at 60s); otherwise it uses `retry_delay * attempt`.
+
+```erlang
+{ok, Resp} = beamai_chat_completion:chat(LLM, Messages, #{
+    max_retries => 3,          %% default 3
+    retry_delay => 1000,       %% base backoff ms, default 1000
+    on_retry => fun(State) ->  %% optional retry callback
+        io:format("retry #~p, delay ~pms: ~p~n",
+                  [maps:get(attempt, State), maps:get(delay, State), maps:get(error, State)])
+    end
+}).
+```
+
+### Unified Error Structure (beamai_llm_error)
+
+Normalizes assorted provider errors so callers can uniformly inspect type / retryability / suggested backoff. Providers still return their legacy error tuples; normalize on demand:
+
+```erlang
+case llm_client:chat(LLM, Messages) of
+    {ok, Resp} -> ...;
+    {error, Reason} ->
+        Err = beamai_llm_error:from_reason(Reason, anthropic),
+        case beamai_llm_error:type(Err) of
+            rate_limit -> %% rate limited, retryable
+                RetryMs = beamai_llm_error:retry_after_ms(Err);
+            auth       -> %% auth failure (API key, etc.), not retryable
+                io:format("~ts~n", [beamai_llm_error:message(Err)]);
+            _          -> ...
+        end
+end.
+```
+
+Error `type`: `rate_limit | server_error | client_error | auth | timeout | network | invalid_response | api_error | unknown`. Accessors: `type/1`, `status/1`, `message/1`, `provider/1`, `retryable/1`, `retry_after_ms/1`, `raw/1`.
 
 ## Environment Variables
 

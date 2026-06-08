@@ -36,11 +36,17 @@
 
 ### 适配器
 
-- **beamai_llm_message_adapter** - 消息格式适配
+- **beamai_llm_message_adapter** - 消息格式适配（含多模态：图片/音频/PDF）
 - **beamai_llm_tool_adapter** - 工具格式适配
 - **beamai_llm_response_parser** - Provider 响应解析（OpenAI/Anthropic/DashScope 等格式 → 统一 `beamai_llm_response` 结构）
 
+### 错误处理
+
+- **beamai_llm_error** - 统一错误结构。把各 Provider/HTTP 层杂乱的错误（`{http_error, ...}` / `{api_error, ...}` / `{request_failed, ...}` 等）归一化为带类型/状态码/是否可重试/建议退避的结构化 map
+
 > **注意**: 核心响应数据结构 `beamai_llm_response` 位于 `beamai_core`，提供统一的类型定义和访问器。
+
+> **流式一致性**: 所有 Provider（含 zhipu/bailian/ollama）的同步与流式调用均返回统一的 `beamai_llm_response` 结构，含分片工具调用累加、usage 统计、reasoning/thinking 内容。
 
 ## API 文档
 
@@ -288,6 +294,119 @@ end,
 llm_client:stream_chat(LLM, Messages, Callback).
 ```
 
+> 回调收到的是各 Provider 的**原始 SSE 事件**（用于实时 token 展示）；而 `stream_chat` 的最终返回值是与同步一致的统一 `beamai_llm_response`。
+
+## 高级能力
+
+### 多模态输入（图片 / 音频 / PDF）
+
+消息的 `content` 除 binary 文本外，还可以是**内容部件列表**，由 `beamai_llm_message_adapter` 自动转换为各 Provider 的格式（OpenAI `image_url` / `input_audio`，Anthropic `image` / `document`）。纯文本 binary 完全向后兼容。
+
+```erlang
+Messages = [
+    #{role => user, content => [
+        #{type => text, text => <<"这张图里是什么？"/utf8>>},
+        %% 图片：base64
+        #{type => image, source => #{type => base64,
+            media_type => <<"image/png">>, data => Base64Png}},
+        %% 图片：url（也支持 #{type => url, url => <<"https://...">>}）
+        #{type => image, source => #{type => url, url => <<"https://x/y.jpg">>}}
+    ]}
+],
+{ok, Resp} = llm_client:chat(LLM, Messages).
+```
+
+- **图片**：OpenAI（gpt-4o 等）/ Anthropic / DeepSeek 均支持
+- **音频**（`#{type => audio, data => Data, format => <<"wav">>}`）：OpenAI `input_audio`（Anthropic 不支持，自动忽略）
+- **PDF 文档**（`#{type => document, source => ...}`）：Anthropic `document`；加 `citations => true` 可启用引用
+
+### Anthropic Prompt 缓存（cache_control）
+
+通过 `cache_control` 配置在 system / 工具定义 / 会话历史上注入 `cache_control: ephemeral` 断点，降低重复上下文的费用。
+
+```erlang
+LLM = llm_client:create(anthropic, #{
+    model => <<"claude-sonnet-4-5-20250929">>,
+    api_key => ApiKey,
+    %% 策略：none | system_only | tools_only | system_and_tools | conversation
+    cache_control => system_and_tools
+    %% 或带 TTL：#{strategy => system_only, ttl => <<"1h">>}
+}).
+```
+
+缓存命中统计在 `usage.details`（`cache_creation_input_tokens` / `cache_read_input_tokens`）。
+
+### Anthropic 内置 Web Search
+
+启用服务端内置搜索工具；Claude 自动搜网并在一次调用内生成回答。
+
+```erlang
+LLM = llm_client:create(anthropic, #{
+    model => <<"claude-sonnet-4-5-20250929">>,
+    api_key => ApiKey,
+    %% true 或 #{max_uses => N, allowed_domains => [...], blocked_domains => [...]}
+    web_search => #{max_uses => 3}
+}),
+{ok, Resp} = llm_client:chat(LLM, Messages),
+%% 搜索结果（title/url/page_age 等）落到 metadata
+Results = maps:get(web_search_results, beamai_llm_response:metadata(Resp), []).
+```
+
+### Anthropic 引用（Citations）
+
+document 部件设 `citations => true` 后，响应中的引用会汇总到 `metadata.citations`。
+
+```erlang
+Citations = maps:get(citations, beamai_llm_response:metadata(Resp), []).
+```
+
+### 速率限制响应头
+
+同步与流式调用都会把响应头中的速率限制信息（`anthropic-ratelimit-*` / `x-ratelimit-*` / `retry-after`）解析到 `metadata.rate_limit`。
+
+```erlang
+case maps:get(rate_limit, beamai_llm_response:metadata(Resp), undefined) of
+    undefined -> ok;
+    RL -> io:format("剩余请求数: ~p~n", [maps:get(<<"requests-remaining">>, RL, undefined)])
+end.
+```
+
+### 自动重试与 Retry-After
+
+`beamai_chat_completion:chat/3` 内置指数退避重试；遇到 429 / 5xx 时，若服务端返回 `Retry-After` 头则**按其建议退避**（上限 60s），否则按 `retry_delay * 重试次数` 退避。
+
+```erlang
+{ok, Resp} = beamai_chat_completion:chat(LLM, Messages, #{
+    max_retries => 3,          %% 默认 3
+    retry_delay => 1000,       %% 基础退避 ms，默认 1000
+    on_retry => fun(State) ->  %% 可选，重试回调
+        io:format("第 ~p 次重试，延迟 ~pms：~p~n",
+                  [maps:get(attempt, State), maps:get(delay, State), maps:get(error, State)])
+    end
+}).
+```
+
+### 统一错误结构（beamai_llm_error）
+
+把各 Provider 杂乱的错误归一化，便于上层一致判断类型 / 是否可重试 / 建议退避。各 Provider 仍返回原 legacy 错误元组，按需调用归一化：
+
+```erlang
+case llm_client:chat(LLM, Messages) of
+    {ok, Resp} -> ...;
+    {error, Reason} ->
+        Err = beamai_llm_error:from_reason(Reason, anthropic),
+        case beamai_llm_error:type(Err) of
+            rate_limit -> %% 限流，可重试
+                RetryMs = beamai_llm_error:retry_after_ms(Err);
+            auth       -> %% 鉴权失败（API key 等），不可重试
+                io:format("~ts~n", [beamai_llm_error:message(Err)]);
+            _          -> ...
+        end
+end.
+```
+
+错误类型 `type`：`rate_limit | server_error | client_error | auth | timeout | network | invalid_response | api_error | unknown`。访问器：`type/1`、`status/1`、`message/1`、`provider/1`、`retryable/1`、`retry_after_ms/1`、`raw/1`。
+
 ## 环境变量
 
 | 变量名 | 说明 |
@@ -424,6 +543,10 @@ beamai_llm_provider_common:parse_single_tool_call(Call) -> ToolCall.
 
 %% 使用统计解析
 beamai_llm_provider_common:parse_usage(Usage) -> #{prompt_tokens, completion_tokens, total_tokens}.
+
+%% 响应头：速率限制与 Retry-After（用作 on_headers 处理器 / 重试退避）
+beamai_llm_provider_common:rate_limit_metadata(Headers) -> #{rate_limit => map()} | #{}.
+beamai_llm_provider_common:retry_after_ms(Headers) -> non_neg_integer() | undefined.
 ```
 
 ### LLM 响应结构 (beamai_llm_response)
@@ -453,13 +576,23 @@ Usage = beamai_llm_response:usage(Response),
     model => binary(),           %% 模型名称
     provider => atom(),          %% Provider 类型
     content => binary() | null,  %% 响应内容
+    content_blocks => [map()],   %% 结构化内容块（text/tool_use/thinking 等）
     tool_calls => [map()],       %% 工具调用列表
     finish_reason => atom(),     %% 结束原因
-    usage => #{...},             %% Token 统计
-    metadata => #{...},          %% Provider 特有信息
+    usage => #{..., details => #{...}},  %% Token 统计（details 含缓存命中等）
+    metadata => #{...},          %% Provider 特有信息（见下）
     raw => map()                 %% 原始响应
 }
 ```
+
+**`metadata` 中可能出现的键（按能力）：**
+
+| 键 | 来源 | 说明 |
+|----|------|------|
+| `reasoning_content` | deepseek-reasoner / GLM | 思维链内容（也可用 `beamai_llm_response:reasoning_content/1` 访问） |
+| `rate_limit` | 同步/流式响应头 | `#{<<"requests-remaining">> => ..., ...}` |
+| `citations` | Anthropic | 引用列表 |
+| `web_search_results` | Anthropic Web Search | 搜索结果（title/url/page_age 等） |
 
 ## 依赖
 

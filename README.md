@@ -389,7 +389,7 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 |------|------|------|
 | **beamai_core** | 核心框架：Kernel、Context、Filter、Tool、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
 | **beamai_agent** | SimpleAgent：ReAct Agent 框架（多轮对话、回调、中断/恢复） | [README](apps/beamai_agent/README.md) |
-| **beamai_llm** | LLM 客户端：支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama | [README](apps/beamai_llm/README.md) |
+| **beamai_llm** | LLM 客户端：6 家 Provider 统一同步/流式；多模态输入、Anthropic 缓存/Web Search/引用、速率限制头、Retry-After 重试、统一错误结构 | [README](apps/beamai_llm/README.md) |
 
 ## 运行示例
 
