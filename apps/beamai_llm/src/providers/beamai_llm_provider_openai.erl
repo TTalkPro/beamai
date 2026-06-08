@@ -6,6 +6,7 @@
 %%%
 %%% 支持的功能：
 %%%   - 基本对话 (chat/stream_chat)
+%%%   - 多模态输入（图片 image_url / 音频 input_audio，经 message_adapter 转换）
 %%%   - 工具调用 (tools + tool_choice)，流式分片工具调用累加
 %%%   - 采样参数 (temperature, top_p, frequency_penalty, presence_penalty)
 %%%   - 确定性输出 (seed) / 多候选 (n) / 停止序列 (stop)
@@ -83,7 +84,10 @@ chat(Config, Request) ->
     Url = build_url(Config, ?OPENAI_ENDPOINT),
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request),
-    Opts = #{timeout => maps:get(timeout, Config, ?OPENAI_TIMEOUT)},
+    Opts = #{
+        timeout => maps:get(timeout, Config, ?OPENAI_TIMEOUT),
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_openai()).
 
 %% @doc 发送流式聊天请求

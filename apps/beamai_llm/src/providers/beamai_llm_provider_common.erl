@@ -82,7 +82,10 @@
     %% 响应解析
     parse_tool_calls/1,
     parse_single_tool_call/1,
-    parse_usage/1
+    parse_usage/1,
+
+    %% 响应头
+    rate_limit_metadata/1
 ]).
 
 %%====================================================================
@@ -613,6 +616,49 @@ parse_usage(Usage) ->
         completion_tokens => maps:get(<<"completion_tokens">>, Usage, 0),
         total_tokens => maps:get(<<"total_tokens">>, Usage, 0)
     }.
+
+%%====================================================================
+%% 响应头：速率限制
+%%====================================================================
+
+%% @doc 从响应头提取速率限制信息，封装为可合并进 metadata 的 map
+%%
+%% 识别以下响应头（大小写不敏感）：
+%%   - anthropic-ratelimit-*（如 -requests-limit / -tokens-remaining / -*-reset）
+%%   - x-ratelimit-*（OpenAI / DeepSeek 等 OpenAI 兼容服务）
+%%   - retry-after
+%%
+%% 命中时返回 #{rate_limit => #{<<"requests-limit">> => V, ...}}，
+%% 无命中返回 #{}（上层据此决定是否注入）。可直接作为
+%% beamai_llm_http_client 的 on_headers 处理器使用。
+%%
+%% @param Headers 响应头列表 [{Name, Value}]
+%% @returns #{rate_limit => map()} | #{}
+-spec rate_limit_metadata([{binary(), binary()}]) -> map().
+rate_limit_metadata(Headers) when is_list(Headers) ->
+    RL = lists:foldl(fun({K, V}, Acc) ->
+        case rate_limit_key(string:lowercase(to_header_binary(K))) of
+            skip -> Acc;
+            NormKey -> Acc#{NormKey => V}
+        end
+    end, #{}, Headers),
+    case map_size(RL) of
+        0 -> #{};
+        _ -> #{rate_limit => RL}
+    end;
+rate_limit_metadata(_) ->
+    #{}.
+
+%% @private 归一化速率限制响应头名（去掉厂商前缀，保留语义后缀）
+rate_limit_key(<<"anthropic-ratelimit-", Rest/binary>>) -> Rest;
+rate_limit_key(<<"x-ratelimit-", Rest/binary>>) -> Rest;
+rate_limit_key(<<"retry-after">>) -> <<"retry-after">>;
+rate_limit_key(_) -> skip.
+
+%% @private 响应头名统一为 binary
+to_header_binary(K) when is_binary(K) -> K;
+to_header_binary(K) when is_list(K) -> list_to_binary(K);
+to_header_binary(K) when is_atom(K) -> atom_to_binary(K, utf8).
 
 %%====================================================================
 %% 内部函数

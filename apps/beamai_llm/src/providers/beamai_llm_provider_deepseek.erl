@@ -121,7 +121,10 @@ chat(Config, Request) ->
     Url = build_url(Config, chat_endpoint(Request)),
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request),
-    Opts = #{timeout => maps:get(timeout, Config, ?DEEPSEEK_TIMEOUT)},
+    Opts = #{
+        timeout => maps:get(timeout, Config, ?DEEPSEEK_TIMEOUT),
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
+    },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_deepseek()).
 
 %% @doc 发送流式聊天请求
