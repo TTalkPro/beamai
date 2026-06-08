@@ -8,9 +8,9 @@
 
 基于 Erlang/OTP 的高性能 AI Agent 应用框架核心库，提供构建 Agent 的基础能力。
 
-> **项目说明**: 本项目是 BeamAI 框架的核心库，提供 Kernel、Process Framework、LLM 客户端和 Memory 管理等核心功能。
+> **项目说明**: 本项目是 BeamAI 框架的核心库，提供 Kernel、Filter（含会话记忆）、LLM 客户端和 SimpleAgent 等核心功能。
 >
-> 高级功能（Simple Agent、Deep Agent、Tools 库、RAG、A2A/MCP 协议等）已迁移到 [beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中。
+> 高级功能（Deep Agent、Process Framework 流程编排、存储/快照引擎、Tools 库、RAG、A2A/MCP 协议等）已迁移到 [beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中。
 
 ## 核心功能与扩展
 
@@ -39,10 +39,9 @@
   - 可插拔存储后端（ETS 默认实现 / 滑动窗口包装 / 自定义 behaviour）
   - 详见 [docs/MEMORY.md](docs/MEMORY.md)
 
-- **Process Framework**: 可编排的流程引擎
-  - 支持步骤定义、条件分支、并行执行
-  - 时间旅行和分支回溯
-  - 事件驱动和状态快照
+- **统一 LLM 客户端**: 6 家 Provider 统一同步/流式
+  - OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama
+  - 多模态输入、Anthropic 缓存/Web Search/引用、速率限制头、Retry-After 重试、统一错误结构
 
 - **Output Parser**: 结构化输出
   - JSON/XML/CSV 解析
@@ -138,46 +137,9 @@ K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
 
 详见 [Filter 文档](docs/FILTER.md)。
 
-### 5. Process Framework（流程编排）
+> **流程编排 / 状态快照** 已迁移到 [beamai_extra](https://github.com/TTalkPro/beamai_extra)（Process Framework、存储/快照引擎）。
 
-```erlang
-%% 使用 Builder 构建流程
-Spec = beamai_process:builder(<<"pipeline">>),
-Spec1 = beamai_process:add_step(Spec, <<"step1">>, my_step_module, #{
-    type => transform,
-    config => #{handler => fun(Input, _State) -> {ok, Input#{step => 1}} end}
-}),
-Spec2 = beamai_process:add_step(Spec1, <<"step2">>, my_step_module, #{
-    type => transform,
-    config => #{handler => fun(Input, _State) -> {ok, Input#{step => 2}} end}
-}),
-Spec3 = beamai_process:set_initial_event(Spec2, <<"step1">>, #{data => <<"test"/utf8>>}),
-{ok, Built} = beamai_process:build(Spec3),
-
-%% 同步执行
-{ok, Result} = beamai_process:run_sync(Built, #{timeout => 30000}).
-```
-
-### 6. Memory 快照
-
-```erlang
-%% 创建存储后端
-{ok, _} = beamai_store_ets:start_link(my_store, #{}),
-Store = {beamai_store_ets, my_store},
-StateStore = beamai_state_store:new(Store),
-
-%% 创建 Process 快照管理器
-Mgr = beamai_process_snapshot:new(StateStore),
-
-%% 保存快照
-StateMap = #{fsm_state => completed, steps => #{<<"step1">> => #{result => ok}}},
-{ok, Snapshot, Mgr1} = beamai_process_snapshot:save_from_state(Mgr, <<"thread-1">>, StateMap),
-
-%% 加载快照
-{ok, Loaded} = beamai_process_snapshot:load(Mgr1, beamai_process_snapshot:get_id(Snapshot)).
-```
-
-### 7. Output Parser（结构化输出）
+### 5. Output Parser（结构化输出）
 
 ```erlang
 %% 创建 JSON 解析器
@@ -205,37 +167,32 @@ apps/
 ├── beamai_core/        # 核心框架
 │   ├── Kernel         # beamai_kernel, beamai_tool, beamai_context,
 │   │                  # beamai_filter, beamai_prompt, beamai_result
-│   ├── Process        # beamai_process, beamai_process_builder,
-│   │                  # beamai_process_engine, beamai_process_runtime,
-│   │                  # beamai_process_step, beamai_process_executor,
-│   │                  # beamai_process_event, beamai_process_state,
-│   │                  # beamai_process_worker, beamai_process_sup
+│   ├── Memory Filter  # beamai_memory_filter（会话历史按 conversation_id 管理）
 │   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_hackney,
 │   │                  # beamai_http_pool
-│   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour,
-│   │                  # beamai_step_behaviour, beamai_process_store_behaviour
+│   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
 ├── beamai_llm/         # LLM 客户端
-│   ├── Chat           # beamai_chat_completion
+│   ├── Chat           # beamai_chat_completion, beamai_llm_error
 │   ├── Parser         # beamai_output_parser, beamai_parser_json
-│   ├── Adapters       # beamai_llm_message_adapter, beamai_beamai_llm_response_parser, beamai_llm_tool_adapter
+│   ├── Adapters       # beamai_llm_message_adapter, beamai_llm_response_parser, beamai_llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
-└── beamai_memory/      # 纯存储引擎
-    ├── Store          # beamai_store_ets, beamai_store_sqlite,
-    │                  # beamai_state_store, beamai_store_manager
-    ├── Snapshot       # beamai_snapshot (通用引擎/behaviour),
-    │                  # beamai_process_snapshot
-    └── Process        # beamai_process_memory_store
+└── beamai_agent/       # SimpleAgent（ReAct）
+    └── Agent          # beamai_agent, beamai_agent_state, beamai_agent_tool_loop,
+                       # beamai_agent_callbacks, beamai_agent_interrupt
 ```
+
+> **流程编排引擎与存储/快照引擎**（原 beamai_process / beamai_memory）已迁移到
+> [beamai_extra](https://github.com/TTalkPro/beamai_extra)，不再属于本项目。
 
 ### 依赖关系
 
 ```
 ┌───────────────────────┐ ┌───────────────────────┐
-│   存储层              │ │   LLM 层              │
-│  (beamai_memory)      │ │  (beamai_llm)         │
+│   Agent 层            │ │   LLM 层              │
+│  (beamai_agent)       │ │  (beamai_llm)         │
 └───────────┬───────────┘ └───────────┬───────────┘
             │                         │
 ┌───────────┴─────────────────────────┴───────────┐
@@ -245,7 +202,7 @@ apps/
 ```
 
 > beamai_core 通过 Behaviour 接口和 `{Module, Ref}` 动态分发模式解耦，
-> 不依赖上层应用。beamai_llm 和 beamai_memory 平级，互不依赖。
+> 不依赖上层应用。beamai_llm 和 beamai_agent 平级，互不依赖。
 
 ## 核心概念
 
@@ -279,47 +236,13 @@ Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
 }, beamai_context:new()).
 ```
 
-### 2. Process Framework
+### 2. 会话记忆 (Memory Filter)
 
-可编排的流程引擎，支持步骤定义、分支、并行和时间旅行：
+Kernel 本身无状态、不记录消息；多轮对话历史由 **Memory Filter**（`beamai_memory_filter`）以 `conversation_id` 为单位管理。每次 invoke 只携带单条最新消息，filter 负责注入历史与持久化增量。
 
-```erlang
-%% 构建流程（Builder 模式）
-Spec = beamai_process:builder(<<"my_process">>),
-Spec1 = beamai_process:add_step(Spec, <<"step1">>, my_step_module, #{
-    type => transform
-}),
-Spec2 = beamai_process:set_initial_event(Spec1, <<"step1">>, #{data => <<"hello">>}),
-{ok, Built} = beamai_process:build(Spec2),
-
-%% 同步执行
-{ok, Result} = beamai_process:run_sync(Built, #{timeout => 30000}).
-```
-
-### 3. Memory 快照引擎
-
-使用 beamai_memory 实现状态快照、分支和时间旅行：
-
-```erlang
-%% 创建存储后端和状态存储
-{ok, _} = beamai_store_ets:start_link(my_store, #{}),
-Store = {beamai_store_ets, my_store},
-StateStore = beamai_state_store:new(Store),
-
-%% 创建 Process 快照管理器
-ProcessMgr = beamai_process_snapshot:new(StateStore),
-
-%% 保存和加载 Process 快照
-StateMap = #{fsm_state => completed, steps => #{<<"s1">> => #{result => ok}}},
-{ok, Snapshot, Mgr1} = beamai_process_snapshot:save_from_state(ProcessMgr, <<"thread-1">>, StateMap),
-{ok, Loaded} = beamai_process_snapshot:load(Mgr1, beamai_process_snapshot:get_id(Snapshot)),
-
-%% 时间旅行
-{ok, OlderSnapshot, Mgr2} = beamai_process_snapshot:go_back(Mgr1, <<"thread-1">>, 1),
-
-%% 分支管理
-{ok, BranchMgr} = beamai_process_snapshot:fork_from(Mgr1, SnapshotId, <<"experiment">>, #{}).
-```
+- 可插拔存储后端（ETS 默认实现 / 滑动窗口包装 / 自定义 behaviour）
+- SimpleAgent 的跨轮记忆即基于此实现
+- 详见 [docs/MEMORY.md](docs/MEMORY.md)
 
 ## 配置
 
@@ -407,9 +330,8 @@ rebar3 shell
 |------|------|
 | **OTP 应用** | 3 个（beamai_core、beamai_agent、beamai_llm） |
 | **源代码模块** | ~60 个 |
-| **测试文件** | ~20 个 |
-| **代码行数 | ~20,000 行 |
-| **单元测试** | ~200 个 |
+| **测试文件** | ~25 个 |
+| **单元测试** | ~260 个 |
 
 ### 测试运行
 

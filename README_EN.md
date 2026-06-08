@@ -8,21 +8,20 @@ English | [中文](README.md)
 
 A high-performance AI Agent framework core library based on Erlang/OTP, providing foundational capabilities for building Agents.
 
-> **Note**: This project is the core library of the BeamAI framework, providing Kernel, Process Framework, LLM Client, and Memory Management core features.
+> **Note**: This project is the core library of the BeamAI framework, providing Kernel, Filter (incl. conversation memory), LLM Client, and SimpleAgent core features.
 >
-> Advanced features (Simple Agent, Deep Agent, Tools Library, RAG, A2A/MCP protocols, etc.) have been moved to the [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project.
+> Advanced features (Deep Agent, Process Framework orchestration, storage/snapshot engine, Tools Library, RAG, A2A/MCP protocols, etc.) have been moved to the [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project.
 
 ## Core vs Extension
 
 ### Core Project (This Repository)
-Foundational infrastructure for building AI Agents:
-- **beamai_core** - Kernel/Tool architecture, Process Framework, HTTP client
+Foundational infrastructure for building AI Agents (three core responsibilities):
+- **beamai_core** - Kernel foundation: Context, Filter (onion-style around model), Tool construction and invocation
+- **beamai_agent** - SimpleAgent: a primarily ReAct-based Agent framework (cross-turn memory via filter-memory, multi-turn conversations, callbacks, interrupt/resume)
 - **beamai_llm** - Unified LLM client (supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama)
-- **beamai_memory** - Pure storage engine (snapshots, Store backends, state storage)
 
 ### Extension Project ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 Advanced features built on top of the core library:
-- **Simple Agent** - ReAct pattern conversational Agent
 - **Deep Agent** - Recursive planning Agent based on SubAgent architecture
 - **Tools Library** - Common tools like File, Shell, HTTP, etc.
 - **RAG** - Retrieval-Augmented Generation
@@ -30,20 +29,19 @@ Advanced features built on top of the core library:
 
 ## Features
 
+- **Kernel/Tool Architecture**: Semantic tool registration and invocation system
+  - Kernel core based on Semantic Kernel concepts (stateless, does not record messages)
+  - Unified Tool definition and management
+  - Onion-style Filter interception and security validation
+
 - **Conversation Memory (Memory Filter)**: history decoupled from the Kernel
   - Each invoke passes only the latest message; history managed by the Memory Filter keyed by `conversation_id`
   - Pluggable storage backends (default ETS / sliding-window wrapper / custom behaviour)
   - See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
 
-- **Kernel/Tool Architecture**: Semantic function registration and invocation system
-  - Kernel core based on Semantic Kernel concepts
-  - Tool management and Middleware pipeline
-  - Security validation and permission control
-
-- **Process Framework**: Orchestratable process engine
-  - Step definitions, conditional branching, parallel execution
-  - Time travel and branch rollback
-  - Event-driven with state snapshots
+- **Unified LLM Client**: 6 providers with unified sync/streaming
+  - OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
+  - Multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure
 
 - **Output Parser**: Structured output
   - JSON/XML/CSV parsing
@@ -58,152 +56,90 @@ export ZHIPU_API_KEY=your_key_here
 rebar3 shell
 ```
 
-### 2. Simple Agent (Basic Usage)
+### 2. LLM Call
 
 ```erlang
-%% Create LLM configuration (use beamai_chat_completion:create/2)
-LLM = beamai_chat_completion:create(anthropic, #{
+%% Create LLM configuration
+LLM = beamai_chat_completion:create(zhipu, #{
     model => <<"glm-4.7">>,
-    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    base_url => <<"https://open.bigmodel.cn/api/anthropic">>
+    api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
 }),
 
-%% Create Agent state (pure function API)
-{ok, State} = beamai_agent:new(#{
-    system_prompt => <<"You are a helpful assistant.">>,
-    llm => LLM
-}),
-
-%% Run Agent
-{ok, Result, _NewState} = beamai_agent:run(State, <<"Hello!">>),
-
-%% View result
-Response = maps:get(final_response, Result).
+%% Send chat request
+{ok, Response} = beamai_chat_completion:chat(LLM, [
+    {role, user, content, <<"你好！"/utf8>>}
+]),
 ```
 
-### 3. Simple Agent (Multi-turn Conversation)
-
-```erlang
-%% Multi-turn conversation through state passing
-{ok, State0} = beamai_agent:new(#{
-    llm => LLM,
-    system_prompt => <<"You are a memory assistant.">>
-}),
-{ok, _, State1} = beamai_agent:run(State0, <<"My name is John">>),
-{ok, Result, _State2} = beamai_agent:run(State1, <<"What's my name?">>).
-%% Agent will remember user's name is John
-```
-
-### 4. Simple Agent (Using Kernel + Tools)
+### 3. Kernel + Tool (Tool Registration)
 
 ```erlang
 %% Create Kernel
 Kernel = beamai_kernel:new(),
 
-%% Register tools via Tool module
-Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_shell),
-
-%% Or manually define tool functions
-SearchTool = beamai_tool:new(<<"search">>,
-    fun(#{<<"query">> := Query}, _Context) ->
+%% Define Tool
+SearchTool = #{
+    name => <<"search">>,
+    description => <<"Search for information">>,
+    parameters => #{
+        <<"query">> => #{type => string, required => true, description => <<"Search keywords">>}
+    },
+    handler => fun(#{<<"query">> := Query}, _Context) ->
         {ok, <<"Search result: ", Query/binary>>}
-    end,
-    #{
-        description => <<"Search for information">>,
-        parameters => #{
-            type => object,
-            properties => #{
-                <<"query">> => #{type => string, description => <<"Search keywords">>}
-            },
-            required => [<<"query">>]
-        }
-    }),
+    end
+},
 
-Kernel2 = beamai_kernel:add_tools(Kernel1, [SearchTool]),
+%% Register tool
+Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 
-%% Get tool specs for Agent use
-Tools = beamai_kernel:get_tool_specs(Kernel2),
-
-%% Create Agent with tools
-{ok, State} = beamai_agent:new(#{
-    system_prompt => <<"You are a search assistant.">>,
-    tools => Tools,
-    llm => LLM
-}),
-
-{ok, Result, _} = beamai_agent:run(State, <<"Search for Erlang tutorials">>).
+%% Invoke a single tool
+{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel1, <<"search">>, #{
+    <<"query">> => <<"Erlang"/utf8>>
+}, beamai_context:new()).
 ```
 
-### 5. Simple Agent (With Memory Persistence)
+### 4. Filter (Onion-style Interception)
 
 ```erlang
-%% Create storage backend
-{ok, _} = beamai_store_ets:start_link(my_store, #{}),
-{ok, Memory} = beamai_memory:new(#{context_store => {beamai_store_ets, my_store}}),
+%% A filter has 2 optional around hooks (around_chat/around_tool).
+%% Each around wraps a single invocation with one closure fun(Req, FCtx, Next) -> Resp;
+%% pre/post logic lives in one place, and not calling Next short-circuits.
+K0 = beamai:kernel(),
+K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
+    fun(#{a := A, b := B}) -> {ok, A + B} end,
+    #{description => <<"Add two numbers">>,
+      parameters => #{
+          a => #{type => integer, required => true},
+          b => #{type => integer, required => true}
+      }})),
 
-%% Create Agent with Memory (checkpoint auto-saved)
-{ok, State0} = beamai_agent:new(#{
-    llm => LLM,
-    system_prompt => <<"You are a persistent assistant.">>,
-    storage => Memory
+%% One around_tool: arg validation (short-circuit) + double the result
+K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
+    around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
+        case A > 1000 of
+            true ->
+                %% Over limit: skip tool execution by not calling Next
+                #{result => {error, <<"a exceeds limit">>}, context => Ctx};
+            false ->
+                %% Normal: enter inner layer then double the result
+                #{result := Result} = Resp = Next(Req),
+                case is_number(Result) of
+                    true  -> Resp#{result => Result * 2};
+                    false -> Resp
+                end
+        end
+    end
 }),
 
-%% Conversation (checkpoint auto-saved)
-{ok, _, State1} = beamai_agent:run(State0, <<"Remember: the password is 12345">>),
-{ok, _, _State2} = beamai_agent:run(State1, <<"OK">>),
-
-%% Later restore session
-{ok, RestoredState} = beamai_agent:restore_from_memory(#{llm => LLM}, Memory),
-{ok, Result, _} = beamai_agent:run(RestoredState, <<"What's the password?">>).
-%% Agent will remember the password is 12345
+%% Invoke (3 + 5 = 8, doubled in post = 16)
+{ok, 16, _} = beamai:invoke_tool(K2, <<"add">>, #{a => 3, b => 5}, beamai:context()).
 ```
 
-### 6. Deep Agent (SubAgent Orchestration)
+See the [Filter docs](docs/FILTER_EN.md).
 
-```erlang
-%% Create Deep Agent configuration (new/1 returns config map directly)
-Config = beamai_deepagent:new(#{
-    llm => LLM,
-    max_depth => 3,
-    planning_enabled => true,
-    reflection_enabled => true,
-    system_prompt => <<"You are a research expert.">>,
-    %% Use Tool modules for tools
-    plugins => [beamai_tool_file, beamai_tool_shell]
-}),
+> **Process orchestration / state snapshots** have been moved to [beamai_extra](https://github.com/TTalkPro/beamai_extra) (Process Framework, storage/snapshot engine).
 
-%% Run complex task (Planner -> Executor -> Reflector)
-{ok, Result} = beamai_deepagent:run(Config,
-    <<"Analyze this codebase's architecture and provide optimization suggestions.">>),
-
-%% View execution plan and trace
-Plan = beamai_deepagent:get_plan(Result),
-Trace = beamai_deepagent:get_trace(Result).
-```
-
-### 7. Process Framework (Process Orchestration)
-
-```erlang
-%% Build process using Process Builder
-{ok, Process} = beamai_process_builder:new(<<"research_pipeline">>)
-    |> beamai_process_builder:add_step(<<"research">>, #{
-        handler => fun(Input, _Ctx) -> {ok, do_research(Input)} end
-    })
-    |> beamai_process_builder:add_step(<<"write">>, #{
-        handler => fun(Input, _Ctx) -> {ok, do_write(Input)} end
-    })
-    |> beamai_process_builder:add_step(<<"review">>, #{
-        handler => fun(Input, _Ctx) -> {ok, do_review(Input)} end
-    })
-    |> beamai_process_builder:build(),
-
-%% Execute process
-{ok, Result} = beamai_process_executor:run(Process, #{
-    task => <<"Research Erlang concurrency model">>
-}).
-```
-
-### 8. Output Parser (Structured Output)
+### 5. Output Parser (Structured Output)
 
 ```erlang
 %% Create JSON parser
@@ -212,8 +148,7 @@ Parser = beamai_output_parser:json(#{
         type => object,
         properties => #{
             <<"title">> => #{type => string},
-            <<"count">> => #{type => integer},
-            <<"items">> => #{type => array, items => #{type => string}}
+            <<"count">> => #{type => integer}
         },
         required => [<<"title">>, <<"count">>]
     }
@@ -221,11 +156,6 @@ Parser = beamai_output_parser:json(#{
 
 %% Parse LLM response
 {ok, Parsed} = beamai_output_parser:parse(Parser, LLMResponse).
-
-%% Parse with retry
-{ok, Parsed} = beamai_output_parser:parse_with_retry(Parser, LLMResponse, #{
-    max_retries => 3
-}).
 ```
 
 ## Architecture
@@ -237,45 +167,44 @@ apps/
 ├── beamai_core/        # Core framework
 │   ├── Kernel         # beamai_kernel, beamai_tool, beamai_context,
 │   │                  # beamai_filter, beamai_prompt, beamai_result
-│   ├── Process        # beamai_process, beamai_process_builder,
-│   │                  # beamai_process_runtime, beamai_process_step,
-│   │                  # beamai_process_executor, beamai_process_event
+│   ├── Memory Filter  # beamai_memory_filter (history keyed by conversation_id)
 │   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_hackney,
 │   │                  # beamai_http_pool
-│   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour,
-│   │                  # beamai_step_behaviour, beamai_process_store_behaviour
+│   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
 ├── beamai_llm/         # LLM client
-│   ├── Chat           # beamai_chat_completion
+│   ├── Chat           # beamai_chat_completion, beamai_llm_error
 │   ├── Parser         # beamai_output_parser, beamai_parser_json
-│   ├── Adapters       # beamai_llm_message_adapter, beamai_beamai_llm_response_parser, beamai_llm_tool_adapter
+│   ├── Adapters       # beamai_llm_message_adapter, beamai_llm_response_parser, beamai_llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
 │
-└── beamai_memory/      # Pure storage engine
-    ├── Store          # ETS/SQLite storage backends
-    └── Snapshot       # Snapshots, branching, time travel
+└── beamai_agent/       # SimpleAgent (ReAct)
+    └── Agent          # beamai_agent, beamai_agent_state, beamai_agent_tool_loop,
+                       # beamai_agent_callbacks, beamai_agent_interrupt
 ```
+
+> **The process-orchestration engine and storage/snapshot engine** (formerly beamai_process / beamai_memory)
+> have been moved to [beamai_extra](https://github.com/TTalkPro/beamai_extra) and are no longer part of this project.
 
 ### Dependency Relationships
 
 ```
-┌──────────────────────────┐ ┌───────────────────────┐
-│   Storage Layer           │ │   LLM Layer           │
-│  (beamai_memory)          │ │  (beamai_llm)         │
-└─────────────┬────────────┘ └────────┬──────────────┘
-              │                       │
-┌─────────────┴───────────────────────┴───────────────┐
-│   Core Layer                                         │
-│  (beamai_core)                                       │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────┐ ┌───────────────────────┐
+│   Agent Layer         │ │   LLM Layer           │
+│  (beamai_agent)       │ │  (beamai_llm)         │
+└───────────┬───────────┘ └───────────┬───────────┘
+            │                         │
+┌───────────┴─────────────────────────┴───────────┐
+│   Core Layer                                     │
+│  (beamai_core)                                   │
+└─────────────────────────────────────────────────┘
 ```
 
 > beamai_core is decoupled via Behaviour interfaces and `{Module, Ref}` dynamic dispatch,
-> with no dependency on upper-layer apps. beamai_llm and beamai_memory are peers with no
-> mutual dependency.
+> with no dependency on upper-layer apps. beamai_llm and beamai_agent are peers with no mutual dependency.
 
-See [DEPENDENCIES_EN.md](docs/DEPENDENCIES_EN.md) for details
+See [DEPENDENCIES_EN.md](docs/DEPENDENCIES_EN.md) for details.
 
 ## Core Concepts
 
@@ -287,69 +216,35 @@ Kernel is BeamAI's core abstraction, managing Tool registration and invocation:
 %% Create Kernel instance
 Kernel = beamai_kernel:new(),
 
-%% Load tool from module
+%% Load tool from a Tool module
 Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
 
-%% Invoke a single registered tool
-{ok, Result, _Ctx} = beamai_kernel:invoke_tool(Kernel1, <<"file_read">>, #{
+%% Or add a single tool
+Tool = #{
+    name => <<"read_file">>,
+    description => <<"Read file content">>,
+    parameters => #{
+        <<"path">> => #{type => string, required => true}
+    },
+    handler => fun(#{<<"path">> := Path}, _Ctx) ->
+        file:read_file(Path)
+    end
+},
+Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
+
+%% Invoke the registered tool
+{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel2, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
 
-### 2. Process Framework
+### 2. Conversation Memory (Memory Filter)
 
-Orchestratable process engine supporting step definitions, branching, parallelism, and time travel:
+The Kernel itself is stateless and does not record messages; multi-turn conversation history is managed by the **Memory Filter** (`beamai_memory_filter`) keyed by `conversation_id`. Each invoke carries only the latest message; the filter injects history and persists deltas.
 
-```erlang
-%% Build process
-Process = beamai_process_builder:new(<<"my_process">>),
-Process1 = beamai_process_builder:add_step(Process, <<"step1">>, #{
-    handler => fun(Input, Ctx) -> {ok, transform(Input)} end
-}),
-{ok, Built} = beamai_process_builder:build(Process1),
-
-%% Execute
-{ok, Result} = beamai_process_executor:run(Built, InitialInput).
-```
-
-### 3. Memory Persistence
-
-Use beamai_memory for session persistence and time travel:
-
-```erlang
-%% Create Memory
-{ok, _} = beamai_store_ets:start_link(my_store, #{}),
-{ok, Memory} = beamai_memory:new(#{context_store => {beamai_store_ets, my_store}}),
-
-%% Create Agent with storage (checkpoint auto-saved)
-{ok, State} = beamai_agent:new(#{llm => LLM, storage => Memory}),
-{ok, _, NewState} = beamai_agent:run(State, <<"Hello">>),
-
-%% Restore session from Memory
-{ok, RestoredState} = beamai_agent:restore_from_memory(#{llm => LLM}, Memory).
-```
-
-### 4. Callbacks
-
-Listen to Agent execution events:
-
-```erlang
-{ok, State} = beamai_agent:new(#{
-    llm => LLM,
-    system_prompt => <<"You are an assistant">>,
-    callbacks => #{
-        on_llm_start => fun(Prompts, Meta) ->
-            io:format("LLM call started~n")
-        end,
-        on_tool_start => fun(ToolName, Args, Meta) ->
-            io:format("Executing tool: ~ts~n", [ToolName])
-        end,
-        on_agent_finish => fun(Result, Meta) ->
-            io:format("Agent completed~n")
-        end
-    }
-}).
-```
+- Pluggable storage backends (default ETS / sliding-window wrapper / custom behaviour)
+- SimpleAgent's cross-turn memory is built on this
+- See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
 
 ## Configuration
 
@@ -359,16 +254,16 @@ LLM configuration is created using `beamai_chat_completion:create/2`:
 
 ```erlang
 %% Create LLM configuration
-LLM = beamai_chat_completion:create(anthropic, #{
+LLM = beamai_chat_completion:create(zhipu, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
     temperature => 0.7
-}),
+}).
 
-%% Configuration can be reused across multiple Agents
-{ok, State1} = beamai_agent:new(#{llm => LLM, system_prompt => <<"Research assistant">>}),
-{ok, State2} = beamai_agent:new(#{llm => LLM, system_prompt => <<"Writing assistant">>}).
+%% Send request
+{ok, Response} = beamai_chat_completion:chat(LLM, [
+    {role, user, content, <<"你好"/utf8>>}
+]).
 ```
 
 **Supported Providers:**
@@ -417,9 +312,9 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 
 | Module | Description | Documentation |
 |--------|-------------|---------------|
-| **beamai_core** | Core framework: Kernel, Process Framework, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
+| **beamai_core** | Core framework: Kernel, Context, Filter, Tool, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
+| **beamai_agent** | SimpleAgent: ReAct Agent framework (multi-turn, callbacks, interrupt/resume) | [README](apps/beamai_agent/README_EN.md) |
 | **beamai_llm** | LLM client: 6 providers with unified sync/streaming; multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure | [README](apps/beamai_llm/README_EN.md) |
-| **beamai_memory** | Pure storage engine: snapshot management, Store backends, state storage | [README](apps/beamai_memory/README_EN.md) |
 
 ## Running Examples
 
@@ -435,11 +330,10 @@ rebar3 shell
 
 | Metric | Count |
 |--------|-------|
-| **OTP Applications** | 5 |
+| **OTP Applications** | 3 (beamai_core, beamai_agent, beamai_llm) |
 | **Source Modules** | ~60 |
-| **Test Files** | ~20 |
-| **Lines of Code** | ~20,000 |
-| **Unit Tests** | ~200 |
+| **Test Files** | ~25 |
+| **Unit Tests** | ~260 |
 
 ### Running Tests
 
@@ -447,7 +341,7 @@ rebar3 shell
 # Run all tests
 rebar3 eunit
 
-# Run tests for specific app
+# Run tests for a specific app
 rebar3 eunit --app=beamai_llm
 
 # Run type checking
