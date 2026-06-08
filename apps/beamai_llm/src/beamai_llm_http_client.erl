@@ -156,19 +156,33 @@ stream_request(Url, Headers, Body, Opts, Callback) ->
     {ok, map()} | {error, term()}.
 stream_request(Url, Headers, Body, Opts, Callback, Accumulator) ->
     Finalizer = maps:get(finalizer, Opts, fun finalize_stream/1),
+    OnHeaders = maps:get(on_headers, Opts, undefined),
     StreamBody = Body#{<<"stream">> => true},
     HttpOpts = #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
         connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
         headers => Headers,
+        %% 设置了 on_headers 时，请求后端把首个响应头以 {http_headers, _} 回传
+        forward_headers => is_function(OnHeaders, 1),
         init_acc => #{buffer => <<>>, acc => init_stream_acc(), callback => Callback, accumulator => Accumulator}
     },
     %% 使用 beamai_http 的流式请求，传入 SSE 处理器
     case beamai_http:stream_request(post, Url, [], StreamBody, HttpOpts, fun sse_chunk_handler/2) of
-        {ok, #{acc := FinalAcc}} ->
-            Finalizer(FinalAcc);
+        {ok, State} when is_map(State) ->
+            finalize_stream_response(Finalizer, State, OnHeaders);
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%% @private 完成流式响应，并按需把响应头元信息注入 metadata
+finalize_stream_response(Finalizer, State, OnHeaders) ->
+    FinalAcc = maps:get(acc, State, State),
+    case Finalizer(FinalAcc) of
+        {ok, Resp} when is_function(OnHeaders, 1) ->
+            RespHeaders = maps:get(resp_headers, State, []),
+            {ok, inject_metadata(Resp, safe_extract_headers(OnHeaders, RespHeaders))};
+        Other ->
+            Other
     end.
 
 %%====================================================================
@@ -177,7 +191,11 @@ stream_request(Url, Headers, Body, Opts, Callback, Accumulator) ->
 
 %% @private SSE 数据块处理器
 %% 解析 SSE 事件并调用回调和累加器
--spec sse_chunk_handler(binary(), map()) -> {continue, map()} | {done, map()}.
+-spec sse_chunk_handler(binary() | {http_headers, [{binary(), binary()}]}, map()) ->
+    {continue, map()} | {done, map()}.
+sse_chunk_handler({http_headers, RespHeaders}, State) ->
+    %% 后端在 forward_headers 开启时回传首个响应头，暂存供 finalize 阶段提取
+    {continue, State#{resp_headers => RespHeaders}};
 sse_chunk_handler(Chunk, #{buffer := Buffer, acc := Acc, callback := Callback, accumulator := Accumulator} = State) ->
     {NewBuffer, Events} = parse_sse(<<Buffer/binary, Chunk/binary>>),
     NewAcc = process_events(Events, Acc, Callback, Accumulator),
