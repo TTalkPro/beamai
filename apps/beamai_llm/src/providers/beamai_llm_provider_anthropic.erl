@@ -90,7 +90,8 @@ stream_chat(Config, Request, Callback) ->
     Body = build_request_body(Config, Request#{stream => true}),
     Opts = #{
         timeout => maps:get(timeout, Config, ?ANTHROPIC_TIMEOUT),
-        finalizer => fun beamai_llm_provider_common:finalize_anthropic_stream/1
+        finalizer => fun beamai_llm_provider_common:finalize_anthropic_stream/1,
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
     },
     beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
                                           fun beamai_llm_provider_common:accumulate_anthropic_event/2).

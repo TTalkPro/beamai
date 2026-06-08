@@ -101,7 +101,8 @@ stream_chat(Config, Request, Callback) ->
         timeout => maps:get(timeout, Config, ?OPENAI_TIMEOUT),
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_openai_stream(Acc, openai)
-        end
+        end,
+        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
     },
     beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
                                           fun beamai_llm_provider_common:accumulate_openai_event/2).
