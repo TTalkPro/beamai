@@ -99,6 +99,39 @@ no_headers_no_rate_limit_key() ->
     ?assertNot(maps:is_key(rate_limit, beamai_llm_response:metadata(Resp))).
 
 %%====================================================================
+%% 端到端：流式路径同样注入速率限制头
+%%====================================================================
+
+stream_rate_limit_fixture_test_() ->
+    {setup,
+     fun() -> beamai_llm_fake_backend:install() end,
+     fun(Prev) -> beamai_llm_fake_backend:uninstall(Prev) end,
+     fun(_) -> [?_test(anthropic_stream_injects_rate_limit())] end}.
+
+anthropic_stream_injects_rate_limit() ->
+    beamai_llm_fake_backend:set_stream(
+        anthropic_stream_chunks(),
+        [{<<"anthropic-ratelimit-requests-remaining">>, <<"7">>}]),
+    Config = #{api_key => <<"k">>, model => <<"claude-sonnet-4-5">>},
+    {ok, Resp} = beamai_llm_provider_anthropic:stream_chat(
+        Config, #{messages => [#{role => user, content => <<"hi">>}]},
+        fun(_Event) -> ok end),
+    %% 流式累加正确
+    ?assertEqual(<<"hi">>, beamai_llm_response:content(Resp)),
+    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
+    %% 速率限制头注入 metadata
+    RL = maps:get(rate_limit, beamai_llm_response:metadata(Resp)),
+    ?assertEqual(<<"7">>, maps:get(<<"requests-remaining">>, RL)).
+
+anthropic_stream_chunks() ->
+    [
+     <<"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4-5\",\"usage\":{\"input_tokens\":2}}}\n">>,
+     <<"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n">>,
+     <<"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n">>,
+     <<"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n">>
+    ].
+
+%%====================================================================
 %% fixtures
 %%====================================================================
 
