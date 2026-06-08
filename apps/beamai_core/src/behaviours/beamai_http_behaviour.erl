@@ -39,7 +39,8 @@
     connect_timeout => pos_integer(),
     headers => headers(),
     pool => atom(),
-    init_acc => term()
+    init_acc => term(),
+    forward_headers => boolean()
 }.
 
 -type response() :: {ok, term()} | {error, term()}.

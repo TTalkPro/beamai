@@ -110,6 +110,7 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
     Timeout = maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
     ConnectTimeout = maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
     InitAcc = maps:get(init_acc, Opts, <<>>),
+    FwdHeaders = maps:get(forward_headers, Opts, false),
 
     HackneyOpts = [
         async,
@@ -122,7 +123,7 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
 
     case hackney:request(Method, UrlBin, Headers, BodyBin, HackneyOpts) of
         {ok, ClientRef} ->
-            stream_receive_loop(ClientRef, InitAcc, Handler, Timeout);
+            stream_receive_loop(ClientRef, InitAcc, Handler, Timeout, FwdHeaders);
         {error, Reason} ->
             {error, {request_failed, Reason}}
     end.
@@ -139,24 +140,26 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
 %% - done: 流结束
 %% - Chunk (binary): 数据块，调用 Handler(Chunk, Acc)
 %%   返回 {continue, NewAcc} 继续接收，{done, FinalAcc} 关闭连接
-stream_receive_loop(ClientRef, Acc, Handler, Timeout) ->
+stream_receive_loop(ClientRef, Acc, Handler, Timeout, FwdHeaders) ->
     receive
         {hackney_response, ClientRef, {status, StatusCode, _Reason}} ->
             case StatusCode of
                 Code when Code >= 200, Code < 300 ->
-                    stream_receive_loop(ClientRef, Acc, Handler, Timeout);
+                    stream_receive_loop(ClientRef, Acc, Handler, Timeout, FwdHeaders);
                 Code ->
                     _ = hackney:close(ClientRef),
                     {error, {http_error, Code}}
             end;
-        {hackney_response, ClientRef, {headers, _Headers}} ->
-            stream_receive_loop(ClientRef, Acc, Handler, Timeout);
+        {hackney_response, ClientRef, {headers, Headers}} ->
+            %% forward_headers 开启时把响应头以 {http_headers, Headers} 传给 Handler
+            Acc1 = forward_headers(FwdHeaders, Handler, Headers, Acc),
+            stream_receive_loop(ClientRef, Acc1, Handler, Timeout, FwdHeaders);
         {hackney_response, ClientRef, done} ->
             {ok, Acc};
         {hackney_response, ClientRef, Chunk} when is_binary(Chunk) ->
             case Handler(Chunk, Acc) of
                 {continue, NewAcc} ->
-                    stream_receive_loop(ClientRef, NewAcc, Handler, Timeout);
+                    stream_receive_loop(ClientRef, NewAcc, Handler, Timeout, FwdHeaders);
                 {done, FinalAcc} ->
                     _ = hackney:close(ClientRef),
                     {ok, FinalAcc}
@@ -166,5 +169,14 @@ stream_receive_loop(ClientRef, Acc, Handler, Timeout) ->
     after Timeout ->
         _ = hackney:close(ClientRef),
         {error, timeout}
+    end.
+
+%% @private 将响应头以 {http_headers, Headers} 传给 Handler（仅 forward_headers 开启时）
+forward_headers(false, _Handler, _Headers, Acc) ->
+    Acc;
+forward_headers(true, Handler, Headers, Acc) ->
+    case Handler({http_headers, Headers}, Acc) of
+        {continue, NewAcc} -> NewAcc;
+        {done, NewAcc} -> NewAcc
     end.
 

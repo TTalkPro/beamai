@@ -68,7 +68,8 @@
     retry => non_neg_integer(),
     retry_delay => pos_integer(),
     pool => atom(),
-    init_acc => term()
+    init_acc => term(),
+    forward_headers => boolean()
 }.
 -type response() :: {ok, body()} | {error, term()}.
 -type stream_callback() :: fun((binary()) -> any()).

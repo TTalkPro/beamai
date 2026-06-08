@@ -88,10 +88,13 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
 
     Timeout = maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
     InitAcc = maps:get(init_acc, Opts, <<>>),
+    %% forward_headers => true 时，首个响应头会以 {http_headers, Headers} 形式
+    %% 传给 Handler，供上层提取速率限制等信息（默认关闭，保持原行为）。
+    FwdHeaders = maps:get(forward_headers, Opts, false),
 
     case request_async(Method, Url, Headers, Body, Opts) of
         {ok, ConnPid, StreamRef} ->
-            Result = stream_receive_loop(ConnPid, StreamRef, InitAcc, Handler, Timeout),
+            Result = stream_receive_loop(ConnPid, StreamRef, InitAcc, Handler, Timeout, FwdHeaders),
             %% 归还连接
             beamai_http_pool:return_connection(ConnPid),
             Result;
@@ -256,16 +259,17 @@ receive_error_body(ConnPid, StreamRef, Status, Acc, Timeout) ->
 %% 每收到一个数据块调用 Handler(Data, Acc)：
 %% - 返回 {continue, NewAcc}：继续接收
 %% - 返回 {done, FinalAcc}：取消流并返回结果
-stream_receive_loop(ConnPid, StreamRef, Acc, Handler, Timeout) ->
+stream_receive_loop(ConnPid, StreamRef, Acc, Handler, Timeout, FwdHeaders) ->
     receive
-        {gun_response, ConnPid, StreamRef, fin, Status, _Headers}
+        {gun_response, ConnPid, StreamRef, fin, Status, Headers}
           when Status >= 200, Status < 300 ->
-            {ok, Acc};
+            {ok, forward_headers(FwdHeaders, Handler, Headers, Acc)};
         {gun_response, ConnPid, StreamRef, fin, Status, _Headers} ->
             {error, {http_error, Status}};
-        {gun_response, ConnPid, StreamRef, nofin, Status, _Headers}
+        {gun_response, ConnPid, StreamRef, nofin, Status, Headers}
           when Status >= 200, Status < 300 ->
-            stream_receive_loop(ConnPid, StreamRef, Acc, Handler, Timeout);
+            Acc1 = forward_headers(FwdHeaders, Handler, Headers, Acc),
+            stream_receive_loop(ConnPid, StreamRef, Acc1, Handler, Timeout, FwdHeaders);
         {gun_response, ConnPid, StreamRef, nofin, Status, _Headers} ->
             {error, {http_error, Status}};
 
@@ -277,7 +281,7 @@ stream_receive_loop(ConnPid, StreamRef, Acc, Handler, Timeout) ->
         {gun_data, ConnPid, StreamRef, nofin, Data} ->
             case Handler(Data, Acc) of
                 {continue, NewAcc} ->
-                    stream_receive_loop(ConnPid, StreamRef, NewAcc, Handler, Timeout);
+                    stream_receive_loop(ConnPid, StreamRef, NewAcc, Handler, Timeout, FwdHeaders);
                 {done, FinalAcc} ->
                     gun:cancel(ConnPid, StreamRef),
                     {ok, FinalAcc}
@@ -290,6 +294,15 @@ stream_receive_loop(ConnPid, StreamRef, Acc, Handler, Timeout) ->
     after Timeout ->
         gun:cancel(ConnPid, StreamRef),
         {error, timeout}
+    end.
+
+%% @private 将响应头以 {http_headers, Headers} 传给 Handler（仅 forward_headers 开启时）
+forward_headers(false, _Handler, _Headers, Acc) ->
+    Acc;
+forward_headers(true, Handler, Headers, Acc) ->
+    case Handler({http_headers, Headers}, Acc) of
+        {continue, NewAcc} -> NewAcc;
+        {done, NewAcc} -> NewAcc
     end.
 
 %% @private 从 URL 中提取路径和查询字符串
