@@ -165,12 +165,13 @@ build_kernel(Config) ->
 %%   - false | none：不启用记忆（memory=undefined，仅在本轮内累积、不持久）
 %%   - {window, N}：窗口 provider 包「默认 provider + 默认 store」，发给 LLM 时只保留
 %%     最近 N 条非系统消息（全量仍持久于底层），防止长对话撑爆 context window
-%%   - {window, Inner, N}：窗口 provider 包 Inner（provider 或存储句柄）
 %%   - {store, Handle}：默认 provider 包指定存储后端句柄
-%%   - {Module, Ref}：若 Module 实现 beamai_memory_provider 协议则直接作为 provider
-%%     （自定义记忆策略：摘要/RAG/token 窗口…）；否则视作存储句柄，用默认 provider 包装
+%%   - {Module, Ref}：直接作为 provider（须实现 beamai_memory_provider 协议；
+%%     自定义记忆策略：摘要/RAG/token 窗口…）
 %%
 %% 注：默认为无界增长，长对话需显式选 {window, N} 或自管裁剪/摘要 provider。
+%% 想对自管存储套窗口：自行构造 beamai_memory_provider_window:new(
+%%   beamai_memory_provider:default(Handle), N) 作为 provider 传入。
 -spec setup_memory(map()) -> beamai_memory_provider:provider() | undefined.
 setup_memory(Config) ->
     case maps:get(memory, Config, default) of
@@ -181,15 +182,11 @@ setup_memory(Config) ->
         {window, MaxMessages} when is_integer(MaxMessages), MaxMessages > 0 ->
             beamai_memory_provider_window:new(
                 beamai_memory_provider:default(ensure_default_store()), MaxMessages);
-        {window, Inner, MaxMessages}
-                when is_tuple(Inner), is_integer(MaxMessages), MaxMessages > 0 ->
-            %% Inner 既可是 provider 也可是存储句柄
-            beamai_memory_provider_window:new(beamai_memory_provider:coerce(Inner), MaxMessages);
         {store, Handle} when is_tuple(Handle) ->
             beamai_memory_provider:default(Handle);
-        Handle when is_tuple(Handle) ->
-            %% provider 句柄原样用；裸存储句柄自动包成默认 provider
-            beamai_memory_provider:coerce(Handle)
+        Provider when is_tuple(Provider) ->
+            %% 自定义 provider（{Module, Ref}，须实现 beamai_memory_provider）
+            Provider
     end.
 
 %% @private 确保共享默认会话 store 运行（幂等、单例），返回句柄

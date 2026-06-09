@@ -76,12 +76,12 @@ beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_message
     %% 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
     parallel_tools => true,
 
-    %% 会话记忆（filter-memory）：详见下文「会话记忆」一节
-    %%   缺省               —— 共享默认 store（单例，按 conversation_id 分区，无界增长）
-    %%   {window, N}        —— 默认 store 套 N 条滑动窗口
-    %%   {window, Handle, N}—— 对自管 store 套 N 条滑动窗口
-    %%   {Mod, Ref}         —— 自管 store 句柄（生命周期自负责）
-    %%   false | none       —— 不启用记忆（messages/1 退化为 []）
+    %% 会话记忆（memory provider）：详见下文「会话记忆」一节
+    %%   缺省          —— 默认 provider + 共享默认 store（无界增长）
+    %%   {window, N}   —— 默认 store 套 N 条滑动窗口
+    %%   {store, Handle}—— 默认 provider 包指定存储后端句柄
+    %%   {Mod, Ref}    —— 自定义 provider（须实现 beamai_memory_provider）
+    %%   false | none  —— 不启用记忆（messages/1 退化为 []）
     memory => {window, 20},
     %% 复用同一会话历史可显式指定 conversation_id（缺省自动生成）
     conversation_id => <<"conv-123">>,
@@ -180,13 +180,16 @@ end.
 {ok, A} = beamai_agent:new(#{llm => LLM,
                             memory => {store, beamai_chat_memory_ets:handle(my_store)}}),
 
-%% (e) 对自管 store 套窗口
-{ok, A} = beamai_agent:new(#{llm => LLM,
-                            memory => {window, beamai_chat_memory_ets:handle(my_store), 20}}),
-
-%% (f) 完全自定义策略：实现 beamai_memory_provider 的 5 个 callback（摘要/RAG/token 窗口…）
-%%     memory => {YourModule, Ref}
+%% (e) 完全自定义策略：实现 beamai_memory_provider 的 4 个 callback（摘要/RAG/token 窗口…）
 {ok, A} = beamai_agent:new(#{llm => LLM, memory => {my_summary_memory, Ref}}).
+```
+
+对自管存储套窗口：自行构造 provider 再传入（`{Mod, Ref}` 直接作为 provider，不做归一）：
+
+```erlang
+W = beamai_memory_provider_window:new(
+        beamai_memory_provider:default(beamai_chat_memory_ets:handle(my_store)), 20),
+{ok, A} = beamai_agent:new(#{llm => LLM, memory => W}).
 ```
 
 **自定义记忆策略**只需实现 `beamai_memory_provider` 的 4 个 callback：
@@ -205,8 +208,8 @@ clear(Ref, ConvId) -> ok.
 {ok, A} = beamai_agent:new(#{llm => LLM, memory => {my_summary_memory, MyRef}}).
 ```
 
-> 兼容：`memory => {Mod, Ref}` 若 `Mod` 实现了 `beamai_memory_provider` 即作为 provider；
-> 否则按 `beamai_chat_memory` 存储句柄处理，自动用默认 provider 包装。
+> `memory => {Mod, Ref}` **直接**作为 provider（须实现 `beamai_memory_provider`），不做
+> 任何归一/兼容包装；要用裸存储后端请显式写 `{store, Handle}`。
 >
 > **默认 store 的生命周期**：beamai_agent 作为 OTP 应用启动时，默认 store 纳入监督树
 > （permanent，崩溃自动重启）；未启动应用（库式直接调用 / 裸 eunit）时回退为懒启动的
