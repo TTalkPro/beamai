@@ -169,12 +169,14 @@ stream(State, UserMessage) ->
 
 %% @doc 流式执行一轮对话（带选项）
 %%
-%% 与 run/3 同样经过 filter-memory（delta 模式）完成工具循环，得到最终回复后
-%% 通过 on_token callback 将回复内容分块推送给用户。
+%% 与 run/3 同样经过 filter-memory（delta 模式）完成工具循环，区别在于循环中
+%% 的每次 LLM 调用走 provider 级 streaming（kernel:invoke_chat_stream）：文本
+%% token 经 on_token callback **实时**逐 token 推送，而非等整轮完成后再分块。
+%% 工具调用轮通常无文本内容（content=null），自然不产生 token；最终文本回合
+%% 即逐 token 流出。
 %%
-%% 说明：为与 filter-memory 一致并避免重复存储/重复 LLM 调用，流式不再对最终
-%% 调用单独发起 provider 级 streaming，而是在最终回复产生后经 on_token 分块输出。
-%% on_token 回调语义（逐块接收最终回复）保持不变。
+%% 要求所选 provider 的 stream_chat 返回汇聚后的统一响应（openai/anthropic/
+%% deepseek 已支持；其余 provider 视其流式 finalize 完成度）。
 %%
 %% @param State 当前 agent 状态
 %% @param UserMessage 用户输入文本
@@ -187,14 +189,10 @@ stream(State, UserMessage) ->
     {error, term()}.
 stream(State, UserMessage, Opts) ->
     #{callbacks := Callbacks} = State,
-    case run(State, UserMessage, Opts) of
-        {ok, #{content := Content} = Result, NewState} ->
-            Meta = beamai_agent_callbacks:build_metadata(NewState),
-            emit_tokens(Content, Meta, Callbacks),
-            {ok, Result, NewState};
-        Other ->
-            Other
-    end.
+    Meta = beamai_agent_callbacks:build_metadata(State),
+    %% 桥接：kernel 逐 token 回调 → agent on_token 回调
+    TokenHandler = fun(Token) -> emit_tokens(Token, Meta, Callbacks) end,
+    run(State, UserMessage, Opts#{stream_token_handler => TokenHandler}).
 
 %%====================================================================
 %% 查询 API
@@ -427,7 +425,9 @@ run_loop(State, Delta, PrevCalls, Opts) ->
         chat_opts => build_chat_opts(State, Opts),
         callbacks => Callbacks,
         max_iterations => MaxIter,
-        agent => State
+        agent => State,
+        %% 流式时透传 token 处理器；非流式为 undefined
+        stream_token_handler => maps:get(stream_token_handler, Opts, undefined)
     },
     beamai_agent_tool_loop:run(LoopOpts, PrevCalls).
 
@@ -462,6 +462,8 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
 %% 在共享工具模块基础上，附加：
 %%   - 带 conversation_id 的 context（供 Memory / 回调等 filter 定位会话）
 %%   - system_prompts（system_prompt 包装为 system 消息，经内层 filter 注入、不入存储）
+%%   - callback_meta（本轮 agent 元数据，供 on_llm_call / 流式 on_token 回调读取；
+%%     经引线随请求传入，filter 闭包据此拿到实时 turn_count/run_id 等）
 %%   - 中断 tool specs（如有）
 build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
     BaseOpts0 = beamai_agent_utils:build_chat_opts(Kernel, Opts),
@@ -469,7 +471,8 @@ build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
             beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
     BaseOpts1 = BaseOpts0#{
         context => Ctx,
-        system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined))
+        system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined)),
+        callback_meta => callback_meta(Agent)
     },
     InterruptSpecs = beamai_agent_interrupt:get_interrupt_tool_specs(Agent),
     case InterruptSpecs of
@@ -478,6 +481,13 @@ build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
             ExistingTools = maps:get(tools, BaseOpts1, []),
             BaseOpts1#{tools => ExistingTools ++ InterruptSpecs}
     end.
+
+%% @private 本轮 agent 元数据（标准 build_metadata + conversation_id + run_id）
+callback_meta(Agent) ->
+    (beamai_agent_callbacks:build_metadata(Agent))#{
+        conversation_id => beamai_agent_state:conversation_id(Agent),
+        run_id => maps:get(run_id, Agent, undefined)
+    }.
 
 %% @private 把 system_prompt 包装为 system 消息列表（空/未设返回 []）
 system_prompts(undefined) -> [];

@@ -32,7 +32,10 @@
     chat_opts := map(),       %% 含 context（带 conversation_id）与 system_prompts
     callbacks := map(),
     max_iterations := pos_integer(),
-    agent := map()
+    agent := map(),
+    %% 流式 token 处理器：设置时每轮 LLM 调用走 invoke_chat_stream，
+    %% 文本 token 经此回调实时透出（undefined 则非流式）。
+    stream_token_handler => undefined | fun((binary()) -> ok)
 }.
 
 -export_type([loop_opts/0]).
@@ -68,8 +71,7 @@ iterate(_Opts, 0, ToolCallsMade) ->
 
 %% @private 主循环体：用本轮 delta 调用 LLM 并根据响应分支处理
 iterate(Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel, messages := Delta, chat_opts := ChatOpts} = Opts,
-    case beamai_kernel:invoke_chat(Kernel, Delta, ChatOpts) of
+    case invoke_llm(Opts) of
         {ok, Response, _Ctx} ->
             case beamai_llm_response:has_tool_calls(Response) of
                 true ->
@@ -80,6 +82,17 @@ iterate(Opts, N, ToolCallsMade) ->
             end;
         {error, _} = Err ->
             Err
+    end.
+
+%% @private 调用 LLM：有 stream_token_handler 则走流式（token 实时透出），
+%% 否则非流式。两者都返回汇聚后的统一响应，循环逻辑一致。
+invoke_llm(#{kernel := Kernel, messages := Delta, chat_opts := ChatOpts} = Opts) ->
+    case maps:get(stream_token_handler, Opts, undefined) of
+        undefined ->
+            beamai_kernel:invoke_chat(Kernel, Delta, ChatOpts);
+        Handler when is_function(Handler, 1) ->
+            TokenCb = fun(Token, _Meta) -> Handler(Token) end,
+            beamai_kernel:invoke_chat_stream(Kernel, Delta, ChatOpts, TokenCb)
     end.
 
 %% @private 无 tool_calls，返回最终响应
@@ -110,10 +123,13 @@ handle_tool_calls(TCs, Opts, N, ToolCallsMade) ->
 %% 先执行非中断 tools，然后构建中断上下文返回。已执行的工具结果暂存于
 %% completed_tool_results，resume 时作为 delta 的一部分由 Memory filter 存储。
 handle_interrupt_tool(InterruptTC, OtherCalls, TCs, Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel, agent := Agent} = Opts,
+    #{kernel := Kernel, agent := Agent, callbacks := Callbacks} = Opts,
     #{max_tool_iterations := MaxIter} = Agent,
     Ctx = ctx(Opts),
-    {OtherResults, OtherCallRecords} = beamai_agent_utils:execute_tools(Kernel, OtherCalls, Ctx),
+    Parallel = maps:get(parallel_tools, Agent, true),
+    {OtherResults, OtherCallRecords} =
+        beamai_agent_utils:execute_tools(Kernel, OtherCalls, Ctx, Parallel),
+    fire_tool_results(Callbacks, OtherCallRecords),
     Reason = extract_interrupt_reason(InterruptTC),
     Context = build_interrupt_context(TCs, MaxIter - N,
                                       OtherResults, InterruptTC,
@@ -137,12 +153,24 @@ handle_normal_tool_calls(TCs, Opts, N, ToolCallsMade) ->
 %% @private 执行 tools 并继续循环
 %%
 %% delta 模式：下一轮 delta 只含工具结果消息（assistant(tool_calls) 已由
-%% Memory filter 在本次 invoke_chat 后置存储）。
-execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel} = Opts,
-    {ok, ToolResults, NewToolCalls} = execute_tools_with_interrupt_check(Kernel, TCs, ctx(Opts)),
+%% Memory filter 在本次 invoke_chat 后置存储）。工具执行（含并发）统一委托给
+%% beamai_agent_utils:execute_tools/4。
+execute_and_continue(TCs, #{kernel := Kernel, agent := Agent, callbacks := Callbacks} = Opts,
+                     N, ToolCallsMade) ->
+    Parallel = maps:get(parallel_tools, Agent, true),
+    {ToolResults, NewToolCalls} =
+        beamai_agent_utils:execute_tools(Kernel, TCs, ctx(Opts), Parallel),
+    fire_tool_results(Callbacks, NewToolCalls),
     NextOpts = Opts#{messages => ToolResults},
     iterate(NextOpts, N - 1, ToolCallsMade ++ NewToolCalls).
+
+%% @private 对每个工具调用记录触发 on_tool_result 回调（观察用）
+%%
+%% 并发执行时回调在整批结果收齐后触发（非逐个完成即触发）。
+fire_tool_results(Callbacks, CallRecords) ->
+    lists:foreach(fun(#{name := Name, result := Result}) ->
+        beamai_agent_callbacks:invoke(on_tool_result, [Name, Result], Callbacks)
+    end, CallRecords).
 
 %% @private 取贯穿全链的 context（带 conversation_id），缺省新建
 ctx(#{chat_opts := ChatOpts}) ->
@@ -158,13 +186,12 @@ compute_iterations(ToolCallsMade) -> length(ToolCallsMade) + 1.
 
 %% @private 构建中断上下文 map
 %%
-%% delta 模式下会话历史在 store，本上下文不再保存全量 pending_messages；
-%% resume 仅凭 completed_tool_results + 人类输入作为 delta 继续。
-build_interrupt_context(TCs, Iteration, CompletedResults,
+%% delta 模式下会话历史在 store：触发中断的 assistant(tool_calls) 已由 Memory
+%% filter 存储，resume 仅凭 completed_tool_results + 人类输入作为 delta 继续，
+%% 故不再保存 pending_messages / assistant_response。TCs 仅用于定位被中断的调用。
+build_interrupt_context(_TCs, Iteration, CompletedResults,
                         InterruptedTC, ToolCallsMade, Reason) ->
-    AssistantMsg = #{role => assistant, content => null, tool_calls => TCs},
     #{
-        assistant_response => AssistantMsg,
         completed_tool_results => CompletedResults,
         interrupted_tool_call => InterruptedTC,
         iteration => Iteration,
@@ -197,31 +224,6 @@ check_callback_interrupt_loop([TC | Rest], Fun) ->
         _ ->
             check_callback_interrupt_loop(Rest, Fun)
     end.
-
-%%====================================================================
-%% 内部函数 - 带中断检查的 Tool 执行
-%%====================================================================
-
-%% @private 逐个执行 tool_calls（用贯穿 context），检查执行结果中的中断信号
-%%
-%% 如果某个 tool 返回 {interrupt, Reason, PartialResult}，
-%% 停止执行并返回中断信息。
-execute_tools_with_interrupt_check(Kernel, ToolCalls, Context) ->
-    execute_tools_iter(Kernel, ToolCalls, Context, [], []).
-
-%% @private 执行循环体
-execute_tools_iter(_Kernel, [], _Context, ResultsAcc, CallsAcc) ->
-    {ok, lists:reverse(ResultsAcc), lists:reverse(CallsAcc)};
-execute_tools_iter(Kernel, [TC | Rest], Context, ResultsAcc, CallsAcc) ->
-    {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
-    Result = case beamai_kernel:invoke_tool(Kernel, Name, Args, Context) of
-        {ok, Value, _Ctx} -> beamai_tool:encode_result(Value);
-        {error, Reason} -> beamai_tool:encode_result(#{error => Reason})
-    end,
-    Msg = #{role => tool, tool_call_id => Id, content => Result},
-    CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id},
-    execute_tools_iter(Kernel, Rest, Context,
-        [Msg | ResultsAcc], [CallRecord | CallsAcc]).
 
 %%====================================================================
 %% 内部函数 - 辅助
