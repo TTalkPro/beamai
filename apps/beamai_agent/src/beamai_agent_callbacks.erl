@@ -72,7 +72,9 @@ invoke(Name, Args, Callbacks) ->
 %% 元数据包含：
 %%   - agent_id: agent 唯一标识
 %%   - agent_name: agent 名称
+%%   - conversation_id: 当前会话标识
 %%   - turn_count: 当前已完成的 turn 数
+%%   - run_id: 本次 run 的唯一 ID（未在 run 中时 undefined）
 %%   - timestamp: 当前时间戳（毫秒）
 %%
 %% @param AgentState agent 状态 map
@@ -81,5 +83,7 @@ invoke(Name, Args, Callbacks) ->
 build_metadata(AgentState) ->
     #{agent_id => maps:get(id, AgentState),
       agent_name => maps:get(name, AgentState, <<>>),
+      conversation_id => maps:get(conversation_id, AgentState, undefined),
       turn_count => maps:get(turn_count, AgentState, 0),
+      run_id => maps:get(run_id, AgentState, undefined),
       timestamp => erlang:system_time(millisecond)}.
