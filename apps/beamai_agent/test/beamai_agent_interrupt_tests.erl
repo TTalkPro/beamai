@@ -62,18 +62,16 @@ handle_interrupt_test() ->
 
 build_resume_messages_test() ->
     IntState = #{
-        completed_tool_results => [#{role => tool, tool_call_id => <<"c0">>,
-                                    content => <<"done">>}],
         interrupted_tool_call => #{id => <<"c1">>, function => #{name => <<"ask">>}}
     },
     Msgs = beamai_agent_interrupt:build_resume_messages(IntState, <<"yes, approved">>),
-    %% delta 模式：[已完成 tool 结果] ++ [人类输入作为 tool 结果]
-    %% （历史与触发中断的 assistant(tool_calls) 由 Memory filter 维护，不在 delta 内）
-    ?assertEqual(2, length(Msgs)),
-    LastMsg = lists:last(Msgs),
-    ?assertEqual(tool, maps:get(role, LastMsg)),
-    ?assertEqual(<<"c1">>, maps:get(tool_call_id, LastMsg)),
-    ?assertEqual(<<"yes, approved">>, maps:get(content, LastMsg)).
+    %% Agent 自管编排：只返回[人类输入作为被中断 tool_call 的结果]，
+    %% 已累积的完整 messages 由 interrupt_state.messages 携带、由调用方拼接。
+    ?assertEqual(1, length(Msgs)),
+    [Msg] = Msgs,
+    ?assertEqual(tool, maps:get(role, Msg)),
+    ?assertEqual(<<"c1">>, maps:get(tool_call_id, Msg)),
+    ?assertEqual(<<"yes, approved">>, maps:get(content, Msg)).
 
 validate_resume_input_test() ->
     IntState = #{status => interrupted},

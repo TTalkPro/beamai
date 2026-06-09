@@ -479,44 +479,33 @@ state_create_test() ->
     ?assertEqual(true, maps:get('__agent__', State)),
     ?assert(is_binary(maps:get(id, State))),
     ?assertEqual(<<"agent">>, maps:get(name, State)),
-    %% 跨轮历史改由 filter-memory store 维护，agent 状态不再持有 messages，
-    %% 而是持有 store 句柄与 conversation_id。
+    %% 跨轮历史改由 filter-memory provider 维护，agent 状态不再持有 messages，
+    %% 而是持有 memory provider 与 conversation_id。
     ?assert(is_binary(beamai_agent_state:conversation_id(State))),
-    ?assertNotEqual(undefined, beamai_agent_state:store(State)),
+    ?assertNotEqual(undefined, beamai_agent_state:memory(State)),
     ?assertEqual([], beamai_agent:messages(State)),
     ?assertEqual(0, maps:get(turn_count, State)),
     ?assertEqual(10, maps:get(max_tool_iterations, State)).
 
 state_create_memory_disabled_test() ->
-    %% memory => false 时不启用记忆：无 store，messages 退化为 []
+    %% memory => false 时不启用记忆：无 provider，messages 退化为 []
     {ok, State} = beamai_agent_state:create(#{llm => {mock, #{}}, memory => false}),
-    ?assertEqual(undefined, beamai_agent_state:store(State)),
+    ?assertEqual(undefined, beamai_agent_state:memory(State)),
     ?assertEqual([], beamai_agent:messages(State)).
 
 state_build_kernel_with_existing_test() ->
     K = beamai_kernel:new(),
     ?assertEqual(K, beamai_agent_state:build_kernel(#{kernel => K})).
 
-state_inject_callback_filters_test() ->
-    K0 = beamai_kernel:new(),
-    Callbacks = #{
-        on_llm_call => fun(_Msgs, _Meta) -> ok end,
-        on_tool_call => fun(_Name, _Args) -> ok end
-    },
-    K1 = beamai_agent_state:inject_callback_filters(K0, Callbacks),
-    #{filters := Filters} = K1,
-    %% 仅注入 on_llm_call filter；on_tool_call 不在此注入（由 tool_loop 的
-    %% check_callback_interrupt 统一触发，避免双触发）。
-    ?assertEqual(1, length(Filters)),
-    Names = [maps:get(name, F) || F <- Filters],
-    ?assert(lists:member(<<"agent_on_llm_call">>, Names)),
-    ?assertNot(lists:member(<<"agent_on_tool_call">>, Names)).
-
-state_inject_no_callbacks_test() ->
-    K0 = beamai_kernel:new(),
-    K1 = beamai_agent_state:inject_callback_filters(K0, #{}),
-    #{filters := Filters} = K1,
-    ?assertEqual(0, length(Filters)).
+%% agent 不再向 kernel 注入 callback/memory filter：注册回调后 kernel 仍无 filter
+state_no_filter_injection_test() ->
+    {ok, State} = beamai_agent:new(#{
+        llm => {mock, #{}},
+        callbacks => #{on_llm_call => fun(_M, _Meta) -> ok end,
+                       on_tool_call => fun(_N, _A) -> ok end}
+    }),
+    #{filters := Filters} = beamai_agent:kernel(State),
+    ?assertEqual([], Filters).
 
 %%====================================================================
 %% extract_content 健壮性（#4）
@@ -666,27 +655,62 @@ default_store_orphan_fallback_test() ->
     %% 确保 app 未运行
     application:stop(beamai_agent),
     {ok, State} = beamai_agent:new(#{llm => {mock, #{}}}),
-    Store = beamai_agent_state:store(State),
-    ?assertMatch({beamai_chat_memory_ets, beamai_agent_default_memory}, Store),
+    %% 默认 provider 包默认 ETS store
+    Mem = beamai_agent_state:memory(State),
+    ?assertMatch({beamai_memory_provider_default,
+                  {beamai_chat_memory_ets, beamai_agent_default_memory}}, Mem),
     ?assert(is_pid(whereis(beamai_agent_default_memory))).
 
 %%====================================================================
 %% 上下文窗口管理（#6）：memory => {window, N}
 %%====================================================================
 
-%% {window, N}：全量入底层 store，messages/1（经窗口）只见最近 N 条非系统消息
+%% {window, N}：全量持久（history 全见）；窗口只在 prepare（发送前）裁剪
 windowed_memory_test() ->
     {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}}, memory => {window, 2},
                                      conversation_id => <<"win-conv">>}),
-    %% store 句柄为窗口包装
-    ?assertMatch({beamai_chat_memory_window, _}, beamai_agent_state:store(Agent)),
+    %% memory provider 为窗口 provider 包默认 provider
+    Provider = beamai_agent_state:memory(Agent),
+    ?assertMatch({beamai_memory_provider_window, _}, Provider),
     %% 追加 4 条用户消息
     [beamai_agent:add_message(Agent, #{role => user, content => C})
      || C <- [<<"m1">>, <<"m2">>, <<"m3">>, <<"m4">>]],
-    Msgs = beamai_agent:messages(Agent),
-    Contents = [maps:get(content, M) || M <- Msgs],
-    %% 窗口只保留最近 2 条
-    ?assertEqual([<<"m3">>, <<"m4">>], Contents).
+    %% history（messages/1）保留全量 4 条
+    AllContents = [maps:get(content, M) || M <- beamai_agent:messages(Agent)],
+    ?assertEqual([<<"m1">>, <<"m2">>, <<"m3">>, <<"m4">>], AllContents),
+    %% prepare（发送给 LLM 前）只保留最近 2 条
+    Full = beamai_memory_provider:history(Provider, <<"win-conv">>),
+    Sent = beamai_memory_provider:prepare(Provider, <<"win-conv">>, Full),
+    ?assertEqual([<<"m3">>, <<"m4">>], [maps:get(content, M) || M <- Sent]).
+
+%%====================================================================
+%% 自定义记忆 Provider：memory => {Module, Ref}（符合 beamai_memory_provider 协议）
+%%====================================================================
+
+custom_memory_provider_test() ->
+    meck:new(beamai_chat_completion, [passthrough]),
+    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+        {ok, #{content => <<"hi back">>, finish_reason => <<"stop">>}}
+    end),
+    Provider = beamai_agent_fake_memory:new(fake_mem_tab),
+    try
+        {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}},
+                                         memory => Provider,
+                                         conversation_id => <<"c">>}),
+        %% provider 原样作为 agent 记忆（未被默认 provider 包装）
+        ?assertEqual(Provider, beamai_agent_state:memory(Agent)),
+        {ok, R, _} = beamai_agent:run(Agent, <<"hello">>),
+        ?assertEqual(<<"hi back">>, maps:get(content, R)),
+        %% 自定义 provider 真的被用到：单轮一次 prepare；append 至少 2 次(user+assistant)
+        ?assertEqual(1, beamai_agent_fake_memory:count(fake_mem_tab, prepare)),
+        ?assert(beamai_agent_fake_memory:count(fake_mem_tab, append) >= 2),
+        %% 历史经自定义 provider 落库（user + assistant）
+        ?assertEqual([<<"hello">>, <<"hi back">>],
+                     [maps:get(content, M) || M <- beamai_agent:messages(Agent)])
+    after
+        meck:unload(beamai_chat_completion),
+        catch ets:delete(fake_mem_tab)
+    end.
 
 %% 工具返回 {error, Reason}：归一为稳定的 #{error => #{type, message}} 结构
 tool_error_structured_test() ->
