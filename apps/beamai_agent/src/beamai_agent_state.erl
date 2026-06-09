@@ -163,15 +163,14 @@ build_kernel(Config) ->
 %% Config 的 memory 选项（统一解析为一个 beamai_memory_provider:provider/0）：
 %%   - 缺省（default）：默认 provider 包共享默认 store（懒启动，注册名 ?DEFAULT_STORE_NAME）
 %%   - false | none：不启用记忆（memory=undefined，仅在本轮内累积、不持久）
-%%   - {window, N}：窗口 provider 包「默认 provider + 默认 store」，发给 LLM 时只保留
+%%   - {window, N}：默认 provider 带 N 条滑动窗口（默认 store），发给 LLM 时只保留
 %%     最近 N 条非系统消息（全量仍持久于底层），防止长对话撑爆 context window
-%%   - {store, Handle}：默认 provider 包指定存储后端句柄
+%%   - {store, Handle}：默认 provider 包指定存储后端句柄（无窗口）
 %%   - {Module, Ref}：直接作为 provider（须实现 beamai_memory_provider 协议；
 %%     自定义记忆策略：摘要/RAG/token 窗口…）
 %%
 %% 注：默认为无界增长，长对话需显式选 {window, N} 或自管裁剪/摘要 provider。
-%% 想对自管存储套窗口：自行构造 beamai_memory_provider_window:new(
-%%   beamai_memory_provider:default(Handle), N) 作为 provider 传入。
+%% 想对自管存储套窗口：beamai_memory_provider_default:new(Handle, N) 作为 provider 传入。
 -spec setup_memory(map()) -> beamai_memory_provider:provider() | undefined.
 setup_memory(Config) ->
     case maps:get(memory, Config, default) of
@@ -180,8 +179,7 @@ setup_memory(Config) ->
         default ->
             beamai_memory_provider:default(ensure_default_store());
         {window, MaxMessages} when is_integer(MaxMessages), MaxMessages > 0 ->
-            beamai_memory_provider_window:new(
-                beamai_memory_provider:default(ensure_default_store()), MaxMessages);
+            beamai_memory_provider_default:new(ensure_default_store(), MaxMessages);
         {store, Handle} when is_tuple(Handle) ->
             beamai_memory_provider:default(Handle);
         Provider when is_tuple(Provider) ->

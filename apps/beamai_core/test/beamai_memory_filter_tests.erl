@@ -31,36 +31,36 @@ ets_store_add_get_clear_test() ->
     gen_server:stop(Pid).
 
 %%====================================================================
-%% Window Store 单元测试
+%% Window Provider 单元测试（窗口归在策略层：history 全量，prepare 裁剪）
 %%====================================================================
 
-window_store_test() ->
+window_provider_test() ->
     Name = unique_name(win_inner),
     {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
-    Inner = beamai_chat_memory_ets:handle(Name),
-    Win = beamai_chat_memory_window:handle(Inner, 2),
+    Win = beamai_memory_provider_default:new(beamai_chat_memory_ets:handle(Name), 2),
     Sys = #{role => system, content => <<"sys">>},
     U1 = #{role => user, content => <<"u1">>},
     A1 = #{role => assistant, content => <<"a1">>},
     U2 = #{role => user, content => <<"u2">>},
-    ok = beamai_chat_memory:mem_add(Win, <<"c">>, [Sys, U1, A1, U2]),
-    %% 底层保留全量
-    ?assertEqual([Sys, U1, A1, U2], beamai_chat_memory:mem_get(Inner, <<"c">>)),
-    %% 窗口：system 保留 + 最近 2 条非系统
-    ?assertEqual([Sys, A1, U2], beamai_chat_memory:mem_get(Win, <<"c">>)),
+    ok = beamai_memory_provider:append(Win, <<"c">>, [Sys, U1, A1, U2]),
+    %% history 保留全量
+    Full = beamai_memory_provider:history(Win, <<"c">>),
+    ?assertEqual([Sys, U1, A1, U2], Full),
+    %% prepare（发送前）：system 保留 + 最近 2 条非系统
+    ?assertEqual([Sys, A1, U2], beamai_memory_provider:prepare(Win, <<"c">>, Full)),
     gen_server:stop(Pid).
 
-window_drops_orphan_tool_test() ->
+window_provider_drops_orphan_tool_test() ->
     Name = unique_name(win_orphan),
     {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
-    Inner = beamai_chat_memory_ets:handle(Name),
-    Win = beamai_chat_memory_window:handle(Inner, 2),
+    Win = beamai_memory_provider_default:new(beamai_chat_memory_ets:handle(Name), 2),
     A1 = #{role => assistant, content => <<"a1">>},
     T1 = #{role => tool, tool_call_id => <<"x">>, name => <<"t">>, content => <<"r">>},
     U2 = #{role => user, content => <<"u2">>},
-    ok = beamai_chat_memory:mem_add(Win, <<"c">>, [A1, T1, U2]),
-    %% 窗口取最近 2 条 = [T1, U2]，头部孤立 tool 被丢弃
-    ?assertEqual([U2], beamai_chat_memory:mem_get(Win, <<"c">>)),
+    ok = beamai_memory_provider:append(Win, <<"c">>, [A1, T1, U2]),
+    Full = beamai_memory_provider:history(Win, <<"c">>),
+    %% prepare 取最近 2 条 = [T1, U2]，头部孤立 tool 被丢弃
+    ?assertEqual([U2], beamai_memory_provider:prepare(Win, <<"c">>, Full)),
     gen_server:stop(Pid).
 
 %%====================================================================

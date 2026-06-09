@@ -106,8 +106,8 @@ end_to_end_example_test() ->
         after 1000 -> ?assert(false)
         end,
 
-        %% --- 7. 历史经 memory provider 落库（窗口 provider 包默认 provider）---
-        ?assertMatch({beamai_memory_provider_window, _},
+        %% --- 7. 历史经 memory provider 落库（默认 provider 带窗口 50）---
+        ?assertMatch({beamai_memory_provider_default, {_, 50}},
                      beamai_agent_state:memory(Agent1)),
         Msgs = beamai_agent:messages(Agent1),
         %% user + assistant(tool_calls) + tool 结果 + assistant(final)

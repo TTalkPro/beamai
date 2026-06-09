@@ -655,10 +655,10 @@ default_store_orphan_fallback_test() ->
     %% 确保 app 未运行
     application:stop(beamai_agent),
     {ok, State} = beamai_agent:new(#{llm => {mock, #{}}}),
-    %% 默认 provider 包默认 ETS store
+    %% 默认 provider 包默认 ETS store（无窗口 = infinity）
     Mem = beamai_agent_state:memory(State),
     ?assertMatch({beamai_memory_provider_default,
-                  {beamai_chat_memory_ets, beamai_agent_default_memory}}, Mem),
+                  {{beamai_chat_memory_ets, beamai_agent_default_memory}, infinity}}, Mem),
     ?assert(is_pid(whereis(beamai_agent_default_memory))).
 
 %%====================================================================
@@ -669,9 +669,9 @@ default_store_orphan_fallback_test() ->
 windowed_memory_test() ->
     {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}}, memory => {window, 2},
                                      conversation_id => <<"win-conv">>}),
-    %% memory provider 为窗口 provider 包默认 provider
+    %% memory provider 为默认 provider 带窗口 2
     Provider = beamai_agent_state:memory(Agent),
-    ?assertMatch({beamai_memory_provider_window, _}, Provider),
+    ?assertMatch({beamai_memory_provider_default, {_, 2}}, Provider),
     %% 追加 4 条用户消息
     [beamai_agent:add_message(Agent, #{role => user, content => C})
      || C <- [<<"m1">>, <<"m2">>, <<"m3">>, <<"m4">>]],

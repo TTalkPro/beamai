@@ -155,12 +155,13 @@ end.
 
 | 层 | 协议（behaviour） | 职责 | 默认实现 |
 |----|------------------|------|----------|
-| **策略** | `beamai_memory_provider` | `history`(载入跨轮)/`append`(持久化)/`prepare`(发送前变换:窗口/摘要/RAG)/`clear` | `beamai_memory_provider_default`（全量持久、prepare 恒等） |
+| **策略** | `beamai_memory_provider` | `history`(载入跨轮)/`append`(持久化)/`prepare`(发送前变换:窗口/摘要/RAG)/`clear` | `beamai_memory_provider_default`（包存储后端，全量持久；`new/2` 可带滑动窗口） |
 | **存储** | `beamai_chat_memory` | dumb 后端：`mem_get`/`mem_add`/`mem_clear` | `beamai_chat_memory_ets` |
 
 职责切分：**within-run**（一轮内跨工具迭代）消息由 loop 累积；**cross-run**（跨轮）
 加载/持久由 provider 的 history/append；**发送前变换**（裁剪/摘要）由 prepare。
-`memory` 的各种取值统一解析为一个 provider。窗口装饰器：`beamai_memory_provider_window`。
+`memory` 的各种取值统一解析为一个 provider；窗口即默认 provider 的一个选项
+（`beamai_memory_provider_default:new(Store, N)`）。
 
 > 注：`beamai_memory_filter` + `beamai_kernel:with_memory/2` 是**kernel 级**的 filter
 > 形态记忆，给"直接用 kernel / beamai facade"的人；Agent 层**不用**它。
@@ -184,11 +185,10 @@ end.
 {ok, A} = beamai_agent:new(#{llm => LLM, memory => {my_summary_memory, Ref}}).
 ```
 
-对自管存储套窗口：自行构造 provider 再传入（`{Mod, Ref}` 直接作为 provider，不做归一）：
+对自管存储套窗口：用默认 provider 的 `new/2` 构造再传入（`{Mod, Ref}` 直接作为 provider）：
 
 ```erlang
-W = beamai_memory_provider_window:new(
-        beamai_memory_provider:default(beamai_chat_memory_ets:handle(my_store)), 20),
+W = beamai_memory_provider_default:new(beamai_chat_memory_ets:handle(my_store), 20),
 {ok, A} = beamai_agent:new(#{llm => LLM, memory => W}).
 ```
 
