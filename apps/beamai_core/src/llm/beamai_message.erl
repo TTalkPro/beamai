@@ -24,6 +24,7 @@
 -export([system/1, user/1, assistant/1]).
 -export([tool_calls/1, tool_result/3]).
 -export([with_content_blocks/2]).
+-export([from_response/1]).
 
 %% === 访问器（Accessor）===
 -export([role/1, content/1, get_tool_calls/1, tool_call_id/1, name/1]).
@@ -100,6 +101,32 @@ tool_result(Id, Name, Content) ->
 with_content_blocks(Msg, []) -> Msg;
 with_content_blocks(Msg, Blocks) when is_list(Blocks) ->
     Msg#{content_blocks => Blocks}.
+
+%% @doc 把 LLM 响应转为中性 assistant 消息（无可存内容返回 undefined）
+%%
+%% tool_calls 优先，否则取 content；同时保留 content_blocks（含 Anthropic
+%% extended-thinking 的 thinking 块与 signature），使回放给 LLM 时适配器能原样
+%% 拼回——否则历史前缀与模型真实产出不一致，会破坏 prompt cache 命中。
+-spec from_response(term()) -> message() | undefined.
+from_response(Response) ->
+    case base_from_response(Response) of
+        undefined ->
+            undefined;
+        Base ->
+            with_content_blocks(Base, beamai_llm_response:content_blocks(Response))
+    end.
+
+%% @private 根据响应构建基础 assistant 消息（tool_calls 优先，否则取 content）
+base_from_response(Response) ->
+    case beamai_llm_response:has_tool_calls(Response) of
+        true ->
+            tool_calls(beamai_llm_response:tool_calls(Response));
+        false ->
+            case beamai_llm_response:content(Response) of
+                null -> undefined;
+                Content -> assistant(Content)
+            end
+    end.
 
 %%====================================================================
 %% Accessor

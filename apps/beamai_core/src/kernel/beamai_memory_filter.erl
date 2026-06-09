@@ -1,16 +1,18 @@
 %%%-------------------------------------------------------------------
-%%% @doc Memory Filter：会话历史的存储与注入（洋葱式）
+%%% @doc Memory Filter：会话历史的存储与注入（kernel 级，洋葱式）
 %%%
-%%% 把会话历史管理收敛到**单个** filter 的 around_chat hook：
+%%% 这是 **kernel 级**的会话记忆：给"直接用 beamai_kernel / beamai facade"的
+%%% 调用方提供 filter 形态的记忆（beamai_kernel:with_memory/2 挂载本 filter）。
 %%%
+%%% 注意：beamai_agent 层**不再**用本 filter——Agent 在自己的 tool loop 里通过
+%%% beamai_memory_provider 显式编排记忆（见该模块）。两者互不影响。
+%%%
+%%% 把会话历史管理收敛到**单个** around_chat hook（delta 模式）：
 %%% - 前置（调 LLM 前）：读 context 的 conversation_id，把本轮 delta 存入 store，
 %%%   再用 store 里的完整历史替换 messages 发给 LLM。
 %%% - 后置（调 LLM 后）：把 LLM 的 assistant 回复存入 store。
 %%%
-%%% 无 conversation_id 时原样透传（退化为单次无状态调用）。前后逻辑同处一个
-%%% around 闭包，只需查一次 conversation_id；洋葱链天然保证前置在内层之前、
-%%% 后置在内层之后。order 越小越外层，memory 用较小 order 即可包在其它 filter
-%%% （如 system prompt 注入）外层。
+%%% 无 conversation_id 时原样透传（退化为单次无状态调用）。order 越小越外层。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -56,29 +58,7 @@ memory_filter(Store, Order) ->
         end
     }, Order).
 
-%% @doc 把 LLM 响应转为中性 assistant 消息（无可存内容返回 undefined）
-%%
-%% 同时保留响应的 content_blocks（含 Anthropic extended-thinking 的 thinking
-%% 块与 signature），使该消息回放给 LLM 时适配器能原样拼回 thinking 块——
-%% 否则历史前缀与模型真实产出的回合不一致，会破坏 prompt cache 命中。
+%% @doc 把 LLM 响应转为中性 assistant 消息（保留 content_blocks；委托 beamai_message）。
 -spec response_to_message(term()) -> beamai_message:message() | undefined.
 response_to_message(Response) ->
-    case base_message(Response) of
-        undefined ->
-            undefined;
-        Base ->
-            beamai_message:with_content_blocks(
-                Base, beamai_llm_response:content_blocks(Response))
-    end.
-
-%% @private 根据响应构建基础 assistant 消息（tool_calls 优先，否则取 content）
-base_message(Response) ->
-    case beamai_llm_response:has_tool_calls(Response) of
-        true ->
-            beamai_message:tool_calls(beamai_llm_response:tool_calls(Response));
-        false ->
-            case beamai_llm_response:content(Response) of
-                null -> undefined;
-                Content -> beamai_message:assistant(Content)
-            end
-    end.
+    beamai_message:from_response(Response).
