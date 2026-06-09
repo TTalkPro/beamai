@@ -23,9 +23,11 @@
 %% === 构建器（Builder）===
 -export([system/1, user/1, assistant/1]).
 -export([tool_calls/1, tool_result/3]).
+-export([with_content_blocks/2]).
 
 %% === 访问器（Accessor）===
 -export([role/1, content/1, get_tool_calls/1, tool_call_id/1, name/1]).
+-export([content_blocks/1]).
 
 %% === 谓词（Predicate）===
 -export([is_message/1, is_role/2]).
@@ -40,6 +42,10 @@
     role := user | assistant | system | tool,
     content := binary() | null,
     tool_calls => [tool_call()],
+    %% 助手回合的 provider 原生内容块（含 Anthropic extended-thinking 的
+    %% thinking/redacted_thinking 块及 signature）。保留它，回放历史时适配器
+    %% 才能原样拼回 thinking 块，避免破坏 prompt cache 前缀。
+    content_blocks => [beamai_llm_response:content_block()],
     tool_call_id => binary(),
     name => binary()
 }.
@@ -86,6 +92,15 @@ tool_calls(TCs) ->
 tool_result(Id, Name, Content) ->
     #{role => tool, tool_call_id => Id, name => Name, content => to_bin(Content)}.
 
+%% @doc 给消息附加 provider 原生内容块（content_blocks）
+%%
+%% 主要用于把助手回合的 thinking 块随历史一并保留，使回放给 LLM 时
+%% 适配器能原样拼回（cache 友好）。Blocks 为空列表时原样返回 Msg。
+-spec with_content_blocks(message(), [beamai_llm_response:content_block()]) -> message().
+with_content_blocks(Msg, []) -> Msg;
+with_content_blocks(Msg, Blocks) when is_list(Blocks) ->
+    Msg#{content_blocks => Blocks}.
+
 %%====================================================================
 %% Accessor
 %%====================================================================
@@ -102,6 +117,11 @@ content(#{content := Content}) -> Content.
 -spec get_tool_calls(message()) -> [tool_call()].
 get_tool_calls(#{tool_calls := TCs}) -> TCs;
 get_tool_calls(_) -> [].
+
+%% @doc 获取 provider 原生内容块（无则返回 []）
+-spec content_blocks(message()) -> [beamai_llm_response:content_block()].
+content_blocks(#{content_blocks := Blocks}) -> Blocks;
+content_blocks(_) -> [].
 
 %% @doc 获取 tool_call_id
 -spec tool_call_id(message()) -> binary() | undefined.
