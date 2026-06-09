@@ -333,6 +333,42 @@ callback_filter_on_llm_call_test() ->
     after 1000 -> ?assert(false)
     end.
 
+%% on_llm_result：每次 LLM 返回后触发；多工具回合含中间轮，可取各次 usage
+callback_on_llm_result_test() ->
+    meck:new(beamai_chat_completion, [passthrough]),
+    CallCount = counters:new(1, []),
+    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+        counters:add(CallCount, 1, 1),
+        case counters:get(CallCount, 1) of
+            1 -> {ok, #{content => null, tool_calls => [tc(<<"c1">>, <<"t1">>)],
+                        finish_reason => <<"tool_calls">>,
+                        usage => #{total_tokens => 11}}};
+            _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>,
+                        usage => #{total_tokens => 22}}}
+        end
+    end),
+    Self = self(),
+    Callbacks = #{on_llm_result =>
+        fun(Resp, _Meta) ->
+            Self ! {llm_result, beamai_llm_response:has_tool_calls(Resp),
+                    maps:get(total_tokens, beamai_llm_response:usage(Resp), 0)}
+        end},
+    K = slow_tools_kernel(fun(_A, _C) -> {ok, <<"ok">>} end),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, callbacks => Callbacks}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
+        %% 两次 LLM 调用各触发一次（含中间工具轮），usage 各自可见
+        ?assertEqual({true, 11}, recv_llm_result()),   %% 第一次：含 tool_calls
+        ?assertEqual({false, 22}, recv_llm_result())   %% 第二次：最终回复
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+recv_llm_result() ->
+    receive {llm_result, HasTC, Tokens} -> {HasTC, Tokens}
+    after 1000 -> timeout
+    end.
+
 callback_filter_on_tool_call_test() ->
     meck:new(beamai_chat_completion, [passthrough]),
     CallCount = counters:new(1, []),

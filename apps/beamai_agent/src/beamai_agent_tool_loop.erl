@@ -73,6 +73,8 @@ iterate(Opts, N, ToolCallsMade) ->
     beamai_agent_callbacks:invoke(on_llm_call, [ToSend, Meta], Callbacks),
     case invoke_llm(Opts, ToSend) of
         {ok, Response, _Ctx} ->
+            %% 每次 LLM 返回后触发（含中间轮，可据此累计各次 usage）
+            beamai_agent_callbacks:invoke(on_llm_result, [Response, Meta], Callbacks),
             Messages1 = record_assistant(Opts, Response, Messages),
             case beamai_llm_response:has_tool_calls(Response) of
                 true ->

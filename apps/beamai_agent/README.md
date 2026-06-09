@@ -283,15 +283,18 @@ filters() -> [beamai_filter:new(<<"audit">>,
 | `on_turn_start` | 新 turn 开始 | `(Meta)` |
 | `on_turn_end`   | turn 正常完成 | `(Meta)` |
 | `on_turn_error` | turn 执行出错 | `(Reason, Meta)` |
-| `on_llm_call`   | 每次 LLM 调用前（around_chat 注入） | `(Messages, Meta)` |
+| `on_llm_call`   | 每次 LLM 调用前 | `(Messages, Meta)` |
+| `on_llm_result` | 每次 LLM 返回后（含中间轮，可取各次 usage） | `(Response, Meta)` |
 | `on_tool_call`  | 每个工具调用前，可返回 `{interrupt, Reason}` | `(Name, Args)` |
 | `on_tool_result`| 每个工具执行得到结果后（并发时整批收齐后） | `(Name, Result)` |
 | `on_token`      | 流式模式逐 token 实时推送 | `(Token, Meta)` |
 | `on_interrupt`  | 进入中断状态 | `(IntState, Meta)` |
 | `on_resume`     | 从中断恢复 | `(IntState, Meta)` |
 
-> `Meta` 含 `agent_id / agent_name / turn_count / timestamp`；`on_llm_call` 的 Meta 另含
-> `conversation_id / run_id`。
+> `Meta` 含 `agent_id / agent_name / conversation_id / turn_count / run_id / timestamp`。
+> `on_llm_result` 的 `Response` 是原始 `beamai_llm_response`，可经访问器取
+> `content / tool_calls / usage / finish_reason`——这是观测**每次**（含中间轮）token
+> 用量的唯一途径（`run` 结果的 `usage` 只反映最后一次）。
 
 ## 依赖
 
