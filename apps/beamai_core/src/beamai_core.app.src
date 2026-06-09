@@ -31,9 +31,7 @@
         beamai_memory_provider,
         %% 会话记忆（Memory Filter 机制）
         beamai_chat_memory_ets,
-        beamai_chat_memory_window,
         beamai_memory_provider_default,
-        beamai_memory_provider_window,
         beamai_memory_filter,
         %% HTTP 客户端
         beamai_http,

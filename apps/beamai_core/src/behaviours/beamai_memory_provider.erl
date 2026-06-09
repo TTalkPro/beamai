@@ -13,7 +13,7 @@
 %%%   - **发送前变换**（裁剪窗口 / 摘要 / 召回）由 provider 的 prepare 负责（纯函数）。
 %%%
 %%% 句柄约定 `{Module, Ref}`。默认实现见 `beamai_memory_provider_default`
-%%% （持久全量、prepare 恒等）；窗口装饰器见 `beamai_memory_provider_window`。
+%%% （包存储后端，持久全量、prepare 恒等；new/2 可带滑动窗口）。
 %%% 自定义记忆只需实现这 4 个 callback，`memory => {YourMod, Ref}` 即插。
 %%%
 %%% @end
