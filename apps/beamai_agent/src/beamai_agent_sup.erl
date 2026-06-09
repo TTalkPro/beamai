@@ -15,7 +15,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, ensure_store/1]).
+-export([start_link/0, ensure_store/1, ensure_manager/0]).
 
 %% Supervisor 回调
 -export([init/1]).
@@ -48,6 +48,21 @@ ensure_store(Name) ->
     end,
     beamai_chat_memory_ets:handle(Name).
 
+%% @doc 确保子 agent 管理器在监督树下运行（幂等），返回其 pid。
+-spec ensure_manager() -> pid().
+ensure_manager() ->
+    case whereis(beamai_subagent_manager) of
+        Pid when is_pid(Pid) -> Pid;
+        undefined ->
+            case supervisor:start_child(?MODULE, manager_spec()) of
+                {ok, Pid} -> Pid;
+                {error, {already_started, Pid}} -> Pid;
+                {error, already_present} ->
+                    {ok, Pid} = supervisor:restart_child(?MODULE, beamai_subagent_manager),
+                    Pid
+            end
+    end.
+
 %%====================================================================
 %% Supervisor 回调
 %%====================================================================
@@ -59,12 +74,24 @@ init([]) ->
         intensity => 5,
         period => 10
     },
-    %% store 按需通过 ensure_store/1 动态加入，无静态子进程
+    %% store 与子 agent 管理器均按需动态加入（避免与库式懒启动的孤儿单例重名冲突）
     {ok, {SupFlags, []}}.
 
 %%====================================================================
 %% 内部函数
 %%====================================================================
+
+%% @private 子 agent 管理器子进程规格（permanent）
+manager_spec() ->
+    #{
+        id => beamai_subagent_manager,
+        start => {beamai_subagent_manager, start_link,
+                  [#{ttl => application:get_env(beamai_agent, subagent_ttl, infinity)}]},
+        restart => permanent,
+        shutdown => 5000,
+        type => worker,
+        modules => [beamai_subagent_manager]
+    }.
 
 %% @private 会话 store 子进程规格（ETS 后端，permanent）
 store_spec(Name) ->

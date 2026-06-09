@@ -5,6 +5,6 @@
     {mod, {beamai_agent_app, []}},
     {applications, [kernel, stdlib, jsx, beamai_core, beamai_llm]},
     {env, []},
-    {modules, [beamai_agent, beamai_agent_app, beamai_agent_sup, beamai_agent_state, beamai_agent_callbacks, beamai_agent_interrupt, beamai_agent_utils, beamai_agent_tool_loop]},
+    {modules, [beamai_agent, beamai_agent_app, beamai_agent_sup, beamai_agent_state, beamai_agent_callbacks, beamai_agent_interrupt, beamai_agent_utils, beamai_agent_tool_loop, beamai_agent_delegate, beamai_subagent_manager]},
     {licenses, ["Apache-2.0"]}
 ]}.
