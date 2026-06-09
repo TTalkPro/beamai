@@ -74,6 +74,7 @@ handle_interrupt(Type, Reason, Context, AgentState) ->
     IntState = #{
         status => interrupted,
         reason => Reason,
+        messages => maps:get(messages, Context, []),
         completed_tool_results => maps:get(completed_tool_results, Context, []),
         interrupted_tool_call => maps:get(interrupted_tool_call, Context, undefined),
         iteration => maps:get(iteration, Context, 0),
@@ -84,34 +85,22 @@ handle_interrupt(Type, Reason, Context, AgentState) ->
     UpdatedAgent = AgentState#{interrupt_state => IntState},
     {IntState, UpdatedAgent}.
 
-%% @doc 构建恢复用的 delta 消息列表（filter-memory delta 模式）
+%% @doc 构建恢复用的消息（人类输入作为被中断 tool_call 的结果）
 %%
-%% 跨轮历史由 Memory filter 按 conversation_id 维护，触发中断的
-%% assistant(tool_calls) 已在中断那次 invoke_chat 由 Memory filter 后置存储。
-%% 因此 resume 只需提交本轮 **delta**：已完成的工具结果 + 人类输入（作为被中断
-%% tool_call 的 tool result）。Memory filter 会存储该 delta 并展开完整历史。
-%%
-%% delta 结构:
-%%   [已完成的 tool 结果...] ++ [人类输入作为 tool 结果]
+%% Agent 自管编排下，中断时本轮已累积的完整 messages（含 assistant(tool_calls)
+%% 与已完成工具结果）由 interrupt_state.messages 携带。因此 resume 只需补一条
+%% **人类输入作为被中断 tool_call 的 tool result**，由调用方拼到该 messages 之后。
 %%
 %% @param IntState 中断状态
 %% @param HumanInput 人类输入（binary 或 map）
-%% @returns 恢复用的 delta 消息列表
+%% @returns 单元素列表 [人类输入作为 tool 结果]
 -spec build_resume_messages(map(), term()) -> [map()].
-build_resume_messages(IntState, HumanInput) ->
-    #{
-        completed_tool_results := CompletedResults,
-        interrupted_tool_call := InterruptedCall
-    } = IntState,
-
-    %% 构建人类输入作为 tool result
-    HumanToolResult = #{
+build_resume_messages(#{interrupted_tool_call := InterruptedCall}, HumanInput) ->
+    [#{
         role => tool,
         tool_call_id => get_tool_call_id(InterruptedCall),
         content => format_human_input(HumanInput)
-    },
-
-    CompletedResults ++ [HumanToolResult].
+    }].
 
 %% @doc 验证 resume 输入是否匹配中断上下文
 %%
