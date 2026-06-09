@@ -57,8 +57,22 @@ memory_filter(Store, Order) ->
     }, Order).
 
 %% @doc 把 LLM 响应转为中性 assistant 消息（无可存内容返回 undefined）
+%%
+%% 同时保留响应的 content_blocks（含 Anthropic extended-thinking 的 thinking
+%% 块与 signature），使该消息回放给 LLM 时适配器能原样拼回 thinking 块——
+%% 否则历史前缀与模型真实产出的回合不一致，会破坏 prompt cache 命中。
 -spec response_to_message(term()) -> beamai_message:message() | undefined.
 response_to_message(Response) ->
+    case base_message(Response) of
+        undefined ->
+            undefined;
+        Base ->
+            beamai_message:with_content_blocks(
+                Base, beamai_llm_response:content_blocks(Response))
+    end.
+
+%% @private 根据响应构建基础 assistant 消息（tool_calls 优先，否则取 content）
+base_message(Response) ->
     case beamai_llm_response:has_tool_calls(Response) of
         true ->
             beamai_message:tool_calls(beamai_llm_response:tool_calls(Response));
