@@ -1,12 +1,13 @@
 %%%-------------------------------------------------------------------
 %%% @doc Agent 回调系统
 %%%
-%%% 提供 8 个回调，用于监控和控制 agent 执行过程：
+%%% 提供 9 个回调，用于监控和控制 agent 执行过程：
 %%%   - on_turn_start: 新 turn 开始时触发
 %%%   - on_turn_end: turn 正常完成后触发
 %%%   - on_turn_error: turn 执行出错时触发
 %%%   - on_llm_call: 每次 LLM 调用前触发（通过 around_chat filter 注入）
 %%%   - on_tool_call: 每次 tool 调用前触发，可返回 {interrupt, Reason}
+%%%   - on_tool_result: 每个 tool 执行得到结果后触发（观察用，不影响流程）
 %%%   - on_token: streaming 模式下每收到一个 token 时触发
 %%%   - on_interrupt: agent 进入中断状态时触发
 %%%   - on_resume: agent 从中断状态恢复时触发
@@ -33,6 +34,8 @@
     on_tool_call   => fun((binary(), map()) -> ok | {interrupt, term()}),
                                                     %% 参数: 函数名, 调用参数
                                                     %% 返回 {interrupt, Reason} 可触发中断
+    on_tool_result => fun((binary(), binary()) -> ok),
+                                                    %% 参数: 函数名, 编码后的结果（binary）
     on_token       => fun((binary(), map()) -> ok), %% 参数: token 文本, 元数据 map
     on_interrupt   => fun((map(), map()) -> ok),    %% 参数: interrupt_state, 元数据 map
     on_resume      => fun((map(), map()) -> ok)     %% 参数: interrupt_state, 元数据 map

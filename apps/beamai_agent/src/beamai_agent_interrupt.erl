@@ -74,8 +74,6 @@ handle_interrupt(Type, Reason, Context, AgentState) ->
     IntState = #{
         status => interrupted,
         reason => Reason,
-        pending_messages => maps:get(pending_messages, Context, []),
-        assistant_response => maps:get(assistant_response, Context, #{}),
         completed_tool_results => maps:get(completed_tool_results, Context, []),
         interrupted_tool_call => maps:get(interrupted_tool_call, Context, undefined),
         iteration => maps:get(iteration, Context, 0),

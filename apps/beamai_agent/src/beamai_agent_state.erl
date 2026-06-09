@@ -34,6 +34,7 @@
     conversation_id := binary(),    %% 本 agent 的会话标识，用于在 store 内定位历史
     system_prompt := binary() | undefined, %% 系统提示词
     max_tool_iterations := pos_integer(),  %% tool loop 最大迭代次数
+    parallel_tools := boolean(),           %% 一轮多个 tool_call 是否并发执行（默认 true）
     callbacks := beamai_agent_callbacks:callbacks(), %% 回调函数表
     turn_count := non_neg_integer(),%% 已完成的对话轮数
     metadata := map(),              %% 用户自定义元数据
@@ -47,8 +48,6 @@
 -type interrupt_state() :: #{
     status := interrupted,
     reason := term(),                     %% 中断原因
-    pending_messages := [map()],          %% tool loop 中已累积的消息
-    assistant_response := map(),          %% LLM 的响应（含 tool_calls）
     completed_tool_results := [map()],    %% 已完成的 tool 结果
     interrupted_tool_call := map() | undefined, %% 触发中断的 tool_call
     iteration := non_neg_integer(),       %% 当前 tool loop 迭代次数
@@ -77,8 +76,10 @@
 %%   plugins — 要加载的 plugin 模块列表 [module()]
 %%   system_prompt — 系统提示词（binary）
 %%   max_tool_iterations — 最大 tool loop 迭代次数（默认 10）
+%%   parallel_tools — 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
 %%   callbacks — 观察性回调 map（参见 beamai_agent_callbacks:callbacks()）
 %%   memory — 会话记忆（filter-memory）：缺省用共享默认 store；{Mod,Ref} 句柄用自管 store；
+%%            {window,N} / {window,Handle,N} 对历史套 N 条滑动窗口（防上下文窗口爆）；
 %%            false|none 关闭记忆。详见 setup_memory/2
 %%   conversation_id — 会话标识（默认自动生成）
 %%   id — agent ID（默认自动生成）
@@ -108,6 +109,7 @@ create(Config) ->
             conversation_id => maps:get(conversation_id, Config, beamai_id:gen_id(<<"conv">>)),
             system_prompt => maps:get(system_prompt, Config, undefined),
             max_tool_iterations => maps:get(max_tool_iterations, Config, 10),
+            parallel_tools => maps:get(parallel_tools, Config, true),
             callbacks => Callbacks,
             turn_count => 0,
             metadata => maps:get(metadata, Config, #{}),
@@ -155,14 +157,17 @@ build_kernel(Config) ->
 %%
 %% 根据 callbacks 中注册的回调类型，向 kernel 注入对应的洋葱式 filter：
 %%   - 若注册了 on_llm_call: 注入 around_chat filter（每次 LLM 调用前触发）
-%%   - 若注册了 on_tool_call: 注入 around_tool filter（每次工具调用前触发）
+%%
+%% 注意：on_tool_call **不在此注入** filter。它由 tool_loop 的
+%% check_callback_interrupt 在执行每个 tool 前统一触发（那里同时负责
+%% {interrupt, Reason} 中断判定）。若此处再注入 around_tool filter 会导致
+%% on_tool_call 每次工具调用被触发两次。
 %%
 %% Filter 设计要点（around 闭包模型）：
 %%   - 使用 order 9999（最外层之后/最内层，最后注册）；回调仅作观察，不改写请求
 %%   - 前置触发回调后，原样 Next(Req) 透传，不影响执行流程
 %%   - 回调异常由 beamai_agent_callbacks:invoke/3 内部捕获
-%%   - chat 请求形如 #{messages, context, opts}；tool 请求形如 #{tool, args, context}，
-%%     其中 tool 为 tool_spec map（名称在 name 键）
+%%   - chat 请求形如 #{messages, context, opts}
 %%
 %% @param Kernel kernel 实例
 %% @param Callbacks 回调注册表
@@ -170,9 +175,7 @@ build_kernel(Config) ->
 -spec inject_callback_filters(beamai_kernel:kernel(), beamai_agent_callbacks:callbacks()) ->
     beamai_kernel:kernel().
 inject_callback_filters(Kernel, Callbacks) ->
-    HasLlmCb = maps:is_key(on_llm_call, Callbacks),
-    HasToolCb = maps:is_key(on_tool_call, Callbacks),
-    K1 = case HasLlmCb of
+    case maps:is_key(on_llm_call, Callbacks) of
         true ->
             %% 注入 around_chat filter：每次 LLM 调用前触发 on_llm_call 回调
             LlmFilter = beamai_filter:new(
@@ -187,24 +190,6 @@ inject_callback_filters(Kernel, Callbacks) ->
             beamai_kernel:add_filter(Kernel, LlmFilter);
         false ->
             Kernel
-    end,
-    case HasToolCb of
-        true ->
-            %% 注入 around_tool filter：每次工具调用前触发 on_tool_call 回调
-            ToolFilter = beamai_filter:new(
-                <<"agent_on_tool_call">>,
-                #{around_tool => fun(Req, _FCtx, Next) ->
-                    ToolSpec = maps:get(tool, Req, #{}),
-                    ToolName = maps:get(name, ToolSpec, <<>>),
-                    Args = maps:get(args, Req, #{}),
-                    beamai_agent_callbacks:invoke(on_tool_call, [ToolName, Args], Callbacks),
-                    Next(Req)
-                end},
-                9999
-            ),
-            beamai_kernel:add_filter(K1, ToolFilter);
-        false ->
-            K1
     end.
 
 %%====================================================================
@@ -217,7 +202,11 @@ inject_callback_filters(Kernel, Callbacks) ->
 %%   - 缺省：使用懒启动的共享默认 store（注册名 ?DEFAULT_STORE_NAME）
 %%   - false | none：不启用记忆（不挂 Memory filter，store=undefined）
 %%   - 句柄 {Module, Ref}：使用调用方自管的 store（可多 agent 共享，生命周期自负责）
+%%   - {window, N}：默认 store 外套 N 条滑动窗口（全量仍存底层，发给 LLM 时只保留
+%%     最近 N 条非系统消息，防止长对话撑爆 context window）
+%%   - {window, Inner, N}：对自管 store Inner 套 N 条滑动窗口
 %%
+%% 注：默认（default）为无界增长，长对话需显式选 {window, N} 或自管裁剪/摘要 store。
 %% 在 build_kernel + inject_callback_filters 之后挂载，确保即便传入预构建
 %% kernel（build_kernel 原样返回）也能获得会话记忆。
 -spec setup_memory(beamai_kernel:kernel(), map()) ->
@@ -227,28 +216,51 @@ setup_memory(Kernel, Config) ->
         false -> {undefined, Kernel};
         none -> {undefined, Kernel};
         default ->
-            Store = ensure_default_store(),
-            {Store, beamai_kernel:with_memory(Kernel, Store)};
+            attach_memory(Kernel, ensure_default_store());
+        %% {window, N}：默认 store 套 N 条滑动窗口（全量仍存底层，仅发给 LLM 时裁剪）
+        {window, MaxMessages} when is_integer(MaxMessages), MaxMessages > 0 ->
+            Store = beamai_chat_memory_window:handle(ensure_default_store(), MaxMessages),
+            attach_memory(Kernel, Store);
+        %% {window, Inner, N}：对调用方自管 store 套 N 条滑动窗口
+        {window, Inner, MaxMessages}
+                when is_tuple(Inner), is_integer(MaxMessages), MaxMessages > 0 ->
+            attach_memory(Kernel, beamai_chat_memory_window:handle(Inner, MaxMessages));
         Handle when is_tuple(Handle) ->
-            {Handle, beamai_kernel:with_memory(Kernel, Handle)}
+            attach_memory(Kernel, Handle)
     end.
 
-%% @private 懒启动共享默认会话 store（幂等、单例）
+%% @private 挂载 memory filter 并返回 {Store, Kernel}
+attach_memory(Kernel, Store) ->
+    {Store, beamai_kernel:with_memory(Kernel, Store)}.
+
+%% @private 确保共享默认会话 store 运行（幂等、单例），返回句柄
 %%
 %% 用固定注册名避免动态原子增长；各 agent 以各自 conversation_id 在其中分区。
-%% 已启动则复用；未启动则启动并 unlink，使其作为独立单例存活、不随调用进程退出
-%% 而终止（需要可监督/可控生命周期的调用方应通过 Config 的 memory 选项传入自管 store）。
+%% 优先把 store 纳入 beamai_agent 监督树（崩溃可重启）；当 beamai_agent 未作为
+%% OTP 应用启动时（库式直接调用 / 裸 eunit），回退到懒启动并 unlink 的孤儿单例。
 -spec ensure_default_store() -> beamai_chat_memory:handle().
 ensure_default_store() ->
     Name = ?DEFAULT_STORE_NAME,
     case whereis(Name) of
+        Pid when is_pid(Pid) ->
+            beamai_chat_memory_ets:handle(Name);
         undefined ->
-            case beamai_chat_memory_ets:start_link(Name) of
-                {ok, Pid} -> unlink(Pid);
-                {error, {already_started, _Pid}} -> ok
-            end;
-        _Pid ->
-            ok
+            case whereis(beamai_agent_sup) of
+                SupPid when is_pid(SupPid) ->
+                    %% 监督树在线：把 store 作为 permanent 子进程纳入
+                    beamai_agent_sup:ensure_store(Name);
+                undefined ->
+                    %% app 未启动：回退到孤儿单例
+                    start_orphan_store(Name)
+            end
+    end.
+
+%% @private 懒启动孤儿 store（unlink，使其不随调用进程退出而终止）
+-spec start_orphan_store(atom()) -> beamai_chat_memory:handle().
+start_orphan_store(Name) ->
+    case beamai_chat_memory_ets:start_link(Name) of
+        {ok, Pid} -> unlink(Pid);
+        {error, {already_started, _Pid}} -> ok
     end,
     beamai_chat_memory_ets:handle(Name).
 
