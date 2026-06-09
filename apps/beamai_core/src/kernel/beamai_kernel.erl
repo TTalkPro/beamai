@@ -29,6 +29,7 @@
 %% Invoke API（仅单次 chat / tool；ReAct 循环属于 Agent 层）
 -export([invoke_tool/4]).
 -export([invoke_chat/3]).
+-export([invoke_chat_stream/4]).
 
 %% Query API
 -export([get_tool/2]).
@@ -228,6 +229,35 @@ invoke_chat(Kernel, Messages, Opts) ->
             {error, no_llm_service}
     end.
 
+%% @doc 流式 Chat Completion（经完整 around_chat 链）
+%%
+%% 与 invoke_chat/3 走**同一条** filter 洋葱链（Memory / system_prompt 等行为
+%% 完全一致），区别仅在最内层 terminal 调用 provider 的 stream_chat：流式 token
+%% 经 TokenCallback 实时回传，链最终仍返回汇聚后的统一响应（供 Memory filter
+%% 落库、供工具循环判定 tool_calls）。
+%%
+%% 要求 provider 的 stream_chat 返回汇聚后的统一 beamai_llm_response。
+%%
+%% @param Kernel Kernel 实例
+%% @param Messages 消息列表
+%% @param Opts Chat 选项（同 invoke_chat/3）
+%% @param TokenCallback fun((Token :: binary(), Meta :: map()) -> ok)，逐 token 回调
+%% @returns {ok, 响应 Map, 更新后上下文} | {error, 原因}
+-spec invoke_chat_stream(kernel(), [map()], chat_opts(),
+                         fun((binary(), map()) -> ok)) ->
+    {ok, map(), beamai_context:t()} | {error, term()}.
+invoke_chat_stream(Kernel, Messages, Opts, TokenCallback) ->
+    case get_service(Kernel) of
+        {ok, LlmConfig} ->
+            #{filters := Filters0} = Kernel,
+            Context = maps:get(context, Opts, beamai_context:new()),
+            SystemPrompts = maps:get(system_prompts, Opts, []),
+            Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
+            run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback);
+        error ->
+            {error, no_llm_service}
+    end.
+
 %%====================================================================
 %% Query API
 %%====================================================================
@@ -319,6 +349,29 @@ chat_terminal(LlmConfig) ->
     Module = maps:get(module, LlmConfig, beamai_chat_completion),
     fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
         case Module:chat(LlmConfig, Messages, Opts) of
+            {ok, Response} -> #{response => Response, context => Ctx};
+            {error, Reason} -> throw(Reason)
+        end
+    end.
+
+%% @private 运行流式 chat filter 洋葱链（与 run_chat 同链，仅 terminal 不同）
+run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback) ->
+    Req = #{messages => Messages, context => Context, opts => Opts},
+    Terminal = stream_chat_terminal(LlmConfig, TokenCallback),
+    case beamai_filter_chain:run(Filters, around_chat, Terminal, Req) of
+        {ok, #{response := Response, context := Ctx}} -> {ok, Response, Ctx};
+        {error, _} = Err -> Err
+    end.
+
+%% @private 流式 chat 链最内层：调用 provider stream_chat，token 经回调实时回传，
+%% 返回汇聚后的统一响应（出错时 throw，由链统一捕获）。
+stream_chat_terminal(LlmConfig, TokenCallback) ->
+    Module = maps:get(module, LlmConfig, beamai_chat_completion),
+    fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
+        %% on_llm_new_token 由 beamai_chat_completion 的流式包装识别并逐 token 调用；
+        %% 原始 event 回调用空操作（统一响应由 stream_chat 返回值给出）。
+        StreamOpts = Opts#{on_llm_new_token => TokenCallback},
+        case Module:stream_chat(LlmConfig, Messages, fun(_Event) -> ok end, StreamOpts) of
             {ok, Response} -> #{response => Response, context => Ctx};
             {error, Reason} -> throw(Reason)
         end
