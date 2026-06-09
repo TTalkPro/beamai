@@ -16,8 +16,8 @@
 %%%-------------------------------------------------------------------
 -module(beamai_agent_state).
 
--export([create/1, build_kernel/1, inject_callback_filters/2]).
--export([store/1, conversation_id/1]).
+-export([create/1, build_kernel/1]).
+-export([memory/1, conversation_id/1]).
 
 -export_type([agent_state/0]).
 
@@ -30,8 +30,8 @@
     id := binary(),                 %% agent 唯一标识（自动生成或用户指定）
     name := binary(),               %% agent 显示名称
     kernel := beamai_kernel:kernel(), %% kernel 实例（含 LLM、plugins、filters、memory filter）
-    store := beamai_chat_memory:handle() | undefined, %% 会话历史存储句柄（filter-memory）
-    conversation_id := binary(),    %% 本 agent 的会话标识，用于在 store 内定位历史
+    memory := beamai_memory_provider:provider() | undefined, %% 记忆 provider（策略+存储）
+    conversation_id := binary(),    %% 本 agent 的会话标识，用于在记忆内定位历史
     system_prompt := binary() | undefined, %% 系统提示词
     max_tool_iterations := pos_integer(),  %% tool loop 最大迭代次数
     parallel_tools := boolean(),           %% 一轮多个 tool_call 是否并发执行（默认 true）
@@ -48,6 +48,7 @@
 -type interrupt_state() :: #{
     status := interrupted,
     reason := term(),                     %% 中断原因
+    messages := [map()],                  %% 中断时本轮已累积的完整 messages（供 resume 续接）
     completed_tool_results := [map()],    %% 已完成的 tool 结果
     interrupted_tool_call := map() | undefined, %% 触发中断的 tool_call
     iteration := non_neg_integer(),       %% 当前 tool loop 迭代次数
@@ -66,9 +67,9 @@
 %%
 %% 这是 agent 初始化的核心入口，执行以下步骤：
 %%   1. 从 Config 构建 kernel（或使用预构建的 kernel）
-%%   2. 从 Config 提取 callbacks 配置
-%%   3. 将 callback filters 注入到 kernel 中
-%%   4. 组装完整的 agent_state map
+%%   2. 从 Config 解析 memory provider（callbacks 与 memory 均由 tool loop 显式编排，
+%%      不向 kernel 注入 filter）
+%%   3. 组装完整的 agent_state map
 %%
 %% Config 支持的选项：
 %%   kernel — 预构建的 kernel 实例（与 llm/plugins 互斥）
@@ -78,8 +79,9 @@
 %%   max_tool_iterations — 最大 tool loop 迭代次数（默认 10）
 %%   parallel_tools — 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
 %%   callbacks — 观察性回调 map（参见 beamai_agent_callbacks:callbacks()）
-%%   memory — 会话记忆（filter-memory）：缺省用共享默认 store；{Mod,Ref} 句柄用自管 store；
-%%            {window,N} / {window,Handle,N} 对历史套 N 条滑动窗口（防上下文窗口爆）；
+%%   memory — 会话记忆（filter-memory，解析为 beamai_memory_provider）：
+%%            缺省用默认 provider+共享 store；{window,N}/{window,Handle,N} 套滑动窗口；
+%%            {store,Handle} 指定存储后端；{Mod,Ref} 自定义 provider（摘要/RAG…）或存储句柄；
 %%            false|none 关闭记忆。详见 setup_memory/2
 %%   conversation_id — 会话标识（默认自动生成）
 %%   id — agent ID（默认自动生成）
@@ -94,18 +96,17 @@
 create(Config) ->
     try
         Callbacks = maps:get(callbacks, Config, #{}),
-        Kernel0 = build_kernel(Config),
-        Kernel1 = inject_callback_filters(Kernel0, Callbacks),
-        %% 解析会话存储并挂载 filter-memory：跨轮对话历史由 Memory filter
-        %% 按 conversation_id 管理（不再用 agent_state.messages 自累积）。
-        {Store, Kernel} = setup_memory(Kernel1, Config),
+        Kernel = build_kernel(Config),
+        %% 解析记忆 provider：跨轮历史由 Agent 在 tool loop 里显式委托给 provider，
+        %% 不再注入 kernel filter（callbacks 同理，全在 loop 触发）。
+        Memory = setup_memory(Config),
         Id = maps:get(id, Config, beamai_id:gen_id(<<"agent">>)),
         State = #{
             '__agent__' => true,
             id => Id,
             name => maps:get(name, Config, <<"agent">>),
             kernel => Kernel,
-            store => Store,
+            memory => Memory,
             conversation_id => maps:get(conversation_id, Config, beamai_id:gen_id(<<"conv">>)),
             system_prompt => maps:get(system_prompt, Config, undefined),
             max_tool_iterations => maps:get(max_tool_iterations, Config, 10),
@@ -125,9 +126,9 @@ create(Config) ->
             {error, {init_failed, Reason, Stack}}
     end.
 
-%% @doc 获取 agent 的会话存储句柄
--spec store(agent_state()) -> beamai_chat_memory:handle() | undefined.
-store(#{store := Store}) -> Store.
+%% @doc 获取 agent 的记忆 provider（无记忆时 undefined）
+-spec memory(agent_state()) -> beamai_memory_provider:provider() | undefined.
+memory(#{memory := Memory}) -> Memory.
 
 %% @doc 获取 agent 的会话标识
 -spec conversation_id(agent_state()) -> binary().
@@ -153,88 +154,43 @@ build_kernel(Config) ->
     K1 = add_llm(K0, Config),
     add_plugins(K1, Config).
 
-%% @doc 注入 callback filters 到 kernel
-%%
-%% 根据 callbacks 中注册的回调类型，向 kernel 注入对应的洋葱式 filter：
-%%   - 若注册了 on_llm_call: 注入 around_chat filter（每次 LLM 调用前触发）
-%%
-%% 注意：on_tool_call **不在此注入** filter。它由 tool_loop 的
-%% check_callback_interrupt 在执行每个 tool 前统一触发（那里同时负责
-%% {interrupt, Reason} 中断判定）。若此处再注入 around_tool filter 会导致
-%% on_tool_call 每次工具调用被触发两次。
-%%
-%% Filter 设计要点（around 闭包模型）：
-%%   - 使用 order 9999（最外层之后/最内层，最后注册）；回调仅作观察，不改写请求
-%%   - 前置触发回调后，原样 Next(Req) 透传，不影响执行流程
-%%   - 回调异常由 beamai_agent_callbacks:invoke/3 内部捕获
-%%   - chat 请求形如 #{messages, context, opts}
-%%
-%% @param Kernel kernel 实例
-%% @param Callbacks 回调注册表
-%% @returns 注入 filter 后的 kernel
--spec inject_callback_filters(beamai_kernel:kernel(), beamai_agent_callbacks:callbacks()) ->
-    beamai_kernel:kernel().
-inject_callback_filters(Kernel, Callbacks) ->
-    case maps:is_key(on_llm_call, Callbacks) of
-        true ->
-            %% 注入 around_chat filter：每次 LLM 调用前触发 on_llm_call 回调。
-            %% Meta 经引线随请求传入（agent 在 build_chat_opts 把 callback_meta 放进
-            %% opts），filter 闭包据此拿到实时 turn_count/run_id 等，而非空 map。
-            LlmFilter = beamai_filter:new(
-                <<"agent_on_llm_call">>,
-                #{around_chat => fun(Req, _FCtx, Next) ->
-                    Messages = maps:get(messages, Req, []),
-                    Meta = maps:get(callback_meta, maps:get(opts, Req, #{}), #{}),
-                    beamai_agent_callbacks:invoke(on_llm_call, [Messages, Meta], Callbacks),
-                    Next(Req)
-                end},
-                9999
-            ),
-            beamai_kernel:add_filter(Kernel, LlmFilter);
-        false ->
-            Kernel
-    end.
-
 %%====================================================================
 %% 内部函数
 %%====================================================================
 
-%% @private 解析会话存储并挂载 filter-memory
+%% @private 解析记忆 provider（Agent 在 tool loop 里显式使用，不挂 kernel filter）
 %%
-%% Config 的 memory 选项：
-%%   - 缺省：使用懒启动的共享默认 store（注册名 ?DEFAULT_STORE_NAME）
-%%   - false | none：不启用记忆（不挂 Memory filter，store=undefined）
-%%   - 句柄 {Module, Ref}：使用调用方自管的 store（可多 agent 共享，生命周期自负责）
-%%   - {window, N}：默认 store 外套 N 条滑动窗口（全量仍存底层，发给 LLM 时只保留
-%%     最近 N 条非系统消息，防止长对话撑爆 context window）
-%%   - {window, Inner, N}：对自管 store Inner 套 N 条滑动窗口
+%% Config 的 memory 选项（统一解析为一个 beamai_memory_provider:provider/0）：
+%%   - 缺省（default）：默认 provider 包共享默认 store（懒启动，注册名 ?DEFAULT_STORE_NAME）
+%%   - false | none：不启用记忆（memory=undefined，仅在本轮内累积、不持久）
+%%   - {window, N}：窗口 provider 包「默认 provider + 默认 store」，发给 LLM 时只保留
+%%     最近 N 条非系统消息（全量仍持久于底层），防止长对话撑爆 context window
+%%   - {window, Inner, N}：窗口 provider 包 Inner（provider 或存储句柄）
+%%   - {store, Handle}：默认 provider 包指定存储后端句柄
+%%   - {Module, Ref}：若 Module 实现 beamai_memory_provider 协议则直接作为 provider
+%%     （自定义记忆策略：摘要/RAG/token 窗口…）；否则视作存储句柄，用默认 provider 包装
 %%
-%% 注：默认（default）为无界增长，长对话需显式选 {window, N} 或自管裁剪/摘要 store。
-%% 在 build_kernel + inject_callback_filters 之后挂载，确保即便传入预构建
-%% kernel（build_kernel 原样返回）也能获得会话记忆。
--spec setup_memory(beamai_kernel:kernel(), map()) ->
-    {beamai_chat_memory:handle() | undefined, beamai_kernel:kernel()}.
-setup_memory(Kernel, Config) ->
+%% 注：默认为无界增长，长对话需显式选 {window, N} 或自管裁剪/摘要 provider。
+-spec setup_memory(map()) -> beamai_memory_provider:provider() | undefined.
+setup_memory(Config) ->
     case maps:get(memory, Config, default) of
-        false -> {undefined, Kernel};
-        none -> {undefined, Kernel};
+        false -> undefined;
+        none -> undefined;
         default ->
-            attach_memory(Kernel, ensure_default_store());
-        %% {window, N}：默认 store 套 N 条滑动窗口（全量仍存底层，仅发给 LLM 时裁剪）
+            beamai_memory_provider:default(ensure_default_store());
         {window, MaxMessages} when is_integer(MaxMessages), MaxMessages > 0 ->
-            Store = beamai_chat_memory_window:handle(ensure_default_store(), MaxMessages),
-            attach_memory(Kernel, Store);
-        %% {window, Inner, N}：对调用方自管 store 套 N 条滑动窗口
+            beamai_memory_provider_window:new(
+                beamai_memory_provider:default(ensure_default_store()), MaxMessages);
         {window, Inner, MaxMessages}
                 when is_tuple(Inner), is_integer(MaxMessages), MaxMessages > 0 ->
-            attach_memory(Kernel, beamai_chat_memory_window:handle(Inner, MaxMessages));
+            %% Inner 既可是 provider 也可是存储句柄
+            beamai_memory_provider_window:new(beamai_memory_provider:coerce(Inner), MaxMessages);
+        {store, Handle} when is_tuple(Handle) ->
+            beamai_memory_provider:default(Handle);
         Handle when is_tuple(Handle) ->
-            attach_memory(Kernel, Handle)
+            %% provider 句柄原样用；裸存储句柄自动包成默认 provider
+            beamai_memory_provider:coerce(Handle)
     end.
-
-%% @private 挂载 memory filter 并返回 {Store, Kernel}
-attach_memory(Kernel, Store) ->
-    {Store, beamai_kernel:with_memory(Kernel, Store)}.
 
 %% @private 确保共享默认会话 store 运行（幂等、单例），返回句柄
 %%
