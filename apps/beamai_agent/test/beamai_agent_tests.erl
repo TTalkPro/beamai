@@ -312,16 +312,24 @@ callbacks_on_turn_error_test() ->
 callback_filter_on_llm_call_test() ->
     Self = self(),
     Callbacks = #{
-        on_llm_call => fun(Messages, _Meta) -> Self ! {llm_call, length(Messages)} end
+        on_llm_call => fun(Messages, Meta) -> Self ! {llm_call, length(Messages), Meta} end
     },
     {ok, Agent} = beamai_agent:new(#{
         llm => {mock, #{}},
+        name => <<"bob">>,
+        conversation_id => <<"conv-xyz">>,
         callbacks => Callbacks
     }),
     {ok, _, _} = beamai_agent:run(Agent, <<"Hello">>),
-    receive {llm_call, MsgCount} ->
+    receive {llm_call, MsgCount, Meta} ->
         %% 应该有 1 条消息（user msg，无 system prompt）
-        ?assertEqual(1, MsgCount)
+        ?assertEqual(1, MsgCount),
+        %% on_llm_call 现在收到真实 meta（不再是空 map）
+        ?assertEqual(<<"bob">>, maps:get(agent_name, Meta)),
+        ?assertEqual(<<"conv-xyz">>, maps:get(conversation_id, Meta)),
+        ?assert(is_binary(maps:get(agent_id, Meta))),
+        ?assert(is_integer(maps:get(turn_count, Meta))),
+        ?assert(maps:is_key(run_id, Meta))
     after 1000 -> ?assert(false)
     end.
 

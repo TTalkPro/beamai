@@ -177,12 +177,15 @@ build_kernel(Config) ->
 inject_callback_filters(Kernel, Callbacks) ->
     case maps:is_key(on_llm_call, Callbacks) of
         true ->
-            %% 注入 around_chat filter：每次 LLM 调用前触发 on_llm_call 回调
+            %% 注入 around_chat filter：每次 LLM 调用前触发 on_llm_call 回调。
+            %% Meta 经引线随请求传入（agent 在 build_chat_opts 把 callback_meta 放进
+            %% opts），filter 闭包据此拿到实时 turn_count/run_id 等，而非空 map。
             LlmFilter = beamai_filter:new(
                 <<"agent_on_llm_call">>,
                 #{around_chat => fun(Req, _FCtx, Next) ->
                     Messages = maps:get(messages, Req, []),
-                    beamai_agent_callbacks:invoke(on_llm_call, [Messages, #{}], Callbacks),
+                    Meta = maps:get(callback_meta, maps:get(opts, Req, #{}), #{}),
+                    beamai_agent_callbacks:invoke(on_llm_call, [Messages, Meta], Callbacks),
                     Next(Req)
                 end},
                 9999
