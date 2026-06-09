@@ -160,6 +160,75 @@ run_with_tool_calls_test() ->
         meck:unload(beamai_chat_completion)
     end.
 
+%% 一轮多个 tool_call：默认并发执行，结果按原顺序、且总耗时显著小于串行之和
+parallel_tool_calls_test() ->
+    meck:new(beamai_chat_completion, [passthrough]),
+    CallCount = counters:new(1, []),
+    ThreeCalls = [tc(<<"call_a">>, <<"slow_a">>),
+                  tc(<<"call_b">>, <<"slow_b">>),
+                  tc(<<"call_c">>, <<"slow_c">>)],
+    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+        counters:add(CallCount, 1, 1),
+        case counters:get(CallCount, 1) of
+            1 -> {ok, #{content => null, tool_calls => ThreeCalls,
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    Sleep = fun(_Args, _Ctx) -> timer:sleep(150), {ok, <<"ok">>} end,
+    K = slow_tools_kernel(Sleep),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K}),  %% parallel_tools 默认 true
+        {Micros, {ok, Result, _}} =
+            timer:tc(fun() -> beamai_agent:run(Agent, <<"go">>) end),
+        Made = maps:get(tool_calls_made, Result, []),
+        Names = [maps:get(name, R) || R <- Made],
+        %% 三个工具结果按原 tool_call 顺序
+        ?assertEqual([<<"slow_a">>, <<"slow_b">>, <<"slow_c">>], Names),
+        %% 并发：远小于串行 3*150=450ms（留余量，断言 < 350ms）
+        ?assert(Micros < 350000)
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% parallel_tools=false：串行执行，结果顺序仍正确
+sequential_tool_calls_test() ->
+    meck:new(beamai_chat_completion, [passthrough]),
+    CallCount = counters:new(1, []),
+    TwoCalls = [tc(<<"c1">>, <<"t1">>), tc(<<"c2">>, <<"t2">>)],
+    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+        counters:add(CallCount, 1, 1),
+        case counters:get(CallCount, 1) of
+            1 -> {ok, #{content => null, tool_calls => TwoCalls,
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    Fast = fun(_Args, _Ctx) -> {ok, <<"ok">>} end,
+    K = slow_tools_kernel(Fast),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, parallel_tools => false}),
+        {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
+        Names = [maps:get(name, R) || R <- maps:get(tool_calls_made, Result, [])],
+        ?assertEqual([<<"t1">>, <<"t2">>], Names)
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% @private 构造一个 tool_call map
+tc(Id, Name) ->
+    #{id => Id, type => <<"function">>,
+      function => #{name => Name, arguments => <<"{}">>}}.
+
+%% @private 构造一个注册了多个同 handler 工具的 kernel
+slow_tools_kernel(Handler) ->
+    Kernel0 = beamai_kernel:new(),
+    K1 = beamai_kernel:add_service(Kernel0, beamai_chat_completion:create(mock, #{})),
+    Names = [<<"slow_a">>, <<"slow_b">>, <<"slow_c">>, <<"t1">>, <<"t2">>],
+    beamai_kernel:add_tools(K1,
+        [#{name => N, description => <<"t">>, parameters => #{}, handler => Handler}
+         || N <- Names]).
+
 max_tool_iterations_test() ->
     meck:new(beamai_chat_completion, [passthrough]),
     meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
@@ -297,9 +366,18 @@ callback_filter_on_tool_call_test() ->
         {ok, _, _} = beamai_agent:run(Agent, <<"Use tool">>),
         receive {tool_call, <<"my_tool">>} -> ok
         after 1000 -> ?assert(false)
-        end
+        end,
+        %% on_tool_call 对每次工具调用只应触发一次（不再有 filter 双触发）
+        ?assertEqual(0, drain_tool_calls())
     after
         meck:unload(beamai_chat_completion)
+    end.
+
+%% @private 排空邮箱中剩余的 {tool_call, _} 消息，返回剩余条数
+drain_tool_calls() -> drain_tool_calls(0).
+drain_tool_calls(N) ->
+    receive {tool_call, _} -> drain_tool_calls(N + 1)
+    after 0 -> N
     end.
 
 callback_exception_ignored_test() ->
@@ -419,14 +497,198 @@ state_inject_callback_filters_test() ->
     },
     K1 = beamai_agent_state:inject_callback_filters(K0, Callbacks),
     #{filters := Filters} = K1,
-    ?assertEqual(2, length(Filters)),
-    %% 验证 filter 名称
+    %% 仅注入 on_llm_call filter；on_tool_call 不在此注入（由 tool_loop 的
+    %% check_callback_interrupt 统一触发，避免双触发）。
+    ?assertEqual(1, length(Filters)),
     Names = [maps:get(name, F) || F <- Filters],
     ?assert(lists:member(<<"agent_on_llm_call">>, Names)),
-    ?assert(lists:member(<<"agent_on_tool_call">>, Names)).
+    ?assertNot(lists:member(<<"agent_on_tool_call">>, Names)).
 
 state_inject_no_callbacks_test() ->
     K0 = beamai_kernel:new(),
     K1 = beamai_agent_state:inject_callback_filters(K0, #{}),
     #{filters := Filters} = K1,
     ?assertEqual(0, length(Filters)).
+
+%%====================================================================
+%% extract_content 健壮性（#4）
+%%====================================================================
+
+extract_content_null_test() ->
+    Resp = beamai_llm_response:new(#{content => null}),
+    ?assertEqual(<<>>, beamai_agent_utils:extract_content(Resp)).
+
+extract_content_binary_test() ->
+    Resp = beamai_llm_response:new(#{content => <<"hello">>}),
+    ?assertEqual(<<"hello">>, beamai_agent_utils:extract_content(Resp)).
+
+extract_content_non_binary_test() ->
+    %% 意外的非 binary content（如 list / map）兜底为空二进制，不崩溃
+    R1 = beamai_llm_response:new(#{content => [#{type => text, text => <<"a">>}]}),
+    ?assertEqual(<<>>, beamai_agent_utils:extract_content(R1)),
+    R2 = beamai_llm_response:new(#{content => #{foo => <<"bar">>}}),
+    ?assertEqual(<<>>, beamai_agent_utils:extract_content(R2)).
+
+%%====================================================================
+%% 真流式（#2）：每轮 LLM 调用走 provider streaming，token 实时透出
+%%====================================================================
+
+%% 单轮：token 经 on_token 实时、按序到达；最终统一响应驱动返回值
+stream_real_tokens_test() ->
+    meck:new(beamai_chat_completion, [passthrough]),
+    meck:expect(beamai_chat_completion, stream_chat,
+        fun(_Config, _Messages, _RawCb, Opts) ->
+            TokenCb = maps:get(on_llm_new_token, Opts),
+            [TokenCb(T, #{}) || T <- [<<"Hel">>, <<"lo">>, <<"!">>]],
+            {ok, beamai_llm_response:new(
+                #{content => <<"Hello!">>, finish_reason => <<"stop">>})}
+        end),
+    Self = self(),
+    Callbacks = #{on_token => fun(Tok, _Meta) -> Self ! {token, Tok} end},
+    try
+        {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}}, callbacks => Callbacks}),
+        {ok, Result, _} = beamai_agent:stream(Agent, <<"hi">>),
+        ?assertEqual(<<"Hello!">>, maps:get(content, Result)),
+        ?assertEqual([<<"Hel">>, <<"lo">>, <<"!">>], collect_tokens(3))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% 跨工具轮：tool 调用轮无文本 token，最终回合逐 token 流出
+stream_with_tool_call_test() ->
+    meck:new(beamai_chat_completion, [passthrough]),
+    CallCount = counters:new(1, []),
+    meck:expect(beamai_chat_completion, stream_chat,
+        fun(_Config, _Messages, _RawCb, Opts) ->
+            counters:add(CallCount, 1, 1),
+            TokenCb = maps:get(on_llm_new_token, Opts),
+            case counters:get(CallCount, 1) of
+                1 ->
+                    {ok, beamai_llm_response:new(
+                        #{content => null, tool_calls => [tc(<<"c1">>, <<"t1">>)],
+                          finish_reason => <<"tool_calls">>})};
+                _ ->
+                    TokenCb(<<"final">>, #{}),
+                    {ok, beamai_llm_response:new(
+                        #{content => <<"final">>, finish_reason => <<"stop">>})}
+            end
+        end),
+    Self = self(),
+    Callbacks = #{on_token => fun(Tok, _M) -> Self ! {token, Tok} end},
+    K = slow_tools_kernel(fun(_A, _C) -> {ok, <<"ok">>} end),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, callbacks => Callbacks}),
+        {ok, Result, _} = beamai_agent:stream(Agent, <<"go">>),
+        ?assertEqual(<<"final">>, maps:get(content, Result)),
+        ?assertEqual(1, length(maps:get(tool_calls_made, Result, []))),
+        %% 仅最终回合产生一个 token（工具轮 content=null 不产 token）
+        ?assertEqual([<<"final">>], collect_tokens(1))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% @private 按序收集 N 个 {token, _} 消息
+collect_tokens(0) -> [];
+collect_tokens(N) ->
+    receive {token, T} -> [T | collect_tokens(N - 1)]
+    after 1000 -> []
+    end.
+
+%%====================================================================
+%% on_tool_result 回调（#7） + 工具错误结构化（#8）
+%%====================================================================
+
+%% 工具执行后触发 on_tool_result（函数名 + 编码结果）
+on_tool_result_callback_test() ->
+    meck:new(beamai_chat_completion, [passthrough]),
+    CallCount = counters:new(1, []),
+    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+        counters:add(CallCount, 1, 1),
+        case counters:get(CallCount, 1) of
+            1 -> {ok, #{content => null, tool_calls => [tc(<<"c1">>, <<"t1">>)],
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    Self = self(),
+    Callbacks = #{on_tool_result => fun(Name, Result) -> Self ! {tool_result, Name, Result} end},
+    K = slow_tools_kernel(fun(_A, _C) -> {ok, <<"the-output">>} end),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, callbacks => Callbacks}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
+        receive {tool_result, <<"t1">>, <<"the-output">>} -> ok
+        after 1000 -> ?assert(false)
+        end
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%%====================================================================
+%% 默认 store 纳入监督树（#5）
+%%====================================================================
+
+%% beamai_agent_sup:ensure_store/1 把 store 纳入监督树；幂等；被 kill 自动重启
+supervised_store_restart_test() ->
+    {ok, Started} = application:ensure_all_started(beamai_agent),
+    Name = supervised_test_store,
+    try
+        Handle = beamai_agent_sup:ensure_store(Name),
+        ?assertMatch({beamai_chat_memory_ets, Name}, Handle),
+        Pid1 = whereis(Name),
+        ?assert(is_pid(Pid1)),
+        %% 幂等：再次调用复用同一进程
+        _ = beamai_agent_sup:ensure_store(Name),
+        ?assertEqual(Pid1, whereis(Name)),
+        %% 是 supervisor 的子进程
+        ?assert(lists:keymember(Name, 1, supervisor:which_children(beamai_agent_sup))),
+        %% kill 后自动重启为新进程
+        exit(Pid1, kill),
+        timer:sleep(100),
+        Pid2 = whereis(Name),
+        ?assert(is_pid(Pid2)),
+        ?assertNotEqual(Pid1, Pid2)
+    after
+        catch supervisor:terminate_child(beamai_agent_sup, Name),
+        catch supervisor:delete_child(beamai_agent_sup, Name),
+        [application:stop(A) || A <- lists:reverse(Started)]
+    end.
+
+%% app 未启动时 ensure_default_store 回退到孤儿 store（不依赖监督树）
+default_store_orphan_fallback_test() ->
+    %% 确保 app 未运行
+    application:stop(beamai_agent),
+    {ok, State} = beamai_agent:new(#{llm => {mock, #{}}}),
+    Store = beamai_agent_state:store(State),
+    ?assertMatch({beamai_chat_memory_ets, beamai_agent_default_memory}, Store),
+    ?assert(is_pid(whereis(beamai_agent_default_memory))).
+
+%%====================================================================
+%% 上下文窗口管理（#6）：memory => {window, N}
+%%====================================================================
+
+%% {window, N}：全量入底层 store，messages/1（经窗口）只见最近 N 条非系统消息
+windowed_memory_test() ->
+    {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}}, memory => {window, 2},
+                                     conversation_id => <<"win-conv">>}),
+    %% store 句柄为窗口包装
+    ?assertMatch({beamai_chat_memory_window, _}, beamai_agent_state:store(Agent)),
+    %% 追加 4 条用户消息
+    [beamai_agent:add_message(Agent, #{role => user, content => C})
+     || C <- [<<"m1">>, <<"m2">>, <<"m3">>, <<"m4">>]],
+    Msgs = beamai_agent:messages(Agent),
+    Contents = [maps:get(content, M) || M <- Msgs],
+    %% 窗口只保留最近 2 条
+    ?assertEqual([<<"m3">>, <<"m4">>], Contents).
+
+%% 工具返回 {error, Reason}：归一为稳定的 #{error => #{type, message}} 结构
+tool_error_structured_test() ->
+    %% 非 map reason → #{type, message}
+    E1 = beamai_agent_utils:tool_error(some_atom_reason),
+    ?assertEqual(#{error => #{type => <<"tool_error">>,
+                              message => <<"some_atom_reason">>}}, E1),
+    %% binary reason
+    E2 = beamai_agent_utils:tool_error(<<"boom">>),
+    ?assertMatch(#{error := #{type := <<"tool_error">>, message := <<"boom">>}}, E2),
+    %% 已结构化的 map reason 原样透传到 error 下
+    E3 = beamai_agent_utils:tool_error(#{type => <<"not_found">>, message => <<"x">>}),
+    ?assertEqual(#{error => #{type => <<"not_found">>, message => <<"x">>}}, E3).

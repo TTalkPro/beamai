@@ -47,8 +47,6 @@ is_interrupt_tool_test() ->
 
 handle_interrupt_test() ->
     Context = #{
-        pending_messages => [#{role => user, content => <<"hi">>}],
-        assistant_response => #{role => assistant, content => null, tool_calls => []},
         completed_tool_results => [],
         interrupted_tool_call => #{id => <<"c1">>, function => #{name => <<"ask">>}},
         iteration => 2,
