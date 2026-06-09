@@ -70,11 +70,11 @@ window_drops_orphan_tool_test() ->
 response_to_message_text_test() ->
     Resp = beamai_llm_response:new(#{content => <<"hello">>}),
     ?assertEqual(#{role => assistant, content => <<"hello">>},
-                 beamai_memory_filter:response_to_message(Resp)).
+                 beamai_message:from_response(Resp)).
 
 response_to_message_null_test() ->
     Resp = beamai_llm_response:new(#{content => null}),
-    ?assertEqual(undefined, beamai_memory_filter:response_to_message(Resp)).
+    ?assertEqual(undefined, beamai_message:from_response(Resp)).
 
 %% 带 tool_calls 的助手回合：content_blocks（thinking 块）随消息一并保留，
 %% 回放历史时适配器才能拼回 thinking，避免破坏 prompt cache。
@@ -82,7 +82,7 @@ response_to_message_carries_thinking_with_tool_calls_test() ->
     Think = #{type => thinking, thinking => <<"reasoning">>, signature => <<"sig">>},
     TC = #{id => <<"t1">>, name => <<"foo">>, arguments => #{}},
     Resp = beamai_llm_response:new(#{tool_calls => [TC], content_blocks => [Think]}),
-    Msg = beamai_memory_filter:response_to_message(Resp),
+    Msg = beamai_message:from_response(Resp),
     ?assertEqual([TC], beamai_message:get_tool_calls(Msg)),
     ?assertEqual([Think], beamai_message:content_blocks(Msg)).
 
@@ -92,13 +92,13 @@ response_to_message_carries_thinking_with_text_test() ->
     Text = #{type => text, text => <<"hi">>},
     Resp = beamai_llm_response:new(#{content => <<"hi">>,
                                      content_blocks => [Think, Text]}),
-    Msg = beamai_memory_filter:response_to_message(Resp),
+    Msg = beamai_message:from_response(Resp),
     ?assertEqual([Think, Text], beamai_message:content_blocks(Msg)).
 
 %% 无 content_blocks 时消息不应携带该字段（保持旧形态，不引入空键）。
 response_to_message_no_content_blocks_test() ->
     Resp = beamai_llm_response:new(#{content => <<"hello">>}),
-    Msg = beamai_memory_filter:response_to_message(Resp),
+    Msg = beamai_message:from_response(Resp),
     ?assertEqual(#{role => assistant, content => <<"hello">>}, Msg).
 
 %%====================================================================

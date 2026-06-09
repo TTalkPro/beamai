@@ -22,8 +22,8 @@
 
 %% 调度 API
 -export([history/2, append/3, prepare/3, clear/2]).
-%% 构造 / 归一
--export([default/1, coerce/1, is_provider/1]).
+%% 构造
+-export([default/1]).
 
 -export_type([provider/0]).
 
@@ -64,29 +64,10 @@ prepare({Module, Ref}, ConvId, Messages) -> Module:prepare(Ref, ConvId, Messages
 clear({Module, Ref}, ConvId) -> Module:clear(Ref, ConvId).
 
 %%====================================================================
-%% 构造 / 归一
+%% 构造
 %%====================================================================
 
 %% @doc 用默认 provider 包装一个存储后端句柄。
 -spec default(beamai_chat_memory:handle()) -> provider().
 default(StoreHandle) ->
     beamai_memory_provider_default:new(StoreHandle).
-
-%% @doc 把句柄归一为 provider：已是 provider 原样返回；否则视作 beamai_chat_memory
-%% 存储句柄，用默认 provider 包装。
--spec coerce(provider() | beamai_chat_memory:handle()) -> provider().
-coerce({Module, _} = Handle) ->
-    case is_provider_module(Module) of
-        true -> Handle;
-        false -> default(Handle)
-    end.
-
-%% @doc 判断句柄是否为（已实现本 Behaviour 的）provider。
--spec is_provider(term()) -> boolean().
-is_provider({Module, _}) -> is_provider_module(Module);
-is_provider(_) -> false.
-
-%% @private 模块是否实现了 provider 协议（以 prepare/3 为判据）
-is_provider_module(Module) ->
-    _ = code:ensure_loaded(Module),
-    erlang:function_exported(Module, prepare, 3).

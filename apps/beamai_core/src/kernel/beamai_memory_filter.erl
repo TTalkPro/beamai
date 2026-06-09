@@ -20,7 +20,6 @@
 
 %% API
 -export([memory_filter/1, memory_filter/2]).
--export([response_to_message/1]).
 
 %% memory filter 默认 order（较小 → 外层：先展开历史，再让内层注入系统提示）
 -define(DEFAULT_ORDER, -1000).
@@ -49,7 +48,7 @@ memory_filter(Store, Order) ->
                     Full = beamai_chat_memory:mem_get(Store, ConvId),
                     #{response := Response} = Resp = Next(Req#{messages => Full}),
                     %% 后置：存 assistant 回复
-                    case response_to_message(Response) of
+                    case beamai_message:from_response(Response) of
                         undefined -> ok;
                         Msg -> ok = beamai_chat_memory:mem_add(Store, ConvId, [Msg])
                     end,
@@ -57,8 +56,3 @@ memory_filter(Store, Order) ->
             end
         end
     }, Order).
-
-%% @doc 把 LLM 响应转为中性 assistant 消息（保留 content_blocks；委托 beamai_message）。
--spec response_to_message(term()) -> beamai_message:message() | undefined.
-response_to_message(Response) ->
-    beamai_message:from_response(Response).
