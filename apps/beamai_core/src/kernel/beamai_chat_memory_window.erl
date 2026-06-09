@@ -21,7 +21,7 @@
 -behaviour(beamai_chat_memory).
 
 %% API
--export([handle/2]).
+-export([handle/2, safe_window/2]).
 
 %% beamai_chat_memory 回调
 -export([mem_get/2, mem_add/3, mem_clear/2]).
@@ -62,7 +62,9 @@ mem_clear({Inner, _MaxMessages}, ConvId) ->
 %% 内部函数
 %%====================================================================
 
-%% @private 套用滑动窗口
+%% @doc 套用滑动窗口：system 全留置顶，非系统只留尾部 MaxMessages 条，
+%% 并丢弃裁剪后落在头部的孤立 tool 消息。供 provider 层复用。
+-spec safe_window([message()], pos_integer()) -> [message()].
 safe_window(Msgs, MaxMessages) ->
     Systems = [M || M <- Msgs, is_role(M, system)],
     Body = [M || M <- Msgs, not is_role(M, system)],
