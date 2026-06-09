@@ -193,7 +193,8 @@ with_kernel(Ctx, Kernel) ->
 %%
 %% 未关联时返回 undefined。
 -spec get_kernel(t()) -> term() | undefined.
-get_kernel(#{kernel := Kernel}) -> Kernel.
+get_kernel(#{kernel := Kernel}) -> Kernel;
+get_kernel(_) -> undefined.
 
 %% @doc 添加执行跟踪记录
 %%

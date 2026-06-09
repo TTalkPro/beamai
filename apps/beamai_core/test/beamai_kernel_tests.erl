@@ -179,6 +179,23 @@ no_llm_service_chat_test() ->
     ?assertEqual({error, no_llm_service},
                  beamai_kernel:invoke_chat(K, [#{role => user, content => <<"hi">>}], #{})).
 
+%% invoke_chat 与 invoke_tool 一致地把 kernel 绑进 context，around_chat filter 可取到
+context_binds_kernel_in_chat_test() ->
+    K0 = beamai_kernel:new(),
+    K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{model => <<"m">>})),
+    Self = self(),
+    Filter = beamai_filter:new(<<"capture_kernel">>, #{
+        around_chat => fun(#{context := Ctx} = Req, _F, Next) ->
+            Self ! {kernel_bound, beamai_context:get_kernel(Ctx) =/= undefined},
+            Next(Req)
+        end
+    }),
+    K2 = beamai_kernel:add_filter(K1, Filter),
+    {ok, _Resp, _Ctx} = beamai_kernel:invoke_chat(K2, [#{role => user, content => <<"hi">>}], #{}),
+    receive {kernel_bound, Bound} -> ?assert(Bound)
+    after 1000 -> ?assert(false)
+    end.
+
 %%====================================================================
 %% Filter Integration Tests
 %%====================================================================

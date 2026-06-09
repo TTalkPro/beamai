@@ -219,7 +219,10 @@ invoke_chat(Kernel, Messages, Opts) ->
     case get_service(Kernel) of
         {ok, LlmConfig} ->
             #{filters := Filters0} = Kernel,
-            Context = maps:get(context, Opts, beamai_context:new()),
+            %% 绑 kernel 进 context（与 invoke_tool 一致）：让 around_chat filter 可经
+            %% beamai_context:get_kernel/1 拿到 kernel 做组合（如调工具/查 specs）。
+            Context = beamai_context:with_kernel(
+                        maps:get(context, Opts, beamai_context:new()), Kernel),
             %% system_prompts 作为临时内层 chat filter 注入（不入存储），
             %% 在 Memory 展开历史之后前置系统消息，且不写入存储。
             SystemPrompts = maps:get(system_prompts, Opts, []),
@@ -250,7 +253,8 @@ invoke_chat_stream(Kernel, Messages, Opts, TokenCallback) ->
     case get_service(Kernel) of
         {ok, LlmConfig} ->
             #{filters := Filters0} = Kernel,
-            Context = maps:get(context, Opts, beamai_context:new()),
+            Context = beamai_context:with_kernel(
+                        maps:get(context, Opts, beamai_context:new()), Kernel),
             SystemPrompts = maps:get(system_prompts, Opts, []),
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
             run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback);
