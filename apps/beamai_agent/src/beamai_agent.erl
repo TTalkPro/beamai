@@ -2,19 +2,20 @@
 %%% @doc 有状态多轮对话 Agent（ReAct）
 %%%
 %%% 封装 beamai_kernel，提供：
-%%%   - 多轮对话管理（跨轮历史由 filter-memory 按 conversation_id 维护）
-%%%   - 自实现 tool loop（delta 模式，确保 filters 完整触发）
-%%%   - 6 个观察性回调（on_turn_start/end/error, on_llm_call, on_tool_call, on_token）
+%%%   - 多轮对话管理（跨轮历史由 memory provider 按 conversation_id 维护）
+%%%   - 自实现 tool loop（full-messages 模式，自管编排记忆与回调）
+%%%   - 9 个观察性回调（on_turn_start/end/error, on_llm_call, on_tool_call,
+%%%     on_tool_result, on_token, on_interrupt, on_resume）
 %%%
-%%% 核心设计决策：
-%%%   - 上下文记忆用 Filter 实现：kernel 经 with_memory/2 挂载 beamai_memory_filter，
-%%%     工具循环以 delta 模式运行——每轮只提交新消息（用户消息 / 工具结果），
-%%%     由 Memory filter 存储 delta 并展开完整历史。agent 状态不再持有 messages，
-%%%     仅持有 store 句柄与 conversation_id。
-%%%   - Agent 自己实现 tool loop（每次 LLM 调用 invoke_chat、工具调用 invoke_tool
-%%%     都经过完整 filter 管道），以支撑中断检测与流式。
-%%%   - 回调通过 kernel filter 注入（on_llm_call → around_chat, on_tool_call → around_tool）
-%%%   - Map-based 状态，无 Record 依赖，方便序列化和扩展（store 句柄为 {Mod, 注册名}，
+%%% 核心设计决策（Agent 自管编排，不借道 kernel filter）：
+%%%   - **记忆是 Agent 自己的接口**（beamai_memory_provider），由 tool loop 显式调用
+%%%     （history 载入跨轮 / append 持久化 / prepare 发送前变换），**不**注入 kernel
+%%%     filter。within-run 消息由 loop 累积，cross-run 由 provider 持久化。
+%%%   - **回调是 Agent 自己的接口**，全部在 tool loop 里直接触发，**不**注入 kernel
+%%%     filter（取消了曾经的 on_llm_call around_chat 注入）。
+%%%   - kernel 仍是纯原语（invoke_chat/invoke_tool + filter 给"直接用 kernel 的人"；
+%%%     plugin 的 filters/0 / 预构建 kernel filter 仍可用，那是用户显式加的 kernel 级 filter）。
+%%%   - Map-based 状态，无 Record 依赖，方便序列化（memory provider 为 {Mod, Ref}，
 %%%     conversation_id 为 binary，均可序列化）
 %%%
 %%% 使用示例：
@@ -139,9 +140,14 @@ run(State, UserMessage, Opts) ->
     Meta = beamai_agent_callbacks:build_metadata(State0),
     beamai_agent_callbacks:invoke(on_turn_start, [Meta], Callbacks),
 
-    %% delta 模式：本轮只提交用户消息，跨轮历史由 Memory filter 维护。
+    %% Agent 自管编排：载入跨轮历史 + 持久化本轮用户消息，组装本轮完整 messages。
     UserMsg = #{role => user, content => UserMessage},
-    case run_loop(State0, [UserMsg], [], Opts) of
+    Provider = beamai_agent_state:memory(State0),
+    ConvId = beamai_agent_state:conversation_id(State0),
+    Prior = load_history(Provider, ConvId),
+    persist(Provider, ConvId, [UserMsg]),
+    Messages0 = Prior ++ [UserMsg],
+    case run_loop(State0, Messages0, [], Opts) of
         {ok, Response, ToolCallsMade, Iterations} ->
             finalize_turn(State0, Response, ToolCallsMade, Iterations);
         {interrupt, Type, Context} ->
@@ -209,9 +215,9 @@ stream(State, UserMessage, Opts) ->
 %% @returns 消息列表
 -spec messages(beamai_agent_state:agent_state()) -> [map()].
 messages(State) ->
-    case beamai_agent_state:store(State) of
+    case beamai_agent_state:memory(State) of
         undefined -> [];
-        Store -> beamai_chat_memory:mem_get(Store, beamai_agent_state:conversation_id(State))
+        Memory -> beamai_memory_provider:history(Memory, beamai_agent_state:conversation_id(State))
     end.
 
 %% @doc 获取最后一条 assistant 文本响应
@@ -291,9 +297,9 @@ set_system_prompt(State, Prompt) ->
 -spec add_message(beamai_agent_state:agent_state(), map()) ->
     beamai_agent_state:agent_state().
 add_message(State, Msg) ->
-    case beamai_agent_state:store(State) of
+    case beamai_agent_state:memory(State) of
         undefined -> ok;
-        Store -> beamai_chat_memory:mem_add(Store, beamai_agent_state:conversation_id(State), [Msg])
+        Memory -> beamai_memory_provider:append(Memory, beamai_agent_state:conversation_id(State), [Msg])
     end,
     State.
 
@@ -307,9 +313,9 @@ add_message(State, Msg) ->
 -spec clear_messages(beamai_agent_state:agent_state()) ->
     beamai_agent_state:agent_state().
 clear_messages(State) ->
-    case beamai_agent_state:store(State) of
+    case beamai_agent_state:memory(State) of
         undefined -> ok;
-        Store -> beamai_chat_memory:mem_clear(Store, beamai_agent_state:conversation_id(State))
+        Memory -> beamai_memory_provider:clear(Memory, beamai_agent_state:conversation_id(State))
     end,
     State.
 
@@ -357,8 +363,13 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
             Meta = beamai_agent_callbacks:build_metadata(Agent),
             beamai_agent_callbacks:invoke(on_resume, [IntState, Meta], Callbacks),
 
-            %% 2. 构建恢复 delta（已完成工具结果 + 人类输入；历史在 store）
-            ResumeDelta = beamai_agent_interrupt:build_resume_messages(IntState, HumanInput),
+            %% 2. 人类输入作为被中断 tool_call 的结果，并入中断时携带的完整 messages
+            %%    （已完成工具结果与 assistant(tool_calls) 已在该 messages 内）。
+            HumanMsg = beamai_agent_interrupt:build_resume_messages(IntState, HumanInput),
+            Provider = beamai_agent_state:memory(Agent),
+            ConvId = beamai_agent_state:conversation_id(Agent),
+            persist(Provider, ConvId, HumanMsg),
+            Messages = maps:get(messages, IntState, []) ++ HumanMsg,
 
             %% 3. 清除中断状态
             Agent1 = Agent#{interrupt_state => undefined},
@@ -366,7 +377,7 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
             %% 4. 继续 tool loop（剩余迭代数）
             #{iteration := Iter, tool_calls_made := PrevCalls} = IntState,
             RemainingIter = MaxIter - Iter,
-            case run_loop(Agent1, ResumeDelta, PrevCalls, #{max_iterations => RemainingIter}) of
+            case run_loop(Agent1, Messages, PrevCalls, #{max_iterations => RemainingIter}) of
                 {ok, Response, AllToolCalls, Iterations} ->
                     finalize_turn(Agent1, Response, AllToolCalls, Iterations);
                 {interrupt, Type, Context} ->
@@ -411,25 +422,36 @@ get_interrupt_info(_) ->
 %% 内部函数 - 辅助
 %%====================================================================
 
-%% @private 运行一轮 tool loop（delta 模式）
+%% @private 运行一轮 tool loop（full-messages 模式）
 %%
-%% 统一 run / resume 的 LoopOpts 组装：注入带 conversation_id 的 context 与
-%% system_prompts 的 chat_opts，交给 tool_loop 在 filter-memory 下驱动循环。
+%% 统一 run / resume 的 LoopOpts 组装：把本轮完整 messages、memory provider、
+%% conversation_id、回调元数据交给 tool_loop，由其自管编排记忆与回调。
 %% Opts 可含 max_iterations 覆盖（resume 用剩余迭代数）。
-run_loop(State, Delta, PrevCalls, Opts) ->
+run_loop(State, Messages, PrevCalls, Opts) ->
     #{callbacks := Callbacks, kernel := Kernel} = State,
     MaxIter = maps:get(max_iterations, Opts, maps:get(max_tool_iterations, State)),
     LoopOpts = #{
         kernel => Kernel,
-        messages => Delta,
+        messages => Messages,
         chat_opts => build_chat_opts(State, Opts),
         callbacks => Callbacks,
         max_iterations => MaxIter,
         agent => State,
+        memory => beamai_agent_state:memory(State),
+        conversation_id => beamai_agent_state:conversation_id(State),
+        meta => beamai_agent_callbacks:build_metadata(State),
         %% 流式时透传 token 处理器；非流式为 undefined
         stream_token_handler => maps:get(stream_token_handler, Opts, undefined)
     },
     beamai_agent_tool_loop:run(LoopOpts, PrevCalls).
+
+%% @private 载入跨轮历史（无 memory 则 []）
+load_history(undefined, _ConvId) -> [];
+load_history(Provider, ConvId) -> beamai_memory_provider:history(Provider, ConvId).
+
+%% @private 持久化消息到 memory provider（无 memory 则 no-op）
+persist(undefined, _ConvId, _Msgs) -> ok;
+persist(Provider, ConvId, Msgs) -> beamai_memory_provider:append(Provider, ConvId, Msgs).
 
 %% @private 完成一轮对话：构建结果、更新状态、触发回调
 %%
@@ -460,19 +482,18 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
 %% @private 构建 chat 选项
 %%
 %% 在共享工具模块基础上，附加：
-%%   - 带 conversation_id 的 context（供 Memory / 回调等 filter 定位会话）
-%%   - system_prompts（system_prompt 包装为 system 消息，经内层 filter 注入、不入存储）
-%%   - callback_meta（本轮 agent 元数据，供 on_llm_call / 流式 on_token 回调读取；
-%%     经引线随请求传入，filter 闭包据此拿到实时 turn_count/run_id 等）
+%%   - 带 conversation_id 的 context（供工具执行 / 用户自加的 kernel filter 定位会话）
+%%   - system_prompts（system_prompt 包装为 system 消息，经 kernel invoke_chat 注入、不入存储）
 %%   - 中断 tool specs（如有）
+%%
+%% 注：记忆与 on_llm_call 等回调由 tool_loop 显式编排，不再经 chat_opts 引线。
 build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
     BaseOpts0 = beamai_agent_utils:build_chat_opts(Kernel, Opts),
     Ctx = beamai_context:with_conversation_id(
             beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
     BaseOpts1 = BaseOpts0#{
         context => Ctx,
-        system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined)),
-        callback_meta => callback_meta(Agent)
+        system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined))
     },
     InterruptSpecs = beamai_agent_interrupt:get_interrupt_tool_specs(Agent),
     case InterruptSpecs of
@@ -481,13 +502,6 @@ build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
             ExistingTools = maps:get(tools, BaseOpts1, []),
             BaseOpts1#{tools => ExistingTools ++ InterruptSpecs}
     end.
-
-%% @private 本轮 agent 元数据（标准 build_metadata + conversation_id + run_id）
-callback_meta(Agent) ->
-    (beamai_agent_callbacks:build_metadata(Agent))#{
-        conversation_id => beamai_agent_state:conversation_id(Agent),
-        run_id => maps:get(run_id, Agent, undefined)
-    }.
 
 %% @private 把 system_prompt 包装为 system 消息列表（空/未设返回 []）
 system_prompts(undefined) -> [];
