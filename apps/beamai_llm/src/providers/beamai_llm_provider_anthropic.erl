@@ -38,7 +38,6 @@
 -define(ANTHROPIC_BASE_URL, <<"https://api.anthropic.com">>).
 -define(ANTHROPIC_ENDPOINT, <<"/v1/messages">>).
 -define(ANTHROPIC_MODEL, <<"claude-sonnet-4-5-20250929">>).
--define(ANTHROPIC_TIMEOUT, 60000).
 -define(ANTHROPIC_MAX_TOKENS, 8192).
 -define(API_VERSION, <<"2023-06-01">>).
 
@@ -52,7 +51,7 @@ default_config() ->
     #{
         base_url => ?ANTHROPIC_BASE_URL,
         model => ?ANTHROPIC_MODEL,
-        timeout => ?ANTHROPIC_TIMEOUT,
+        timeout => beamai_llm_provider_common:default_timeout(anthropic),
         max_tokens => ?ANTHROPIC_MAX_TOKENS
     }.
 
@@ -74,7 +73,7 @@ chat(Config, Request) ->
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?ANTHROPIC_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, anthropic),
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
     },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_anthropic()).
@@ -89,7 +88,7 @@ stream_chat(Config, Request, Callback) ->
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request#{stream => true}),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?ANTHROPIC_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, anthropic),
         finalizer => fun beamai_llm_provider_common:finalize_anthropic_stream/1,
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
     },
@@ -115,7 +114,7 @@ build_headers(#{api_key := ApiKey}) ->
 %% @private 构建请求体（使用管道模式）
 build_request_body(Config, Request) ->
     Messages = maps:get(messages, Request, []),
-    {SystemPrompt, UserMessages} = extract_system_prompt(Messages),
+    {SystemPrompt, UserMessages} = beamai_llm_message_adapter:extract_system_prompt(Messages),
     {CacheStrategy, CacheControl} = parse_cache_strategy(Config),
     Base = #{
         <<"model">> => maps:get(model, Config, ?ANTHROPIC_MODEL),
@@ -140,13 +139,6 @@ build_request_body(Config, Request) ->
         ]) end,
         fun(B) -> maybe_add_stream(B, Request) end
     ]).
-
-%% @private 提取系统提示（Anthropic 需要单独的 system 字段）
-extract_system_prompt(Messages) ->
-    case lists:partition(fun(#{role := R}) -> R =:= system end, Messages) of
-        {[], Rest} -> {undefined, Rest};
-        {[#{content := C} | _], Rest} -> {C, Rest}
-    end.
 
 %% @private 添加系统提示
 %% 命中 system 缓存策略时，将 system 转为带 cache_control 的 text block 列表，

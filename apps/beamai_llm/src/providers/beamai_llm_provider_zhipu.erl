@@ -88,7 +88,6 @@
 
 %% 通用默认值
 -define(ZHIPU_MODEL, <<"glm-4.7">>).
--define(ZHIPU_TIMEOUT, 300000).
 -define(ZHIPU_CONNECT_TIMEOUT, 10000).
 -define(ZHIPU_MAX_TOKENS, 4096).
 -define(ZHIPU_TEMPERATURE, 0.7).
@@ -103,7 +102,7 @@ default_config() ->
     #{
         base_url => ?ZHIPU_BASE_URL,
         model => ?ZHIPU_MODEL,
-        timeout => ?ZHIPU_TIMEOUT,
+        timeout => beamai_llm_provider_common:default_timeout(zhipu),
         max_tokens => ?ZHIPU_MAX_TOKENS,
         temperature => ?ZHIPU_TEMPERATURE
     }.
@@ -227,7 +226,7 @@ handle_async_response(Resp) ->
 %% 使用 beamai_http 作为底层 HTTP 客户端
 do_get_request(Url, Headers, Opts) ->
     HttpOpts = #{
-        timeout => maps:get(timeout, Opts, ?ZHIPU_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Opts, zhipu),
         connect_timeout => maps:get(connect_timeout, Opts, ?ZHIPU_CONNECT_TIMEOUT),
         headers => Headers
     },
@@ -280,7 +279,7 @@ build_anthropic_headers(#{api_key := ApiKey}) ->
 %% @private 构建请求选项
 build_request_opts(Config) ->
     #{
-        timeout => maps:get(timeout, Config, ?ZHIPU_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, zhipu),
         connect_timeout => maps:get(connect_timeout, Config, ?ZHIPU_CONNECT_TIMEOUT)
     }.
 
@@ -302,7 +301,7 @@ build_openai_request_body(Config, Request) ->
 %% @private 构建 Anthropic 兼容模式请求体
 build_anthropic_request_body(Config, Request) ->
     Messages = maps:get(messages, Request, []),
-    {SystemPrompt, UserMessages} = extract_system_prompt(Messages),
+    {SystemPrompt, UserMessages} = beamai_llm_message_adapter:extract_system_prompt(Messages),
     Base = #{
         <<"model">> => maps:get(model, Config, ?ZHIPU_MODEL),
         <<"max_tokens">> => maps:get(max_tokens, Config, ?ZHIPU_MAX_TOKENS),
@@ -313,13 +312,6 @@ build_anthropic_request_body(Config, Request) ->
         fun(B) -> maybe_add_anthropic_tools(B, Request) end,
         fun(B) -> maybe_add_anthropic_stream(B, Request) end
     ]).
-
-%% @private 提取系统提示（Anthropic 需要单独的 system 字段）
-extract_system_prompt(Messages) ->
-    case lists:partition(fun(#{role := R}) -> R =:= system end, Messages) of
-        {[], Rest} -> {undefined, Rest};
-        {[#{content := C} | _], Rest} -> {C, Rest}
-    end.
 
 %% @private 添加系统提示
 maybe_add_system(Body, undefined) -> Body;

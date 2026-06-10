@@ -18,6 +18,7 @@
 -export([to_openai/1, from_openai/1]).
 -export([to_anthropic/1, from_anthropic/1]).
 -export([to_provider/2, from_provider/2]).
+-export([extract_system_prompt/1]).
 
 %% 类型
 -type role_atom() :: user | assistant | system | tool.
@@ -58,6 +59,17 @@ to_provider(Messages, anthropic) -> to_anthropic(Messages);
 to_provider(Messages, ollama) -> to_openai(Messages);  %% Ollama 使用 OpenAI 格式
 to_provider(Messages, zhipu) -> to_openai(Messages);   %% 智谱使用 OpenAI 兼容格式
 to_provider(Messages, _) -> to_openai(Messages).
+
+%% @doc 提取系统提示（Anthropic 风格 API 需要单独的 system 字段）
+%%
+%% 取首条 system 消息的 content 作为系统提示，其余消息原样返回；
+%% 无 system 消息时返回 {undefined, Messages}。
+-spec extract_system_prompt([message()]) -> {term() | undefined, [message()]}.
+extract_system_prompt(Messages) ->
+    case lists:partition(fun(#{role := R}) -> R =:= system end, Messages) of
+        {[], Rest} -> {undefined, Rest};
+        {[#{content := C} | _], Rest} -> {C, Rest}
+    end.
 
 %% @doc 从指定 Provider 格式转换
 -spec from_provider([map()], atom()) -> [message()].
