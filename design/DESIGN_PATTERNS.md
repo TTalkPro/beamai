@@ -98,7 +98,7 @@ fibonacci_backoff(Attempt) -> fibonacci(Attempt) * 100.
 - `beamai_llm_anthropic` - Anthropic Claude
 - `beamai_llm_openai` - OpenAI GPT
 - `beamai_llm_zhipu` - 智谱 AI
-- `beamai_llm_bailian` - 阿里云百炼
+- `beamai_llm_dashscope` - 阿里云百炼
 - `beamai_llm_ollama` - Ollama 本地模型
 
 ---

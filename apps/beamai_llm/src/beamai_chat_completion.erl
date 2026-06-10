@@ -3,7 +3,7 @@
 %% @doc Chat Completion Service
 %%
 %% Provides LLM chat completion with:
-%% - Multi-provider routing (openai, anthropic, zhipu, ollama, deepseek, bailian)
+%% - Multi-provider routing (openai, anthropic, zhipu, ollama, deepseek, dashscope)
 %% - Request building (messages, tools, tool_choice, stream)
 %% - Retry logic with exponential backoff
 %% - Streaming support with token callbacks
@@ -26,7 +26,7 @@
 -export([is_retryable/1, compute_delay/3]).
 -endif.
 
--type provider() :: openai | anthropic | ollama | zhipu | bailian | deepseek | mock | {custom, module()}.
+-type provider() :: openai | anthropic | ollama | zhipu | dashscope | deepseek | mock | {custom, module()}.
 -type config() :: #{
     provider := provider(),
     module := module(),
@@ -102,7 +102,7 @@ provider_module(openai) -> beamai_llm_provider_openai;
 provider_module(anthropic) -> beamai_llm_provider_anthropic;
 provider_module(ollama) -> beamai_llm_provider_ollama;
 provider_module(zhipu) -> beamai_llm_provider_zhipu;
-provider_module(bailian) -> beamai_llm_provider_bailian;
+provider_module(dashscope) -> beamai_llm_provider_dashscope;
 provider_module(deepseek) -> beamai_llm_provider_deepseek;
 provider_module(mock) -> beamai_llm_provider_mock;
 provider_module({custom, Module}) -> Module.

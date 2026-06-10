@@ -18,7 +18,7 @@
 提供构建 AI Agent 的基础设施（三大核心职责）：
 - **beamai_core** - Kernel 基座：Context、Filter（洋葱式 around 模型）、Tool 的构建与调用
 - **beamai_agent** - SimpleAgent：以 ReAct 为主的 Agent 框架（上下文记忆由 filter-memory 实现、多轮对话、回调、中断/恢复）
-- **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama）
+- **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、DashScope、Ollama）
 
 ### 扩展项目 ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 基于核心库构建的高级功能：
@@ -40,7 +40,7 @@
   - 详见 [docs/MEMORY.md](docs/MEMORY.md)
 
 - **统一 LLM 客户端**: 6 家 Provider 统一同步/流式
-  - OpenAI、Anthropic、DeepSeek、Zhipu、Bailian、Ollama
+  - OpenAI、Anthropic、DeepSeek、Zhipu、DashScope、Ollama
   - 多模态输入、Anthropic 缓存/Web Search/引用、速率限制头、Retry-After 重试、统一错误结构
 
 - **Output Parser**: 结构化输出
@@ -177,7 +177,7 @@ apps/
 │   ├── Chat           # beamai_chat_completion, beamai_llm_error
 │   ├── Parser         # beamai_output_parser, beamai_parser_json
 │   ├── Adapters       # beamai_llm_message_adapter, beamai_llm_response_parser, beamai_llm_tool_adapter
-│   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
+│   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama
 │
 └── beamai_agent/       # SimpleAgent（ReAct）
     └── Agent          # beamai_agent, beamai_agent_state, beamai_agent_tool_loop,
@@ -272,7 +272,7 @@ LLM = beamai_chat_completion:create(zhipu, #{
 | `openai` | beamai_llm_provider_openai | OpenAI | OpenAI API |
 | `deepseek` | beamai_llm_provider_deepseek | OpenAI 兼容 | DeepSeek API |
 | `zhipu` | beamai_llm_provider_zhipu | OpenAI 兼容 | 智谱 AI (GLM 系列) |
-| `bailian` | beamai_llm_provider_bailian | DashScope 原生 | 阿里云百炼 (通义千问系列) |
+| `dashscope` | beamai_llm_provider_dashscope | DashScope 原生 | 阿里云百炼 (通义千问系列) |
 | `ollama` | beamai_llm_provider_ollama | OpenAI 兼容 | Ollama 本地模型 |
 
 ### HTTP 后端配置

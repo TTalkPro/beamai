@@ -528,7 +528,7 @@ from_dashscope_basic_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_dashscope(Raw),
 
-    ?assertEqual(bailian, beamai_llm_response:provider(Resp)),
+    ?assertEqual(dashscope, beamai_llm_response:provider(Resp)),
     ?assertEqual(<<"req-12345">>, beamai_llm_response:id(Resp)),
     ?assertEqual(<<"Hello from Qwen!">>, beamai_llm_response:content(Resp)),
     ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
@@ -550,5 +550,5 @@ from_dashscope_legacy_format_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_dashscope(Raw),
 
-    ?assertEqual(bailian, beamai_llm_response:provider(Resp)),
+    ?assertEqual(dashscope, beamai_llm_response:provider(Resp)),
     ?assertEqual(<<"Legacy format response">>, beamai_llm_response:content(Resp)).

@@ -120,11 +120,11 @@ build_url(Config, DefaultEndpoint, DefaultBaseUrl) ->
 %% @doc Provider 请求超时默认值（毫秒）
 %%
 %% 集中各 provider 的默认超时，避免散落在各模块的重复 define；
-%% 本地模型（ollama）与长任务后端（zhipu/bailian）默认更长。
+%% 本地模型（ollama）与长任务后端（zhipu/dashscope）默认更长。
 -spec default_timeout(atom()) -> pos_integer().
 default_timeout(ollama) -> 120000;
 default_timeout(zhipu) -> 300000;
-default_timeout(bailian) -> 300000;
+default_timeout(dashscope) -> 300000;
 default_timeout(deepseek) -> 60000;  %% FIM / reasoner 如需更长在此调整
 default_timeout(_) -> 60000.
 

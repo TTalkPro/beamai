@@ -11,7 +11,7 @@
 %%%   - Ollama (本地模型，如 Llama3, Qwen)
 %%%   - Zhipu (GLM-4.7, GLM-4 系列)
 %%%   - DeepSeek (deepseek-chat, deepseek-reasoner)
-%%%   - Bailian/DashScope (通义千问系列)
+%%%   - DashScope (通义千问系列)
 %%%
 %%% == 设计原则 ==
 %%%

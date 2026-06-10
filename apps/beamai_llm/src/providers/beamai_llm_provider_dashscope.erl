@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc 阿里云百炼 (Bailian/DashScope) LLM Provider 实现
+%%% @doc 阿里云 DashScope (百炼) LLM Provider 实现
 %%%
 %%% 支持阿里云百炼平台的 DashScope 原生 API。
 %%% 使用 beamai_llm_http_client 处理公共 HTTP 逻辑。
@@ -25,8 +25,8 @@
 %%%
 %%% 使用方式:
 %%% ```
-%%% ApiKey = os:getenv("BAILIAN_API_KEY"),
-%%% Config = beamai_chat_completion:create(bailian, #{
+%%% ApiKey = os:getenv("DASHSCOPE_API_KEY"),
+%%% Config = beamai_chat_completion:create(dashscope, #{
 %%%     api_key => list_to_binary(ApiKey),
 %%%     model => <<"qwen-plus">>
 %%% }),
@@ -35,7 +35,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(beamai_llm_provider_bailian).
+-module(beamai_llm_provider_dashscope).
 -behaviour(beamai_llm_provider_behaviour).
 
 -include_lib("beamai_core/include/beamai_common.hrl").
@@ -58,13 +58,13 @@
 %% Behaviour 回调实现
 %%====================================================================
 
-name() -> <<"Bailian (DashScope)">>.
+name() -> <<"DashScope">>.
 
 default_config() ->
     #{
         base_url => ?DASHSCOPE_BASE_URL,
         model => ?DASHSCOPE_MODEL,
-        timeout => beamai_llm_provider_common:default_timeout(bailian),
+        timeout => beamai_llm_provider_common:default_timeout(dashscope),
         max_tokens => ?DASHSCOPE_MAX_TOKENS,
         temperature => ?DASHSCOPE_TEMPERATURE
     }.
@@ -146,7 +146,7 @@ build_headers(#{api_key := ApiKey}, IsStream) ->
 %% @private 构建请求选项
 build_request_opts(Config) ->
     #{
-        timeout => beamai_llm_provider_common:request_timeout(Config, bailian),
+        timeout => beamai_llm_provider_common:request_timeout(Config, dashscope),
         connect_timeout => maps:get(connect_timeout, Config, ?DASHSCOPE_CONNECT_TIMEOUT)
     }.
 

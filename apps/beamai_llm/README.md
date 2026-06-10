@@ -13,7 +13,7 @@
 | DeepSeek | `beamai_llm_provider_deepseek` | OpenAI 兼容 | deepseek-chat, deepseek-reasoner |
 | Ollama | `beamai_llm_provider_ollama` | OpenAI 兼容 | 本地模型部署 |
 | 智谱 AI | `beamai_llm_provider_zhipu` | OpenAI 兼容 | GLM-4.7 等国产模型 |
-| 阿里云百炼 | `beamai_llm_provider_bailian` | DashScope 原生 | 通义千问系列 (qwen-plus, qwen-max 等) |
+| 阿里云百炼 | `beamai_llm_provider_dashscope` | DashScope 原生 | 通义千问系列 (qwen-plus, qwen-max 等) |
 
 ## 模块概览
 
@@ -32,7 +32,7 @@
 - **beamai_llm_provider_deepseek** - DeepSeek 实现 (OpenAI 兼容 API)
 - **beamai_llm_provider_ollama** - Ollama 实现
 - **beamai_llm_provider_zhipu** - 智谱 AI 实现
-- **beamai_llm_provider_bailian** - 阿里云百炼实现 (DashScope 原生 API)
+- **beamai_llm_provider_dashscope** - 阿里云百炼实现 (DashScope 原生 API)
 
 ### 适配器
 
@@ -46,7 +46,7 @@
 
 > **注意**: 核心响应数据结构 `beamai_llm_response` 位于 `beamai_core`，提供统一的类型定义和访问器。
 
-> **流式一致性**: 所有 Provider（含 zhipu/bailian/ollama）的同步与流式调用均返回统一的 `beamai_llm_response` 结构，含分片工具调用累加、usage 统计、reasoning/thinking 内容。
+> **流式一致性**: 所有 Provider（含 zhipu/dashscope/ollama）的同步与流式调用均返回统一的 `beamai_llm_response` 结构，含分片工具调用累加、usage 统计、reasoning/thinking 内容。
 
 ## API 文档
 
@@ -80,7 +80,7 @@ LLM = llm_client:create(Provider, #{
     max_tokens => 4096                    %% 可选，最大 token 数
 }).
 
-%% Provider 类型：openai | anthropic | deepseek | ollama | zhipu | bailian
+%% Provider 类型：openai | anthropic | deepseek | ollama | zhipu | dashscope
 ```
 
 ## 使用示例
@@ -169,9 +169,9 @@ Completion = beamai_llm_response:content(Resp2),
 
 ```erlang
 %% 创建百炼配置（通义千问）
-LLM = llm_client:create(bailian, #{
+LLM = llm_client:create(dashscope, #{
     model => <<"qwen-plus">>,  %% 推荐：均衡性价比
-    api_key => list_to_binary(os:getenv("BAILIAN_API_KEY"))
+    api_key => list_to_binary(os:getenv("DASHSCOPE_API_KEY"))
 }),
 
 %% 注意：中文字符串需要 /utf8 后缀
@@ -195,7 +195,7 @@ Messages = [
 
 ```erlang
 %% 启用联网搜索
-LLM = llm_client:create(bailian, #{
+LLM = llm_client:create(dashscope, #{
     model => <<"qwen-plus">>,
     api_key => ApiKey,
     enable_search => true  %% 启用联网搜索
@@ -415,7 +415,7 @@ end.
 | `ANTHROPIC_API_KEY` | Anthropic API 密钥 |
 | `DEEPSEEK_API_KEY` | DeepSeek API 密钥 |
 | `ZHIPU_API_KEY` | 智谱 AI API 密钥 |
-| `BAILIAN_API_KEY` | 阿里云百炼 API 密钥 (DashScope) |
+| `DASHSCOPE_API_KEY` | 阿里云百炼 API 密钥 (DashScope) |
 | `OLLAMA_BASE_URL` | Ollama 服务地址（默认 http://localhost:11434） |
 
 ## Provider 技术细节

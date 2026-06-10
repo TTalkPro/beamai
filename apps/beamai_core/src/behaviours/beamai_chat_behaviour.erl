@@ -15,7 +15,7 @@
 %% Types
 %%====================================================================
 
--type provider() :: openai | anthropic | ollama | zhipu | bailian | deepseek | mock | {custom, module()}.
+-type provider() :: openai | anthropic | ollama | zhipu | dashscope | deepseek | mock | {custom, module()}.
 
 -type config() :: #{
     provider := provider(),

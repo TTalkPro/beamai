@@ -39,7 +39,7 @@ parser(anthropic) -> parser_anthropic();
 parser(deepseek) -> parser_deepseek();
 parser(zhipu) -> parser_zhipu();
 parser(ollama) -> parser_ollama();
-parser(bailian) -> parser_dashscope();
+parser(dashscope) -> parser_dashscope();
 parser(_) -> parser_openai().
 
 %% @doc 返回 Ollama 格式的解析器函数
@@ -78,7 +78,7 @@ from_provider(Raw, anthropic) -> from_anthropic(Raw);
 from_provider(Raw, deepseek) -> from_deepseek(Raw); % DeepSeek 使用 OpenAI 格式 + reasoning_content
 from_provider(Raw, zhipu) -> from_zhipu(Raw);      % 智谱使用 OpenAI 格式 + reasoning_content
 from_provider(Raw, ollama) -> from_ollama(Raw);    % Ollama 支持原生和 OpenAI 格式
-from_provider(Raw, bailian) -> from_dashscope(Raw); % 百炼使用 DashScope 格式
+from_provider(Raw, dashscope) -> from_dashscope(Raw); % 百炼使用 DashScope 格式
 from_provider(Raw, Provider) ->
     %% 默认尝试 OpenAI 格式
     case from_openai(Raw) of
@@ -524,7 +524,7 @@ parse_dashscope_output(#{<<"choices">> := [Choice | _]}, Raw) ->
     {ok, beamai_llm_response:new(#{
         id => maps:get(<<"request_id">>, Raw, <<>>),
         model => <<>>,  %% DashScope 响应不包含 model
-        provider => bailian,
+        provider => dashscope,
         content => Content,
         content_blocks => case Content of null -> []; _ -> [#{type => text, text => Content}] end,
         tool_calls => ToolCalls,
@@ -540,7 +540,7 @@ parse_dashscope_output(#{<<"text">> := Text, <<"finish_reason">> := FinishReason
     {ok, beamai_llm_response:new(#{
         id => maps:get(<<"request_id">>, Raw, <<>>),
         model => <<>>,
-        provider => bailian,
+        provider => dashscope,
         content => Text,
         content_blocks => [#{type => text, text => Text}],
         tool_calls => [],

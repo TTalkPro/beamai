@@ -239,7 +239,7 @@ llm_client:provider_info(Provider).
 | `anthropic` | beamai_llm_provider_anthropic | Anthropic | 聊天、流式、工具调用 |
 | `deepseek` | beamai_llm_provider_deepseek | OpenAI 兼容 | 聊天、流式、工具调用 |
 | `zhipu` | beamai_llm_provider_zhipu | OpenAI 兼容 | 聊天、流式、工具调用、异步 |
-| `bailian` | beamai_llm_provider_bailian | DashScope 原生 | 聊天、流式、工具调用、联网搜索 |
+| `dashscope` | beamai_llm_provider_dashscope | DashScope 原生 | 聊天、流式、工具调用、联网搜索 |
 | `ollama` | beamai_llm_provider_ollama | OpenAI 兼容 | 聊天、流式 |
 
 ### Provider 公共模块 (beamai_llm_provider_common)
@@ -316,7 +316,7 @@ LLM = llm_client:create(Provider, #{
 }).
 ```
 
-**Provider 类型：** `openai | anthropic | deepseek | zhipu | bailian | ollama`
+**Provider 类型：** `openai | anthropic | deepseek | zhipu | dashscope | ollama`
 
 ---
 

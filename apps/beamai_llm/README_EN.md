@@ -13,7 +13,7 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 | DeepSeek | `beamai_llm_provider_deepseek` | OpenAI Compatible | deepseek-chat, deepseek-reasoner |
 | Ollama | `beamai_llm_provider_ollama` | OpenAI Compatible | Local model deployment |
 | Zhipu AI | `beamai_llm_provider_zhipu` | OpenAI Compatible | GLM-4.7 and other Chinese models |
-| Alibaba Cloud Bailian | `beamai_llm_provider_bailian` | DashScope Native | Qwen series (qwen-plus, qwen-max, etc.) |
+| Alibaba Cloud DashScope | `beamai_llm_provider_dashscope` | DashScope Native | Qwen series (qwen-plus, qwen-max, etc.) |
 
 ## Module Overview
 
@@ -31,7 +31,7 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 - **beamai_llm_provider_deepseek** - DeepSeek implementation (OpenAI compatible API)
 - **beamai_llm_provider_ollama** - Ollama implementation
 - **beamai_llm_provider_zhipu** - Zhipu AI implementation
-- **beamai_llm_provider_bailian** - Alibaba Cloud Bailian implementation (DashScope native API)
+- **beamai_llm_provider_dashscope** - Alibaba Cloud DashScope implementation (DashScope native API)
 
 ### Adapters
 
@@ -45,7 +45,7 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 
 > **Note:** The core response data structure `beamai_llm_response` is in `beamai_core`, providing unified type definitions and accessors.
 
-> **Streaming consistency:** All providers (incl. zhipu/bailian/ollama) return the unified `beamai_llm_response` structure for both sync and streaming calls, with streamed tool-call accumulation, usage stats, and reasoning/thinking content.
+> **Streaming consistency:** All providers (incl. zhipu/dashscope/ollama) return the unified `beamai_llm_response` structure for both sync and streaming calls, with streamed tool-call accumulation, usage stats, and reasoning/thinking content.
 
 ## API Documentation
 
@@ -79,7 +79,7 @@ LLM = llm_client:create(Provider, #{
     max_tokens => 4096                    %% Optional, maximum token count
 }).
 
-%% Provider types: openai | anthropic | deepseek | ollama | zhipu | bailian
+%% Provider types: openai | anthropic | deepseek | ollama | zhipu | dashscope
 ```
 
 ## Usage Examples
@@ -160,17 +160,17 @@ Completion = beamai_llm_response:content(Resp2),
 {ok, Resp3} = beamai_llm_provider_deepseek:stream_fim(Config, #{prompt => P}, Callback).
 ```
 
-### Using Alibaba Cloud Bailian (DashScope Native API)
+### Using Alibaba Cloud DashScope (Native API)
 
-Alibaba Cloud Bailian Provider uses DashScope native API, supporting:
+Alibaba Cloud DashScope Provider uses DashScope native API, supporting:
 - Text generation: `/api/v1/services/aigc/text-generation/generation`
 - Multimodal generation: `/api/v1/services/aigc/multimodal-generation/generation` (automatically selected based on model)
 
 ```erlang
-%% Create Bailian configuration (Qwen)
-LLM = llm_client:create(bailian, #{
+%% Create DashScope configuration (Qwen)
+LLM = llm_client:create(dashscope, #{
     model => <<"qwen-plus">>,  %% Recommended: balanced cost-performance
-    api_key => list_to_binary(os:getenv("BAILIAN_API_KEY"))
+    api_key => list_to_binary(os:getenv("DASHSCOPE_API_KEY"))
 }),
 
 %% Note: Chinese strings require /utf8 suffix
@@ -194,7 +194,7 @@ Messages = [
 
 ```erlang
 %% Enable web search
-LLM = llm_client:create(bailian, #{
+LLM = llm_client:create(dashscope, #{
     model => <<"qwen-plus">>,
     api_key => ApiKey,
     enable_search => true  %% Enable web search
@@ -414,7 +414,7 @@ Error `type`: `rate_limit | server_error | client_error | auth | timeout | netwo
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
 | `ZHIPU_API_KEY` | Zhipu AI API key |
-| `BAILIAN_API_KEY` | Alibaba Cloud Bailian API key (DashScope) |
+| `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key (DashScope) |
 | `OLLAMA_BASE_URL` | Ollama service address (default http://localhost:11434) |
 
 ## Provider Technical Details
@@ -462,7 +462,7 @@ DeepSeek API is fully compatible with OpenAI API format, using the same request/
 }
 ```
 
-### Alibaba Cloud Bailian (DashScope Native API)
+### Alibaba Cloud DashScope (Native API)
 
 **Request Format:**
 ```json

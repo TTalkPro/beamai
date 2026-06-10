@@ -74,7 +74,7 @@
     metadata := map()
 }.
 
--type provider() :: openai | anthropic | deepseek | zhipu | ollama | bailian | unknown.
+-type provider() :: openai | anthropic | deepseek | zhipu | ollama | dashscope | unknown.
 
 -type content_block() ::
     #{type := text, text := binary()} |

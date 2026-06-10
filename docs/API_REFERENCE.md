@@ -186,7 +186,7 @@ beamai_chat_completion:stream_chat(Config, Messages, Callback, Opts).
 | `anthropic` | beamai_llm_provider_anthropic | Anthropic | Chat, streaming, tool calling |
 | `deepseek` | beamai_llm_provider_deepseek | OpenAI compatible | Chat, streaming, tool calling |
 | `zhipu` | beamai_llm_provider_zhipu | OpenAI compatible | Chat, streaming, tool calling, async |
-| `bailian` | beamai_llm_provider_bailian | DashScope native | Chat, streaming, tool calling, web search |
+| `dashscope` | beamai_llm_provider_dashscope | DashScope native | Chat, streaming, tool calling, web search |
 | `ollama` | beamai_llm_provider_ollama | OpenAI compatible | Chat, streaming |
 
 ### DeepSeek Detailed Description
@@ -207,9 +207,9 @@ LLM = beamai_chat_completion:create(deepseek, #{
 }).
 ```
 
-### Alibaba Cloud Bailian (DashScope) Detailed Description
+### Alibaba Cloud DashScope Detailed Description
 
-Bailian Provider uses DashScope native API, automatically selecting endpoints based on model type:
+DashScope Provider uses DashScope native API, automatically selecting endpoints based on model type:
 - **Text generation models** (`qwen-plus`, `qwen-max`, `qwen-turbo`): Use `/api/v1/services/aigc/text-generation/generation`
 - **Multimodal models** (`qwen-vl-plus`, `qwen-audio`, etc.): Use `/api/v1/services/aigc/multimodal-generation/generation`
 
@@ -236,7 +236,7 @@ LLM = beamai_chat_completion:create(Provider, #{
 }).
 ```
 
-**Provider Types:** `openai | anthropic | deepseek | zhipu | bailian | ollama`
+**Provider Types:** `openai | anthropic | deepseek | zhipu | dashscope | ollama`
 
 ---
 

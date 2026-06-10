@@ -18,7 +18,7 @@ A high-performance AI Agent framework core library based on Erlang/OTP, providin
 Foundational infrastructure for building AI Agents (three core responsibilities):
 - **beamai_core** - Kernel foundation: Context, Filter (onion-style around model), Tool construction and invocation
 - **beamai_agent** - SimpleAgent: a primarily ReAct-based Agent framework (cross-turn memory via filter-memory, multi-turn conversations, callbacks, interrupt/resume)
-- **beamai_llm** - Unified LLM client (supports OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama)
+- **beamai_llm** - Unified LLM client (supports OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama)
 
 ### Extension Project ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 Advanced features built on top of the core library:
@@ -40,7 +40,7 @@ Advanced features built on top of the core library:
   - See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
 
 - **Unified LLM Client**: 6 providers with unified sync/streaming
-  - OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
+  - OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama
   - Multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure
 
 - **Output Parser**: Structured output
@@ -177,7 +177,7 @@ apps/
 │   ├── Chat           # beamai_chat_completion, beamai_llm_error
 │   ├── Parser         # beamai_output_parser, beamai_parser_json
 │   ├── Adapters       # beamai_llm_message_adapter, beamai_llm_response_parser, beamai_llm_tool_adapter
-│   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, Ollama
+│   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama
 │
 └── beamai_agent/       # SimpleAgent (ReAct)
     └── Agent          # beamai_agent, beamai_agent_state, beamai_agent_tool_loop,
@@ -274,7 +274,7 @@ LLM = beamai_chat_completion:create(zhipu, #{
 | `openai` | beamai_llm_provider_openai | OpenAI | OpenAI API |
 | `deepseek` | beamai_llm_provider_deepseek | OpenAI compatible | DeepSeek API |
 | `zhipu` | beamai_llm_provider_zhipu | OpenAI compatible | Zhipu AI (GLM series) |
-| `bailian` | beamai_llm_provider_bailian | DashScope native | Alibaba Cloud Bailian (Qwen series) |
+| `dashscope` | beamai_llm_provider_dashscope | DashScope native | Alibaba Cloud DashScope (Qwen series) |
 | `ollama` | beamai_llm_provider_ollama | OpenAI compatible | Ollama local models |
 
 ### HTTP Backend Configuration

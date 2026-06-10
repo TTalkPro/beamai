@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc zhipu / ollama / bailian 流式统一响应测试（A）
+%%% @doc zhipu / ollama / dashscope 流式统一响应测试（A）
 %%%
 %%% 验证这三个 provider 的流式 stream_chat 也返回统一 beamai_llm_response
 %%% （与同步路径一致：正确的 provider / content / finish_reason），
@@ -18,7 +18,7 @@ stream_unify_fixture_test_() ->
         ?_test(zhipu_openai_stream_unified()),
         ?_test(zhipu_openai_stream_tool_calls()),
         ?_test(ollama_stream_unified()),
-        ?_test(bailian_stream_unified())
+        ?_test(dashscope_stream_unified())
      ] end}.
 
 %%====================================================================
@@ -64,16 +64,16 @@ ollama_stream_unified() ->
     ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)).
 
 %%====================================================================
-%% bailian（DashScope 原生格式）
+%% dashscope（DashScope 原生格式）
 %%====================================================================
 
-bailian_stream_unified() ->
+dashscope_stream_unified() ->
     beamai_llm_fake_backend:set_stream(dashscope_chunks(), []),
     Config = #{api_key => <<"k">>, model => <<"qwen-plus">>},
-    {ok, Resp} = beamai_llm_provider_bailian:stream_chat(
+    {ok, Resp} = beamai_llm_provider_dashscope:stream_chat(
         Config, #{messages => [#{role => user, content => <<"hi">>}]},
         fun(_E) -> ok end),
-    ?assertEqual(bailian, beamai_llm_response:provider(Resp)),
+    ?assertEqual(dashscope, beamai_llm_response:provider(Resp)),
     ?assertEqual(<<"你好世界"/utf8>>, beamai_llm_response:content(Resp)),
     ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
     ?assertEqual(3, beamai_llm_response:input_tokens(Resp)),

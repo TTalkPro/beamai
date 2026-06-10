@@ -27,7 +27,7 @@
         beamai_llm_provider_deepseek,
         beamai_llm_provider_ollama,
         beamai_llm_provider_zhipu,
-        beamai_llm_provider_bailian,
+        beamai_llm_provider_dashscope,
         beamai_llm_provider_common,
         %% Note: beamai_llm_response 已移至 beamai_core
         %% Adapters
