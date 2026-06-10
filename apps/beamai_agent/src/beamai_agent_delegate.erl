@@ -72,12 +72,17 @@ fanout_tool(Config) ->
             context => #{type => string, description => <<"Shared background for all subtasks.">>}
         },
         handler => fun(Args, Ctx) ->
-            Tasks = arg_list(Args, <<"tasks">>),
-            Shared = [SeedFn(Args, Ctx), arg(Args, <<"context">>)],
-            Jobs = [{ensure_isolated(SubagentFn(Args#{<<"task">> => T}, Ctx)),
-                     compose(Shared, T)} || T <- Tasks],
-            Results = run_many(Jobs, Timeout, ResultFn),
-            {ok, combine(Tasks, Results)}
+            case arg_list(Args, <<"tasks">>) of
+                [] ->
+                    {error, #{type => invalid_arguments,
+                              message => <<"tasks must be a non-empty array of strings">>}};
+                Tasks ->
+                    Shared = [SeedFn(Args, Ctx), arg(Args, <<"context">>)],
+                    Jobs = [{ensure_isolated(SubagentFn(Args#{<<"task">> => T}, Ctx)),
+                             compose(Shared, T)} || T <- Tasks],
+                    Results = run_many(Jobs, Timeout, ResultFn),
+                    fanout_outcome(Tasks, Results)
+            end
         end
     }.
 
@@ -204,6 +209,17 @@ ensure_isolated(Cfg) ->
 compose(Parts0, Task) ->
     Parts = [P || P <- Parts0, is_binary(P), P =/= <<>>] ++ [Task],
     iolist_to_binary(lists:join(<<"\n\n">>, Parts)).
+
+%% @private fan-out 结果裁决：全部失败时显式返回 error（区别于部分成功的正常汇总），
+%% 让调用方/LLM 能区分"全失败"与"部分成功"并采取回退策略（Tasks 非空，入口已校验）
+fanout_outcome(Tasks, Results) ->
+    case lists:any(fun({ok, _}) -> true; (_) -> false end, Results) of
+        true ->
+            {ok, combine(Tasks, Results)};
+        false ->
+            {error, #{all_failed =>
+                [#{task => T, error => to_msg(R)} || {T, {error, R}} <- lists:zip(Tasks, Results)]}}
+    end.
 
 %% @private 汇总 fan-out 结果为 JSON
 combine(Tasks, Results) ->
