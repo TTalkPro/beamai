@@ -107,15 +107,13 @@ run(State, UserMessage) ->
 
 %% @doc 执行一轮对话（带选项）
 %%
-%% 执行流程（delta 模式 + filter-memory）：
+%% 执行流程（Agent 自管编排，记忆统一由 tool_loop 经 memory provider 处理）：
 %%   1. 触发 on_turn_start 回调
-%%   2. 进入 tool loop（本轮 delta 起始 = 用户消息）:
-%%      a. kernel:invoke_chat 发送本轮 delta；Memory filter 存 delta、展开完整历史、
-%%         调 LLM、存回 assistant 回复（经过完整 around_chat 链）
-%%      b. 若 LLM 返回 tool_calls: 逐个 kernel:invoke_tool 执行（经过 around_tool 链），
-%%         工具结果作为下一轮 delta，回到 (a)
-%%      c. 若 LLM 返回文本: 终止循环
-%%   3. turn_count + 1（历史已由 Memory filter 写入 store，无需 agent 追加）
+%%   2. 进入 tool loop（声明本轮新增 = 用户消息，并要求载入跨轮历史）:
+%%      a. tool_loop 持久化新消息、前接跨轮历史，组装本轮完整 messages
+%%      b. 每轮：prepare 变换 → invoke_chat(_stream) → assistant 回合并入并持久化
+%%      c. 有 tool_calls 则执行（结果并入并持久化）回到 (b)；纯文本则终止
+%%   3. turn_count + 1
 %%   4. 触发 on_turn_end 回调
 %%
 %% 选项：
@@ -140,14 +138,10 @@ run(State, UserMessage, Opts) ->
     Meta = beamai_agent_callbacks:build_metadata(State0),
     beamai_agent_callbacks:invoke(on_turn_start, [Meta], Callbacks),
 
-    %% Agent 自管编排：载入跨轮历史 + 持久化本轮用户消息，组装本轮完整 messages。
+    %% 记忆编排（载入跨轮历史 + 持久化新消息）统一由 tool_loop 负责，
+    %% 这里只声明本轮新增消息并要求载入历史。
     UserMsg = #{role => user, content => UserMessage},
-    Provider = beamai_agent_state:memory(State0),
-    ConvId = beamai_agent_state:conversation_id(State0),
-    Prior = load_history(Provider, ConvId),
-    persist(Provider, ConvId, [UserMsg]),
-    Messages0 = Prior ++ [UserMsg],
-    case run_loop(State0, Messages0, [], Opts) of
+    case run_loop(State0, #{new => [UserMsg], load_history => true}, [], Opts) of
         {ok, Response, ToolCallsMade, Iterations} ->
             finalize_turn(State0, Response, ToolCallsMade, Iterations);
         {interrupt, Type, Context} ->
@@ -364,12 +358,10 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
             beamai_agent_callbacks:invoke(on_resume, [IntState, Meta], Callbacks),
 
             %% 2. 人类输入作为被中断 tool_call 的结果，并入中断时携带的完整 messages
-            %%    （已完成工具结果与 assistant(tool_calls) 已在该 messages 内）。
+            %%    （已完成工具结果与 assistant(tool_calls) 已在该 messages 内）；
+            %%    持久化由 tool_loop 统一负责（resume 不重载历史）。
             HumanMsg = beamai_agent_interrupt:build_resume_messages(IntState, HumanInput),
-            Provider = beamai_agent_state:memory(Agent),
-            ConvId = beamai_agent_state:conversation_id(Agent),
-            persist(Provider, ConvId, HumanMsg),
-            Messages = maps:get(messages, IntState, []) ++ HumanMsg,
+            Existing = maps:get(messages, IntState, []),
 
             %% 3. 清除中断状态
             Agent1 = Agent#{interrupt_state => undefined},
@@ -377,7 +369,8 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
             %% 4. 继续 tool loop（剩余迭代数）
             #{iteration := Iter, tool_calls_made := PrevCalls} = IntState,
             RemainingIter = MaxIter - Iter,
-            case run_loop(Agent1, Messages, PrevCalls, #{max_iterations => RemainingIter}) of
+            case run_loop(Agent1, #{existing => Existing, new => HumanMsg},
+                          PrevCalls, #{max_iterations => RemainingIter}) of
                 {ok, Response, AllToolCalls, Iterations} ->
                     finalize_turn(Agent1, Response, AllToolCalls, Iterations);
                 {interrupt, Type, Context} ->
@@ -424,19 +417,27 @@ get_interrupt_info(_) ->
 
 %% @private 运行一轮 tool loop（full-messages 模式）
 %%
-%% 统一 run / resume 的 LoopOpts 组装：把本轮完整 messages、memory provider、
-%% conversation_id、回调元数据交给 tool_loop，由其自管编排记忆与回调。
+%% 统一 run / resume 的 LoopOpts 组装。MsgSpec 描述本轮消息来源：
+%%   existing     — 已有上下文（resume 时为中断时携带的完整 messages）
+%%   new          — 本轮新增消息（用户输入 / resume 的人类输入）
+%%   load_history — 是否前接跨轮历史（首轮 true，resume false）
+%% 历史载入与新消息持久化全部由 tool_loop 编排（agent 不再直接碰 memory）。
 %% Opts 可含 max_iterations 覆盖（resume 用剩余迭代数）。
-run_loop(State, Messages, PrevCalls, Opts) ->
+run_loop(State, MsgSpec, PrevCalls, Opts) ->
     #{callbacks := Callbacks, kernel := Kernel} = State,
     MaxIter = maps:get(max_iterations, Opts, maps:get(max_tool_iterations, State)),
     LoopOpts = #{
         kernel => Kernel,
-        messages => Messages,
+        messages => maps:get(existing, MsgSpec, []),
+        new_messages => maps:get(new, MsgSpec, []),
+        load_history => maps:get(load_history, MsgSpec, false),
         chat_opts => build_chat_opts(State, Opts),
         callbacks => Callbacks,
         max_iterations => MaxIter,
-        agent => State,
+        %% 只传 tool_loop 实际需要的字段，不传完整 agent state
+        max_tool_iterations => maps:get(max_tool_iterations, State),
+        parallel_tools => maps:get(parallel_tools, State, true),
+        interrupt_tools => maps:get(interrupt_tools, State, []),
         memory => beamai_agent_state:memory(State),
         conversation_id => beamai_agent_state:conversation_id(State),
         meta => beamai_agent_callbacks:build_metadata(State),
@@ -444,14 +445,6 @@ run_loop(State, Messages, PrevCalls, Opts) ->
         stream_token_handler => maps:get(stream_token_handler, Opts, undefined)
     },
     beamai_agent_tool_loop:run(LoopOpts, PrevCalls).
-
-%% @private 载入跨轮历史（无 memory 则 []）
-load_history(undefined, _ConvId) -> [];
-load_history(Provider, ConvId) -> beamai_memory_provider:history(Provider, ConvId).
-
-%% @private 持久化消息到 memory provider（无 memory 则 no-op）
-persist(undefined, _ConvId, _Msgs) -> ok;
-persist(Provider, ConvId, Msgs) -> beamai_memory_provider:append(Provider, ConvId, Msgs).
 
 %% @private 完成一轮对话：构建结果、更新状态、触发回调
 %%
