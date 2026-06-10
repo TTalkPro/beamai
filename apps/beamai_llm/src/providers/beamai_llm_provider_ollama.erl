@@ -25,7 +25,6 @@
 -define(OLLAMA_BASE_URL, <<"http://localhost:11434">>).
 -define(OLLAMA_ENDPOINT, <<"/v1/chat/completions">>).
 -define(OLLAMA_MODEL, <<"llama3.2">>).
--define(OLLAMA_TIMEOUT, 120000).
 -define(OLLAMA_MAX_TOKENS, 4096).
 -define(OLLAMA_TEMPERATURE, 0.7).
 
@@ -39,7 +38,7 @@ default_config() ->
     #{
         base_url => ?OLLAMA_BASE_URL,
         model => ?OLLAMA_MODEL,
-        timeout => ?OLLAMA_TIMEOUT,
+        timeout => beamai_llm_provider_common:default_timeout(ollama),
         max_tokens => ?OLLAMA_MAX_TOKENS,
         temperature => ?OLLAMA_TEMPERATURE
     }.
@@ -63,7 +62,7 @@ chat(Config, Request) ->
     Headers = build_headers(),
     Body = build_request_body(Config, Request),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?OLLAMA_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, ollama),
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
     },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_ollama()).
@@ -76,7 +75,7 @@ stream_chat(Config, Request, Callback) ->
     Headers = build_headers(),
     Body = build_request_body(Config, Request),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?OLLAMA_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, ollama),
         stream_timeout => 120000,
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_openai_stream(Acc, ollama)

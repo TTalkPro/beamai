@@ -86,7 +86,11 @@
 
     %% 响应头
     rate_limit_metadata/1,
-    retry_after_ms/1
+    retry_after_ms/1,
+
+    %% 超时默认值（集中管理，Config 的 timeout 可覆盖）
+    default_timeout/1,
+    request_timeout/2
 ]).
 
 %%====================================================================
@@ -108,6 +112,26 @@ build_url(Config, DefaultEndpoint, DefaultBaseUrl) ->
     BaseUrl = maps:get(base_url, Config, DefaultBaseUrl),
     Endpoint = maps:get(endpoint, Config, DefaultEndpoint),
     <<BaseUrl/binary, Endpoint/binary>>.
+
+%%====================================================================
+%% 超时默认值
+%%====================================================================
+
+%% @doc Provider 请求超时默认值（毫秒）
+%%
+%% 集中各 provider 的默认超时，避免散落在各模块的重复 define；
+%% 本地模型（ollama）与长任务后端（zhipu/bailian）默认更长。
+-spec default_timeout(atom()) -> pos_integer().
+default_timeout(ollama) -> 120000;
+default_timeout(zhipu) -> 300000;
+default_timeout(bailian) -> 300000;
+default_timeout(deepseek) -> 60000;  %% FIM / reasoner 如需更长在此调整
+default_timeout(_) -> 60000.
+
+%% @doc 从 Config 取请求超时，未配置时用 provider 默认值
+-spec request_timeout(map(), atom()) -> timeout().
+request_timeout(Config, Provider) ->
+    maps:get(timeout, Config, default_timeout(Provider)).
 
 %%====================================================================
 %% 请求头构建

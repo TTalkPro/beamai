@@ -51,7 +51,6 @@
 -define(DEEPSEEK_CHAT_BETA_ENDPOINT, <<"/beta/chat/completions">>).
 -define(DEEPSEEK_FIM_ENDPOINT, <<"/beta/completions">>).
 -define(DEEPSEEK_MODEL, <<"deepseek-chat">>).
--define(DEEPSEEK_TIMEOUT, 60000).
 -define(DEEPSEEK_MAX_TOKENS, 4096).
 -define(DEEPSEEK_TEMPERATURE, 1.0).
 
@@ -97,7 +96,7 @@ default_config() ->
     #{
         base_url => ?DEEPSEEK_BASE_URL,
         model => ?DEEPSEEK_MODEL,
-        timeout => ?DEEPSEEK_TIMEOUT,
+        timeout => beamai_llm_provider_common:default_timeout(deepseek),
         max_tokens => ?DEEPSEEK_MAX_TOKENS,
         temperature => ?DEEPSEEK_TEMPERATURE
     }.
@@ -122,7 +121,7 @@ chat(Config, Request) ->
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?DEEPSEEK_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
     },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_deepseek()).
@@ -135,7 +134,7 @@ stream_chat(Config, Request, Callback) ->
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request#{stream => true}),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?DEEPSEEK_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_openai_stream(Acc, deepseek)
         end,
@@ -172,7 +171,7 @@ fim(Config, Request) ->
     Url = build_fim_url(Config),
     Headers = build_headers(Config),
     Body = build_fim_request_body(Config, Request),
-    Opts = #{timeout => maps:get(timeout, Config, ?DEEPSEEK_TIMEOUT)},
+    Opts = #{timeout => beamai_llm_provider_common:request_timeout(Config, deepseek)},
     beamai_llm_http_client:request(Url, Headers, Body, Opts,
                                    beamai_llm_response_parser:parser_deepseek_fim()).
 
@@ -183,7 +182,7 @@ stream_fim(Config, Request, Callback) ->
     Headers = build_headers(Config),
     Body = build_fim_request_body(Config, Request#{stream => true}),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?DEEPSEEK_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_completions_stream(
                 Acc, beamai_llm_response_parser:parser_deepseek_fim())

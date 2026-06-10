@@ -50,7 +50,6 @@
 -define(DASHSCOPE_TEXT_ENDPOINT, <<"/api/v1/services/aigc/text-generation/generation">>).
 -define(DASHSCOPE_MULTIMODAL_ENDPOINT, <<"/api/v1/services/aigc/multimodal-generation/generation">>).
 -define(DASHSCOPE_MODEL, <<"qwen-plus">>).
--define(DASHSCOPE_TIMEOUT, 300000).
 -define(DASHSCOPE_CONNECT_TIMEOUT, 10000).
 -define(DASHSCOPE_MAX_TOKENS, 4096).
 -define(DASHSCOPE_TEMPERATURE, 0.7).
@@ -65,7 +64,7 @@ default_config() ->
     #{
         base_url => ?DASHSCOPE_BASE_URL,
         model => ?DASHSCOPE_MODEL,
-        timeout => ?DASHSCOPE_TIMEOUT,
+        timeout => beamai_llm_provider_common:default_timeout(bailian),
         max_tokens => ?DASHSCOPE_MAX_TOKENS,
         temperature => ?DASHSCOPE_TEMPERATURE
     }.
@@ -147,7 +146,7 @@ build_headers(#{api_key := ApiKey}, IsStream) ->
 %% @private 构建请求选项
 build_request_opts(Config) ->
     #{
-        timeout => maps:get(timeout, Config, ?DASHSCOPE_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, bailian),
         connect_timeout => maps:get(connect_timeout, Config, ?DASHSCOPE_CONNECT_TIMEOUT)
     }.
 

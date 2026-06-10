@@ -31,7 +31,6 @@
 -define(OPENAI_BASE_URL, <<"https://api.openai.com">>).
 -define(OPENAI_ENDPOINT, <<"/v1/chat/completions">>).
 -define(OPENAI_MODEL, <<"gpt-4">>).
--define(OPENAI_TIMEOUT, 60000).
 -define(OPENAI_MAX_TOKENS, 4096).
 -define(OPENAI_TEMPERATURE, 0.7).
 
@@ -62,7 +61,7 @@ default_config() ->
     #{
         base_url => ?OPENAI_BASE_URL,
         model => ?OPENAI_MODEL,
-        timeout => ?OPENAI_TIMEOUT,
+        timeout => beamai_llm_provider_common:default_timeout(openai),
         max_tokens => ?OPENAI_MAX_TOKENS,
         temperature => ?OPENAI_TEMPERATURE
     }.
@@ -85,7 +84,7 @@ chat(Config, Request) ->
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?OPENAI_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, openai),
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
     },
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_openai()).
@@ -98,7 +97,7 @@ stream_chat(Config, Request, Callback) ->
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request#{stream => true}),
     Opts = #{
-        timeout => maps:get(timeout, Config, ?OPENAI_TIMEOUT),
+        timeout => beamai_llm_provider_common:request_timeout(Config, openai),
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_openai_stream(Acc, openai)
         end,
