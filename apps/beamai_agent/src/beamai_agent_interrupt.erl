@@ -153,9 +153,14 @@ find_interrupt_in_calls([TC | Rest], InterruptNames, Acc) ->
     end.
 
 %% @private 从 tool_call 中提取函数名
+%%
+%% 畸形 tool_call 返回 <<>>（不会匹配任何中断工具名），但留下日志痕迹，
+%% 避免中断机制静默失效难以排查。
 get_tool_call_name(#{function := #{name := Name}}) -> Name;
 get_tool_call_name(#{<<"function">> := #{<<"name">> := Name}}) -> Name;
-get_tool_call_name(_) -> <<>>.
+get_tool_call_name(TC) ->
+    logger:warning("beamai_agent_interrupt: cannot extract tool name from malformed tool_call: ~p", [TC]),
+    <<>>.
 
 %% @private 从 tool_call 中提取 ID
 get_tool_call_id(#{id := Id}) -> Id;

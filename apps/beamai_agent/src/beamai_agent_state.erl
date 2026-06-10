@@ -210,8 +210,14 @@ ensure_default_store() ->
     end.
 
 %% @private 懒启动孤儿 store（unlink，使其不随调用进程退出而终止）
+%%
+%% 孤儿 store 无监督树保护：崩溃即丢失全部跨轮会话历史且不会重启。
+%% 记 warning 提示生产环境应将 beamai_agent 作为 OTP 应用启动。
 -spec start_orphan_store(atom()) -> beamai_chat_memory:handle().
 start_orphan_store(Name) ->
+    logger:warning(
+        "beamai_agent app not started; falling back to unsupervised orphan memory store ~p. "
+        "Start beamai_agent as an OTP application to get a supervised store.", [Name]),
     case beamai_chat_memory_ets:start_link(Name) of
         {ok, Pid} -> unlink(Pid);
         {error, {already_started, _Pid}} -> ok
