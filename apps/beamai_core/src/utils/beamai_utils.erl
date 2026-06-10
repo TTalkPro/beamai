@@ -188,9 +188,9 @@ binary_join(Separator, [Head | Tail]) ->
 to_binary(Term) when is_binary(Term) ->
     Term;
 to_binary(Term) when is_list(Term) ->
-    case io_lib:printable_unicode_list(Term) of
-        true -> list_to_binary(Term);
-        false -> list_to_binary(Term)
+    case unicode:characters_to_binary(Term) of
+        Bin when is_binary(Bin) -> Bin;
+        _ -> iolist_to_binary(io_lib:format("~p", [Term]))
     end;
 to_binary(Term) when is_atom(Term) ->
     atom_to_binary(Term, utf8);

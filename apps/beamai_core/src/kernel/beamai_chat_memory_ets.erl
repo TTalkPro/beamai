@@ -4,7 +4,8 @@
 %%% 基于 ETS 表的 beamai_chat_memory 实现，按 conversation_id 追加存储
 %%% 会话消息。进程持有 ETS 表所有权，进程退出表自动回收。
 %%%
-%%% 存储结构：ETS 表 {ConvId, [message()]}（消息正序）。
+%%% 存储结构：ETS 表 {ConvId, [message()]}（内部倒序存储，最新在前，
+%%% 使追加为 O(新消息数)；读取时 reverse 还原正序）。
 %%%
 %%% 句柄：`{beamai_chat_memory_ets, Name}`，Name 为注册名。
 %%%
@@ -80,7 +81,7 @@ init([Name, _Opts]) ->
 
 handle_call({mem_get, ConvId}, _From, #state{table = T} = State) ->
     Msgs = case ets:lookup(T, ConvId) of
-        [{ConvId, Stored}] -> Stored;
+        [{ConvId, Stored}] -> lists:reverse(Stored);
         [] -> []
     end,
     {reply, Msgs, State};
@@ -89,7 +90,7 @@ handle_call({mem_add, ConvId, NewMsgs}, _From, #state{table = T} = State) ->
         [{ConvId, Stored}] -> Stored;
         [] -> []
     end,
-    ets:insert(T, {ConvId, Existing ++ NewMsgs}),
+    ets:insert(T, {ConvId, lists:reverse(NewMsgs, Existing)}),
     {reply, ok, State};
 handle_call({mem_clear, ConvId}, _From, #state{table = T} = State) ->
     ets:delete(T, ConvId),

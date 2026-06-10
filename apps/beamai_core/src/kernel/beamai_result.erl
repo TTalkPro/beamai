@@ -75,7 +75,7 @@ pipe(Value, [Fun | Rest]) ->
         {error, _} = E -> E
     end.
 
-%% @doc 当谓词返回 true 时继续传递
+%% @doc 当谓词返回 true 时继续传递，谓词为 false 时短路返回当前值
 -spec pipe_while(A, [{fun((A) -> boolean()), fun((A) -> result(A))}]) -> result(A).
 pipe_while(Value, []) ->
     {ok, Value};

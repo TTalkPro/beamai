@@ -473,6 +473,6 @@ get_tls_opts() ->
     catch
         _:_ ->
             %% 如果获取系统证书失败，使用 verify_none（仅用于开发/测试）
-            error_logger:warning_msg("Failed to get system CA certs, using verify_none~n"),
+            logger:warning("Failed to get system CA certs, using verify_none"),
             [{verify, verify_none}]
     end.

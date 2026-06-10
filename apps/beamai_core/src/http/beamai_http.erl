@@ -42,7 +42,7 @@
 -export([post_json/2, post_json/3]).
 -export([put/3, put/4]).
 -export([delete/1, delete/2, delete/3]).
--export([request/5, request/6]).
+-export([request/5]).
 -export([request_meta/5]).
 
 %% 流式请求 API
@@ -174,11 +174,6 @@ put(Url, ContentType, Body, Opts) ->
 %% @doc 发送 HTTP 请求
 -spec request(atom(), url(), headers(), body(), options()) -> response().
 request(Method, Url, ExtraHeaders, Body, Opts) ->
-    do_request(Method, Url, ExtraHeaders, Body, Opts, 0).
-
-%% @doc 发送 HTTP 请求（带重试计数）
--spec request(atom(), url(), headers(), body(), options(), non_neg_integer()) -> response().
-request(Method, Url, ExtraHeaders, Body, Opts, _Attempt) ->
     do_request(Method, Url, ExtraHeaders, Body, Opts, 0).
 
 %% @doc 发送 HTTP 请求并返回响应元信息（状态码 + 响应头）

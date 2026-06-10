@@ -35,9 +35,15 @@
 %%====================================================================
 
 %% @doc 加载某会话的跨轮历史（开场用；无则 []）。
+%%
+%% **可见性语义要求（read-your-writes）**：同一调用进程内，history 必须能
+%% 看到此前 append 已返回 ok 的全部消息。Agent tool loop 依赖该语义编排
+%% "先 load 历史、再 persist 新消息"的时序——若实现为异步写（外部 DB /
+%% 消息队列），必须在 append 返回前完成写入，或保证同会话的单调读。
 -callback history(Ref :: term(), ConvId :: binary()) -> [message()].
 
 %% @doc 持久化消息（user / assistant / tool 结果，供下次 history 取回）。
+%% 返回 ok 即表示写入对后续 history 可见（见 history 的可见性语义）。
 -callback append(Ref :: term(), ConvId :: binary(), Msgs :: [message()]) -> ok.
 
 %% @doc 发送前变换：把本轮要发给 LLM 的完整消息列表变换为实际发送的列表

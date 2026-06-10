@@ -70,21 +70,30 @@ get_variables(#{input_variables := Vars}) -> Vars.
 
 %% @private 执行模板渲染
 %%
-%% 遍历变量 Map，将每个 {{key}} 替换为对应值的二进制表示。
-%% 使用 binary:replace/4 的 [global] 选项替换所有出现位置。
+%% 单遍扫描：re:split 以 {{var}} 为分隔符且带捕获组，结果为
+%% [文本, 变量名, 文本, 变量名, ..., 文本] 交替列表，逐项查表拼装。
+%% 缺失的变量保持 {{var}} 原样（与旧行为一致）。
+%% 约束：变量名不能包含 '}'（与 extract_variables 的正则一致）。
 do_render(Template, Vars) ->
     try
-        Result = maps:fold(fun(Key, Value, Acc) ->
-            KeyBin = beamai_utils:to_binary(Key),
-            Pattern = <<"{{", KeyBin/binary, "}}">>,
-            ValueBin = beamai_utils:to_binary(Value),
-            binary:replace(Acc, Pattern, ValueBin, [global])
-        end, Template, Vars),
-        {ok, Result}
+        NormVars = maps:fold(fun(Key, Value, Acc) ->
+            Acc#{beamai_utils:to_binary(Key) => beamai_utils:to_binary(Value)}
+        end, #{}, Vars),
+        Parts = re:split(Template, <<"\\{\\{([^}]+)\\}\\}">>, [{return, binary}]),
+        {ok, iolist_to_binary(render_parts(Parts, NormVars))}
     catch
         _:Reason ->
             {error, {render_failed, Reason}}
     end.
+
+%% @private 拼装 re:split 的交替结果（偶数位文本，奇数位变量名）
+render_parts([], _Vars) ->
+    [];
+render_parts([Text], _Vars) ->
+    [Text];
+render_parts([Text, Var | Rest], Vars) ->
+    Value = maps:get(Var, Vars, <<"{{", Var/binary, "}}">>),
+    [Text, Value | render_parts(Rest, Vars)].
 
 %% @private 从模板中提取所有 {{variable}} 变量名
 %%
