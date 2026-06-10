@@ -118,11 +118,11 @@ parse_response_body(Response, ResponseParser) when is_binary(Response) ->
     case beamai_utils:parse_json(Response) of
         Parsed when map_size(Parsed) > 0 -> ResponseParser(Parsed);
         Empty ->
-            error_logger:warning_msg("Failed to parse response JSON: ~ts~n", [Response]),
+            logger:warning("Failed to parse response JSON: ~ts", [Response]),
             {error, {parse_error, Empty}}
     end;
 parse_response_body(Response, _ResponseParser) ->
-    error_logger:warning_msg("Unexpected response type: ~p~n", [Response]),
+    logger:warning("Unexpected response type: ~p", [Response]),
     {error, {unexpected_response, Response}}.
 
 %% @private 安全调用响应头处理器（异常或非 map 返回时降级为空）
@@ -145,23 +145,37 @@ inject_metadata(Resp, _HeaderMeta) ->
 %%====================================================================
 
 %% @doc 发送流式 HTTP 请求
-%% 使用默认事件累加器
+%% 使用默认事件累加器（与之配对的默认 finalize_stream/1，可被 Opts 覆盖）
 -spec stream_request(binary(), [{binary(), binary()}], map(), request_opts(), stream_callback()) ->
     {ok, map()} | {error, term()}.
 stream_request(Url, Headers, Body, Opts, Callback) ->
-    stream_request(Url, Headers, Body, Opts, Callback, fun default_accumulator/2).
+    Opts1 = Opts#{finalizer => maps:get(finalizer, Opts, fun finalize_stream/1)},
+    stream_request(Url, Headers, Body, Opts1, Callback, fun default_accumulator/2).
 
 %% @doc 发送流式 HTTP 请求（带自定义事件累加器）
 %% 使用 beamai_http:stream_request 作为底层，添加 SSE 解析
 %%
-%% Opts 中可包含 finalizer，用于将累加结果转换为最终响应
-%% （如转成与同步模式一致的 beamai_llm_response 结构）。
-%% 未指定时使用默认的 finalize_stream/1。
+%% Opts **必须**包含 finalizer，用于将累加结果转换为最终响应
+%% （如转成与同步模式一致的 beamai_llm_response 结构）。自定义累加器的
+%% 中间形态只有与之配对的 finalizer 能理解，漏传几乎必是 provider 实现
+%% bug —— 返回 {error, {missing_stream_finalizer, _}}（经 beamai_llm_error
+%% 归一后不可重试）而非静默退化为通用 finalize（那会丢 usage、分片
+%% tool_calls 合并等统一响应结构）。
 -spec stream_request(binary(), [{binary(), binary()}], map(), request_opts(),
                      stream_callback(), event_accumulator()) ->
     {ok, map()} | {error, term()}.
 stream_request(Url, Headers, Body, Opts, Callback, Accumulator) ->
-    Finalizer = maps:get(finalizer, Opts, fun finalize_stream/1),
+    case maps:get(finalizer, Opts, undefined) of
+        F when is_function(F, 1) ->
+            do_stream_request(Url, Headers, Body, Opts, Callback, Accumulator, F);
+        _ ->
+            {error, {missing_stream_finalizer,
+                     <<"stream_request/6 with a custom accumulator requires a "
+                       "paired finalizer in Opts">>}}
+    end.
+
+%% @private 实际执行流式请求（finalizer 已校验）
+do_stream_request(Url, Headers, Body, Opts, Callback, Accumulator, Finalizer) ->
     OnHeaders = maps:get(on_headers, Opts, undefined),
     StreamBody = Body#{<<"stream">> => true},
     HttpOpts = #{

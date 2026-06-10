@@ -115,8 +115,18 @@ classify({invalid_response, R}, Provider) ->
     mk(invalid_response, undefined, <<"Invalid response">>, Provider, false, undefined, {invalid_response, R});
 classify({parse_error, R}, Provider) ->
     mk(invalid_response, undefined, <<"Response parse error">>, Provider, false, undefined, {parse_error, R});
+classify({unexpected_response, R}, Provider) ->
+    mk(invalid_response, undefined, <<"Unexpected response shape">>, Provider, false, undefined,
+       {unexpected_response, R});
+classify({task_failed, R}, Provider) ->
+    mk(api_error, undefined, <<"Async task failed">>, Provider, false, undefined, {task_failed, R});
 classify(missing_api_key, Provider) ->
     mk(auth, undefined, <<"Missing API key">>, Provider, false, undefined, missing_api_key);
+classify(missing_model, Provider) ->
+    mk(client_error, undefined, <<"Missing model in config">>, Provider, false, undefined, missing_model);
+classify(not_supported, Provider) ->
+    mk(client_error, undefined, <<"Operation not supported by provider">>, Provider, false, undefined,
+       not_supported);
 classify(Reason, Provider) ->
     mk(unknown, undefined, to_message(Reason), Provider, false, undefined, Reason).
 
