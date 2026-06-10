@@ -132,7 +132,9 @@ execute_sequential(Kernel, ToolCalls, Context) ->
 %%
 %% 工作进程把 {tool_result, self(), {Msg, CallRecord}} 回传给父进程；进程意外
 %% 崩溃（未走 invoke_tool 的 {error,_} 路径）由 'DOWN' 兜底合成 error tool 消息。
-%% 结果按原 tool_call 顺序（索引）重排。
+%% 全局收集有截止时间（app env `tool_gather_timeout`，默认 5 分钟）：超时后
+%% kill 未完成的工作进程、为其合成 timeout error 结果，避免单个卡死工具冻结
+%% 整个 tool loop 并泄漏 worker。结果按原 tool_call 顺序（索引）重排。
 execute_concurrent(Kernel, ToolCalls, Context) ->
     Parent = self(),
     Indexed = lists:zip(lists:seq(1, length(ToolCalls)), ToolCalls),
@@ -142,37 +144,64 @@ execute_concurrent(Kernel, ToolCalls, Context) ->
         end),
         Acc#{Pid => #{idx => Idx, tc => TC, mref => MRef}}
     end, #{}, Indexed),
-    ResultMap = collect_tools(Workers, #{}),
+    Deadline = erlang:monotonic_time(millisecond) + gather_timeout(),
+    ResultMap = collect_tools(Workers, #{}, Deadline),
     Ordered = [maps:get(Idx, ResultMap) || {Idx, _TC} <- Indexed],
     lists:unzip(Ordered).
 
-%% @private 收集并发工作进程结果，直到每个 tool 都有结果（idx 为键）
-collect_tools(Workers, Acc) when map_size(Acc) =:= map_size(Workers) ->
+%% @private 收集并发工作进程结果，直到每个 tool 都有结果（idx 为键）或超时
+collect_tools(Workers, Acc, _Deadline) when map_size(Acc) =:= map_size(Workers) ->
     Acc;
-collect_tools(Workers, Acc) ->
+collect_tools(Workers, Acc, Deadline) ->
+    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
     receive
         {tool_result, Pid, RC} ->
-            #{idx := Idx, mref := MRef} = maps:get(Pid, Workers),
-            erlang:demonitor(MRef, [flush]),
-            collect_tools(Workers, Acc#{Idx => RC});
+            case maps:get(Pid, Workers, undefined) of
+                undefined ->
+                    %% 上一批被 kill 的 worker 在死前发出的迟到结果，忽略
+                    collect_tools(Workers, Acc, Deadline);
+                #{idx := Idx, mref := MRef} ->
+                    erlang:demonitor(MRef, [flush]),
+                    collect_tools(Workers, Acc#{Idx => RC}, Deadline)
+            end;
         {'DOWN', _MRef, process, Pid, Reason} ->
             case maps:get(Pid, Workers, undefined) of
                 undefined ->
-                    collect_tools(Workers, Acc);
+                    collect_tools(Workers, Acc, Deadline);
                 #{idx := Idx, tc := TC} ->
                     case maps:is_key(Idx, Acc) of
-                        true -> collect_tools(Workers, Acc);  %% 结果已先到，DOWN 忽略
-                        false -> collect_tools(Workers, Acc#{Idx => crash_result(TC, Reason)})
+                        true -> collect_tools(Workers, Acc, Deadline);  %% 结果已先到，DOWN 忽略
+                        false -> collect_tools(Workers, Acc#{Idx => synth_result(TC, tool_worker_crash, Reason)}, Deadline)
                     end
             end
+    after Remaining ->
+        kill_pending(Workers, Acc)
     end.
 
-%% @private 工作进程崩溃时合成 error tool 结果（保持与正常结果同构）
-crash_result(TC, Reason) ->
+%% @private 超时收尾：kill 所有未交付结果的 worker，并合成 timeout error 结果
+kill_pending(Workers, Acc) ->
+    maps:fold(fun(Pid, #{idx := Idx, tc := TC, mref := MRef}, A) ->
+        case maps:is_key(Idx, A) of
+            true ->
+                A;
+            false ->
+                erlang:demonitor(MRef, [flush]),
+                exit(Pid, kill),
+                A#{Idx => synth_result(TC, tool_timeout, gather_timeout_exceeded)}
+        end
+    end, Acc, Workers).
+
+%% @private 合成 error tool 结果（保持与正常结果同构）
+synth_result(TC, Type, Reason) ->
     {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
     Result = beamai_tool:encode_result(
-        #{error => #{type => tool_worker_crash,
+        #{error => #{type => Type,
                      reason => iolist_to_binary(io_lib:format("~p", [Reason]))}}),
     Msg = #{role => tool, tool_call_id => Id, content => Result},
     CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id},
     {Msg, CallRecord}.
+
+%% @private 并发收集的全局截止时长（毫秒，默认 2 分钟）
+%% 长耗时工具场景请通过 app env tool_gather_timeout 显式调大
+gather_timeout() ->
+    application:get_env(beamai_agent, tool_gather_timeout, 120000).

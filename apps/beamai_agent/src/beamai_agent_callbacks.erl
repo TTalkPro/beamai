@@ -52,7 +52,7 @@
 %% 从 callbacks map 中查找指定名称的回调，找到后用提供的参数列表调用。
 %% 安全保证：
 %%   - 回调未注册（undefined）时直接返回 ok，不做任何操作
-%%   - 回调执行中抛出任何异常均被捕获并返回 ok
+%%   - 回调执行中抛出任何异常均被捕获并返回 ok（记 warning 日志留痕）
 %%   - 确保回调永远不会中断 agent 的主执行流程
 %%
 %% @param Name 回调名称（atom，如 on_turn_start, on_tool_call 等）
@@ -62,8 +62,18 @@
 -spec invoke(atom(), [term()], callbacks()) -> ok.
 invoke(Name, Args, Callbacks) ->
     case maps:get(Name, Callbacks, undefined) of
-        undefined -> ok;
-        Fun -> try erlang:apply(Fun, Args) catch _:_ -> ok end
+        undefined ->
+            ok;
+        Fun ->
+            try
+                _ = erlang:apply(Fun, Args),
+                ok
+            catch
+                Class:Reason:Stack ->
+                    logger:warning("beamai_agent callback ~p crashed: ~p:~p",
+                                   [Name, Class, Reason], #{stacktrace => Stack}),
+                    ok
+            end
     end.
 
 %% @doc 构建回调元数据
