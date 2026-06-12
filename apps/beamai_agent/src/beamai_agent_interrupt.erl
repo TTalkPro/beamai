@@ -154,10 +154,14 @@ find_interrupt_in_calls([TC | Rest], InterruptNames, Acc) ->
 
 %% @private 从 tool_call 中提取函数名
 %%
+%% 支持 OpenAI 嵌套格式（function.name）与统一响应的扁平格式（name），
+%% 与 beamai_tool:parse_tool_call/1 的格式覆盖保持一致。
 %% 畸形 tool_call 返回 <<>>（不会匹配任何中断工具名），但留下日志痕迹，
 %% 避免中断机制静默失效难以排查。
 get_tool_call_name(#{function := #{name := Name}}) -> Name;
 get_tool_call_name(#{<<"function">> := #{<<"name">> := Name}}) -> Name;
+get_tool_call_name(#{name := Name}) -> Name;
+get_tool_call_name(#{<<"name">> := Name}) -> Name;
 get_tool_call_name(TC) ->
     logger:warning("beamai_agent_interrupt: cannot extract tool name from malformed tool_call: ~p", [TC]),
     <<>>.

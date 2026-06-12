@@ -74,7 +74,8 @@
 %% @doc 创建新的 Agent 实例
 %%
 %% 从配置 map 构建完整的 agent 状态，包括 kernel 初始化、
-%% callback filter 注入、默认值填充等。
+%% memory provider 解析、默认值填充等。kernel 与 memory 为两个
+%% 正交的创建参数；callbacks 是 agent 唯一的观察扩展点。
 %%
 %% 详细配置选项参见 beamai_agent_state:create/1。
 %%
@@ -169,7 +170,7 @@ stream(State, UserMessage) ->
 
 %% @doc 流式执行一轮对话（带选项）
 %%
-%% 与 run/3 同样经过 filter-memory（delta 模式）完成工具循环，区别在于循环中
+%% 与 run/3 同样经 tool loop（full-messages 模式）完成工具循环，区别在于循环中
 %% 的每次 LLM 调用走 provider 级 streaming（kernel:invoke_chat_stream）：文本
 %% token 经 on_token callback **实时**逐 token 推送，而非等整轮完成后再分块。
 %% 工具调用轮通常无文本内容（content=null），自然不产生 token；最终文本回合
@@ -200,7 +201,7 @@ stream(State, UserMessage, Opts) ->
 
 %% @doc 获取对话消息历史
 %%
-%% 从 filter-memory store 按 conversation_id 读取完整历史（正序）。
+%% 从 memory provider 按 conversation_id 读取完整历史（正序）。
 %% 历史含 user / assistant 消息，以及工具循环中的 assistant(tool_calls) 与
 %% tool 结果消息。不包含 system_prompt（每次调用时动态拼接、不入存储）。
 %% 未启用记忆（memory => false）时返回 []。
@@ -281,9 +282,9 @@ set_system_prompt(State, Prompt) ->
 
 %% @doc 手动追加消息到历史
 %%
-%% 将一条消息追加到 store 中本会话历史末尾。可用于注入上下文信息，
-%% 如添加 assistant 角色的引导消息。未启用记忆时为 no-op。
-%% agent 状态本身不可变，历史变更落在 store，故返回原 State。
+%% 经 memory provider 将一条消息追加到本会话历史末尾。可用于注入上下文
+%% 信息，如添加 assistant 角色的引导消息。未启用记忆时为 no-op。
+%% agent 状态本身不可变，历史变更落在记忆里，故返回原 State。
 %%
 %% @param State agent 状态
 %% @param Msg 消息 map（需包含 role 和 content 键）
@@ -299,7 +300,7 @@ add_message(State, Msg) ->
 
 %% @doc 清空消息历史
 %%
-%% 清空 store 中本会话历史，agent 将从全新对话开始。未启用记忆时为 no-op。
+%% 经 memory provider 清空本会话历史，agent 将从全新对话开始。未启用记忆时为 no-op。
 %% 注意：不会重置 turn_count；agent 状态不可变，故返回原 State。
 %%
 %% @param State agent 状态
@@ -448,7 +449,7 @@ run_loop(State, MsgSpec, PrevCalls, Opts) ->
 
 %% @private 完成一轮对话：构建结果、更新状态、触发回调
 %%
-%% 跨轮历史已由 Memory filter 存入 store（含本轮用户消息与 assistant 回复），
+%% 跨轮历史已由 memory provider 持久化（含本轮用户消息与 assistant 回复），
 %% 此处不再向 agent 状态追加消息，仅累加 turn_count 并构建结果。
 %%
 %% @param State0 执行前的 agent 状态

@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc beamai_agent 顶层 Supervisor
 %%%
-%%% 监督 agent 的会话历史 store（filter-memory 后端）。store 作为**动态子进程**
+%%% 监督 agent 的会话历史 store（默认 memory provider 的存储后端）。store 作为**动态子进程**
 %%% 按需加入（ensure_store/1），permanent 重启策略，崩溃后自动重启——取代原先
 %%% unlink 的孤儿单例（不受监督、崩溃静默丢失记忆）。
 %%%

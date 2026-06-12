@@ -3,14 +3,15 @@
 %%%
 %%% 负责 agent 生命周期中的状态初始化工作：
 %%%   - 从用户 Config 构建完整的 agent_state map
-%%%   - 构建或接收 kernel（LLM 服务 + 插件 + 中间件）
-%%%   - 注入 callback filters 到 kernel（实现 on_llm_call / on_tool_call）
-%%%   - 组装发送给 kernel 的消息列表（system_prompt + history + user_msg）
+%%%   - 构建或接收 kernel（LLM 服务 + 工具插件）
+%%%   - 解析 memory provider（与 kernel 正交，互不感知）
 %%%
 %%% 设计决策：
 %%%   - 使用 Map 而非 Record，灵活可序列化
-%%%   - 支持两种 kernel 来源：预构建的 kernel 或从组件自动构建
-%%%   - Callback 通过 kernel filter 注入，利用 filter 机制自动触发
+%%%   - kernel 与 memory 是两个正交的创建参数：kernel 管 LLM/工具调用，
+%%%     memory 管跨轮会话历史，二者任意组合（预构建 kernel + 自定义 provider 等）
+%%%   - agent 本身没有 filter 概念：回调（callbacks）是 agent 唯一的观察扩展点，
+%%%     由 tool loop 直接触发；filter 属于 kernel 层（想用就自建 kernel 传入）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -29,7 +30,7 @@
     '__agent__' := true,            %% 标识这是一个 agent 状态 map
     id := binary(),                 %% agent 唯一标识（自动生成或用户指定）
     name := binary(),               %% agent 显示名称
-    kernel := beamai_kernel:kernel(), %% kernel 实例（含 LLM、plugins、filters、memory filter）
+    kernel := beamai_kernel:kernel(), %% kernel 实例（LLM 服务 + 工具）
     memory := beamai_memory_provider:provider() | undefined, %% 记忆 provider（策略+存储）
     conversation_id := binary(),    %% 本 agent 的会话标识，用于在记忆内定位历史
     system_prompt := binary() | undefined, %% 系统提示词
@@ -79,10 +80,10 @@
 %%   max_tool_iterations — 最大 tool loop 迭代次数（默认 10）
 %%   parallel_tools — 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
 %%   callbacks — 观察性回调 map（参见 beamai_agent_callbacks:callbacks()）
-%%   memory — 会话记忆（filter-memory，解析为 beamai_memory_provider）：
-%%            缺省用默认 provider+共享 store；{window,N}/{window,Handle,N} 套滑动窗口；
-%%            {store,Handle} 指定存储后端；{Mod,Ref} 自定义 provider（摘要/RAG…）或存储句柄；
-%%            false|none 关闭记忆。详见 setup_memory/2
+%%   memory — 会话记忆（解析为 beamai_memory_provider，与 kernel 正交）：
+%%            缺省用默认 provider+共享 store；{window,N} 套滑动窗口；
+%%            {store,Handle} 指定存储后端；{Mod,Ref} 自定义 provider（摘要/RAG…）；
+%%            false|none 关闭记忆。详见 setup_memory/1
 %%   conversation_id — 会话标识（默认自动生成）
 %%   id — agent ID（默认自动生成）
 %%   name — agent 名称（默认 <<"agent">>）
@@ -243,20 +244,10 @@ add_llm(Kernel, Config) ->
 
 %% @private 加载工具模块到 kernel
 %%
-%% 遍历 plugins 列表中的模块，逐个用 beamai_kernel 原语加载：
-%% 每个模块需实现 beamai_tool_behaviour 回调（tools/0），
-%% 若模块还定义了 filters/0，则一并加载其过滤器。
+%% 整体委托 beamai_kernel:add_tool_module/2（每个模块需实现
+%% beamai_tool_behaviour 的 tools/0；模块若定义 filters/0，由 kernel
+%% 原语自行处理——agent 层不感知 filter）。
 add_plugins(Kernel, Config) ->
     Plugins = maps:get(plugins, Config, []),
-    lists:foldl(fun load_plugin/2, Kernel, Plugins).
-
-%% @private 加载单个工具模块（tools/0 + 可选 filters/0）
-load_plugin(Module, Kernel) ->
-    K1 = beamai_kernel:add_tool_module(Kernel, Module),
-    case erlang:function_exported(Module, filters, 0) of
-        true ->
-            lists:foldl(fun(F, K) -> beamai_kernel:add_filter(K, F) end,
-                        K1, Module:filters());
-        false ->
-            K1
-    end.
+    lists:foldl(fun(Module, K) -> beamai_kernel:add_tool_module(K, Module) end,
+                Kernel, Plugins).
