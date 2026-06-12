@@ -20,6 +20,19 @@ find_interrupt_tool_test() ->
     ?assertEqual(TC2, Found),
     ?assertEqual([TC1], Others).
 
+%% 统一响应的扁平 tool_call 格式（#{id, name, arguments}，真实 provider 经
+%% beamai_llm_response 解析后的形状）也必须能匹配中断工具
+%% （回归：曾只认 OpenAI 嵌套 function.name，扁平格式静默不匹配并刷告警）
+find_interrupt_tool_flat_format_test() ->
+    Agent = #{interrupt_tools => [#{name => <<"ask_human">>}]},
+    TC1 = #{id => <<"c1">>, name => <<"normal_tool">>,
+            arguments => #{}, raw_arguments => <<"{}">>},
+    TC2 = #{id => <<"c2">>, name => <<"ask_human">>,
+            arguments => #{<<"q">> => <<"ok?">>}, raw_arguments => <<"{\"q\":\"ok?\"}">>},
+    {yes, Found, Others} = beamai_agent_interrupt:find_interrupt_tool([TC1, TC2], Agent),
+    ?assertEqual(TC2, Found),
+    ?assertEqual([TC1], Others).
+
 find_interrupt_tool_no_match_test() ->
     Agent = #{interrupt_tools => [#{name => <<"ask_human">>}]},
     TC1 = #{id => <<"c1">>, type => <<"function">>,

@@ -309,7 +309,7 @@ callbacks_on_turn_error_test() ->
         meck:unload(beamai_chat_completion)
     end.
 
-callback_filter_on_llm_call_test() ->
+callback_on_llm_call_test() ->
     Self = self(),
     Callbacks = #{
         on_llm_call => fun(Messages, Meta) -> Self ! {llm_call, length(Messages), Meta} end
@@ -369,7 +369,7 @@ recv_llm_result() ->
     after 1000 -> timeout
     end.
 
-callback_filter_on_tool_call_test() ->
+callback_on_tool_call_test() ->
     meck:new(beamai_chat_completion, [passthrough]),
     CallCount = counters:new(1, []),
     meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
@@ -515,7 +515,7 @@ state_create_test() ->
     ?assertEqual(true, maps:get('__agent__', State)),
     ?assert(is_binary(maps:get(id, State))),
     ?assertEqual(<<"agent">>, maps:get(name, State)),
-    %% 跨轮历史改由 filter-memory provider 维护，agent 状态不再持有 messages，
+    %% 跨轮历史改由 memory provider 维护，agent 状态不再持有 messages，
     %% 而是持有 memory provider 与 conversation_id。
     ?assert(is_binary(beamai_agent_state:conversation_id(State))),
     ?assertNotEqual(undefined, beamai_agent_state:memory(State)),
@@ -542,6 +542,18 @@ state_no_filter_injection_test() ->
     }),
     #{filters := Filters} = beamai_agent:kernel(State),
     ?assertEqual([], Filters).
+
+%% plugins 加载带 filters/0 的模块：整体委托 kernel 原语，filter 只注册一次
+%% （回归：agent 层曾在 add_tool_module 之外重复加载 filters/0，导致双重注册）
+state_plugin_filters_loaded_once_test() ->
+    {ok, State} = beamai_agent:new(#{
+        llm => {mock, #{}},
+        plugins => [beamai_agent_test_plugin]
+    }),
+    #{filters := Filters} = beamai_agent:kernel(State),
+    ?assertEqual(1, length(Filters)),
+    %% 工具正常注册
+    ?assertMatch({ok, _}, beamai_kernel:get_tool(beamai_agent:kernel(State), <<"plugin_tool">>)).
 
 %%====================================================================
 %% extract_content 健壮性（#4）
