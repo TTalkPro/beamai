@@ -292,9 +292,12 @@ partition_by_callback(ToolCalls, Fun) ->
 %%====================================================================
 
 %% @private 从 interrupt tool_call 中提取中断原因
+%% 支持 OpenAI 嵌套格式与统一响应的扁平格式（与 get_tool_call_name 同理）
 extract_interrupt_reason(#{function := #{arguments := Args}}) when is_map(Args) ->
     Args;
 extract_interrupt_reason(#{<<"function">> := #{<<"arguments">> := Args}}) when is_map(Args) ->
+    Args;
+extract_interrupt_reason(#{arguments := Args}) when is_map(Args) ->
     Args;
 extract_interrupt_reason(TC) ->
     {_Id, Name, Args} = beamai_tool:parse_tool_call(TC),
