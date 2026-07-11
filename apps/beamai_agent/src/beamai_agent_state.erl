@@ -54,6 +54,7 @@
     interrupted_tool_call := map() | undefined, %% 触发中断的 tool_call
     iteration := non_neg_integer(),       %% 当前 tool loop 迭代次数
     tool_calls_made := [map()],           %% 之前已执行的 tool 调用记录
+    saved_state := map(),                  %% 中断前累积的 state 槽（纯数据），resume 时恢复进 context
     interrupt_type := tool_request | tool_result | callback,
     created_at := integer()
 }.
@@ -150,7 +151,13 @@ conversation_id(#{conversation_id := ConvId}) -> ConvId.
 build_kernel(#{kernel := Kernel}) when is_map(Kernel) ->
     Kernel;
 build_kernel(Config) ->
-    Settings = maps:get(kernel_settings, Config, #{}),
+    Settings0 = maps:get(kernel_settings, Config, #{}),
+    %% state_slots：工具 writes 折叠进 state 的槽级 reducer 声明（顶层 config 便捷项，
+    %% 也可直接放 kernel_settings.state_slots；预构建 kernel 则由用户自管）
+    Settings = case maps:get(state_slots, Config, undefined) of
+        undefined -> Settings0;
+        Slots -> Settings0#{state_slots => Slots}
+    end,
     K0 = beamai_kernel:new(Settings),
     K1 = add_llm(K0, Config),
     add_plugins(K1, Config).

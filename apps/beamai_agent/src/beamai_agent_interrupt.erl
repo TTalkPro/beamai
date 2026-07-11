@@ -79,6 +79,8 @@ handle_interrupt(Type, Reason, Context, AgentState) ->
         interrupted_tool_call => maps:get(interrupted_tool_call, Context, undefined),
         iteration => maps:get(iteration, Context, 0),
         tool_calls_made => maps:get(tool_calls_made, Context, []),
+        %% 中断前累积的 state 槽（纯数据），resume 时恢复进 context
+        saved_state => maps:get(state, Context, #{}),
         interrupt_type => Type,
         created_at => erlang:system_time(millisecond)
     },

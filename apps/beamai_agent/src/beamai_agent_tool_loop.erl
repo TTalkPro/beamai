@@ -96,14 +96,16 @@ iterate(Opts, N, ToolCallsMade) ->
     ToSend = prepare_messages(Opts, Messages),
     beamai_agent_callbacks:invoke(on_llm_call, [ToSend, Meta], Callbacks),
     case invoke_llm(Opts, ToSend) of
-        {ok, Response, _Ctx} ->
+        {ok, Response, ChatCtx} ->
             %% 每次 LLM 返回后触发（含中间轮，可据此累计各次 usage）
             beamai_agent_callbacks:invoke(on_llm_result, [Response, Meta], Callbacks),
             Messages1 = record_assistant(Opts, Response, Messages),
+            %% 穿线 chat 返回的 context：filter 私有状态与 state 槽跨轮存活
+            Opts1 = with_ctx(Opts, ChatCtx),
             case beamai_llm_response:has_tool_calls(Response) of
                 true ->
                     TCs = beamai_llm_response:tool_calls(Response),
-                    handle_tool_calls(TCs, Opts#{messages => Messages1}, N, ToolCallsMade);
+                    handle_tool_calls(TCs, Opts1#{messages => Messages1}, N, ToolCallsMade);
                 false ->
                     finish(Response, ToolCallsMade)
             end;
@@ -188,14 +190,15 @@ handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls,
     #{kernel := Kernel, callbacks := Callbacks, messages := Messages,
       max_tool_iterations := MaxIter} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
-    {SafeResults, SafeCallRecords} =
+    {SafeResults, SafeCallRecords, NewCtx} =
         beamai_agent_utils:execute_tools(Kernel, SafeCalls, ctx(Opts), Parallel),
     AllResults = SafeResults ++ [skipped_result(TC) || TC <- SkippedCalls],
     fire_tool_results(Callbacks, SafeCallRecords),
     persist(Opts, AllResults),
     Context = build_interrupt_context(MaxIter - N, AllResults, InterruptedTC,
                                       ToolCallsMade ++ SafeCallRecords, Reason,
-                                      Messages ++ AllResults),
+                                      Messages ++ AllResults,
+                                      beamai_context:get_state(NewCtx)),
     {interrupt, Type, Context}.
 
 %% @private 被拦截未执行的 tool_call 的占位结果（保证消息历史完整）
@@ -213,11 +216,13 @@ skipped_result(TC) ->
 execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
     #{kernel := Kernel, callbacks := Callbacks, messages := Messages} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
-    {ToolResults, NewToolCalls} =
+    {ToolResults, NewToolCalls, NewCtx} =
         beamai_agent_utils:execute_tools(Kernel, TCs, ctx(Opts), Parallel),
     fire_tool_results(Callbacks, NewToolCalls),
     persist(Opts, ToolResults),
-    iterate(Opts#{messages => Messages ++ ToolResults}, N - 1, ToolCallsMade ++ NewToolCalls).
+    %% 穿线折叠后的 context：本轮工具写下的 state 槽下一轮工具/ filter 可见
+    Opts1 = with_ctx(Opts, NewCtx),
+    iterate(Opts1#{messages => Messages ++ ToolResults}, N - 1, ToolCallsMade ++ NewToolCalls).
 
 %% @private 把消息持久化到 memory provider（无 provider 或空列表则 no-op）
 persist(#{memory := undefined}, _Msgs) -> ok;
@@ -235,6 +240,11 @@ fire_tool_results(Callbacks, CallRecords) ->
 ctx(#{chat_opts := ChatOpts}) ->
     maps:get(context, ChatOpts, beamai_context:new()).
 
+%% @private 把更新后的 context 穿线回 chat_opts，供下一轮 chat/tool 复用
+%% （filter 私有状态跨轮存活、state 槽跨轮可见）
+with_ctx(#{chat_opts := ChatOpts} = Opts, Ctx) ->
+    Opts#{chat_opts => ChatOpts#{context => Ctx}}.
+
 %% @private 计算迭代次数
 compute_iterations([]) -> 1;
 compute_iterations(ToolCallsMade) -> length(ToolCallsMade) + 1.
@@ -243,16 +253,20 @@ compute_iterations(ToolCallsMade) -> length(ToolCallsMade) + 1.
 %% 内部函数 - 中断上下文构建
 %%====================================================================
 
-%% @private 构建中断上下文 map（携带当前完整 messages 供 resume 续接）
+%% @private 构建中断上下文 map（携带当前完整 messages 与 state 快照供 resume 续接）
+%%
+%% State 为中断前累积的 state 槽（纯数据），resume 时恢复进 context，避免累积
+%% 状态在跨越中断时静默丢失。
 build_interrupt_context(Iteration, CompletedResults, InterruptedTC,
-                        ToolCallsMade, Reason, Messages) ->
+                        ToolCallsMade, Reason, Messages, State) ->
     #{
         completed_tool_results => CompletedResults,
         interrupted_tool_call => InterruptedTC,
         iteration => Iteration,
         tool_calls_made => ToolCallsMade,
         reason => Reason,
-        messages => Messages
+        messages => Messages,
+        state => State
     }.
 
 %%====================================================================

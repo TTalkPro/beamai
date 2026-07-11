@@ -367,11 +367,13 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
             %% 3. 清除中断状态
             Agent1 = Agent#{interrupt_state => undefined},
 
-            %% 4. 继续 tool loop（剩余迭代数）
+            %% 4. 继续 tool loop（剩余迭代数）；恢复中断前累积的 state 槽进 context
             #{iteration := Iter, tool_calls_made := PrevCalls} = IntState,
             RemainingIter = MaxIter - Iter,
+            InitState = maps:get(saved_state, IntState, #{}),
             case run_loop(Agent1, #{existing => Existing, new => HumanMsg},
-                          PrevCalls, #{max_iterations => RemainingIter}) of
+                          PrevCalls,
+                          #{max_iterations => RemainingIter, init_state => InitState}) of
                 {ok, Response, AllToolCalls, Iterations} ->
                     finalize_turn(Agent1, Response, AllToolCalls, Iterations);
                 {interrupt, Type, Context} ->
@@ -483,8 +485,10 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
 %% 注：记忆与 on_llm_call 等回调由 tool_loop 显式编排，不再经 chat_opts 引线。
 build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
     BaseOpts0 = beamai_agent_utils:build_chat_opts(Kernel, Opts),
-    Ctx = beamai_context:with_conversation_id(
+    Ctx0 = beamai_context:with_conversation_id(
             beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
+    %% resume 时恢复中断前累积的 state 槽（首轮 init_state 缺省为空）
+    Ctx = beamai_context:with_state(Ctx0, maps:get(init_state, Opts, #{})),
     BaseOpts1 = BaseOpts0#{
         context => Ctx,
         system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined))
