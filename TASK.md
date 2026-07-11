@@ -1,102 +1,96 @@
-# TASK: Context 拆分（env/state/filter_states 三分区）+ 并行工具 writes 归并
+# TASK: HITL / Timeline / 串行标注 / 错误分层（单 Agent，移植自 clj-agent）
 
-> 来源：`design/context_split_parallel_tools.md`（2026-07-11 设计稿）。
-> 目标：`beamai_context` 从五类混装拆为三分区（env 只读运行环境 / state 用户
-> 状态槽 / filter_states 框架私有）；工具返回 `{ok, V, Writes}`（写出即数据），
-> 并行批次屏障处按 tool_call 原始序折叠 writes 进 state（槽级 reducer）。
-> 顺带修复 filter_states 跨轮丢失、中断 resume 丢 state 两个现存缺口。
-> 顺序：A（core context 基础）→ B（core writes 通道）→ C（agent 折叠+穿线）→
-> D（facade+测试+文档）。每批次跑全量 eunit。破坏面盘点见设计 §5（≈0 真实写者）。
+> 来源：`design/hitl_timeline_serial_errors.md`（对照 clj-agent
+> `agent-loop-concurrency-design.md` §9–§13 + `hitl-timeline-design.md`）。
+> 承接 `design/context_split_parallel_tools.md`（已实施：writes 折叠 + 跨轮穿线 +
+> 中断 saved_state）。顺序 A→B→C→D→E，每批跑全量 eunit + dialyzer。
+> 不 commit：只改代码，待用户 review。ETS 为 pause_store / lineage_store 的首个适配。
 
-## 批次 A：core context 三分区（基础，不引入并发语义）
+## 批次 A：per-tool `:serial` 标注
 
-- [x] A1 `beamai_core/src/kernel/beamai_context.erl` — 重构 `t()` 为三分区
-      `#{env := #{kernel, conversation_id, vars}, state := #{}, '__filter_states__' := #{}}`；
-      `new/0,1`、`get/2,3`、`set/3`、`set_many/2`、`delete/2`、`update/3`、`keys/1`、
-      `has_key/2` 全部重定向到 `env.vars`（语义：只读运行环境注入，仅构造期写）；
-      `with_kernel/get_kernel`、`with_conversation_id/conversation_id` 迁入 env；
-      `filter_state/set_filter_state` 保持（框架私有分区不变）
-- [x] A2 `beamai_context.erl` — **删除死字段** `trace`/`metadata` 及其 4 个访问器
-      （`add_trace/get_trace/get_metadata/set_metadata`，src 零调用者；测试里的
-      metadata 均属 `beamai_llm_response`，不受影响）
-- [x] A3 `beamai_context.erl` — **新增 state API**：`state_get/2,3`、`get_state/1`、
-      `with_state/2`；`apply_writes/3`（按 index 升序折叠 writes → 新 state：声明槽
-      过 reducer、未声明槽 last-writer + 同批双写 conflict 收集，返回
-      `{t(), Conflicts :: [binary()]}`）；core 保持零外部依赖
-- [x] A4 全量 `rebar3 eunit`：现有 context/kernel/chat_completion 测试零回归
-      （`set`→`env.vars`、`get` 读回、`get_kernel`、`conversation_id`、`filter_state` 等价）
+- [x] A1 `beamai_tool` tool_spec 加 `serial => boolean()`（缺省 false）；docstring 说明
+- [x] A2 `beamai_kernel` 加 `serial_tool/2`（按工具名查 tool_spec 的 serial 标志）
+- [x] A3 `beamai_agent_utils:execute_tools/4` 并行判定改为
+      `Parallel andalso length>1 andalso 批内无 serial 工具`；命中则整批退化串行
+      （状态语义仍「快照+屏障折叠」不变）
+- [x] A4 测试：批内含 serial → 整批串行（可观测：串行工具间时序）；全非 serial → 并行；
+      serial 工具的 writes 仍正常折叠
+- [x] A5 全量 eunit + dialyzer
 
-## 批次 B：core writes 通道（tool / kernel / filter_chain）
+## 批次 B：on_tool_result 实时触发
 
-- [x] B1 `beamai_core/src/kernel/beamai_tool.erl` — `invoke/2,3` 返回归一
-      `{ok, V} | {ok, V, Writes :: map()} | {error, R}`；handler 三元组
-      `{ok, V, NewCtx}` 语义变为 `{ok, V, Writes}`（arity 不变）；docstring 改
-      "context 为只读运行环境，写状态经 Writes 返回"
-- [x] B2 `beamai_core/src/kernel/beamai_kernel.erl` — `tool_terminal` 归一
-      `{ok,V}→writes #{}`、`{ok,V,W}→writes W`；`run_tool` Response 形状
-      `#{result, writes, context}`；`invoke_tool/4` 返回 `{ok, V, Writes}`
-      （原第三元 Ctx 全链丢弃，无感）；`new/1` 收 `state_slots` 入 kernel settings；
-      `+ state_slots/1` 查询
-- [x] B3 `beamai_core/src/kernel/beamai_filter_chain.erl` — tool 链 Response 缺
-      `writes` 时兜底 `#{}`（宽容自写 around_tool filter，不强制它构造 writes）
-- [x] B4 全量 `rebar3 eunit`：kernel invoke_tool 测试第三元由 Ctx 变 Writes
-      （`?assertMatch({ok,_,_})` 仍通过）；filter 链测试零回归
+- [x] B1 `beamai_agent_utils:execute_tools` 增可选 `on_result` fun（`fun((Name,Result)->ok)`）：
+      并发 collector 收到每个结果即调、串行逐个调（异常经 callbacks:invoke 不逃逸）
+- [x] B2 `beamai_agent_tool_loop`：把 `on_tool_result` 触发从批后 `fire_tool_results`
+      移为传入 `on_result`（实时）；保留 CallRecords 供确定顺序消费
+- [x] B3 测试：实时触发（每工具完成即回调）、批内顺序不保证但 records 原序
+- [x] B4 全量 eunit + dialyzer
 
-## 批次 C：agent 折叠 + 跨轮穿线 + 中断 state
+## 批次 C：工具错误分层路由
 
-- [x] C1 `beamai_agent/src/beamai_agent_utils.erl` — `run_one_tool/3` 透出
-      `{Msg, CallRecord, Writes}`；`execute_concurrent`/`execute_sequential` 屏障处
-      调 `beamai_context:apply_writes/3` 折叠、返回 `{Msgs, Records, NewCtx}`；
-      `synth_result`（crash/timeout）与 skipped 合成结果 Writes 恒 `#{}`；
-      顺带修 `:136` 注释（gather 默认 **2 分钟** 而非 5 分钟）
-- [x] C2 `beamai_agent/src/beamai_agent_tool_loop.erl` — `execute_and_continue`/
-      `handle_interrupt` 接 `execute_tools` 新返回；**context 跨轮穿线**（把折叠后
-      NewCtx 写回下一轮 `chat_opts` 的 `context`，兑现 filter_states 跨轮存活 +
-      state 跨轮可见）；中断上下文 `build_interrupt_context` 增带 `state`
-- [x] C3 `beamai_agent/src/beamai_agent.erl` + `beamai_agent_state.erl` — config
-      收 `state_slots` 透传给内部 kernel；resume 从中断上下文 `with_state` 恢复
-      state 进 context
-- [x] C4 全量 `rebar3 eunit`：现有 agent/并行/中断测试零回归
+- [x] C1 新模块 `beamai_tool_error:classify/1` → `semantic|transient|environment`
+      （error_class 显式 > llm_error retryable/auth > erlang timeout/network > semantic）
+- [x] C2 `beamai_tool:invoke_with_retry` 改为**仅** transient 类重试 + 指数退避；
+      `retry => true | #{max_retries,initial_delay_ms}`（缺省 max_retries=2/delay=200）；
+      未开 retry 不重试（幂等 opt-in）
+- [x] C3 `beamai_agent_utils:execute_tools` 返回增第 4 元 `Errors`（分类后仍失败的
+      `[#{id,name,class,message}]`）；run_one_tool 透出 error class
+- [x] C4 `beamai_agent_tool_loop` 屏障处：Errors 含 environment 且策略 pause →
+      造中断 phase=`env_retry`，中断上下文带 batch_messages/failed_calls；
+      `on_env_error` 缺省 proceed，HITL agent 自动升 pause
+- [x] C5 resume（env phase）：`retry`/`approved` 只重跑失败调用、按 tool_call_id 替换；
+      其余 proceed；`reply` 拒收
+- [x] C6 `beamai_agent_state` config 收 `on_env_error`；interrupt_state 类型加 phase 等字段
+- [x] C7 测试：三类分类；transient 重试成功/耗尽；环境暂停+resume retry 替换；
+      proceed 缺省；语义类照旧 errors-are-data
+- [x] C8 全量 eunit + dialyzer
 
-## 批次 D：facade + 新测试 + 文档
+## 批次 D：暂停持久化（PauseStore ETS）+ resume payload
 
-- [x] D1 `beamai_core/src/beamai.erl` — facade context 构造 API 与新结构对齐
-      （`context/0,1` 走 `beamai_context:new`，预计零改动，确认即可）
-- [x] D2 新增测试（设计 §7）：快照隔离（同批 B 看不到 A 写）、reducer 折叠
-      （conj 槽两写全收）、last-writer 按 index 序而非完成序、错误/超时/skipped
-      writes 归零、conflict 告警、跨轮可见（本轮写下轮读）、filter_states 跨轮
-      存活回归、中断-resume state 恢复、串行/并行状态语义一致、`fun/1` 工具可返 writes
-- [x] D3 文档：`README`（context 章节）、`design/context_split_parallel_tools.md`
-      状态更新为已实施
+- [x] D1 behaviour `beamai_pause_store`（pause_save/3, pause_load/2, pause_clear/2；
+      句柄 {Module,Ref}）
+- [x] D2 ETS 实现 `beamai_pause_store_ets`（gen_server，工程学同 chat_memory_ets）
+- [x] D3 快照构造（version=1，纯数据：conversation_id/paused_at/pause_reason/
+      pending_tool/interrupt_state）；存档前 term_to_binary 往返校验 + warn
+- [x] D4 Agent 集成：config `pause_store`；中断自动 save；终态/新 chat/resume 成功
+      自动 clear；`is_interrupted`/`resume` 无本地态时透明回落 store
+- [x] D5 resume payload：2/3-arity `resume(Agent,Decision[,Payload])`；审批决策词汇
+      `proceed|reject|{reject,理由}|{reply,结果}`；approved+args 编辑后批准、
+      reply 答复即结果（ask-user）；兼容旧文本 resume
+- [x] D6 测试：PauseStore ETS 存/取/覆盖/清；跨"重启"端到端（新 agent 实例+共享 store）；
+      resume payload 三形态；saved_state 跨暂停恢复
+- [x] D7 全量 eunit + dialyzer
 
-## 明确不做（本 TASK 范围外，各自独立立项）
+## 批次 E：Timeline（LineageStore ETS）+ writes 进历史
 
-- per-tool `:serial` 标注（副作用工具整批退化串行）：现有 agent 级 `parallel_tools`
-  总开关兜底，暂不细化
-- 工具错误分层路由（瞬态重试 / 环境类暂停，clj-agent S2 对应物）
-- 暂停持久化（state + messages 已可序列化，PauseStore 协议另议）
-- `on_tool_result` 改实时触发：维持整批收齐后按原序触发
+- [x] E1 behaviour `beamai_lineage_store`（record/2, get/2, children/2, delete/2）+ ETS 实现
+- [x] E2 模块 `beamai_timeline`：`fork/3`（前缀复制+血缘；全量+源暂停→连带暂停快照）、
+      `rollback/3`（截断+清暂停快照）、`lineage/2`、`ancestry/2`、`prune/2`（有子拒绝）
+- [x] E3 writes 进历史：tool-result 消息带可选 `writes` 元数据（只存不发；已确认
+      message_adapter 白名单剥落）；execute_tools 落消息时附带；失败工具无 writes
+- [x] E4 测试：fork 前缀+血缘、暂停 fork 带快照+双分支各自 resume、rollback 截断清暂停、
+      prune 拒绝有子、ancestry 回溯；writes 落历史（错误工具无 writes）
+- [x] E5 全量 eunit + dialyzer
+
+## 明确出界（各自另议）
+
+- durable execution（批中崩溃恢复）：不做
+- 多 Agent 编排 / BSP-actor：单 Agent 优先，另议
+- 跨 turn 状态槽：如需走 fold-from-history，勿建快照店
 
 ## 验证
 
-- 每批次：`rebar3 eunit`（全量，当前基线约 217+ 测试）+ `rebar3 dialyzer`（如已配置）
-- 不 commit：只改代码，待用户 review 后由其决定提交（遵 `no-commit-without-review`）
+- 每批：`rebar3 eunit`（全量，基线 314）+ `rebar3 dialyzer`（EXIT=0）
+- 不 commit：待用户 review 后由其决定
 
 ## 完成情况（2026-07-11 全部实施）
 
-- **全绿**：`rebar3 eunit` 314 tests, 0 failures（基线 295 +19 新测试）；`rebar3 dialyzer` EXIT=0 零警告。
-- **A**：beamai_context 三分区（env/state/'__filter_states__'），删 trace/metadata 死字段，
-  新增 state_get/get_state/with_state/apply_writes/variables。顺带修 beamai_prompt：渲染
-  context 时经 variables/1 取 env.vars（否则读不到用户变量）。
-- **B**：beamai_tool tool_result 三元语义改 writes；beamai_kernel tool_terminal 归一 writes、
-  run_tool Response `#{result,writes,context}`、invoke_tool 返回 `{ok,V,Writes}`、加 state_slots/1；
-  filter_chain 由 run_tool 的 `maps:get(writes,_,#{})` 兜底（无需改动）。
-- **C**：beamai_agent_utils execute_tools 返回三元组、finalize 屏障折叠、synth_result 零 writes、
-  修 :136 注释（2 分钟）；tool_loop 跨轮穿线 context（with_ctx）+ 中断上下文带 state；
-  beamai_agent resume 恢复 saved_state；beamai_agent_state build_kernel 收 state_slots。
-- **D**：新增 beamai_context_tests（12）、beamai_agent_writes_tests（7，含跨轮/中断-resume）。
-- **踩坑记录**：给 interrupt_state 加 saved_state 字段后 dialyzer 报 subagent_manager 的
-  interrupt 分支「can never match」——根因是 `interrupt_state()` 是**封闭 map 类型**
-  （Erlang typespec `#{k:=t}` 不容额外键），新字段未同步进类型声明即污染 agent_state()
-  逐层收窄 run 返回类型。修法：把 `saved_state := map()` 加进
-  `beamai_agent_state:interrupt_state()` 类型。教训：往受类型约束的 map 加字段必须同步 -type。
+- **全绿**：`rebar3 eunit` 347 tests / 0 failures（基线 314 +33）；`rebar3 dialyzer` EXIT=0。
+- **A serial**：tool_spec `serial`；kernel `serial_tool/2`；execute_tools 批内含 serial → 整批退化串行（状态语义仍快照+屏障折叠）。
+- **B 实时回调**：execute_tools 增 `on_result` fun，并发 collector/串行逐个即时触发；tool_loop 以 `tool_result_cb` 传入（替代批后 fire）。
+- **C 错误分层**：新 `beamai_tool_error:classify/1`（core，结构匹配 llm_error 免依赖 llm app）；beamai_tool retry 仅 transient + 指数退避（`retry => true|#{max_retries,initial_delay_ms}`）；run_one_tool/synth_result 把 error class 塞进 CallRecord；tool_loop 屏障 `env_pause` → 中断 phase=env_retry；resume 按 phase 分派，env retry 重跑失败调用按 id 替换（`replace_results_by_id`）；`on_env_error` 缺省 proceed、HITL 自动升 pause。
+- **D 暂停持久化 + payload**：behaviour `beamai_pause_store` + ETS `beamai_pause_store_ets`；集成 `beamai_agent_pause`（save/load/clear，快照 term 往返校验）；中断自动 save、终态/resume 自动 clear、`is_interrupted`/`resume` 透明回落 store；resume/3 payload：approved(+args 执行被中断工具)/reply(答复即结果 ask-user)/rejected(+理由)，兼容旧文本 resume。
+- **E Timeline**：behaviour `beamai_lineage_store` + ETS；`beamai_timeline` fork/rollback/lineage/ancestry(根在前)/prune(有子拒绝)，全量 fork+源暂停连带复制暂停快照；writes 进历史（tool 结果消息带 `writes`，message_adapter 白名单剥落，失败工具无 writes）。
+- **新增模块**：beamai_tool_error、beamai_pause_store(+_ets)、beamai_agent_pause、beamai_lineage_store(+_ets)、beamai_timeline。
+- **踩坑**：execute_tools/5 新 arity 忘记 export → 全链 `undef` 19 failures（教训：新 arity 必须同步 -export）。中文字符串跨文件字节比对不可靠（reject_text 前缀）→ 测试改断言 reason 子串。
+- **未做（各自另议）**：durable execution、多 Agent 编排、跨 turn 状态槽。

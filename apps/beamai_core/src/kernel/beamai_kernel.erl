@@ -39,6 +39,7 @@
 -export([get_tool_schemas/1, get_tool_schemas/2]).
 -export([get_service/1]).
 -export([state_slots/1]).
+-export([serial_tool/2]).
 
 %% Types
 -export_type([kernel/0, kernel_settings/0, chat_opts/0]).
@@ -332,6 +333,16 @@ get_service(#{llm_config := Config}) -> {ok, Config}.
 -spec state_slots(kernel()) -> beamai_context:state_slots().
 state_slots(#{settings := Settings}) -> maps:get(state_slots, Settings, #{});
 state_slots(_) -> #{}.
+
+%% @doc 按工具名查询该工具是否标记为串行（有副作用、需顺序执行）
+%%
+%% 未注册的工具名返回 false（不因未知工具强制整批退化）。
+-spec serial_tool(kernel(), binary()) -> boolean().
+serial_tool(Kernel, ToolName) ->
+    case get_tool(Kernel, ToolName) of
+        {ok, ToolSpec} -> beamai_tool:is_serial(ToolSpec);
+        error -> false
+    end.
 
 %%====================================================================
 %% 内部函数 - 辅助

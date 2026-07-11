@@ -16,6 +16,7 @@
     execute_tools/2,
     execute_tools/3,
     execute_tools/4,
+    execute_tools/5,
     run_one_tool/3,
     tool_error/1
 ]).
@@ -86,10 +87,34 @@ execute_tools(Kernel, ToolCalls, Context) ->
 -spec execute_tools(beamai_kernel:kernel(), [map()], beamai_context:t(), boolean()) ->
     {[map()], [map()], beamai_context:t()}.
 execute_tools(Kernel, ToolCalls, Context, Parallel) ->
-    case Parallel andalso length(ToolCalls) > 1 of
-        true -> execute_concurrent(Kernel, ToolCalls, Context);
-        false -> execute_sequential(Kernel, ToolCalls, Context)
+    execute_tools(Kernel, ToolCalls, Context, Parallel, fun(_CR) -> ok end).
+
+%% @doc 执行 tool calls（带实时结果回调）
+%%
+%% OnResult 在**每个工具完成即触发**（并发时在结果落地点、串行时逐个），传入该
+%% 工具的 CallRecord。进度 UX 的实时性优先于顺序性——并发时触发顺序不确定；
+%% 需确定顺序的消费返回的 CallRecords（按原始 tool_call 序）。OnResult 应自身
+%% 吞异常（调用方通常传 beamai_agent_callbacks:invoke 包装）。
+%%
+%% @returns {ToolResultMsgs, CallRecords, NewContext}
+-spec execute_tools(beamai_kernel:kernel(), [map()], beamai_context:t(), boolean(),
+                    fun((map()) -> ok)) ->
+    {[map()], [map()], beamai_context:t()}.
+execute_tools(Kernel, ToolCalls, Context, Parallel, OnResult) ->
+    Concurrent = Parallel
+        andalso length(ToolCalls) > 1
+        andalso not batch_has_serial(Kernel, ToolCalls),
+    case Concurrent of
+        true -> execute_concurrent(Kernel, ToolCalls, Context, OnResult);
+        false -> execute_sequential(Kernel, ToolCalls, Context, OnResult)
     end.
+
+%% @private 批内是否含 serial 工具（命中则整批退化串行，保住副作用顺序）
+batch_has_serial(Kernel, ToolCalls) ->
+    lists:any(fun(TC) ->
+        {_Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
+        beamai_kernel:serial_tool(Kernel, Name)
+    end, ToolCalls).
 
 %% @doc 执行单个 tool：经完整 filter 管道调用，编码结果，构建 tool 消息与调用记录
 %%
@@ -100,13 +125,29 @@ execute_tools(Kernel, ToolCalls, Context, Parallel) ->
     {map(), map(), beamai_context:writes()}.
 run_one_tool(Kernel, TC, Context) ->
     {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
-    {Result, Writes} = case beamai_kernel:invoke_tool(Kernel, Name, Args, Context) of
-        {ok, Value, W} -> {beamai_tool:encode_result(Value), W};
-        {error, Reason} -> {beamai_tool:encode_result(tool_error(Reason)), #{}}
+    {Result, Writes, ErrInfo} = case beamai_kernel:invoke_tool(Kernel, Name, Args, Context) of
+        {ok, Value, W} ->
+            {beamai_tool:encode_result(Value), W, undefined};
+        {error, Reason} ->
+            %% 失败：分类为 semantic|transient|environment，供屏障处分层路由
+            {beamai_tool:encode_result(tool_error(Reason)), #{},
+             #{class => beamai_tool_error:classify(Reason),
+               message => beamai_tool_error:message(Reason)}}
     end,
-    Msg = #{role => tool, tool_call_id => Id, content => Result},
-    CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id},
-    {Msg, CallRecord, Writes}.
+    %% tool 结果消息带可选 writes 元数据（该工具写意图）：**只进存储、不发 LLM**
+    %% （message_adapter 白名单构建 wire 消息，writes 天然剥落）。event-sourcing 伏笔
+    %% + 审计。失败工具 Writes=#{} → 无 writes 键（历史自然缺席，与事务性同真同假）。
+    Msg = with_writes(#{role => tool, tool_call_id => Id, content => Result}, Writes),
+    CallRecord0 = #{name => Name, args => Args, result => Result, tool_call_id => Id},
+    {Msg, with_error(CallRecord0, ErrInfo), Writes}.
+
+%% @private 成功无 error 字段；失败带 #{class, message}（屏障处按 class 路由）
+with_error(CallRecord, undefined) -> CallRecord;
+with_error(CallRecord, ErrInfo) -> CallRecord#{error => ErrInfo}.
+
+%% @private 非空 writes 附到 tool 结果消息（存储用；wire 层剥离）
+with_writes(Msg, Writes) when map_size(Writes) =:= 0 -> Msg;
+with_writes(Msg, Writes) -> Msg#{writes => Writes}.
 
 %% @doc 把工具错误原因归一为稳定、JSON 友好的结构，便于 LLM 可靠解析自我纠错
 %%
@@ -128,9 +169,15 @@ reason_to_binary(R) -> iolist_to_binary(io_lib:format("~p", [R])).
 %%====================================================================
 
 %% @private 串行执行 tool_calls（每个工具拿同一轮初快照，屏障处折叠）
-execute_sequential(Kernel, ToolCalls, Context) ->
-    Ordered = [run_one_tool(Kernel, TC, Context) || TC <- ToolCalls],
+%% 每个工具完成即触发 OnResult（实时）。
+execute_sequential(Kernel, ToolCalls, Context, OnResult) ->
+    Ordered = [fire_result(OnResult, run_one_tool(Kernel, TC, Context)) || TC <- ToolCalls],
     finalize(Kernel, Context, Ordered).
+
+%% @private 触发实时结果回调并原样返回结果三元组
+fire_result(OnResult, {_Msg, CallRecord, _Writes} = Result) ->
+    _ = OnResult(CallRecord),
+    Result.
 
 %% @private 并发执行 tool_calls：每个 tool 一个被监控的工作进程
 %%
@@ -140,7 +187,7 @@ execute_sequential(Kernel, ToolCalls, Context) ->
 %% 默认 2 分钟）：超时后 kill 未完成的工作进程、为其合成 timeout error 结果，
 %% 避免单个卡死工具冻结整个 tool loop 并泄漏 worker。结果按原 tool_call 顺序
 %% （索引）重排，屏障处折叠 writes。
-execute_concurrent(Kernel, ToolCalls, Context) ->
+execute_concurrent(Kernel, ToolCalls, Context, OnResult) ->
     Parent = self(),
     Indexed = lists:zip(lists:seq(1, length(ToolCalls)), ToolCalls),
     Workers = lists:foldl(fun({Idx, TC}, Acc) ->
@@ -150,7 +197,7 @@ execute_concurrent(Kernel, ToolCalls, Context) ->
         Acc#{Pid => #{idx => Idx, tc => TC, mref => MRef}}
     end, #{}, Indexed),
     Deadline = erlang:monotonic_time(millisecond) + gather_timeout(),
-    ResultMap = collect_tools(Workers, #{}, Deadline),
+    ResultMap = collect_tools(Workers, #{}, Deadline, OnResult),
     Ordered = [maps:get(Idx, ResultMap) || {Idx, _TC} <- Indexed],
     finalize(Kernel, Context, Ordered).
 
@@ -176,36 +223,41 @@ warn_conflicts(Conflicts) ->
                    "tool_call 原始序取 last-writer）：~p", [Conflicts]).
 
 %% @private 收集并发工作进程结果，直到每个 tool 都有结果（idx 为键）或超时
-collect_tools(Workers, Acc, _Deadline) when map_size(Acc) =:= map_size(Workers) ->
+%% 每个结果落地即触发 OnResult（实时；顺序不确定）。
+collect_tools(Workers, Acc, _Deadline, _OnResult) when map_size(Acc) =:= map_size(Workers) ->
     Acc;
-collect_tools(Workers, Acc, Deadline) ->
+collect_tools(Workers, Acc, Deadline, OnResult) ->
     Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
     receive
         {tool_result, Pid, RC} ->
             case maps:get(Pid, Workers, undefined) of
                 undefined ->
                     %% 上一批被 kill 的 worker 在死前发出的迟到结果，忽略
-                    collect_tools(Workers, Acc, Deadline);
+                    collect_tools(Workers, Acc, Deadline, OnResult);
                 #{idx := Idx, mref := MRef} ->
                     erlang:demonitor(MRef, [flush]),
-                    collect_tools(Workers, Acc#{Idx => RC}, Deadline)
+                    _ = fire_result(OnResult, RC),
+                    collect_tools(Workers, Acc#{Idx => RC}, Deadline, OnResult)
             end;
         {'DOWN', _MRef, process, Pid, Reason} ->
             case maps:get(Pid, Workers, undefined) of
                 undefined ->
-                    collect_tools(Workers, Acc, Deadline);
+                    collect_tools(Workers, Acc, Deadline, OnResult);
                 #{idx := Idx, tc := TC} ->
                     case maps:is_key(Idx, Acc) of
-                        true -> collect_tools(Workers, Acc, Deadline);  %% 结果已先到，DOWN 忽略
-                        false -> collect_tools(Workers, Acc#{Idx => synth_result(TC, tool_worker_crash, Reason)}, Deadline)
+                        true -> collect_tools(Workers, Acc, Deadline, OnResult);  %% 结果已先到，DOWN 忽略
+                        false ->
+                            R = synth_result(TC, tool_worker_crash, Reason),
+                            _ = fire_result(OnResult, R),
+                            collect_tools(Workers, Acc#{Idx => R}, Deadline, OnResult)
                     end
             end
     after Remaining ->
-        kill_pending(Workers, Acc)
+        kill_pending(Workers, Acc, OnResult)
     end.
 
 %% @private 超时收尾：kill 所有未交付结果的 worker，并合成 timeout error 结果
-kill_pending(Workers, Acc) ->
+kill_pending(Workers, Acc, OnResult) ->
     maps:fold(fun(Pid, #{idx := Idx, tc := TC, mref := MRef}, A) ->
         case maps:is_key(Idx, A) of
             true ->
@@ -213,18 +265,22 @@ kill_pending(Workers, Acc) ->
             false ->
                 erlang:demonitor(MRef, [flush]),
                 exit(Pid, kill),
-                A#{Idx => synth_result(TC, tool_timeout, gather_timeout_exceeded)}
+                R = synth_result(TC, tool_timeout, gather_timeout_exceeded),
+                _ = fire_result(OnResult, R),
+                A#{Idx => R}
         end
     end, Acc, Workers).
 
 %% @private 合成 error tool 结果（保持与正常结果同构；Writes 空 → 不参与折叠）
+%% crash/timeout 均归为 transient 类（重试/等待有意义），带 error 供屏障路由。
 synth_result(TC, Type, Reason) ->
     {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
+    Msg0 = iolist_to_binary(io_lib:format("~p", [Reason])),
     Result = beamai_tool:encode_result(
-        #{error => #{type => Type,
-                     reason => iolist_to_binary(io_lib:format("~p", [Reason]))}}),
+        #{error => #{type => Type, reason => Msg0}}),
     Msg = #{role => tool, tool_call_id => Id, content => Result},
-    CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id},
+    CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id,
+                   error => #{class => beamai_tool_error:classify(Type), message => Msg0}},
     {Msg, CallRecord, #{}}.
 
 %% @private 并发收集的全局截止时长（毫秒，默认 2 分钟）

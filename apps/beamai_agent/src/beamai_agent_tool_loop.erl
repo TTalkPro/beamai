@@ -19,6 +19,7 @@
 -module(beamai_agent_tool_loop).
 
 -export([run/2]).
+-export([build_env_interrupt_context/7]).
 
 -type provider() :: beamai_memory_provider:provider() | undefined.
 
@@ -33,6 +34,7 @@
     max_tool_iterations := pos_integer(),  %% agent 配置的总迭代上限（中断上下文计数用）
     parallel_tools := boolean(),    %% 一轮多个 tool_call 是否并发执行
     interrupt_tools := [map()],     %% 中断 tool 定义列表
+    on_env_error => proceed | pause, %% 环境类工具失败策略（缺省 proceed）
     memory := provider(),           %% 记忆 provider（undefined 则不持久/不变换）
     conversation_id := binary(),
     meta := map(),                  %% 回调元数据（on_llm_call 等）
@@ -191,9 +193,9 @@ handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls,
       max_tool_iterations := MaxIter} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     {SafeResults, SafeCallRecords, NewCtx} =
-        beamai_agent_utils:execute_tools(Kernel, SafeCalls, ctx(Opts), Parallel),
+        beamai_agent_utils:execute_tools(Kernel, SafeCalls, ctx(Opts), Parallel,
+                                         tool_result_cb(Callbacks)),
     AllResults = SafeResults ++ [skipped_result(TC) || TC <- SkippedCalls],
-    fire_tool_results(Callbacks, SafeCallRecords),
     persist(Opts, AllResults),
     Context = build_interrupt_context(MaxIter - N, AllResults, InterruptedTC,
                                       ToolCallsMade ++ SafeCallRecords, Reason,
@@ -213,16 +215,52 @@ skipped_result(TC) ->
                                     "still needed.">>}})}.
 
 %% @private 执行 tools，把结果并入 messages 并持久化，继续循环
+%%
+%% 屏障处（工具批次执行完、结果尚未交给下一轮 LLM 之前）做环境类失败分层路由：
+%% 若批内含 environment 类失败且策略 pause → 带一致快照暂停等人（phase=env_retry），
+%% 批次结果尚未持久化/交模型，携带在中断上下文的 batch_messages 里，resume 时按
+%% 决策重跑失败调用或原样放行（见 beamai_agent:resume）。其余情形正常续跑
+%% （语义/瞬态/策略类结果照旧 errors-are-data 交模型）。
 execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel, callbacks := Callbacks, messages := Messages} = Opts,
+    #{kernel := Kernel, callbacks := Callbacks, messages := Messages,
+      max_tool_iterations := MaxIter} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     {ToolResults, NewToolCalls, NewCtx} =
-        beamai_agent_utils:execute_tools(Kernel, TCs, ctx(Opts), Parallel),
-    fire_tool_results(Callbacks, NewToolCalls),
-    persist(Opts, ToolResults),
-    %% 穿线折叠后的 context：本轮工具写下的 state 槽下一轮工具/ filter 可见
-    Opts1 = with_ctx(Opts, NewCtx),
-    iterate(Opts1#{messages => Messages ++ ToolResults}, N - 1, ToolCallsMade ++ NewToolCalls).
+        beamai_agent_utils:execute_tools(Kernel, TCs, ctx(Opts), Parallel,
+                                         tool_result_cb(Callbacks)),
+    case env_pause(Opts, TCs, NewToolCalls) of
+        {pause, FailedCalls} ->
+            Context = build_env_interrupt_context(
+                        MaxIter - N, Messages, ToolResults, NewToolCalls, FailedCalls,
+                        beamai_context:get_state(NewCtx), ToolCallsMade),
+            {interrupt, env_retry, Context};
+        proceed ->
+            persist(Opts, ToolResults),
+            %% 穿线折叠后的 context：本轮工具写下的 state 槽下一轮工具/ filter 可见
+            Opts1 = with_ctx(Opts, NewCtx),
+            iterate(Opts1#{messages => Messages ++ ToolResults},
+                    N - 1, ToolCallsMade ++ NewToolCalls)
+    end.
+
+%% @private 环境类失败暂停判定：策略 pause 且批内有 environment 类失败 →
+%% {pause, FailedTCs}（FailedTCs 为环境失败的原始 tool_call，resume retry 用）；
+%% 否则 proceed。策略缺省 proceed。
+env_pause(Opts, TCs, Records) ->
+    case maps:get(on_env_error, Opts, proceed) of
+        pause ->
+            Failed = [TC || {TC, R} <- lists:zip(TCs, Records),
+                            env_failed(R)],
+            case Failed of
+                [] -> proceed;
+                _ -> {pause, Failed}
+            end;
+        _ ->
+            proceed
+    end.
+
+%% @private CallRecord 是否为环境类失败
+env_failed(#{error := #{class := environment}}) -> true;
+env_failed(_) -> false.
 
 %% @private 把消息持久化到 memory provider（无 provider 或空列表则 no-op）
 persist(#{memory := undefined}, _Msgs) -> ok;
@@ -230,11 +268,12 @@ persist(_Opts, []) -> ok;
 persist(#{memory := Provider, conversation_id := ConvId}, Msgs) ->
     beamai_memory_provider:append(Provider, ConvId, Msgs).
 
-%% @private 对每个工具调用记录触发 on_tool_result 回调（并发时整批收齐后触发）
-fire_tool_results(Callbacks, CallRecords) ->
-    lists:foreach(fun(#{name := Name, result := Result}) ->
+%% @private 构建实时结果回调：每个工具完成即触发 on_tool_result（进度实时性优先，
+%% 并发时触发顺序不确定；需确定顺序读 CallRecords）。经 callbacks:invoke 吞异常。
+tool_result_cb(Callbacks) ->
+    fun(#{name := Name, result := Result}) ->
         beamai_agent_callbacks:invoke(on_tool_result, [Name, Result], Callbacks)
-    end, CallRecords).
+    end.
 
 %% @private 取贯穿全链的 context（带 conversation_id），缺省新建
 ctx(#{chat_opts := ChatOpts}) ->
@@ -267,6 +306,28 @@ build_interrupt_context(Iteration, CompletedResults, InterruptedTC,
         reason => Reason,
         messages => Messages,
         state => State
+    }.
+
+%% @private 构建环境类暂停（phase=env_retry）的中断上下文
+%%
+%% 与审批中断不同：批次**已执行完**（一致快照），结果在 batch_messages 里、
+%% 尚未持久化/交模型；messages 为**批前**消息（含触发本批的 assistant tool_calls）；
+%% failed_calls 为环境类失败的原始 tool_call（resume retry 重跑并按 id 替换结果）。
+build_env_interrupt_context(Iteration, Messages, BatchMessages, Records, FailedCalls,
+                            State, ToolCallsMade) ->
+    #{
+        phase => env_retry,
+        reason => env_error,
+        %% iteration 存"已用计数"（= MaxIter - 剩余），与审批路径一致：resume 以
+        %% MaxIter - iteration 还原剩余迭代
+        iteration => Iteration,
+        tool_calls_made => ToolCallsMade ++ Records,
+        interrupted_tool_call => undefined,
+        completed_tool_results => BatchMessages,
+        messages => Messages,
+        state => State,
+        batch_messages => BatchMessages,
+        failed_calls => FailedCalls
     }.
 
 %%====================================================================

@@ -43,7 +43,9 @@
     %% 中断相关
     interrupt_state := undefined | interrupt_state(), %% 中断时的完整上下文
     run_id := binary() | undefined, %% 当前执行的唯一 ID
-    interrupt_tools := [map()]      %% 中断 tool 定义列表
+    interrupt_tools := [map()],     %% 中断 tool 定义列表
+    on_env_error := proceed | pause, %% 环境类工具失败策略（缺省按是否 HITL 计算）
+    pause_store := beamai_pause_store:handle() | undefined %% 暂停持久化句柄（跨进程 HITL）
 }.
 
 -type interrupt_state() :: #{
@@ -55,8 +57,12 @@
     iteration := non_neg_integer(),       %% 当前 tool loop 迭代次数
     tool_calls_made := [map()],           %% 之前已执行的 tool 调用记录
     saved_state := map(),                  %% 中断前累积的 state 槽（纯数据），resume 时恢复进 context
-    interrupt_type := tool_request | tool_result | callback,
-    created_at := integer()
+    interrupt_type := tool_request | tool_result | callback | env_retry,
+    created_at := integer(),
+    %% 环境类暂停（phase=env_retry）专有；审批暂停缺省 phase=approval
+    phase => approval | env_retry,
+    batch_messages => [map()],            %% env_retry：本批已执行的工具结果消息（尚未交模型）
+    failed_calls => [map()]               %% env_retry：环境类失败的 tool_call（resume retry 重跑）
 }.
 
 -export_type([interrupt_state/0]).
@@ -120,12 +126,29 @@ create(Config) ->
             %% 中断相关字段
             interrupt_state => undefined,
             run_id => undefined,
-            interrupt_tools => maps:get(interrupt_tools, Config, [])
+            interrupt_tools => maps:get(interrupt_tools, Config, []),
+            %% 环境类失败策略：显式配置优先，否则 HITL 已启用（有中断 tool 或
+            %% on_tool_call 回调）自动升 pause，其余 proceed（无人值守不收意外暂停）
+            on_env_error => resolve_on_env_error(Config, Callbacks),
+            pause_store => maps:get(pause_store, Config, undefined)
         },
         {ok, State}
     catch
         error:Reason:Stack ->
             {error, {init_failed, Reason, Stack}}
+    end.
+
+%% @private 计算环境类失败策略缺省值
+%%   显式 on_env_error 优先；否则 HITL 已启用（interrupt_tools 非空 / on_tool_call
+%%   回调在位）自动 pause；其余 proceed。
+resolve_on_env_error(Config, Callbacks) ->
+    case maps:get(on_env_error, Config, undefined) of
+        proceed -> proceed;
+        pause -> pause;
+        _ ->
+            HitlEnabled = maps:get(interrupt_tools, Config, []) =/= []
+                orelse maps:is_key(on_tool_call, Callbacks),
+            case HitlEnabled of true -> pause; false -> proceed end
     end.
 
 %% @doc 获取 agent 的记忆 provider（无记忆时 undefined）

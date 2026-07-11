@@ -27,6 +27,13 @@ kernel(Tools, Slots) ->
             #{name => Name, parameters => #{}, handler => Handler})
     end, K0, Tools).
 
+%% 构造 kernel，指定部分工具为 serial（Tools 为 {Name, Handler, Serial}）
+kernel_serial(Tools) ->
+    lists:foldl(fun({Name, Handler, Serial}, K) ->
+        beamai_kernel:add_tool(K,
+            #{name => Name, parameters => #{}, handler => Handler, serial => Serial})
+    end, beamai_kernel:new(), Tools).
+
 %% 从 CallRecords 里取某工具的 result
 result_of(Records, Name) ->
     case [R || #{name := N, result := R} <- Records, N =:= Name] of
@@ -35,6 +42,68 @@ result_of(Records, Name) ->
     end.
 
 conj() -> #{init => [], reduce => fun(Acc, V) -> [V | Acc] end}.
+
+%%====================================================================
+%% per-tool serial：批内含 serial → 整批退化串行
+%%====================================================================
+
+%% 每个工具向调用进程发 start/done 事件，用于判定是否重叠执行
+ev_tool(Name) ->
+    Parent = self(),
+    fun(_, _) ->
+        Parent ! {ev, Name, start},
+        timer:sleep(40),
+        Parent ! {ev, Name, done},
+        {ok, Name}
+    end.
+
+drain_events(0, Acc) -> lists:reverse(Acc);
+drain_events(N, Acc) ->
+    receive {ev, Name, Kind} -> drain_events(N - 1, [{Name, Kind} | Acc])
+    after 2000 -> lists:reverse(Acc)
+    end.
+
+serial_tool_degrades_batch_test() ->
+    %% wb 标 serial → 即使 Parallel=true 且两工具，整批退化串行（无重叠）
+    K = kernel_serial([
+        {<<"wa">>, ev_tool(<<"wa">>), false},
+        {<<"wb">>, ev_tool(<<"wb">>), true}
+    ]),
+    {_, _, _} = beamai_agent_utils:execute_tools(
+        K, [tc(<<"1">>, <<"wa">>), tc(<<"2">>, <<"wb">>)], beamai_context:new(), true),
+    Events = drain_events(4, []),
+    %% 串行 ⇒ 每个 start 紧跟自己的 done（不交错）
+    ?assertEqual(4, length(Events)),
+    [{N1, start}, {N1b, done}, {N2, start}, {N2b, done}] = Events,
+    ?assertEqual(N1, N1b),
+    ?assertEqual(N2, N2b).
+
+all_parallel_no_serial_overlaps_test() ->
+    %% 均非 serial → 并发执行，两 start 先于任一 done（重叠）
+    K = kernel_serial([
+        {<<"wa">>, ev_tool(<<"wa">>), false},
+        {<<"wb">>, ev_tool(<<"wb">>), false}
+    ]),
+    {_, _, _} = beamai_agent_utils:execute_tools(
+        K, [tc(<<"1">>, <<"wa">>), tc(<<"2">>, <<"wb">>)], beamai_context:new(), true),
+    Events = drain_events(4, []),
+    [{_, K1}, {_, K2} | _] = Events,
+    %% 前两个事件都是 start ⇒ 两工具重叠在跑
+    ?assertEqual(start, K1),
+    ?assertEqual(start, K2).
+
+serial_tool_writes_still_fold_test() ->
+    %% serial 退化串行后，writes 仍按屏障折叠（状态语义不变）
+    K = beamai_kernel:add_tool(
+        beamai_kernel:new(#{state_slots => #{<<"notes">> => conj()}}),
+        #{name => <<"sw">>, parameters => #{}, serial => true,
+          handler => fun(_, _) -> {ok, <<"a">>, #{<<"notes">> => a}} end}),
+    K2 = beamai_kernel:add_tool(K,
+        #{name => <<"sw2">>, parameters => #{},
+          handler => fun(_, _) -> {ok, <<"b">>, #{<<"notes">> => b}} end}),
+    {_, _, Ctx} = beamai_agent_utils:execute_tools(
+        K2, [tc(<<"1">>, <<"sw">>), tc(<<"2">>, <<"sw2">>)], beamai_context:new(), true),
+    ?assertEqual([b, a], beamai_context:state_get(Ctx, <<"notes">>)).
 
 %%====================================================================
 %% 折叠：并行 / 串行
@@ -119,6 +188,66 @@ arity1_tool_writes_test() ->
     {_, _, Ctx} = beamai_agent_utils:execute_tools(
         K, [tc(<<"1">>, <<"f1">>)], beamai_context:new(), false),
     ?assertEqual([z], beamai_context:state_get(Ctx, <<"notes">>)).
+
+%%====================================================================
+%% writes 进历史（只存不发）
+%%====================================================================
+
+writes_in_stored_msg_stripped_from_wire_test() ->
+    %% 写状态的工具 → 结果消息带 writes 元数据（进存储）
+    K = kernel([
+        {<<"w">>, fun(_, _) -> {ok, <<"r">>, #{<<"note">> => <<"kept">>}} end}
+    ], #{}),
+    {Msgs, _, _} = beamai_agent_utils:execute_tools(
+        K, [tc(<<"1">>, <<"w">>)], beamai_context:new(), false),
+    [ToolMsg] = Msgs,
+    ?assertEqual(#{<<"note">> => <<"kept">>}, maps:get(writes, ToolMsg)),
+    %% wire 层（message_adapter）白名单构建 → writes 天然剥落
+    [Wire] = beamai_llm_message_adapter:to_provider([ToolMsg], openai),
+    ?assertNot(maps:is_key(writes, Wire)),
+    ?assertNot(maps:is_key(<<"writes">>, Wire)),
+    ?assertEqual(<<"tool">>, maps:get(<<"role">>, Wire)).
+
+failed_tool_has_no_writes_in_msg_test() ->
+    %% 失败工具无 writes → 结果消息不含 writes 键（历史自然缺席）
+    K = kernel([
+        {<<"boom">>, fun(_, _) -> {error, bad} end}
+    ], #{}),
+    {Msgs, _, _} = beamai_agent_utils:execute_tools(
+        K, [tc(<<"1">>, <<"boom">>)], beamai_context:new(), false),
+    [ToolMsg] = Msgs,
+    ?assertNot(maps:is_key(writes, ToolMsg)).
+
+%%====================================================================
+%% on_tool_result 实时触发
+%%====================================================================
+
+on_tool_result_fires_per_tool_test() ->
+    %% 每个工具完成即触发 on_tool_result（本例 3 工具 → 3 次回调）
+    Parent = self(),
+    K = kernel([
+        {<<"t1">>, fun(_, _) -> {ok, <<"r1">>} end},
+        {<<"t2">>, fun(_, _) -> {ok, <<"r2">>} end},
+        {<<"t3">>, fun(_, _) -> {ok, <<"r3">>} end}
+    ], #{}),
+    OnResult = fun(#{name := N, result := R}) -> Parent ! {fired, N, R}, ok end,
+    {_, Records, _} = beamai_agent_utils:execute_tools(
+        K, [tc(<<"1">>, <<"t1">>), tc(<<"2">>, <<"t2">>), tc(<<"3">>, <<"t3">>)],
+        beamai_context:new(), true, OnResult),
+    Fired = collect_fired(3, []),
+    ?assertEqual(3, length(Fired)),
+    %% 每个工具都触发了一次（顺序不保证，用集合比对）
+    ?assertEqual(lists:sort([<<"t1">>, <<"t2">>, <<"t3">>]),
+                 lists:sort([N || {N, _} <- Fired])),
+    %% CallRecords 按原始 tool_call 序（确定）
+    ?assertEqual([<<"t1">>, <<"t2">>, <<"t3">>],
+                 [maps:get(name, R) || R <- Records]).
+
+collect_fired(0, Acc) -> Acc;
+collect_fired(N, Acc) ->
+    receive {fired, Name, Res} -> collect_fired(N - 1, [{Name, Res} | Acc])
+    after 2000 -> Acc
+    end.
 
 %%====================================================================
 %% 跨轮可见：本轮工具写、下轮工具读（完整 agent loop）

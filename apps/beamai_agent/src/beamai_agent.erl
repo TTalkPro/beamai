@@ -40,7 +40,7 @@
 -export([stream/2, stream/3]).
 
 %% 中断/恢复
--export([resume/2]).
+-export([resume/2, resume/3]).
 -export([is_interrupted/1, get_interrupt_info/1]).
 
 %% 查询
@@ -61,7 +61,7 @@
 
 -type interrupt_info() :: #{
     reason := term(),                     %% 中断原因
-    interrupt_type := tool_request | tool_result | callback,
+    interrupt_type := tool_request | tool_result | callback | env_retry,
     interrupted_tool_call => map(),       %% 触发中断的 tool_call
     completed_results => [map()],         %% 已完成的 tool 结果
     created_at := integer()
@@ -346,43 +346,140 @@ update_metadata(#{metadata := Old} = State, New) ->
     {ok, run_result(), beamai_agent_state:agent_state()} |
     {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
     {error, term()}.
-resume(#{interrupt_state := undefined}, _HumanInput) ->
-    {error, not_interrupted};
-resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
-    %% 1. 验证输入
-    case beamai_agent_interrupt:validate_resume_input(IntState, HumanInput) of
+resume(Agent, Decision) ->
+    resume(Agent, Decision, #{}).
+
+%% @doc 从中断恢复执行（带 payload）
+%%
+%% Decision + Payload 语义（见 design/hitl_timeline_serial_errors.md §4）：
+%%   审批暂停：
+%%     `<<"approved">>` [+ #{args=>新参}] — 原/替换参数执行被中断的工具；
+%%     其它（拒绝） [+ #{message=>理由}] — 结果「已拒绝执行[：理由]」回模型；
+%%     `<<"reply">>` + #{message=>答复}（必填） — 工具不执行，答复即结果（ask-user）。
+%%   环境暂停（phase=env_retry）：
+%%     `<<"retry">>`/`<<"approved">>` — 只重跑失败调用、按 id 替换结果（再失败再暂停）；
+%%     其它 — proceed：原错误结果照常交模型；`<<"reply">>` 显式拒收。
+%%   兼容：旧 `resume(Agent, <<"文本">>)` 等价于审批暂停下"人类输入作为被中断工具结果"。
+-spec resume(beamai_agent_state:agent_state(), term(), map()) ->
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
+resume(#{interrupt_state := undefined} = Agent, Decision, Payload) ->
+    %% 本进程无中断态：透明回落 pause_store（跨重启恢复）
+    case beamai_agent_pause:load(Agent) of
+        {ok, Restored} -> resume(Restored, Decision, Payload);
+        none -> {error, not_interrupted}
+    end;
+resume(#{interrupt_state := IntState} = Agent, Decision, Payload) ->
+    case beamai_agent_interrupt:validate_resume_input(IntState, Decision) of
         {error, _} = Err -> Err;
         ok ->
-            #{callbacks := Callbacks, max_tool_iterations := MaxIter} = Agent,
-
             Meta = beamai_agent_callbacks:build_metadata(Agent),
+            #{callbacks := Callbacks} = Agent,
             beamai_agent_callbacks:invoke(on_resume, [IntState, Meta], Callbacks),
-
-            %% 2. 人类输入作为被中断 tool_call 的结果，并入中断时携带的完整 messages
-            %%    （已完成工具结果与 assistant(tool_calls) 已在该 messages 内）；
-            %%    持久化由 tool_loop 统一负责（resume 不重载历史）。
-            HumanMsg = beamai_agent_interrupt:build_resume_messages(IntState, HumanInput),
-            Existing = maps:get(messages, IntState, []),
-
-            %% 3. 清除中断状态
-            Agent1 = Agent#{interrupt_state => undefined},
-
-            %% 4. 继续 tool loop（剩余迭代数）；恢复中断前累积的 state 槽进 context
-            #{iteration := Iter, tool_calls_made := PrevCalls} = IntState,
-            RemainingIter = MaxIter - Iter,
-            InitState = maps:get(saved_state, IntState, #{}),
-            case run_loop(Agent1, #{existing => Existing, new => HumanMsg},
-                          PrevCalls,
-                          #{max_iterations => RemainingIter, init_state => InitState}) of
-                {ok, Response, AllToolCalls, Iterations} ->
-                    finalize_turn(Agent1, Response, AllToolCalls, Iterations);
-                {interrupt, Type, Context} ->
-                    UserMsg = #{role => user, content => <<"[resume]">>},
-                    handle_new_interrupt(Agent1, Type, Context, UserMsg, Callbacks, Meta);
-                {error, Reason} ->
-                    beamai_agent_callbacks:invoke(on_turn_error, [Reason, Meta], Callbacks),
-                    {error, Reason}
+            case maps:get(phase, IntState, approval) of
+                env_retry -> resume_env(Agent, Decision, IntState, Meta);
+                _ -> resume_approval(Agent, Decision, Payload, IntState, Meta)
             end
+    end.
+
+%% @private 审批暂停恢复：按决策要么执行被中断工具、要么用其结果消息，再续跑
+resume_approval(Agent, Decision, Payload, IntState, Meta) ->
+    #{max_tool_iterations := MaxIter} = Agent,
+    Existing = maps:get(messages, IntState, []),
+    #{iteration := Iter, tool_calls_made := PrevCalls} = IntState,
+    InitState = maps:get(saved_state, IntState, #{}),
+    Agent1 = clear_interrupt(Agent),
+    ResumeMsgs = case beamai_agent_interrupt:resume_action(IntState, Decision, Payload) of
+        {result, Msg} ->
+            [Msg];
+        {execute, ToolCall} ->
+            %% approved：真正执行被中断工具（可能已替换参数），用其结果
+            Kernel = maps:get(kernel, Agent1),
+            Ctx = resume_context(Agent1, InitState),
+            {Msgs, _Records, _Ctx2} =
+                beamai_agent_utils:execute_tools(Kernel, [ToolCall], Ctx, false),
+            Msgs
+    end,
+    continue_resume(Agent1,
+                    #{existing => Existing, new => ResumeMsgs},
+                    PrevCalls,
+                    #{max_iterations => MaxIter - Iter, init_state => InitState},
+                    Meta).
+
+%% @private 环境暂停恢复：retry 重跑失败调用并按 id 替换结果（仍失败则再暂停），
+%% 否则 proceed 原错误结果放行；两条路径都续跑 tool loop。
+resume_env(Agent, Decision, IntState, Meta) ->
+    #{max_tool_iterations := MaxIter, kernel := Kernel} = Agent,
+    #{iteration := Iter, tool_calls_made := PrevCalls,
+      batch_messages := BatchMsgs, failed_calls := FailedCalls} = IntState,
+    InitState = maps:get(saved_state, IntState, #{}),
+    Existing = maps:get(messages, IntState, []),
+    Agent1 = clear_interrupt(Agent),
+    RemOpts = #{max_iterations => MaxIter - Iter, init_state => InitState},
+    case is_retry_decision(Decision) of
+        true ->
+            Ctx = resume_context(Agent1, InitState),
+            Parallel = maps:get(parallel_tools, Agent1, true),
+            {RetryMsgs, RetryRecords, _} =
+                beamai_agent_utils:execute_tools(Kernel, FailedCalls, Ctx, Parallel),
+            Corrected = beamai_agent_interrupt:replace_results_by_id(BatchMsgs, RetryMsgs),
+            StillFailed = [TC || {TC, R} <- lists:zip(FailedCalls, RetryRecords),
+                                 env_failed_record(R)],
+            case {maps:get(on_env_error, Agent1, proceed), StillFailed} of
+                {pause, [_ | _]} ->
+                    %% 重跑后仍有环境类失败 → 再次暂停（携带修正后的批次）
+                    Context = beamai_agent_tool_loop:build_env_interrupt_context(
+                                Iter, Existing, Corrected, RetryRecords, StillFailed,
+                                InitState, PrevCalls),
+                    handle_new_interrupt(Agent1, env_retry, Context,
+                                         #{role => user, content => <<"[resume]">>},
+                                         maps:get(callbacks, Agent1), Meta);
+                _ ->
+                    continue_resume(Agent1, #{existing => Existing, new => Corrected},
+                                    PrevCalls, RemOpts, Meta)
+            end;
+        false ->
+            %% proceed：原错误结果照常交模型
+            continue_resume(Agent1, #{existing => Existing, new => BatchMsgs},
+                            PrevCalls, RemOpts, Meta)
+    end.
+
+%% @private 构建 resume 执行/重跑用的只读环境 context（带 conversation_id + 恢复 state）
+resume_context(Agent, InitState) ->
+    Ctx0 = beamai_context:with_conversation_id(
+             beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
+    beamai_context:with_state(Ctx0, InitState).
+
+%% @private CallRecord 是否为环境类失败
+env_failed_record(#{error := #{class := environment}}) -> true;
+env_failed_record(_) -> false.
+
+%% @private retry / approved 视为"重跑失败调用"，其余为 proceed
+is_retry_decision(<<"retry">>) -> true;
+is_retry_decision(<<"approved">>) -> true;
+is_retry_decision(retry) -> true;
+is_retry_decision(approved) -> true;
+is_retry_decision(_) -> false.
+
+%% @private 清除中断态并同步 pause_store（若配置）
+clear_interrupt(Agent) ->
+    Agent1 = Agent#{interrupt_state => undefined},
+    beamai_agent_pause:clear(Agent1),
+    Agent1.
+
+%% @private resume 续跑 tool loop 并处理三种结果（审批/环境共用）
+continue_resume(Agent1, MsgSpec, PrevCalls, Opts, Meta) ->
+    #{callbacks := Callbacks} = Agent1,
+    case run_loop(Agent1, MsgSpec, PrevCalls, Opts) of
+        {ok, Response, AllToolCalls, Iterations} ->
+            finalize_turn(Agent1, Response, AllToolCalls, Iterations);
+        {interrupt, Type, Context} ->
+            UserMsg = #{role => user, content => <<"[resume]">>},
+            handle_new_interrupt(Agent1, Type, Context, UserMsg, Callbacks, Meta);
+        {error, Reason} ->
+            beamai_agent_callbacks:invoke(on_turn_error, [Reason, Meta], Callbacks),
+            {error, Reason}
     end.
 
 %% @doc 判断 agent 是否处于中断状态
@@ -390,8 +487,13 @@ resume(#{interrupt_state := IntState} = Agent, HumanInput) ->
 %% @param State agent 状态
 %% @returns boolean()
 -spec is_interrupted(beamai_agent_state:agent_state()) -> boolean().
-is_interrupted(#{interrupt_state := undefined}) -> false;
 is_interrupted(#{interrupt_state := #{status := interrupted}}) -> true;
+is_interrupted(#{interrupt_state := undefined} = Agent) ->
+    %% 本进程无中断态：透明回落 pause_store（跨重启发现未决暂停）
+    case beamai_agent_pause:load(Agent) of
+        {ok, _} -> true;
+        none -> false
+    end;
 is_interrupted(_) -> false.
 
 %% @doc 获取中断信息
@@ -441,6 +543,7 @@ run_loop(State, MsgSpec, PrevCalls, Opts) ->
         max_tool_iterations => maps:get(max_tool_iterations, State),
         parallel_tools => maps:get(parallel_tools, State, true),
         interrupt_tools => maps:get(interrupt_tools, State, []),
+        on_env_error => maps:get(on_env_error, State, proceed),
         memory => beamai_agent_state:memory(State),
         conversation_id => beamai_agent_state:conversation_id(State),
         meta => beamai_agent_callbacks:build_metadata(State),
@@ -463,6 +566,8 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
     #{callbacks := Callbacks} = State0,
     Meta = beamai_agent_callbacks:build_metadata(State0),
     Content = beamai_agent_utils:extract_content(Response),
+    %% 到达终态：清除该会话未决暂停快照（store 始终镜像"是否有未决暂停"）
+    beamai_agent_pause:clear(State0),
     NewState = State0#{turn_count => maps:get(turn_count, State0) + 1},
     Result = #{
         content => Content,
@@ -531,6 +636,8 @@ find_last_assistant([_ | Rest]) -> find_last_assistant(Rest).
 handle_new_interrupt(Agent, Type, Context, _UserMsg, Callbacks, Meta) ->
     Reason = maps:get(reason, Context, undefined),
     {IntState, Agent1} = beamai_agent_interrupt:handle_interrupt(Type, Reason, Context, Agent),
+    %% 暂停自动落库（配置了 pause_store 时；缺省 no-op）——跨进程 HITL
+    beamai_agent_pause:save(Agent1),
     beamai_agent_callbacks:invoke(on_interrupt, [IntState, Meta], Callbacks),
     Info = #{
         reason => Reason,

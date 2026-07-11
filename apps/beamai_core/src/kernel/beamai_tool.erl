@@ -26,6 +26,7 @@
 %% API - 查询
 -export([get_name/1]).
 -export([get_tag/1, has_tag/2]).
+-export([is_serial/1]).
 
 %% API - 工具调用协议
 -export([parse_tool_call/1, encode_result/1]).
@@ -44,7 +45,15 @@
     parameters => parameters_schema(),
     tag => binary() | [binary()],
     timeout => pos_integer(),
-    retry => #{max => integer(), delay => integer()},
+    %% retry：仅对 transient 类错误重试（见 beamai_tool_error），指数退避。
+    %% true 用缺省 #{max_retries=>2, initial_delay_ms=>200}；opt-in 即承诺幂等。
+    %% 兼容旧 #{max, delay} 形态。
+    retry => boolean()
+           | #{max_retries => non_neg_integer(), initial_delay_ms => non_neg_integer()}
+           | #{max => integer(), delay => integer()},
+    %% serial：标记有副作用、需顺序执行的工具。批内任一工具 serial → 整批退化串行
+    %% （副作用要顺序，部分并行会改变相对时序）。缺省 false。
+    serial => boolean(),
     filters => [filter_ref()],
     metadata => map()
 }.
@@ -146,8 +155,8 @@ invoke(ToolSpec, Args) ->
 -spec invoke(tool_spec(), args(), beamai_context:t()) -> tool_result().
 invoke(#{handler := Handler} = ToolSpec, Args, Context) ->
     Timeout = maps:get(timeout, ToolSpec, 30000),
-    RetryConf = maps:get(retry, ToolSpec, #{max => 0, delay => 0}),
-    invoke_with_retry(Handler, Args, Context, RetryConf, Timeout).
+    {MaxRetries, InitialDelay} = retry_conf(maps:get(retry, ToolSpec, false)),
+    invoke_with_retry(Handler, Args, Context, MaxRetries, InitialDelay, Timeout).
 
 %%====================================================================
 %% API - Schema 转换
@@ -227,6 +236,11 @@ has_tag(#{tag := ToolTag}, Tag) ->
     ToolTag =:= Tag;
 has_tag(_, _) ->
     false.
+
+%% @doc 工具是否标记为串行（有副作用、需顺序执行）
+-spec is_serial(tool_spec()) -> boolean().
+is_serial(#{serial := true}) -> true;
+is_serial(_) -> false.
 
 %%====================================================================
 %% API - 工具调用协议
@@ -320,16 +334,33 @@ validate_handler(_) -> [{invalid_handler, <<"handler must be fun/1, fun/2, {M,F}
 %% 内部函数 - 调用
 %%====================================================================
 
-%% @private 带重试策略的工具调用入口
-invoke_with_retry(Handler, Args, Context, #{max := Max, delay := Delay}, Timeout) ->
-    invoke_with_retry(Handler, Args, Context, Max, Delay, Timeout).
+%% @private 解析 retry 配置为 {MaxRetries, InitialDelayMs}
+%%   false / 未配置          → {0, 0}（不重试）
+%%   true                    → {2, 200}（缺省）
+%%   #{max_retries, initial_delay_ms}
+%%   #{max, delay}（旧形态，兼容）
+retry_conf(false) -> {0, 0};
+retry_conf(true) -> {2, 200};
+retry_conf(#{max_retries := M} = C) -> {M, maps:get(initial_delay_ms, C, 200)};
+retry_conf(#{max := M} = C) -> {M, maps:get(delay, C, 0)};
+retry_conf(_) -> {0, 0}.
 
 %% @private 带重试策略的工具调用递归实现
+%%
+%% **仅对 transient 类错误重试**（超时/网络抖动等，见 beamai_tool_error），
+%% 指数退避（Delay, 2x, 4x…）。语义/环境类错误不重试（重试无用或有害）。
+%% opt-in retry 即承诺工具幂等。
 invoke_with_retry(Handler, Args, Context, RetriesLeft, Delay, Timeout) ->
     case call_handler(Handler, Args, Context, Timeout) of
-        {error, _Reason} when RetriesLeft > 0 ->
-            timer:sleep(Delay),
-            invoke_with_retry(Handler, Args, Context, RetriesLeft - 1, Delay, Timeout);
+        {error, Reason} when RetriesLeft > 0 ->
+            case beamai_tool_error:classify(Reason) of
+                transient ->
+                    timer:sleep(Delay),
+                    invoke_with_retry(Handler, Args, Context, RetriesLeft - 1,
+                                      Delay * 2, Timeout);
+                _ ->
+                    {error, Reason}
+            end;
         Result ->
             Result
     end.

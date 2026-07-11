@@ -21,6 +21,8 @@
     is_interrupt_tool/2,
     handle_interrupt/4,
     build_resume_messages/2,
+    resume_action/3,
+    replace_results_by_id/2,
     validate_resume_input/2,
     get_interrupt_tool_specs/1
 ]).
@@ -71,7 +73,7 @@ is_interrupt_tool(ToolCall, InterruptTools) ->
 -spec handle_interrupt(atom(), term(), map(), map()) ->
     {map(), map()}.
 handle_interrupt(Type, Reason, Context, AgentState) ->
-    IntState = #{
+    Base = #{
         status => interrupted,
         reason => Reason,
         messages => maps:get(messages, Context, []),
@@ -84,6 +86,15 @@ handle_interrupt(Type, Reason, Context, AgentState) ->
         interrupt_type => Type,
         created_at => erlang:system_time(millisecond)
     },
+    %% 环境类暂停（phase=env_retry）额外携带批次结果与失败调用（供 resume retry）
+    IntState = case maps:get(phase, Context, approval) of
+        env_retry ->
+            Base#{phase => env_retry,
+                  batch_messages => maps:get(batch_messages, Context, []),
+                  failed_calls => maps:get(failed_calls, Context, [])};
+        _ ->
+            Base#{phase => approval}
+    end,
     UpdatedAgent = AgentState#{interrupt_state => IntState},
     {IntState, UpdatedAgent}.
 
@@ -103,6 +114,63 @@ build_resume_messages(#{interrupted_tool_call := InterruptedCall}, HumanInput) -
         tool_call_id => get_tool_call_id(InterruptedCall),
         content => format_human_input(HumanInput)
     }].
+
+%% @doc 审批暂停下把 Decision + Payload 解析为一个动作（见 design §4）：
+%%   `{execute, ToolCall}` — approved：执行被中断工具（Payload 有 args 则替换参数）；
+%%   `{result, Message}`   — reply/拒绝/自由文本：直接作为被中断工具的结果消息。
+%%
+%% 决策关键词（其余一律回落"自由文本作结果"，兼容旧 resume(Agent, 文本)）：
+%%   approved → 执行；reply → Payload.message 作结果（必填）；rejected → 拒绝语。
+-spec resume_action(map(), term(), map()) ->
+    {execute, map()} | {result, map()}.
+resume_action(#{interrupted_tool_call := TC}, Decision, Payload) ->
+    Id = get_tool_call_id(TC),
+    case decision_kind(Decision) of
+        approved ->
+            {execute, apply_arg_override(TC, Id, Payload)};
+        reply ->
+            {result, tool_result_msg(Id, format_human_input(maps:get(message, Payload, <<>>)))};
+        rejected ->
+            {result, tool_result_msg(Id, reject_text(Payload))};
+        {text, T} ->
+            {result, tool_result_msg(Id, format_human_input(T))}
+    end.
+
+%% @doc 用重跑结果按 tool_call_id 替换原批次消息中对应的 tool 结果（环境 retry 用）
+%%
+%% 历史无重复 tool_result：同 id 的旧结果被新结果整条替换，其余原样保留。
+-spec replace_results_by_id([map()], [map()]) -> [map()].
+replace_results_by_id(BatchMsgs, NewMsgs) ->
+    ById = maps:from_list([{maps:get(tool_call_id, M), M}
+                           || M <- NewMsgs, maps:is_key(tool_call_id, M)]),
+    [maps:get(maps:get(tool_call_id, Msg, undefined), ById, Msg) || Msg <- BatchMsgs].
+
+%% @private 决策关键词归类
+decision_kind(<<"approved">>) -> approved;
+decision_kind(approved) -> approved;
+decision_kind(<<"reply">>) -> reply;
+decision_kind(reply) -> reply;
+decision_kind(<<"rejected">>) -> rejected;
+decision_kind(rejected) -> rejected;
+decision_kind(<<"reject">>) -> rejected;
+decision_kind(reject) -> rejected;
+decision_kind(T) -> {text, T}.
+
+%% @private 构建 tool 结果消息
+tool_result_msg(Id, Content) ->
+    #{role => tool, tool_call_id => Id, content => Content}.
+
+%% @private 拒绝语（可带理由）
+reject_text(#{message := R}) when is_binary(R), R =/= <<>> ->
+    <<"已拒绝执行：", R/binary>>;
+reject_text(_) ->
+    <<"已拒绝执行">>.
+
+%% @private approved 时若 Payload 带 args 则替换被中断工具参数（构建扁平执行 TC）
+apply_arg_override(TC, Id, #{args := Args}) when is_map(Args) ->
+    #{id => Id, name => get_tool_call_name(TC), arguments => Args};
+apply_arg_override(TC, _Id, _Payload) ->
+    TC.
 
 %% @doc 验证 resume 输入是否匹配中断上下文
 %%
