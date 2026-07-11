@@ -1,96 +1,84 @@
-# TASK: HITL / Timeline / 串行标注 / 错误分层（单 Agent，移植自 clj-agent）
+# TASK: Turn 级 filter 链 + HITL 加固（filter 三链 + resume×turn + 内置 filter + heal-dangling + sensitive）
 
-> 来源：`design/hitl_timeline_serial_errors.md`（对照 clj-agent
-> `agent-loop-concurrency-design.md` §9–§13 + `hitl-timeline-design.md`）。
-> 承接 `design/context_split_parallel_tools.md`（已实施：writes 折叠 + 跨轮穿线 +
-> 中断 saved_state）。顺序 A→B→C→D→E，每批跑全量 eunit + dialyzer。
-> 不 commit：只改代码，待用户 review。ETS 为 pause_store / lineage_store 的首个适配。
+> 来源：`design/turn_filter_hitl_hardening.md`（对照 clj-agent
+> `docs/filter-chain-design.md` + `docs/hitl-timeline-design.md`）。
+> 承接 `design/hitl_timeline_serial_errors.md`、`design/context_split_parallel_tools.md`。
+> 顺序 A→B→C→D→E，每批全量 eunit + dialyzer。不 commit：待用户 review。
 
-## 批次 A：per-tool `:serial` 标注
+## 批次 A：around_turn 链（wrap 整个工具循环）
 
-- [x] A1 `beamai_tool` tool_spec 加 `serial => boolean()`（缺省 false）；docstring 说明
-- [x] A2 `beamai_kernel` 加 `serial_tool/2`（按工具名查 tool_spec 的 serial 标志）
-- [x] A3 `beamai_agent_utils:execute_tools/4` 并行判定改为
-      `Parallel andalso length>1 andalso 批内无 serial 工具`；命中则整批退化串行
-      （状态语义仍「快照+屏障折叠」不变）
-- [x] A4 测试：批内含 serial → 整批串行（可观测：串行工具间时序）；全非 serial → 并行；
-      serial 工具的 writes 仍正常折叠
+- [x] A1 `beamai_filter` 加第三 hook `around_turn`（hook_type/hooks 类型 + 文档）
+- [x] A2 `beamai_agent:run/3` 把 `run_loop`(raw) 作 terminal 包 turn 洋葱
+      （复用 `beamai_filter_chain:run/4`，Phase=around_turn）；TurnRequest
+      `#{messages,context,resume}` 可改写/短路/重入；TurnResult=tool loop 结果 tuple
+- [x] A3 硬规则：`{interrupt,_,_}`/`{error,_}` 透传（filter 不得重入——文档约定）；
+      turn filter 请求侧改写 messages（RAG 前置）、around（guardrail/预算）、重入
+- [x] A4 测试：RAG 式前置 system 消息、around 观测最终结果、重入跑全新循环、
+      注册顺序=层序、无 turn filter 时零开销
 - [x] A5 全量 eunit + dialyzer
 
-## 批次 B：on_tool_result 实时触发
+## 批次 B：resume 经 turn 链（一次性分派终端）
 
-- [x] B1 `beamai_agent_utils:execute_tools` 增可选 `on_result` fun（`fun((Name,Result)->ok)`）：
-      并发 collector 收到每个结果即调、串行逐个调（异常经 callbacks:invoke 不逃逸）
-- [x] B2 `beamai_agent_tool_loop`：把 `on_tool_result` 触发从批后 `fire_tool_results`
-      移为传入 `on_result`（实时）；保留 CallRecords 供确定顺序消费
-- [x] B3 测试：实时触发（每工具完成即回调）、批内顺序不保证但 records 原序
+- [x] B1 `resume/3` 重组 turn 洋葱，终端 `atomics` CAS 一次性分派：
+      首次=延续（消费 interrupt_state 跑 resume 逻辑）、重入=全新循环（TurnReq.messages）
+- [x] B2 TurnRequest `resume => true` 标记；请求侧改写类 filter `resume` 时跳过首次改写；
+      重入方置 `resume => false`
+- [x] B3 测试：暂停→resume→不合格答案→校验反馈重入→合格（恰好 N 次 LLM）；
+      resume 标记探针；短路保留暂停态
 - [x] B4 全量 eunit + dialyzer
 
-## 批次 C：工具错误分层路由
+## 批次 C：内置 filter 模块
 
-- [x] C1 新模块 `beamai_tool_error:classify/1` → `semantic|transient|environment`
-      （error_class 显式 > llm_error retryable/auth > erlang timeout/network > semantic）
-- [x] C2 `beamai_tool:invoke_with_retry` 改为**仅** transient 类重试 + 指数退避；
-      `retry => true | #{max_retries,initial_delay_ms}`（缺省 max_retries=2/delay=200）；
-      未开 retry 不重试（幂等 opt-in）
-- [x] C3 `beamai_agent_utils:execute_tools` 返回增第 4 元 `Errors`（分类后仍失败的
-      `[#{id,name,class,message}]`）；run_one_tool 透出 error class
-- [x] C4 `beamai_agent_tool_loop` 屏障处：Errors 含 environment 且策略 pause →
-      造中断 phase=`env_retry`，中断上下文带 batch_messages/failed_calls；
-      `on_env_error` 缺省 proceed，HITL agent 自动升 pause
-- [x] C5 resume（env phase）：`retry`/`approved` 只重跑失败调用、按 tool_call_id 替换；
-      其余 proceed；`reply` 拒收
-- [x] C6 `beamai_agent_state` config 收 `on_env_error`；interrupt_state 类型加 phase 等字段
-- [x] C7 测试：三类分类；transient 重试成功/耗尽；环境暂停+resume retry 替换；
-      proceed 缺省；语义类照旧 errors-are-data
-- [x] C8 全量 eunit + dialyzer
+- [x] C1 新模块 `beamai_filters`（core）：`logging_filter/0`、`timeout_filter/1`（tool，
+      超时结果标 error class=transient）、`approval_filter/1`（tool，敏感工具审批拒绝短路）
+- [x] C2 `validation_turn_filter/2`（turn）：校验 completed 结果，不合格反馈重入，
+      耗尽原样返回，非 completed 透传
+- [x] C3 测试：logging 不改结果；timeout 短路+transient 标记（+幂等工具自动重试）；
+      approval 拒绝短路；validation 重入直到合格/耗尽
+- [x] C4 全量 eunit + dialyzer
 
-## 批次 D：暂停持久化（PauseStore ETS）+ resume payload
+## 批次 D：heal-dangling
 
-- [x] D1 behaviour `beamai_pause_store`（pause_save/3, pause_load/2, pause_clear/2；
-      句柄 {Module,Ref}）
-- [x] D2 ETS 实现 `beamai_pause_store_ets`（gen_server，工程学同 chat_memory_ets）
-- [x] D3 快照构造（version=1，纯数据：conversation_id/paused_at/pause_reason/
-      pending_tool/interrupt_state）；存档前 term_to_binary 往返校验 + warn
-- [x] D4 Agent 集成：config `pause_store`；中断自动 save；终态/新 chat/resume 成功
-      自动 clear；`is_interrupted`/`resume` 无本地态时透明回落 store
-- [x] D5 resume payload：2/3-arity `resume(Agent,Decision[,Payload])`；审批决策词汇
-      `proceed|reject|{reject,理由}|{reply,结果}`；approved+args 编辑后批准、
-      reply 答复即结果（ask-user）；兼容旧文本 resume
-- [x] D6 测试：PauseStore ETS 存/取/覆盖/清；跨"重启"端到端（新 agent 实例+共享 store）；
-      resume payload 三形态；saved_state 跨暂停恢复
-- [x] D7 全量 eunit + dialyzer
+- [x] D1 `run/3` 入口检测中断态：对历史尾部悬空 assistant(tool_calls) 的每个未决
+      tool_call_id 补合成「已取消」tool 结果；清中断态 + pause_store；再正常开新 turn
+- [x] D2 测试：中断后直接开新 chat → 历史无悬空 tool_calls（补齐取消结果）→ 新 turn 正常
 
-## 批次 E：Timeline（LineageStore ETS）+ writes 进历史
+## 批次 E：sensitive 工具标注 + approval
 
-- [x] E1 behaviour `beamai_lineage_store`（record/2, get/2, children/2, delete/2）+ ETS 实现
-- [x] E2 模块 `beamai_timeline`：`fork/3`（前缀复制+血缘；全量+源暂停→连带暂停快照）、
-      `rollback/3`（截断+清暂停快照）、`lineage/2`、`ancestry/2`、`prune/2`（有子拒绝）
-- [x] E3 writes 进历史：tool-result 消息带可选 `writes` 元数据（只存不发；已确认
-      message_adapter 白名单剥落）；execute_tools 落消息时附带；失败工具无 writes
-- [x] E4 测试：fork 前缀+血缘、暂停 fork 带快照+双分支各自 resume、rollback 截断清暂停、
-      prune 拒绝有子、ancestry 回溯；writes 落历史（错误工具无 writes）
-- [x] E5 全量 eunit + dialyzer
+- [x] E1 tool_spec `sensitive => boolean()`；`beamai_tool:is_sensitive/1`、
+      `beamai_kernel:sensitive_tool/2`
+- [x] E2 `beamai_filters:approval_filter/1` 仅对 sensitive 工具调 ApproveFun，
+      false → 拒绝短路（结果「已拒绝执行（未获批准）」，无 writes）
+- [x] E3 测试：sensitive 工具被拒短路、非 sensitive 工具照常执行
+- [x] E4 全量 eunit + dialyzer
 
-## 明确出界（各自另议）
+## 明确出界
 
-- durable execution（批中崩溃恢复）：不做
-- 多 Agent 编排 / BSP-actor：单 Agent 优先，另议
-- 跨 turn 状态槽：如需走 fold-from-history，勿建快照店
+- RAG advisor 本体（留 turn 挂点）、advisor context map、多 Agent 编排——各自另议
 
 ## 验证
 
-- 每批：`rebar3 eunit`（全量，基线 314）+ `rebar3 dialyzer`（EXIT=0）
+- 每批：`rebar3 eunit`（全量，基线 347）+ `rebar3 dialyzer`（EXIT=0）
 - 不 commit：待用户 review 后由其决定
 
 ## 完成情况（2026-07-11 全部实施）
 
-- **全绿**：`rebar3 eunit` 347 tests / 0 failures（基线 314 +33）；`rebar3 dialyzer` EXIT=0。
-- **A serial**：tool_spec `serial`；kernel `serial_tool/2`；execute_tools 批内含 serial → 整批退化串行（状态语义仍快照+屏障折叠）。
-- **B 实时回调**：execute_tools 增 `on_result` fun，并发 collector/串行逐个即时触发；tool_loop 以 `tool_result_cb` 传入（替代批后 fire）。
-- **C 错误分层**：新 `beamai_tool_error:classify/1`（core，结构匹配 llm_error 免依赖 llm app）；beamai_tool retry 仅 transient + 指数退避（`retry => true|#{max_retries,initial_delay_ms}`）；run_one_tool/synth_result 把 error class 塞进 CallRecord；tool_loop 屏障 `env_pause` → 中断 phase=env_retry；resume 按 phase 分派，env retry 重跑失败调用按 id 替换（`replace_results_by_id`）；`on_env_error` 缺省 proceed、HITL 自动升 pause。
-- **D 暂停持久化 + payload**：behaviour `beamai_pause_store` + ETS `beamai_pause_store_ets`；集成 `beamai_agent_pause`（save/load/clear，快照 term 往返校验）；中断自动 save、终态/resume 自动 clear、`is_interrupted`/`resume` 透明回落 store；resume/3 payload：approved(+args 执行被中断工具)/reply(答复即结果 ask-user)/rejected(+理由)，兼容旧文本 resume。
-- **E Timeline**：behaviour `beamai_lineage_store` + ETS；`beamai_timeline` fork/rollback/lineage/ancestry(根在前)/prune(有子拒绝)，全量 fork+源暂停连带复制暂停快照；writes 进历史（tool 结果消息带 `writes`，message_adapter 白名单剥落，失败工具无 writes）。
-- **新增模块**：beamai_tool_error、beamai_pause_store(+_ets)、beamai_agent_pause、beamai_lineage_store(+_ets)、beamai_timeline。
-- **踩坑**：execute_tools/5 新 arity 忘记 export → 全链 `undef` 19 failures（教训：新 arity 必须同步 -export）。中文字符串跨文件字节比对不可靠（reject_text 前缀）→ 测试改断言 reason 子串。
-- **未做（各自另议）**：durable execution、多 Agent 编排、跨 turn 状态槽。
+- **全绿**：`rebar3 eunit` 363 tests / 0 failures（基线 347 +16）；`rebar3 dialyzer` EXIT=0。
+- **A around_turn 链**：`beamai_filter` 加第三 hook；`beamai_agent:run/3` 把整个 `run_loop`
+  作 terminal 复用 `beamai_filter_chain:run/4`(Phase=around_turn) 包一层；TurnRequest
+  `#{messages,context,resume}`、TurnResult=工具循环结果 tuple（filter 模式匹配，硬规则
+  interrupt/error 透传）；`build_chat_opts` 支持 turn filter 改写的 `turn_context`。
+- **B resume 经 turn 链**：`resume/3` 重组 turn 洋葱，`atomics` CAS 一次性分派终端
+  （首次=延续消费 interrupt_state，重入=全新循环）；resume 逻辑重构为返回**原始** TurnResult
+  tuple 的 `resume_approval_raw`/`resume_env_raw`（含 env 再暂停返回 raw interrupt tuple），
+  `dispatch_turn_result` 统一分派；删 continue_resume。
+- **C 内置 filter**：新模块 `beamai_filters`（core）——logging/timeout(超时 throw→transient)/
+  approval(仅拦 sensitive，拒绝短路) tool 链；validation_turn_filter(校验重入) turn 链。
+- **D heal-dangling**：`run/3` 入口 `heal_dangling`——处于中断态（本地或 store）时，对持久
+  历史里悬空 tool_call_id 补「已取消」结果 + 清中断态/暂停快照，再开新 turn。
+- **E sensitive**：tool_spec `sensitive` + `beamai_tool:is_sensitive/1`；approval_filter 直接读
+  tool spec，故 `beamai_kernel:sensitive_tool/2` 未加（无消费者，approval_filter 已够）。
+- **踩坑**：`atomics:new/2` 选项是 proplist `[{signed,false}]` 非 map 语法（`=>`）→ 语法错误
+  连锁报一堆"函数未使用"；eunit 同进程跨用例邮箱残留（探针消息）→ 测试加 flush 隔离；
+  中文字符串跨文件字节比对不可靠 → 断言 ASCII 字段（not_approved）。
+- **未做**：RAG advisor 本体（留 turn 挂点）、advisor context map、多 Agent 编排。

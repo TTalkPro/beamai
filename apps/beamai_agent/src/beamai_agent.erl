@@ -132,20 +132,54 @@ run(State, UserMessage) ->
 run(State, UserMessage, Opts) ->
     #{callbacks := Callbacks} = State,
 
-    %% 生成本轮 run_id
+    %% 生成本轮 run_id；若上一个中断被放弃（未 resume 直接开新 chat），先 heal
+    %% 历史尾部悬空的 assistant(tool_calls)——补「已取消」结果 + 清中断态/暂停快照，
+    %% 避免 provider 拒绝残缺历史。
     RunId = beamai_id:gen_id(<<"run">>),
-    State0 = State#{run_id => RunId},
+    State0 = heal_dangling(State#{run_id => RunId}),
 
     Meta = beamai_agent_callbacks:build_metadata(State0),
     beamai_agent_callbacks:invoke(on_turn_start, [Meta], Callbacks),
 
     %% 记忆编排（载入跨轮历史 + 持久化新消息）统一由 tool_loop 负责，
-    %% 这里只声明本轮新增消息并要求载入历史。
+    %% 这里只声明本轮新增消息并要求载入历史。整个工具循环包在 turn 洋葱内：
+    %% turn filter 可改写入口消息（RAG 前置）、around（最终答案 guardrail/预算）、
+    %% 多次重入（校验重试/evaluator）。terminal = 一轮完整 tool loop。
     UserMsg = #{role => user, content => UserMessage},
-    case run_loop(State0, #{new => [UserMsg], load_history => true}, [], Opts) of
+    TurnReq = #{messages => [UserMsg],
+                context => initial_turn_context(State0),
+                resume => false},
+    Terminal = fun(TReq) ->
+        run_loop(State0,
+                 #{new => maps:get(messages, TReq), load_history => true},
+                 [], Opts#{turn_context => maps:get(context, TReq)})
+    end,
+    dispatch_turn_result(State0, run_turn_chain(State0, TurnReq, Terminal),
+                         Callbacks, Meta).
+
+%% @private turn 洋葱：把整个工具循环包进 around_turn filter 链
+%%
+%% 复用 beamai_filter_chain（Phase=around_turn）。TurnResult 为工具循环结果 tuple，
+%% filter 直接模式匹配（硬规则：interrupt/error 透传不重入）。filter/terminal 抛出
+%% 由链统一捕获为 {error, Reason}。
+run_turn_chain(#{kernel := #{filters := Filters}}, TurnReq, Terminal) ->
+    case beamai_filter_chain:run(Filters, around_turn, Terminal, TurnReq) of
+        {ok, TurnResult} -> TurnResult;
+        {error, Reason} -> {error, Reason}
+    end.
+
+%% @private turn 入口初始 context（只读环境：conversation_id；首轮 state 空）
+initial_turn_context(State) ->
+    beamai_context:with_conversation_id(
+        beamai_context:new(), beamai_agent_state:conversation_id(State)).
+
+%% @private 把工具循环结果 tuple 分派为 run/resume 的最终返回
+dispatch_turn_result(State0, TurnResult, Callbacks, Meta) ->
+    case TurnResult of
         {ok, Response, ToolCallsMade, Iterations} ->
             finalize_turn(State0, Response, ToolCallsMade, Iterations);
         {interrupt, Type, Context} ->
+            UserMsg = #{role => user, content => <<"[turn]">>},
             handle_new_interrupt(State0, Type, Context, UserMsg, Callbacks, Meta);
         {error, Reason} ->
             beamai_agent_callbacks:invoke(on_turn_error, [Reason, Meta], Callbacks),
@@ -377,19 +411,44 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload) ->
             Meta = beamai_agent_callbacks:build_metadata(Agent),
             #{callbacks := Callbacks} = Agent,
             beamai_agent_callbacks:invoke(on_resume, [IntState, Meta], Callbacks),
-            case maps:get(phase, IntState, approval) of
-                env_retry -> resume_env(Agent, Decision, IntState, Meta);
-                _ -> resume_approval(Agent, Decision, Payload, IntState, Meta)
-            end
+            Agent1 = clear_interrupt(Agent),
+            %% resume 同样经 turn 洋葱（guardrail/校验对被打断过的 turn 最终答案也生效），
+            %% 终端一次性分派：首次进入=延续暂停 turn（消费 interrupt_state），
+            %% 递归重入=全新循环（TurnReq.messages）。CAS 保证延续只跑一次。
+            Consumed = atomics:new(1, [{signed, false}]),  %% 0=未消费
+            InitState = maps:get(saved_state, IntState, #{}),
+            TurnReq = #{messages => [],
+                        context => resume_context(Agent1, InitState),
+                        resume => true},
+            Terminal = fun(TReq) ->
+                case atomics:compare_exchange(Consumed, 1, 0, 1) of
+                    ok ->
+                        resume_continuation(Agent1, Decision, Payload, IntState);
+                    _ ->
+                        %% 递归重入：全新循环
+                        run_loop(Agent1,
+                                 #{new => maps:get(messages, TReq), load_history => true},
+                                 [], #{turn_context => maps:get(context, TReq)})
+                end
+            end,
+            dispatch_turn_result(Agent1, run_turn_chain(Agent1, TurnReq, Terminal),
+                                 Callbacks, Meta)
     end.
 
-%% @private 审批暂停恢复：按决策要么执行被中断工具、要么用其结果消息，再续跑
-resume_approval(Agent, Decision, Payload, IntState, Meta) ->
-    #{max_tool_iterations := MaxIter} = Agent,
+%% @private 延续暂停的 turn：按 phase 消费 interrupt_state，返回**原始**工具循环结果
+%% tuple（由 dispatch_turn_result 统一分派 finalize/interrupt/error）。
+resume_continuation(Agent1, Decision, Payload, IntState) ->
+    case maps:get(phase, IntState, approval) of
+        env_retry -> resume_env_raw(Agent1, Decision, IntState);
+        _ -> resume_approval_raw(Agent1, Decision, Payload, IntState)
+    end.
+
+%% @private 审批暂停延续：按决策要么执行被中断工具、要么用其结果消息，跑续接循环
+resume_approval_raw(Agent1, Decision, Payload, IntState) ->
+    #{max_tool_iterations := MaxIter} = Agent1,
     Existing = maps:get(messages, IntState, []),
     #{iteration := Iter, tool_calls_made := PrevCalls} = IntState,
     InitState = maps:get(saved_state, IntState, #{}),
-    Agent1 = clear_interrupt(Agent),
     ResumeMsgs = case beamai_agent_interrupt:resume_action(IntState, Decision, Payload) of
         {result, Msg} ->
             [Msg];
@@ -401,21 +460,19 @@ resume_approval(Agent, Decision, Payload, IntState, Meta) ->
                 beamai_agent_utils:execute_tools(Kernel, [ToolCall], Ctx, false),
             Msgs
     end,
-    continue_resume(Agent1,
-                    #{existing => Existing, new => ResumeMsgs},
-                    PrevCalls,
-                    #{max_iterations => MaxIter - Iter, init_state => InitState},
-                    Meta).
+    run_loop(Agent1,
+             #{existing => Existing, new => ResumeMsgs},
+             PrevCalls,
+             #{max_iterations => MaxIter - Iter, init_state => InitState}).
 
-%% @private 环境暂停恢复：retry 重跑失败调用并按 id 替换结果（仍失败则再暂停），
-%% 否则 proceed 原错误结果放行；两条路径都续跑 tool loop。
-resume_env(Agent, Decision, IntState, Meta) ->
-    #{max_tool_iterations := MaxIter, kernel := Kernel} = Agent,
+%% @private 环境暂停延续：retry 重跑失败调用并按 id 替换结果（仍失败则再暂停——返回
+%% 原始 {interrupt, env_retry, _}），否则 proceed 原错误结果放行；跑续接循环。
+resume_env_raw(Agent1, Decision, IntState) ->
+    #{max_tool_iterations := MaxIter, kernel := Kernel} = Agent1,
     #{iteration := Iter, tool_calls_made := PrevCalls,
       batch_messages := BatchMsgs, failed_calls := FailedCalls} = IntState,
     InitState = maps:get(saved_state, IntState, #{}),
     Existing = maps:get(messages, IntState, []),
-    Agent1 = clear_interrupt(Agent),
     RemOpts = #{max_iterations => MaxIter - Iter, init_state => InitState},
     case is_retry_decision(Decision) of
         true ->
@@ -428,21 +485,19 @@ resume_env(Agent, Decision, IntState, Meta) ->
                                  env_failed_record(R)],
             case {maps:get(on_env_error, Agent1, proceed), StillFailed} of
                 {pause, [_ | _]} ->
-                    %% 重跑后仍有环境类失败 → 再次暂停（携带修正后的批次）
-                    Context = beamai_agent_tool_loop:build_env_interrupt_context(
-                                Iter, Existing, Corrected, RetryRecords, StillFailed,
-                                InitState, PrevCalls),
-                    handle_new_interrupt(Agent1, env_retry, Context,
-                                         #{role => user, content => <<"[resume]">>},
-                                         maps:get(callbacks, Agent1), Meta);
+                    %% 重跑后仍有环境类失败 → 返回原始 interrupt tuple，dispatch 统一暂停
+                    {interrupt, env_retry,
+                     beamai_agent_tool_loop:build_env_interrupt_context(
+                       Iter, Existing, Corrected, RetryRecords, StillFailed,
+                       InitState, PrevCalls)};
                 _ ->
-                    continue_resume(Agent1, #{existing => Existing, new => Corrected},
-                                    PrevCalls, RemOpts, Meta)
+                    run_loop(Agent1, #{existing => Existing, new => Corrected},
+                             PrevCalls, RemOpts)
             end;
         false ->
             %% proceed：原错误结果照常交模型
-            continue_resume(Agent1, #{existing => Existing, new => BatchMsgs},
-                            PrevCalls, RemOpts, Meta)
+            run_loop(Agent1, #{existing => Existing, new => BatchMsgs},
+                     PrevCalls, RemOpts)
     end.
 
 %% @private 构建 resume 执行/重跑用的只读环境 context（带 conversation_id + 恢复 state）
@@ -468,19 +523,58 @@ clear_interrupt(Agent) ->
     beamai_agent_pause:clear(Agent1),
     Agent1.
 
-%% @private resume 续跑 tool loop 并处理三种结果（审批/环境共用）
-continue_resume(Agent1, MsgSpec, PrevCalls, Opts, Meta) ->
-    #{callbacks := Callbacks} = Agent1,
-    case run_loop(Agent1, MsgSpec, PrevCalls, Opts) of
-        {ok, Response, AllToolCalls, Iterations} ->
-            finalize_turn(Agent1, Response, AllToolCalls, Iterations);
-        {interrupt, Type, Context} ->
-            UserMsg = #{role => user, content => <<"[resume]">>},
-            handle_new_interrupt(Agent1, Type, Context, UserMsg, Callbacks, Meta);
-        {error, Reason} ->
-            beamai_agent_callbacks:invoke(on_turn_error, [Reason, Meta], Callbacks),
-            {error, Reason}
+%% @private 放弃中断开新 chat 时，heal 历史尾部悬空的 assistant(tool_calls)
+%%
+%% 未处于中断态 → 原样返回。否则对持久历史里未获结果的每个 tool_call_id 补一条
+%% 「已取消」tool 结果（保证 provider 不见残缺历史），再清中断态 + 暂停快照。
+%% memory=undefined（不持久）时无历史可 heal，仅清态。
+heal_dangling(Agent) ->
+    case is_pending_interrupt(Agent) of
+        false ->
+            Agent;
+        true ->
+            heal_history(Agent),
+            clear_interrupt(Agent)
     end.
+
+%% @private 是否有未决中断（本地态或 pause_store）
+is_pending_interrupt(#{interrupt_state := IntState}) when IntState =/= undefined -> true;
+is_pending_interrupt(Agent) ->
+    beamai_agent_pause:load(Agent) =/= none.
+
+%% @private 对持久历史补齐悬空 tool_calls 的「已取消」结果
+heal_history(Agent) ->
+    case beamai_agent_state:memory(Agent) of
+        undefined ->
+            ok;
+        Memory ->
+            ConvId = beamai_agent_state:conversation_id(Agent),
+            History = beamai_memory_provider:history(Memory, ConvId),
+            case dangling_tool_call_ids(History) of
+                [] -> ok;
+                Ids ->
+                    Cancelled = [cancelled_tool_result(Id) || Id <- Ids],
+                    beamai_memory_provider:append(Memory, ConvId, Cancelled)
+            end
+    end.
+
+%% @private 历史中出现在 assistant(tool_calls) 但无对应 tool 结果的 tool_call_id
+dangling_tool_call_ids(History) ->
+    CallIds = lists:flatmap(fun assistant_tool_call_ids/1, History),
+    Answered = [Id || #{role := tool, tool_call_id := Id} <- History],
+    [Id || Id <- CallIds, not lists:member(Id, Answered)].
+
+assistant_tool_call_ids(#{role := assistant, tool_calls := TCs}) when is_list(TCs) ->
+    [begin {Id, _N, _A} = beamai_tool:parse_tool_call(TC), Id end || TC <- TCs];
+assistant_tool_call_ids(_) ->
+    [].
+
+%% @private 合成「已取消」tool 结果
+cancelled_tool_result(Id) ->
+    #{role => tool, tool_call_id => Id,
+      content => beamai_tool:encode_result(
+          #{error => #{type => cancelled,
+                       message => <<"tool call abandoned due to interrupt; not executed">>}})}.
 
 %% @doc 判断 agent 是否处于中断状态
 %%
@@ -590,10 +684,16 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
 %% 注：记忆与 on_llm_call 等回调由 tool_loop 显式编排，不再经 chat_opts 引线。
 build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
     BaseOpts0 = beamai_agent_utils:build_chat_opts(Kernel, Opts),
-    Ctx0 = beamai_context:with_conversation_id(
-            beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
-    %% resume 时恢复中断前累积的 state 槽（首轮 init_state 缺省为空）
-    Ctx = beamai_context:with_state(Ctx0, maps:get(init_state, Opts, #{})),
+    %% turn filter 可改写 context → 若 turn 链传入 turn_context 则用之（已含
+    %% conversation_id/state）；否则按 conversation_id + init_state 构建默认。
+    Ctx = case maps:get(turn_context, Opts, undefined) of
+        undefined ->
+            Ctx0 = beamai_context:with_conversation_id(
+                     beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
+            beamai_context:with_state(Ctx0, maps:get(init_state, Opts, #{}));
+        TurnCtx ->
+            TurnCtx
+    end,
     BaseOpts1 = BaseOpts0#{
         context => Ctx,
         system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined))

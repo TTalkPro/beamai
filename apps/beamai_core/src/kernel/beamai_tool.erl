@@ -27,6 +27,7 @@
 -export([get_name/1]).
 -export([get_tag/1, has_tag/2]).
 -export([is_serial/1]).
+-export([is_sensitive/1]).
 
 %% API - 工具调用协议
 -export([parse_tool_call/1, encode_result/1]).
@@ -54,6 +55,8 @@
     %% serial：标记有副作用、需顺序执行的工具。批内任一工具 serial → 整批退化串行
     %% （副作用要顺序，部分并行会改变相对时序）。缺省 false。
     serial => boolean(),
+    %% sensitive：标记敏感工具，beamai_filters:approval_filter 据此拦截审批。缺省 false。
+    sensitive => boolean(),
     filters => [filter_ref()],
     metadata => map()
 }.
@@ -241,6 +244,11 @@ has_tag(_, _) ->
 -spec is_serial(tool_spec()) -> boolean().
 is_serial(#{serial := true}) -> true;
 is_serial(_) -> false.
+
+%% @doc 工具是否标记为敏感（需审批；approval_filter 据此拦截）
+-spec is_sensitive(tool_spec()) -> boolean().
+is_sensitive(#{sensitive := true}) -> true;
+is_sensitive(_) -> false.
 
 %%====================================================================
 %% API - 工具调用协议

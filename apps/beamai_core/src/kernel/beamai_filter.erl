@@ -2,9 +2,11 @@
 %%% @doc 洋葱式 Filter（around 模型）
 %%%
 %%% 一个 filter 是一层洋葱，用单个 `around` 闭包同时承担「前置 → 调内层 →
-%%% 后置」三段逻辑，最多绑定 2 个可选 hook：
-%%% - `around_chat`：包裹一次 LLM 调用（chat 链）
-%%% - `around_tool`：包裹一次工具执行（tool 链）
+%%% 后置」三段逻辑，最多绑定 3 个可选 hook（一个机制三个粒度）：
+%%% - `around_chat`：包裹一次 LLM 调用（chat 链，循环内每轮一次）
+%%% - `around_tool`：包裹一次工具执行（tool 链，每个 tool call 一次、并行任务内）
+%%% - `around_turn`：包裹整个工具循环（turn 链，每 turn 一次）——RAG 注入 /
+%%%   最终答案 guardrail / turn 级预算 / evaluator 递归重入
 %%%
 %%% around 形态（middleware 模式，取代旧的 before/after 双闭包）：
 %%%   `fun(Request, FCtx, Next) -> Response | {Response, NewFCtx}`
@@ -20,9 +22,14 @@
 %%% Request / Response：
 %%% - chat：Request `#{messages, context, opts}` → Response `#{response, context}`
 %%% - tool：Request `#{tool, args, context}`     → Response `#{result, context}`
+%%% - turn：Request `#{messages, context, resume}` → Response = 工具循环结果 tuple
+%%%   （`{ok, Response, ToolCallsMade, Iterations}` | `{interrupt, Type, Ctx}` |
+%%%   `{error, Reason}`）；turn filter 直接模式匹配该 tuple。
+%%%   **硬规则**：`{interrupt,_,_}` / `{error,_}` 必须透传、不得重入 Next
+%%%   （暂停/错误态上重试破坏 HITL 语义）。
 %%%
 %%% 某条链只会用到该链对应的 around（chat 链用 around_chat，tool 链用
-%%% around_tool），不含相关 hook 的 filter 在该链中被跳过。
+%%% around_tool，turn 链用 around_turn），不含相关 hook 的 filter 在该链中被跳过。
 %%%
 %%% order 越小越外层（前置越先执行、后置越后执行）。
 %%%
@@ -38,15 +45,16 @@
 %% Types
 -export_type([filter/0, hooks/0, hook_type/0, request/0, response/0, fctx/0, next/0]).
 
--type hook_type() :: around_chat | around_tool.
+-type hook_type() :: around_chat | around_tool | around_turn.
 -type request() :: map().
--type response() :: map().
+-type response() :: map() | tuple().  %% chat/tool 为 map；turn 为工具循环结果 tuple
 -type fctx() :: map().
 -type next() :: fun((request()) -> response()).
 -type around_fun() :: fun((request(), fctx(), next()) -> response() | {response(), fctx()}).
 -type hooks() :: #{
     around_chat => around_fun(),
-    around_tool => around_fun()
+    around_tool => around_fun(),
+    around_turn => around_fun()
 }.
 
 -type filter() :: #{
