@@ -10,10 +10,10 @@ msg(N) -> #{role => user, content => N}.
 
 setup() ->
     {ok, MPid} = beamai_chat_memory_ets:start_link(tl_mem),
-    {ok, LPid} = beamai_lineage_store_ets:start_link(tl_lin),
+    {ok, LPid} = beamai_branch_store_ets:start_link(tl_lin),
     {ok, PPid} = beamai_pause_store_ets:start_link(tl_pause),
     Deps = #{memory => beamai_chat_memory_ets:handle(tl_mem),
-             lineage => beamai_lineage_store_ets:handle(tl_lin),
+             branch => beamai_branch_store_ets:handle(tl_lin),
              pause_store => beamai_pause_store_ets:handle(tl_pause)},
     {Deps, [MPid, LPid, PPid]}.
 

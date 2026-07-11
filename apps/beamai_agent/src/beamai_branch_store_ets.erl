@@ -1,22 +1,22 @@
 %%%-------------------------------------------------------------------
 %%% @doc 分支血缘存储 - ETS 内存实现（第一个适配）
 %%%
-%%% 基于 ETS 表的 beamai_lineage_store 实现，按 conversation_id 存血缘记录。
+%%% 基于 ETS 表的 beamai_branch_store 实现，按 conversation_id 存血缘记录。
 %%% 进程持有 ETS 表所有权，进程退出表自动回收。
 %%%
-%%% 句柄：`{beamai_lineage_store_ets, Name}`。
+%%% 句柄：`{beamai_branch_store_ets, Name}`。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(beamai_lineage_store_ets).
+-module(beamai_branch_store_ets).
 
 -behaviour(gen_server).
--behaviour(beamai_lineage_store).
+-behaviour(beamai_branch_store).
 
 %% API
 -export([start_link/1, start_link/2, stop/1, handle/1]).
 
-%% beamai_lineage_store 回调
+%% beamai_branch_store 回调
 -export([record/3, get/2, children/2, delete/2]).
 
 %% gen_server 回调
@@ -38,19 +38,19 @@ start_link(Name, Opts) ->
 -spec stop(atom()) -> ok.
 stop(Name) -> gen_server:stop(Name).
 
-%% @doc 构造 beamai_lineage_store 句柄
--spec handle(atom()) -> beamai_lineage_store:handle().
+%% @doc 构造 beamai_branch_store 句柄
+-spec handle(atom()) -> beamai_branch_store:handle().
 handle(Name) -> {?MODULE, Name}.
 
 %%====================================================================
-%% beamai_lineage_store 回调
+%% beamai_branch_store 回调
 %%====================================================================
 
--spec record(atom(), binary(), beamai_lineage_store:lineage_record()) -> ok.
+-spec record(atom(), binary(), beamai_branch_store:branch_record()) -> ok.
 record(Name, ConvId, Rec) ->
     gen_server:call(Name, {record, ConvId, Rec}).
 
--spec get(atom(), binary()) -> {ok, beamai_lineage_store:lineage_record()} | none.
+-spec get(atom(), binary()) -> {ok, beamai_branch_store:branch_record()} | none.
 get(Name, ConvId) ->
     gen_server:call(Name, {get, ConvId}).
 

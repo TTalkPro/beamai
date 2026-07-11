@@ -12,15 +12,15 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(beamai_lineage_store).
+-module(beamai_branch_store).
 
 %% 调度 API
 -export([record/3, get/2, children/2, delete/2]).
 
--export_type([handle/0, lineage_record/0]).
+-export_type([handle/0, branch_record/0]).
 
 -type handle() :: {module(), term()}.
--type lineage_record() :: #{
+-type branch_record() :: #{
     parent := binary() | undefined,
     fork_point := non_neg_integer() | all,
     created_at := integer()
@@ -31,10 +31,10 @@
 %%====================================================================
 
 %% @doc 记录某会话的血缘（覆盖既有）
--callback record(Ref :: term(), ConvId :: binary(), Record :: lineage_record()) -> ok.
+-callback record(Ref :: term(), ConvId :: binary(), Record :: branch_record()) -> ok.
 
 %% @doc 读取某会话的血缘记录（无则 none）
--callback get(Ref :: term(), ConvId :: binary()) -> {ok, lineage_record()} | none.
+-callback get(Ref :: term(), ConvId :: binary()) -> {ok, branch_record()} | none.
 
 %% @doc 列出以 ConvId 为 parent 的直接子会话 id
 -callback children(Ref :: term(), ConvId :: binary()) -> [binary()].
@@ -46,11 +46,11 @@
 %% 调度 API
 %%====================================================================
 
--spec record(handle(), binary(), lineage_record()) -> ok.
+-spec record(handle(), binary(), branch_record()) -> ok.
 record({Module, Ref}, ConvId, Rec) ->
     Module:record(Ref, ConvId, Rec).
 
--spec get(handle(), binary()) -> {ok, lineage_record()} | none.
+-spec get(handle(), binary()) -> {ok, branch_record()} | none.
 get({Module, Ref}, ConvId) ->
     Module:get(Ref, ConvId).
 
