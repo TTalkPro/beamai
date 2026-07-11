@@ -54,7 +54,7 @@ new(Template) ->
 %% @returns {ok, 渲染后的二进制} | {error, 原因}
 -spec render(prompt_template(), map() | beamai_context:t()) -> {ok, binary()} | {error, term()}.
 render(#{template := Template}, #{'__context__' := true} = Context) ->
-    do_render(Template, Context);
+    do_render(Template, beamai_context:variables(Context));
 render(#{template := Template}, Vars) when is_map(Vars) ->
     do_render(Template, Vars).
 
