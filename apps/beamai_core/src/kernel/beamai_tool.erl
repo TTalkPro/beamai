@@ -55,9 +55,13 @@
     | {module(), atom()}
     | {module(), atom(), [term()]}.
 
+%% 工具返回：`{ok, V}` 不写状态；`{ok, V, Writes}` 携带写意图（纯数据 map，
+%% 由 tool 批次在屏障处按原始序折叠进 state，见 beamai_context:apply_writes/3）；
+%% `{error, R}` 失败（不参与折叠）。第三元语义为 **Writes**，非可变 context——
+%% context 是只读运行环境（见 design/context_split_parallel_tools.md）。
 -type tool_result() ::
     {ok, term()}
-    | {ok, term(), beamai_context:t()}
+    | {ok, term(), beamai_context:writes()}
     | {error, term()}.
 
 -type args() :: map().
@@ -135,6 +139,8 @@ invoke(ToolSpec, Args) ->
 
 %% @doc 调用工具（带上下文）
 %%
+%% Context 为**只读运行环境**（env：kernel/conversation_id/vars）；handler 若
+%% 需写状态经返回值 `{ok, V, Writes}` 表达，不改 Context。
 %% 根据工具定义中的 timeout 和 retry 配置执行处理器。
 %% 默认超时 30 秒，默认不重试。
 -spec invoke(tool_spec(), args(), beamai_context:t()) -> tool_result().

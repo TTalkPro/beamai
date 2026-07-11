@@ -38,6 +38,7 @@
 -export([get_tool_specs/1]).
 -export([get_tool_schemas/1, get_tool_schemas/2]).
 -export([get_service/1]).
+-export([state_slots/1]).
 
 %% Types
 -export_type([kernel/0, kernel_settings/0, chat_opts/0]).
@@ -62,6 +63,9 @@
     system_prompts => [map()],
     atom() => term()
 }.
+
+%% 状态槽声明（存于 settings.state_slots）：工具 writes 折叠进 state 时，
+%% 声明槽过其 reducer，未声明槽 last-writer（见 beamai_context:apply_writes/3）。
 
 %%====================================================================
 %% Build API
@@ -185,13 +189,16 @@ with_memory(Kernel, Store) ->
 %% 执行流程：查找工具 → tool filter 洋葱链（around_tool：前置改写参数 → 工具
 %% 执行 → 后置改写结果）。上下文会自动关联当前 Kernel 引用。
 %%
+%% Context 为只读运行环境（自动绑定当前 Kernel 引用）；工具写状态经返回值
+%% 的 Writes 表达（第三元），本函数原样透出，由调用方（tool 批次）折叠进 state。
+%%
 %% @param Kernel Kernel 实例
 %% @param ToolName 工具名称
 %% @param Args 调用参数
-%% @param Context 执行上下文
-%% @returns {ok, 结果, 更新后上下文} | {error, 原因}
+%% @param Context 执行上下文（只读环境）
+%% @returns {ok, 结果, Writes} | {error, 原因}
 -spec invoke_tool(kernel(), binary(), beamai_tool:args(), beamai_context:t()) ->
-    {ok, term(), beamai_context:t()} | {error, term()}.
+    {ok, term(), beamai_context:writes()} | {error, term()}.
 invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
     case get_tool(Kernel, ToolName) of
         {ok, ToolSpec} ->
@@ -319,6 +326,13 @@ get_tool_schemas(Kernel, Provider) ->
 get_service(#{llm_config := undefined}) -> error;
 get_service(#{llm_config := Config}) -> {ok, Config}.
 
+%% @doc 获取 Kernel 的状态槽声明（未配置返回 #{}）
+%%
+%% 供 tool 批次折叠工具 writes 时按槽路由 reducer（见 beamai_context:apply_writes/3）。
+-spec state_slots(kernel()) -> beamai_context:state_slots().
+state_slots(#{settings := Settings}) -> maps:get(state_slots, Settings, #{});
+state_slots(_) -> #{}.
+
 %%====================================================================
 %% 内部函数 - 辅助
 %%====================================================================
@@ -383,22 +397,26 @@ stream_chat_terminal(LlmConfig, TokenCallback) ->
 
 %% @private 运行 tool filter 洋葱链（用 around_tool hook）
 %%
-%% Request `#{tool, args, context}` → Response `#{result, context}`，
-%% 最内层 terminal 为真正的工具执行。
+%% Request `#{tool, args, context}` → Response `#{result, writes, context}`，
+%% 最内层 terminal 为真正的工具执行。`writes` 为工具写意图（纯数据），透出给
+%% 调用方折叠进 state；`context` 仅承载 filter 私有状态合并（框架用）。
 run_tool(Filters, ToolSpec, Args, Context) ->
     Req = #{tool => ToolSpec, args => Args, context => Context},
     Terminal = tool_terminal(),
     case beamai_filter_chain:run(Filters, around_tool, Terminal, Req) of
-        {ok, #{result := Value, context := Ctx}} -> {ok, Value, Ctx};
+        {ok, #{result := Value} = Resp} -> {ok, Value, maps:get(writes, Resp, #{})};
         {error, _} = Err -> Err
     end.
 
 %% @private tool 链最内层：真正执行工具（出错时 throw，由链统一捕获）
+%%
+%% 归一工具返回：`{ok,V}` → 空 writes；`{ok,V,W}` → W 为写意图。
+%% Context 只读透传（filter 私有状态由链在外层合并）。
 tool_terminal() ->
     fun(#{tool := ToolSpec, args := Args, context := Ctx}) ->
         case beamai_tool:invoke(ToolSpec, Args, Ctx) of
-            {ok, Value} -> #{result => Value, context => Ctx};
-            {ok, Value, NewCtx} -> #{result => Value, context => NewCtx};
+            {ok, Value} -> #{result => Value, writes => #{}, context => Ctx};
+            {ok, Value, Writes} -> #{result => Value, writes => Writes, context => Ctx};
             {error, Reason} -> throw(Reason)
         end
     end.
