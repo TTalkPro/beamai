@@ -543,15 +543,15 @@ state_no_filter_injection_test() ->
     #{filters := Filters} = beamai_agent:kernel(State),
     ?assertEqual([], Filters).
 
-%% plugins 加载带 filters/0 的模块：整体委托 kernel 原语，filter 只注册一次
-%% （回归：agent 层曾在 add_tool_module 之外重复加载 filters/0，导致双重注册）
-state_plugin_filters_loaded_once_test() ->
+%% plugins 只提供工具：模块即使导出 filters/0 也被忽略（特性已删除，
+%% filter 一律在构建 kernel 时经 filters 列表一次性给出）
+state_plugin_filters_ignored_test() ->
     {ok, State} = beamai_agent:new(#{
         llm => {mock, #{}},
         plugins => [beamai_agent_test_plugin]
     }),
     #{filters := Filters} = beamai_agent:kernel(State),
-    ?assertEqual(1, length(Filters)),
+    ?assertEqual([], Filters),
     %% 工具正常注册
     ?assertMatch({ok, _}, beamai_kernel:get_tool(beamai_agent:kernel(State), <<"plugin_tool">>)).
 

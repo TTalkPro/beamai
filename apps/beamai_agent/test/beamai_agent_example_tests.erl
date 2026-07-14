@@ -4,7 +4,7 @@
 %%% 一个完整示例：组装带「自定义 chat filter + tool filter + 真实工具 +
 %%% 窗口记忆 + 回调」的 Agent，跑一轮 ReAct（工具调用 → 最终回复），
 %%% 验证各部件协同：
-%%%   - 预构建 kernel：add_service(LLM) + add_tool_module + add_filter(chat/tool)
+%%%   - 预构建 kernel：new(Settings, Filters) 一次性给 filter + add_service(LLM) + 工具
 %%%   - memory => {window, N}
 %%%   - 回调 on_tool_result
 %%%   - filter / 工具 / 回调均按预期触发，历史经 filter-memory 落库
@@ -54,17 +54,17 @@ end_to_end_example_test() ->
             #{around_chat => fun(#{messages := Msgs} = Req, _F, Next) ->
                 Self ! {chat_filter, length(Msgs)},
                 Next(Req)
-            end}, 0),
+            end}),
         ToolFilter = beamai_filter:new(<<"ex_tool">>,
             #{around_tool => fun(#{tool := Spec} = Req, _F, Next) ->
                 Self ! {tool_filter, maps:get(name, Spec, <<>>)},
                 Next(Req)
-            end}, 0),
+            end}),
 
-        %% --- 3. 预构建 kernel：LLM 服务 + 工具 + 自定义 filter ---
-        K0 = beamai_kernel:new(),
+        %% --- 3. 预构建 kernel：filter 一次性给出 + LLM 服务 + 工具 ---
+        K0 = beamai_kernel:new(#{}, [ChatFilter, ToolFilter]),
         K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{})),
-        K2 = beamai_kernel:add_tools(K1, [
+        Kernel = beamai_kernel:add_tools(K1, [
             #{name => <<"get_weather">>,
               description => <<"查询城市天气"/utf8>>,
               parameters => #{city => #{type => string,
@@ -74,8 +74,6 @@ end_to_end_example_test() ->
                               {ok, #{city => City, temp => 22, sky => <<"sunny">>}}
                          end}
         ]),
-        K3 = beamai_kernel:add_filter(K2, ChatFilter),
-        Kernel = beamai_kernel:add_filter(K3, ToolFilter),
 
         %% --- 4. 创建 Agent：窗口记忆 + 回调 ---
         {ok, Agent} = beamai_agent:new(#{

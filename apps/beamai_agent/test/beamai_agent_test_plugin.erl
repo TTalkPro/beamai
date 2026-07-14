@@ -1,9 +1,8 @@
 %%%-------------------------------------------------------------------
 %%% @doc 测试支持模块：同时定义 tools/0 与 filters/0 的插件
 %%%
-%%% 用于验证 agent 的 plugins 加载整体委托 kernel 原语
-%%% （beamai_kernel:add_tool_module/2），filter 只注册一次、
-%%% agent 层不重复加载。
+%%% 用于验证 plugins 只提供工具：filters/0 特性已删除，即使模块导出
+%%% filters/0 也被忽略（filter 一律在构建 kernel 时经 filters 列表给出）。
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_agent_test_plugin).

@@ -20,9 +20,8 @@ mock_llm(Parent) ->
     CC.
 
 kernel_with_filters(Filters) ->
-    K0 = beamai_kernel:add_service(beamai_kernel:new(),
-                                   beamai_chat_completion:create(mock, #{})),
-    lists:foldl(fun(F, K) -> beamai_kernel:add_filter(K, F) end, K0, Filters).
+    beamai_kernel:add_service(beamai_kernel:new(#{}, Filters),
+                              beamai_chat_completion:create(mock, #{})).
 
 turn_filter(Name, Fun) ->
     beamai_filter:new(Name, #{around_turn => Fun}).
@@ -190,10 +189,7 @@ resume_through_turn_chain_reentry_test() ->
             Other -> Other   %% interrupt / error 透传，不得重入
         end
     end),
-    K = beamai_kernel:add_filter(
-          beamai_kernel:add_service(beamai_kernel:new(),
-                                    beamai_chat_completion:create(mock, #{})),
-          Validate),
+    K = kernel_with_filters([Validate]),
     try
         {ok, Agent} = beamai_agent:new(#{
             kernel => K, memory => false,
@@ -243,10 +239,7 @@ resume_flag_probe_test() ->
         Parent ! {resume_flag, maps:get(resume, Req, undefined)},
         Next(Req)
     end),
-    K = beamai_kernel:add_filter(
-          beamai_kernel:add_service(beamai_kernel:new(),
-                                    beamai_chat_completion:create(mock, #{})),
-          Probe),
+    K = kernel_with_filters([Probe]),
     try
         {ok, Agent} = beamai_agent:new(#{
             kernel => K, memory => false,
@@ -281,10 +274,7 @@ validation_turn_filter_reentry_test() ->
         fun(#{content := <<"good">>}) -> ok;
            (_) -> {invalid, <<"必须是 good">>}
         end, 2),
-    K = beamai_kernel:add_filter(
-          beamai_kernel:add_service(beamai_kernel:new(),
-                                    beamai_chat_completion:create(mock, #{})),
-          Validate),
+    K = kernel_with_filters([Validate]),
     try
         {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
@@ -302,10 +292,7 @@ validation_turn_filter_exhausts_test() ->
                   Parent),
     Validate = beamai_filters:validation_turn_filter(
         fun(#{content := <<"good">>}) -> ok; (_) -> {invalid, <<"nope">>} end, 1),
-    K = beamai_kernel:add_filter(
-          beamai_kernel:add_service(beamai_kernel:new(),
-                                    beamai_chat_completion:create(mock, #{})),
-          Validate),
+    K = kernel_with_filters([Validate]),
     try
         {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
