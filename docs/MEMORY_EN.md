@@ -37,7 +37,7 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 | `beamai_chat_memory_ets` | Default ETS gen_server implementation (process owns the ETS table) |
 | `beamai_chat_memory_window` | Sliding-window wrapper: full history kept underneath, windowed on `mem_get` |
 | `beamai_memory_filter` | A single filter: around_chat stores delta + expands history (before), stores reply (after) |
-| `beamai_kernel:with_memory/2` | Bind a store and mount the Memory Filter |
+| `beamai_kernel:new/2` | Put the memory filter into the filters list at build time (first = outermost) |
 
 ## delta mode vs full mode
 
@@ -45,7 +45,7 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 
 | | full mode | delta mode |
 |---|---|---|
-| Trigger | **no** `with_memory` | `with_memory` bound a store |
+| Trigger | **no** memory filter in the filters list | filters list contains a memory filter (bound to a store) |
 | Passed to pipeline each round | locally accumulated **full** messages | only the **new delta** |
 | Who accumulates full history | a local variable in the tool loop | the ChatMemory store |
 | Uses conversation_id | no | yes (ephemeral id generated if absent, cleared at end) |
@@ -67,9 +67,8 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 Store = beamai_chat_memory_ets:handle(my_mem),   %% handle {beamai_chat_memory_ets, my_mem}
 
 %% 2. Build the Kernel and enable memory
-K0 = beamai_kernel:new(),
-K1 = beamai_kernel:add_service(K0, LlmConfig),
-K  = beamai_kernel:with_memory(K1, Store),       %% or beamai:with_memory/2
+K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+K  = beamai_kernel:add_service(K0, LlmConfig),
 
 %% 3. Identify the conversation with a conversation_id; pass only the latest message
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
@@ -118,7 +117,7 @@ after trimming, orphaned leading `tool` messages are dropped.
 {ok, _} = beamai_chat_memory_ets:start_link(inner),
 Inner = beamai_chat_memory_ets:handle(inner),
 Store = beamai_chat_memory_window:handle(Inner, 20),   %% most recent 20 non-system messages
-K = beamai_kernel:with_memory(K1, Store).
+K = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]).
 ```
 
 > Token-based trimming/summarization is intentionally not in core (to avoid a reverse
@@ -153,4 +152,4 @@ and are **not written to the store**.
 | `apps/beamai_core/src/kernel/beamai_chat_memory_ets.erl` | ETS default implementation |
 | `apps/beamai_core/src/kernel/beamai_chat_memory_window.erl` | windowed wrapper |
 | `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | Memory Filter |
-| `apps/beamai_core/src/kernel/beamai_kernel.erl` | `with_memory/2`, invoke dual-mode |
+| `apps/beamai_core/src/kernel/beamai_kernel.erl` | `new/2` (filters given once), invoke dual-mode |
