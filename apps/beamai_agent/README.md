@@ -70,7 +70,7 @@ beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_message
 
     system_prompt => <<"你是一个有帮助的助手。"/utf8>>,
 
-    %% 工具插件模块（实现 beamai_tool_behaviour 的 tools/0，可选 filters/0）
+    %% 工具插件模块（实现 beamai_tool_behaviour 的 tools/0；只提供工具，不携带 filter）
     plugins => [my_tool_module],
 
     %% 最大工具循环迭代次数（默认 10）
@@ -117,7 +117,7 @@ io:format("~s~n", [maps:get(content, Result)]).
 ### 带工具的 Agent
 
 ```erlang
-%% plugins：自动加载模块的 tools/0（及可选 filters/0）
+%% plugins：自动加载模块的 tools/0（只提供工具，不携带 filter）
 {ok, State} = beamai_agent:new(#{llm => LLM, plugins => [my_tool_module]}),
 {ok, Result, _} = beamai_agent:run(State, <<"帮我查一下天气"/utf8>>).
 ```
@@ -166,8 +166,9 @@ end.
 `memory` 的各种取值统一解析为一个 provider；窗口即默认 provider 的一个选项
 （`beamai_memory_provider_default:new(Store, N)`）。
 
-> 注：`beamai_memory_filter` + `beamai_kernel:with_memory/2` 是**kernel 级**的 filter
-> 形态记忆，给"直接用 kernel / beamai facade"的人；Agent 层**不用**它。
+> 注：`beamai_memory_filter`（构建 kernel 时放进 `beamai_kernel:new/2` 的 filters
+> 列表首位）是**kernel 级**的 filter 形态记忆，给"直接用 kernel / beamai facade"
+> 的人；Agent 层**不用**它。
 
 ```erlang
 %% (a) 默认：默认 provider + 共享单例 store，无界增长（缺省即此）
@@ -221,9 +222,9 @@ clear(Ref, ConvId) -> ok.
 ## 自定义 Filter（chat / tool）
 
 Filter 是 **kernel 级**机制（不是 agent 特性——agent 的记忆/回调都不走 filter）。
-`new/1` **没有顶层 `filters` 键**。要在 agent 用到的 kernel 上加 filter 有两条路：
-
-**路 A — 预构建 kernel，传 `kernel =>`**（传 kernel 时 LLM 需自行 `add_service`；
+`new/1` **没有顶层 `filters` 键**。要在 agent 用到的 kernel 上加 filter，走
+**预构建 kernel，传 `kernel =>`**（filter 在 `beamai_kernel:new/2` 一次性给出，
+注册顺序即层序：列表靠前 = 外层；传 kernel 时 LLM 需自行 `add_service`；
 记忆仍由 `memory` 配置独立解析为 provider，与 kernel 无关）：
 
 ```erlang
@@ -232,7 +233,7 @@ LogChat = beamai_filter:new(<<"log_chat">>,
     #{around_chat => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
         io:format("发往 LLM ~p 条消息~n", [length(Msgs)]),
         Next(Req)
-    end}, 0),
+    end}),
 
 %% around_tool：Req = #{tool, args, context}，Next 返回 #{result, context}
 TimeTool = beamai_filter:new(<<"time_tool">>,
@@ -242,27 +243,11 @@ TimeTool = beamai_filter:new(<<"time_tool">>,
         io:format("工具 ~s 耗时 ~p ms~n",
                   [maps:get(name, Spec, <<>>), erlang:monotonic_time(millisecond) - T0]),
         Resp
-    end}, 0),
+    end}),
 
-K0 = beamai_kernel:new(),
+K0 = beamai_kernel:new(#{}, [LogChat, TimeTool]),
 K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(openai, #{model => <<"gpt-4o">>})),
-K2 = beamai_kernel:add_filter(K1, LogChat),
-K3 = beamai_kernel:add_filter(K2, TimeTool),
-{ok, A} = beamai_agent:new(#{kernel => K3, memory => {window, 20}}).
-```
-
-**路 B — plugin 模块的 `filters/0`**（与 `tools/0` 一起被自动加载）：
-
-```erlang
--module(my_plugin).
--export([tools/0, filters/0]).
-tools()   -> [#{name => <<"echo">>, description => <<"...">>, parameters => #{},
-               handler => fun(A, _C) -> {ok, A} end}].
-filters() -> [beamai_filter:new(<<"audit">>,
-               #{around_tool => fun(R, _F, Next) -> Next(R) end}, 0)].
-```
-```erlang
-{ok, A} = beamai_agent:new(#{llm => LLM, plugins => [my_plugin]}).
+{ok, A} = beamai_agent:new(#{kernel => K1, memory => {window, 20}}).
 ```
 
 **Filter hook 速查**
@@ -274,9 +259,10 @@ filters() -> [beamai_filter:new(<<"audit">>,
 
 - 闭包签名 `fun(Req, FCtx, Next) -> Resp`：前置改 `Req` 再 `Next(Req2)`；后置改 `Resp`；
   短路则不调 `Next` 直接返回。
-- **order 越小越外层**。agent 不再自动注入 memory/callback filter（记忆/回调由 tool loop
-  自管）；invoke_chat 仅按 opts 注入临时的 system_prompt filter（order `-500`）。你加的
-  filter（order `0`）即在其内层，看到的就是本轮要发送的消息。
+- **注册顺序即层序**（filters 列表靠前 = 外层）。agent 不再自动注入 memory/callback
+  filter（记忆/回调由 tool loop 自管）；invoke_chat 仅按 opts 在调用时追加临时的
+  system_prompt filter（**最内层**）。你加的 filter 在其外层，看到的是本轮要发送的
+  消息（不含系统提示——系统提示在最内层才注入）。
 - 只做观测（日志/统计/中断）时优先用 **callbacks**，无需手写 filter。
 
 ## 子 Agent 委派（agent-as-tool）
