@@ -101,20 +101,13 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 ### 4. Filter（洋葱式拦截）
 
 ```erlang
-%% 一个 filter 含 2 个可选 around hook（around_chat/around_tool）
+%% 一个 filter 含 3 个可选 around hook（around_chat/around_tool/around_turn）
 %% 每个 around 用单个闭包 fun(Req, FCtx, Next) -> Resp 包裹同一次调用，
-%% 前置/后置同处一处，不调 Next 即短路
-K0 = beamai:kernel(),
-K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
-    fun(#{a := A, b := B}) -> {ok, A + B} end,
-    #{description => <<"Add two numbers">>,
-      parameters => #{
-          a => #{type => integer, required => true},
-          b => #{type => integer, required => true}
-      }})),
+%% 前置/后置同处一处，不调 Next 即短路。
+%% filter 在构建 kernel 时一次性给出，注册顺序即层序（列表靠前 = 外层）。
 
 %% 一个 around_tool：参数校验（短路）+ 结果翻倍
-K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
+ValidateTransform = beamai:filter(<<"validate_transform">>, #{
     around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
         case A > 1000 of
             true ->
@@ -131,8 +124,17 @@ K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
     end
 }),
 
+K0 = beamai:kernel(#{}, [ValidateTransform]),
+K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
+    fun(#{a := A, b := B}) -> {ok, A + B} end,
+    #{description => <<"Add two numbers">>,
+      parameters => #{
+          a => #{type => integer, required => true},
+          b => #{type => integer, required => true}
+      }})),
+
 %% 调用（3 + 5 = 8，后置翻倍后 = 16）
-{ok, 16, _} = beamai:invoke_tool(K2, <<"add">>, #{a => 3, b => 5}, beamai:context()).
+{ok, 16, _} = beamai:invoke_tool(K1, <<"add">>, #{a => 3, b => 5}, beamai:context()).
 ```
 
 详见 [Filter 文档](docs/FILTER.md)。

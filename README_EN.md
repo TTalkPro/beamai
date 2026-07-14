@@ -101,20 +101,14 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 ### 4. Filter (Onion-style Interception)
 
 ```erlang
-%% A filter has 2 optional around hooks (around_chat/around_tool).
+%% A filter has 3 optional around hooks (around_chat/around_tool/around_turn).
 %% Each around wraps a single invocation with one closure fun(Req, FCtx, Next) -> Resp;
 %% pre/post logic lives in one place, and not calling Next short-circuits.
-K0 = beamai:kernel(),
-K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
-    fun(#{a := A, b := B}) -> {ok, A + B} end,
-    #{description => <<"Add two numbers">>,
-      parameters => #{
-          a => #{type => integer, required => true},
-          b => #{type => integer, required => true}
-      }})),
+%% Filters are given once when the kernel is built; registration order is layer
+%% order (earlier in the list = more outer).
 
 %% One around_tool: arg validation (short-circuit) + double the result
-K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
+ValidateTransform = beamai:filter(<<"validate_transform">>, #{
     around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
         case A > 1000 of
             true ->
@@ -131,8 +125,17 @@ K2 = beamai:add_filter(K1, <<"validate_transform">>, #{
     end
 }),
 
+K0 = beamai:kernel(#{}, [ValidateTransform]),
+K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
+    fun(#{a := A, b := B}) -> {ok, A + B} end,
+    #{description => <<"Add two numbers">>,
+      parameters => #{
+          a => #{type => integer, required => true},
+          b => #{type => integer, required => true}
+      }})),
+
 %% Invoke (3 + 5 = 8, doubled in post = 16)
-{ok, 16, _} = beamai:invoke_tool(K2, <<"add">>, #{a => 3, b => 5}, beamai:context()).
+{ok, 16, _} = beamai:invoke_tool(K1, <<"add">>, #{a => 3, b => 5}, beamai:context()).
 ```
 
 See the [Filter docs](docs/FILTER_EN.md).
