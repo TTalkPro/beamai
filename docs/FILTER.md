@@ -7,7 +7,7 @@ beamai_core 的 Filter 系统提供了真正的**洋葱式（onion）**拦截机
 ## 目录
 
 - [概述](#概述)
-- [2 个 around hook 点](#2-个-around-hook-点)
+- [3 个 around hook 点](#3-个-around-hook-点)
 - [filter 私有上下文](#filter-私有上下文)
 - [洋葱执行顺序](#洋葱执行顺序)
 - [API 参考](#api-参考)
@@ -28,7 +28,7 @@ Filter 是 Kernel 工具执行和 Chat 调用的洋葱式拦截器，可以：
 - **私有状态**: 每个 filter 有一份按名字隔离的私有上下文，贯穿一次 invoke（含工具循环各轮）
 - **日志/审计**: 记录调用日志、统计响应长度等
 
-每个 filter 就是**一层洋葱**——它最多绑定 2 个可选 around hook：chat 链的 `around_chat` 和 tool 链的 `around_tool`。一个 around 闭包形如：
+每个 filter 就是**一层洋葱**——它最多绑定 3 个可选 around hook：chat 链的 `around_chat`、tool 链的 `around_tool`、turn 链的 `around_turn`（包整个工具循环，Agent 层使用）。一个 around 闭包形如：
 
 ```erlang
 fun(Request, FCtx, Next) -> Response | {Response, NewFCtx} end
@@ -52,21 +52,23 @@ filter 链由 `beamai_filter_chain` 合成为嵌套调用，最内层是 **termi
 
 ---
 
-## 2 个 around hook 点
+## 3 个 around hook 点
 
-一个 filter 可定义以下 2 个 hook 的任意子集：
+一个 filter 可定义以下 3 个 hook 的任意子集：
 
 | hook | 含义 | 形态 |
 |------|------|------|
 | `around_chat` | 环绕一次 LLM 调用 | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
 | `around_tool` | 环绕一次工具执行 | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
+| `around_turn` | 环绕整个工具循环（每 turn 一次，Agent 层） | 同上（Response 为工具循环结果 tuple） |
 
-**两条链分别只用各自的 around：**
+**每条链分别只用各自的 around：**
 
 - **chat 链**用每个 filter 的 `around_chat`，包裹一次 LLM 调用。
 - **tool 链**用每个 filter 的 `around_tool`，包裹一次工具执行。
+- **turn 链**用每个 filter 的 `around_turn`，包裹整个工具循环（RAG 注入 / 最终答案校验 / turn 级预算）。
 
-某 filter 若对某条链不含对应 around（chat 链无 `around_chat`，或 tool 链无 `around_tool`），则在该链中被**跳过**。
+某 filter 若对某条链不含对应 around，则在该链中被**跳过**。
 
 ### 各链的 Request / Response
 
@@ -74,14 +76,18 @@ filter 链由 `beamai_filter_chain` 合成为嵌套调用，最内层是 **termi
 |----|---------|----------|
 | chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_llm_response） |
 | tool | `#{tool, args, context}` | `#{result, context}` |
+| turn | `#{messages, context, resume}` | 工具循环结果 tuple（`{ok, Resp, TCM, Iter}` \| `{interrupt, _, _}` \| `{error, _}`；interrupt/error 必须透传、不得重入） |
 
 其中 `context` 是贯穿全链的**共享上下文**（`beamai_context`），filter、terminal 都能读写。它与下文的 filter **私有上下文** 是两回事。
 
 > **会话记忆**正是一个 filter：`beamai_memory_filter:memory_filter(Store)` 返回**单个** filter，其 `around_chat` 前置把本轮 delta 存入 store 并用 store 里的完整历史替换 messages（按 `conversation_id`）、后置把 assistant 回复存入 store。由于前后同处一个闭包，只需查一次 `conversation_id`。详见 [MEMORY.md](MEMORY.md)。
 
-### order 字段
+### 注册顺序即层序
 
-`order` 决定洋葱的层次：**越小越外层**——它的前置越先执行、后置越后执行。默认 `order` 为 0。同 `order` 按注册顺序排列（稳定排序）。
+filter 在构建 Kernel 时经 `beamai_kernel:new(Settings, Filters)` **一次性给出**，
+**列表位置决定洋葱层次**：靠前 = 外层（前置先执行、后置后执行）。没有 order
+字段、没有运行时排序——想调整层次，调整列表顺序即可（对齐 clj-agent 的
+扁平 vector 模型）。
 
 ### Filter 规格 Map
 
@@ -91,10 +97,10 @@ filter 是一个标记 map：
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),                  %% 名称（调试标识，也是私有上下文的隔离键）
-    order := integer(),                %% 层次（越小越外层）
-    hooks := #{                        %% 2 个 around hook 的任意子集
+    hooks := #{                        %% 3 个 around hook 的任意子集
         around_chat => around_fun(),
-        around_tool => around_fun()
+        around_tool => around_fun(),
+        around_turn => around_fun()
     },
     init := map()                      %% 私有上下文初值（首次进入时种入，缺省 #{}）
 }.
@@ -112,7 +118,7 @@ filter 是一个标记 map：
 - around 闭包通过第 2 个参数 `FCtx` **读取**私有状态，通过返回 `{Response, NewFCtx}` **写回**。
 - 不同 filter 的私有上下文互不可见（即使用相同的内部键也不冲突）。
 - 私有状态随共享 context 透传，**贯穿一次 invoke**——包括工具调用循环的各轮、以及同名 filter 的 `around_chat` 与 `around_tool` 之间。
-- 用 `beamai_filter:new/4` 的第 4 个参数指定私有状态初值（缺省 `#{}`），首次进入该 filter 时种入。
+- 用 `beamai_filter:new/3` 的第 3 个参数指定私有状态初值（缺省 `#{}`），首次进入该 filter 时种入。
 
 > 私有上下文仅在一次 invoke 内存活，不跨多次 invoke 持久化。若需跨 invoke 的状态（如全局计数器），请另接外部 store。
 
@@ -122,7 +128,7 @@ filter 是一个标记 map：
 
 ## 洋葱执行顺序
 
-对 filter A（order 1）和 B（order 2）在 chat 链上包裹 terminal（LLM）：
+对 filters 列表 `[A, B]`（A 靠前 = 外层）在 chat 链上包裹 terminal（LLM）：
 
 ```
 A 前置 → B 前置 → Terminal → B 后置 → A 后置
@@ -137,7 +143,7 @@ compose([A, B], Phase, Terminal)
 
 其中 `X_around` 即「跑 X 的前置、`Next` 进内层、回程跑 X 的后置」。
 
-- **前置**：按 order 升序执行各层前置（A 先、B 后）。
+- **前置**：按列表顺序执行各层前置（A 先、B 后）。
 - **terminal**：最内层执行真正的 LLM 调用 / 工具执行。
 - **后置**：**自动逆序**（B 先、A 后）——这是嵌套调用栈天然的展开顺序，无需手工指定。
 
@@ -154,24 +160,22 @@ tool 链同理，把上面的 `around_chat` 换成 `around_tool`（Phase = `arou
 #### 构造器
 
 ```erlang
-%% 创建 filter（默认 order 0，私有状态初值 #{}）。
-%% Hooks 为 hook map，可含 around_chat/around_tool 任意子集。
+%% 创建 filter（私有状态初值 #{}）。
+%% Hooks 为 hook map，可含 around_chat/around_tool/around_turn 任意子集。
 -spec new(Name :: binary(), Hooks :: hooks()) -> filter().
 
-%% 创建 filter（指定 order，越小越外层）
--spec new(Name :: binary(), Hooks :: hooks(), Order :: integer()) -> filter().
-
-%% 创建 filter（指定 order 与私有状态初值 Init）
--spec new(Name :: binary(), Hooks :: hooks(), Order :: integer(), Init :: map()) -> filter().
+%% 创建 filter（指定私有状态初值 Init）
+-spec new(Name :: binary(), Hooks :: hooks(), Init :: map()) -> filter().
 ```
 
 其中 hook 形态：
 
 ```erlang
--type hook_type() :: around_chat | around_tool.
+-type hook_type() :: around_chat | around_tool | around_turn.
 -type hooks() :: #{
     around_chat => around_fun(),
-    around_tool => around_fun()
+    around_tool => around_fun(),
+    around_turn => around_fun()
 }.
 -type around_fun() :: fun((Request, FCtx, Next) -> Response | {Response, NewFCtx}).
 ```
@@ -181,9 +185,6 @@ around 不调用 `Next` 则短路（跳过内层），直接返回 `Response`。
 #### 工具函数
 
 ```erlang
-%% 按 order 升序稳定排序（同 order 保持注册顺序）
--spec sort([filter()]) -> [filter()].
-
 %% 取 filter 的某个 hook（不存在返回 undefined）
 -spec hook(filter(), hook_type()) -> around_fun() | undefined.
 
@@ -224,97 +225,63 @@ around 不调用 `Next` 则短路（跳过内层），直接返回 `Response`。
 ### beamai_kernel 集成
 
 ```erlang
-%% 注册 filter 到 Kernel（追加到 filters 列表，运行时按 order 排序）
-beamai_kernel:add_filter(Kernel, Filter) -> UpdatedKernel.
-
-%% 从工具模块自动加载 filter（模块需实现可选的 filters/0 回调）
-beamai_kernel:add_tool_module(Kernel, Module) -> UpdatedKernel.
+%% 构建 Kernel 时一次性给出全量 filter（注册顺序即层序：列表靠前 = 外层）
+beamai_kernel:new(Settings, Filters) -> Kernel.
 ```
+
+filter 在构建后**不可增量追加**——层次完全由这份列表的顺序决定。
+需要会话记忆时把 `beamai_memory_filter:memory_filter(Store)` 放列表**首位**
+（最外层：先展开完整历史，再让内层 filter 处理）。
+
+工具模块（`beamai_kernel:add_tool_module/2`）只提供工具，不携带 filter。
+
+> **system_prompts 注入层次**：`invoke_chat` 的 `Opts` 里给出的 `system_prompts`
+> 在调用时作为**最内层**临时 filter 追加——在所有用户 filter 之后、LLM 之前
+> 前置系统消息。因此用户 chat filter 看到的 messages **不含**系统提示，
+> memory filter 也永远不会把系统提示存进历史。
 
 ### beamai 便捷 API
 
 ```erlang
-%% 注册已构建的 filter
-beamai:add_filter(Kernel, Filter) -> UpdatedKernel.
+%% 创建 Kernel（一次性给出全量 filter）
+beamai:kernel(Settings, Filters) -> Kernel.
 
-%% 快捷创建并注册 filter（直接给 hook map，order 固定为 0）
-beamai:add_filter(Kernel, Name, Hooks) -> UpdatedKernel.
+%% 快捷创建 filter（直接给 hook map；放入 kernel/2 的 Filters 列表）
+beamai:filter(Name, Hooks) -> Filter.
+beamai:filter(Name, Hooks, Init) -> Filter.
 ```
 
 ---
 
 ## 使用方法
 
-### 1. 注册 filter 到 Kernel
+### 1. 构建 Kernel 时一次性给出 filter
 
 ```erlang
-%% 方式一：使用 beamai 便捷 API（hook map，order 0）
-K0 = beamai:kernel(),
-K1 = beamai:add_filter(K0, <<"logger">>, #{
+Logger = beamai:filter(<<"logger">>, #{
     %% around_tool：前置记录工具名
     around_tool => fun(#{tool := #{name := Name}, args := Args} = Req, _FCtx, Next) ->
         io:format("Calling tool: ~ts(~p)~n", [Name, Args]),
         Next(Req)
     end
-}).
-
-%% 方式二：手动创建 filter 并注册（可指定 order）
-Filter = beamai_filter:new(<<"logger">>, #{around_tool => AroundFn}, 10),
-K1 = beamai_kernel:add_filter(K0, Filter).
+}),
+K0 = beamai:kernel(#{}, [Logger]).
 ```
 
-### 2. 工具模块自动注册 filter
+### 2. Filter 层次（注册顺序即层序）
 
-工具模块可通过实现可选的 `filters/0` 回调自动注册 filter：
-
-```erlang
--module(my_tool_module).
--behaviour(beamai_tool_behaviour).
-
--export([tools/0, filters/0]).
-
-tools() ->
-    [#{name => <<"my_tool">>, handler => fun handle/2,
-       description => <<"My tool">>}].
-
-%% 可选回调：返回 filter 列表
-filters() ->
-    [
-        beamai_filter:new(<<"audit">>, #{
-            around_tool => fun(Req, _FCtx, Next) ->
-                #{result := Result} = Resp = Next(Req),
-                logger:info("Tool returned: ~p", [Result]),
-                Resp
-            end
-        })
-    ].
-```
-
-加载模块时，Kernel 会自动注册这些 filter：
+列表靠前 = 外层：它的前置先执行、后置后执行。
 
 ```erlang
-K1 = beamai_kernel:add_tool_module(K0, my_tool_module).
-%% 工具和 filter 都已注册
-```
+Validator   = beamai:filter(<<"validator">>, #{around_tool => ValidateFn}),
+Logger      = beamai:filter(<<"logger">>, #{around_tool => LogFn}),
+Transformer = beamai:filter(<<"transformer">>, #{around_tool => TransformFn}),
 
-### 3. Filter 层次（order）
-
-`order` 数值越小越外层：它的前置越先执行、后置越后执行。同 `order` 按注册顺序排列。
-
-```erlang
-%% 校验器（order -10，最外层 → 前置最先执行）
-K1 = beamai_kernel:add_filter(K0,
-    beamai_filter:new(<<"validator">>, #{around_tool => ValidateFn}, -10)),
-
-%% 日志器（order 0，默认）
-K2 = beamai_kernel:add_filter(K1,
-    beamai_filter:new(<<"logger">>, #{around_tool => LogFn}, 0)),
-
-%% 转换器（order 10，最内层 → 前置最后执行、后置最先执行）
-K3 = beamai_kernel:add_filter(K2,
-    beamai_filter:new(<<"transformer">>, #{around_tool => TransformFn}, 10)).
+%% 列表顺序即洋葱层序（validator 最外层，transformer 最内层）
+K = beamai:kernel(#{}, [Validator, Logger, Transformer]).
 
 %% 前置执行顺序：validator → logger → transformer → Terminal
+%% 后置执行顺序：transformer → logger → validator（自动逆序）
 ```
 
 ---
@@ -324,24 +291,24 @@ K3 = beamai_kernel:add_filter(K2,
 ### 示例 1：tool filter —— 日志 + 结果翻倍（一个 around_tool 同时管前后）
 
 ```erlang
-%% 创建 Kernel 并注册工具
-K0 = beamai:kernel(),
+%% 一个 around_tool 闭包：前置记录调用、后置改写 result
+LogDouble = beamai:filter(<<"log_and_double">>, #{
+    around_tool => fun(#{tool := #{name := Name}, args := Args} = Req, _FCtx, Next) ->
+        io:format("[LOG] ~ts(~p)~n", [Name, Args]),
+        #{result := Result} = Resp = Next(Req),
+        Resp#{result => Result * 2}
+    end
+}),
+
+%% 创建 Kernel（filter 一次性给出）并注册工具
+K0 = beamai:kernel(#{}, [LogDouble]),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
     #{description => <<"Add two numbers">>,
       parameters => #{
           a => #{type => integer, required => true},
           b => #{type => integer, required => true}
-      }})),
-
-%% 一个 around_tool 闭包：前置记录调用、后置改写 result
-K2 = beamai:add_filter(K1, <<"log_and_double">>, #{
-    around_tool => fun(#{tool := #{name := Name}, args := Args} = Req, _FCtx, Next) ->
-        io:format("[LOG] ~ts(~p)~n", [Name, Args]),
-        #{result := Result} = Resp = Next(Req),
-        Resp#{result => Result * 2}
-    end
-}).
+      }})).
 
 %% 调用（3 + 5 = 8，后置翻倍后 = 16）
 %% （工具执行经 Kernel 的 tool filter 洋葱链）
@@ -350,11 +317,8 @@ K2 = beamai:add_filter(K1, <<"log_and_double">>, #{
 ### 示例 2：chat filter —— 注入 system 消息 + 审计（一个 around_chat 同时管前后）
 
 ```erlang
-K0 = beamai:kernel(),
-K1 = beamai:add_llm(K0, LLMConfig),
-
 %% 一个 around_chat 闭包：前置注入 system 消息、后置记录响应长度
-K2 = beamai:add_filter(K1, <<"system_and_audit">>, #{
+SystemAudit = beamai:filter(<<"system_and_audit">>, #{
     around_chat => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
         HasSystem = lists:any(
             fun(#{role := R}) -> R =:= system; (_) -> false end,
@@ -376,7 +340,10 @@ K2 = beamai:add_filter(K1, <<"system_and_audit">>, #{
         end,
         Resp
     end
-}).
+}),
+
+K0 = beamai:kernel(#{}, [SystemAudit]),
+K1 = beamai:add_llm(K0, LLMConfig).
 
 %% 发送请求时，chat filter 链自动注入 system 消息并审计响应。
 ```
@@ -385,14 +352,15 @@ K2 = beamai:add_filter(K1, <<"system_and_audit">>, #{
 
 ```erlang
 %% tool filter：参数校验失败时短路（不调 Next，跳过真正的工具执行）
-K1 = beamai:add_filter(K0, <<"guard">>, #{
+Guard = beamai:filter(<<"guard">>, #{
     around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
         case A > 1000 of
             true  -> #{result => {error, <<"a exceeds limit">>}, context => Ctx};
             false -> Next(Req)
         end
     end
-}).
+}),
+K = beamai:kernel(#{}, [Guard]).
 ```
 
 > 短路即「不调用 `Next`」，由该 filter 直接构造并返回 `Response`。包裹它的外层 filter 后置仍会执行——便于在外层做统一收尾。
@@ -401,14 +369,15 @@ K1 = beamai:add_filter(K0, <<"guard">>, #{
 
 ```erlang
 %% around_chat：用私有上下文记录本次 invoke 内的 LLM 调用次数
-K1 = beamai:add_filter(K0, <<"counter">>, #{
+Counter = beamai:filter(<<"counter">>, #{
     around_chat => fun(Req, FCtx, Next) ->
         N = maps:get(calls, FCtx, 0),
         Resp = Next(Req),
         logger:info("LLM call #~B", [N + 1]),
         {Resp, FCtx#{calls => N + 1}}   %% 返回 {Resp, NewFCtx} 写回私有状态
     end
-}).
+}),
+K = beamai:kernel(#{}, [Counter]).
 %% 工具循环每轮 LLM 调用都让 calls 累加，且与其它 filter 的私有状态互不干扰。
 ```
 
