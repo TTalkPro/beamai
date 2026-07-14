@@ -6,13 +6,16 @@
 %%%
 %%%   tool 链：logging_filter/0、timeout_filter/1、approval_filter/1
 %%%   turn 链：validation_turn_filter/2
+%%%   token 链：token_redact_filter/2、hold_release_filter/1
+%%%     （对照 clj-agent token-stream-filter-design.md §4）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_filters).
 
 -export([logging_filter/0, timeout_filter/1, approval_filter/1,
-         validation_turn_filter/2]).
+         validation_turn_filter/2,
+         token_redact_filter/2, hold_release_filter/1]).
 
 %%====================================================================
 %% tool 链
@@ -101,6 +104,54 @@ validation_turn_filter(ValidateFun, MaxRetries)
         around_turn => fun(Req, _FCtx, Next) ->
             validate_loop(Req, Next, ValidateFun, MaxRetries)
         end
+    }).
+
+%%====================================================================
+%% token 链（token_xf，流式专用）
+%%====================================================================
+
+%% @doc token 脱敏 filter（token_xf）：无状态逐 token 正则替换
+%%
+%% **已知限制**：秘密被切在两个 chunk 之间时漏检（跨 chunk 检测需有状态
+%% 缓冲，按需自写 token_xf 或用 hold_release_filter 整流后审）。
+%% 只改送 sink 的出站流；最终归一化响应（memory 落库/turn 结果）不受影响。
+-spec token_redact_filter(iodata(), binary()) -> beamai_filter:filter().
+token_redact_filter(Pattern, Replacement) when is_binary(Replacement) ->
+    {ok, MP} = re:compile(Pattern),
+    beamai_filter:new(<<"token_redact">>, #{
+        token_xf => #{
+            step => fun(#{token := T} = TD, S) ->
+                Redacted = re:replace(T, MP, Replacement,
+                                      [global, {return, binary}]),
+                {[TD#{token => Redacted}], S}
+            end
+        }
+    }).
+
+%% @doc 先审后放 filter（token_xf）：缓冲整流不外泄，完流时全文审查
+%%
+%% CheckFun(全文 binary) -> `ok`（通过：缓冲按原序放行）|
+%% `{block, Text}`（不通过：只 emit 一个替换 token）。
+%%
+%% **代价即语义**：用户在流结束前看不到任何 token——"完整答案没成形就无法审"
+%% 这一根本矛盾任何机制都消不掉，本 filter 只是把缓冲逻辑标准化。异常完流
+%% 不 flush，缓冲直接丢弃（半截答案不外泄）。
+-spec hold_release_filter(fun((binary()) -> ok | {block, binary()})) ->
+    beamai_filter:filter().
+hold_release_filter(CheckFun) when is_function(CheckFun, 1) ->
+    beamai_filter:new(<<"hold_release">>, #{
+        token_xf => #{
+            init => [],   %% 倒序缓冲
+            step => fun(TD, Buf) -> {[], [TD | Buf]} end,
+            flush => fun(Buf) ->
+                Ordered = lists:reverse(Buf),
+                FullText = iolist_to_binary([T || #{token := T} <- Ordered]),
+                case CheckFun(FullText) of
+                    ok -> Ordered;
+                    {block, Text} -> [#{token => Text, meta => #{}}]
+                end
+            end
+        }
     }).
 
 %%====================================================================
