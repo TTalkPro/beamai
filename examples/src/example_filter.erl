@@ -1,10 +1,13 @@
 %%%-------------------------------------------------------------------
 %%% @doc Filter 洋葱链示例
 %%%
-%%% 演示 beamai 的洋葱式 filter 机制：一个 filter 最多绑定 2 个 around hook
-%%% （around_chat/around_tool），每个 around 用单个闭包
+%%% 演示 beamai 的洋葱式 filter 机制：一个 filter 最多绑定 3 个 around hook
+%%% （around_chat/around_tool/around_turn），每个 around 用单个闭包
 %%% `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用，前置/后置
 %%% 同处一处，不调 Next 即短路。
+%%%
+%%% filter 在构建 kernel 时经 `beamai:kernel(Settings, Filters)` **一次性给出**，
+%%% **注册顺序即层序**：列表靠前 = 外层（前置先执行、后置后执行）。
 %%%   - tool filter: around_tool 前置改写参数 / 后置改写结果 / 短路拒绝
 %%%   - chat filter: around_chat 注入 system 消息 + 审计响应
 %%%
@@ -30,20 +33,8 @@
 run_invoke() ->
     io:format("=== BeamAI Filter Example (Tool) ===~n~n"),
 
-    %% 1. 创建 Kernel 并注册一个简单工具
-    K0 = beamai:kernel(),
-    K1 = beamai:add_tools(K0, [
-        beamai:tool(<<"add">>,
-            fun(#{a := A, b := B}) -> {ok, A + B} end,
-            #{description => <<"Add two numbers">>,
-              parameters => #{
-                  a => #{type => integer, required => true},
-                  b => #{type => integer, required => true}
-              }})
-    ]),
-
-    %% 2. 一个 around_tool 同时管前后：记日志（前置）+ 结果翻倍（后置）
-    K2 = beamai:add_filter(K1, <<"log_double">>, #{
+    %% 1. 一个 around_tool 同时管前后：记日志（前置）+ 结果翻倍（后置）
+    LogDouble = beamai:filter(<<"log_double">>, #{
         around_tool => fun(#{tool := #{name := Name}, args := Args} = Req, _FCtx, Next) ->
             io:format("  [前置] calling ~ts with ~p~n", [Name, Args]),
             Resp = Next(Req),
@@ -57,14 +48,8 @@ run_invoke() ->
         end
     }),
 
-    io:format("Invoking add(3, 5):~n"),
-    case beamai:invoke_tool(K2, <<"add">>, #{a => 3, b => 5}, beamai:context()) of
-        {ok, Value, _} -> io:format("  Final result: ~p~n~n", [Value]);
-        {error, Reason} -> io:format("  Error: ~p~n~n", [Reason])
-    end,
-
-    %% 3. around_tool 短路：参数校验拒绝（不调 Next，跳过工具执行）
-    K3 = beamai:add_filter(K2, <<"validate">>, #{
+    %% 2. around_tool 短路：参数校验拒绝（不调 Next，跳过工具执行）
+    Validate = beamai:filter(<<"validate">>, #{
         around_tool => fun(#{args := #{a := A}, context := Ctx} = Req, _FCtx, Next) ->
             case A > 100 of
                 true ->
@@ -76,8 +61,26 @@ run_invoke() ->
         end
     }),
 
+    %% 3. 构建 Kernel：filter 一次性给出（注册顺序即层序：log_double 在外层）
+    K0 = beamai:kernel(#{}, [LogDouble, Validate]),
+    K1 = beamai:add_tools(K0, [
+        beamai:tool(<<"add">>,
+            fun(#{a := A, b := B}) -> {ok, A + B} end,
+            #{description => <<"Add two numbers">>,
+              parameters => #{
+                  a => #{type => integer, required => true},
+                  b => #{type => integer, required => true}
+              }})
+    ]),
+
+    io:format("Invoking add(3, 5):~n"),
+    case beamai:invoke_tool(K1, <<"add">>, #{a => 3, b => 5}, beamai:context()) of
+        {ok, Value, _} -> io:format("  Final result: ~p~n~n", [Value]);
+        {error, Reason} -> io:format("  Error: ~p~n~n", [Reason])
+    end,
+
     io:format("Invoking add(200, 1) with validation:~n"),
-    case beamai:invoke_tool(K3, <<"add">>, #{a => 200, b => 1}, beamai:context()) of
+    case beamai:invoke_tool(K1, <<"add">>, #{a => 200, b => 1}, beamai:context()) of
         {ok, Value2, _} -> io:format("  Final result: ~p~n", [Value2]);
         {error, Reason2} -> io:format("  Rejected: ~p~n", [Reason2])
     end,
@@ -95,11 +98,8 @@ run_chat() ->
 run_chat(LLMConfig) ->
     io:format("=== BeamAI Filter Example (Chat) ===~n~n"),
 
-    K0 = beamai:kernel(),
-    K1 = beamai:add_llm(K0, LLMConfig),
-
     %% chat filter：around_chat 前置注入 system、后置打印响应字数（同一闭包）
-    K2 = beamai:add_filter(K1, <<"system_audit">>, #{
+    SystemAudit = beamai:filter(<<"system_audit">>, #{
         around_chat => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
             HasSystem = lists:any(fun(#{role := R}) -> R =:= system; (_) -> false end, Msgs),
             Req1 = case HasSystem of
@@ -120,10 +120,13 @@ run_chat(LLMConfig) ->
         end
     }),
 
+    K0 = beamai:kernel(#{}, [SystemAudit]),
+    K1 = beamai:add_llm(K0, LLMConfig),
+
     Messages = [#{role => user, content => <<"什么是 GenServer？"/utf8>>}],
     io:format("User: 什么是 GenServer？~n~n"),
 
-    case beamai:chat(K2, Messages) of
+    case beamai:chat(K1, Messages) of
         {ok, #{content := Content}, _} -> io:format("Assistant: ~ts~n", [Content]);
         {error, Reason} -> io:format("Error: ~p~n", [Reason])
     end,
