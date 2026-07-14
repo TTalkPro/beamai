@@ -14,7 +14,7 @@
 %%%   - **回调是 Agent 自己的接口**，全部在 tool loop 里直接触发，**不**注入 kernel
 %%%     filter（取消了曾经的 on_llm_call around_chat 注入）。
 %%%   - kernel 仍是纯原语（invoke_chat/invoke_tool + filter 给"直接用 kernel 的人"；
-%%%     plugin 的 filters/0 / 预构建 kernel filter 仍可用，那是用户显式加的 kernel 级 filter）。
+%%%     预构建 kernel 的 filter 在 beamai_kernel:new/2 一次性给出，注册顺序即层序）。
 %%%   - Map-based 状态，无 Record 依赖，方便序列化（memory provider 为 {Mod, Ref}，
 %%%     conversation_id 为 binary，均可序列化）
 %%%

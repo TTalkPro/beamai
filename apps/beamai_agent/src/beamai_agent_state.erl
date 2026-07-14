@@ -275,8 +275,8 @@ add_llm(Kernel, Config) ->
 %% @private 加载工具模块到 kernel
 %%
 %% 整体委托 beamai_kernel:add_tool_module/2（每个模块需实现
-%% beamai_tool_behaviour 的 tools/0；模块若定义 filters/0，由 kernel
-%% 原语自行处理——agent 层不感知 filter）。
+%% beamai_tool_behaviour 的 tools/0）。plugin 只提供工具；filter 一律由
+%% 用户在预构建 kernel 时经 beamai_kernel:new/2 的 filters 列表一次性给出。
 add_plugins(Kernel, Config) ->
     Plugins = maps:get(plugins, Config, []),
     lists:foldl(fun(Module, K) -> beamai_kernel:add_tool_module(K, Module) end,
