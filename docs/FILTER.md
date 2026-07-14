@@ -8,6 +8,7 @@ beamai_core 的 Filter 系统提供了真正的**洋葱式（onion）**拦截机
 
 - [概述](#概述)
 - [3 个 around hook 点](#3-个-around-hook-点)
+- [第四钩子：token_transform（token 流变换）](#第四钩子token_transformtoken-流变换)
 - [filter 私有上下文](#filter-私有上下文)
 - [洋葱执行顺序](#洋葱执行顺序)
 - [API 参考](#api-参考)
@@ -28,7 +29,7 @@ Filter 是 Kernel 工具执行和 Chat 调用的洋葱式拦截器，可以：
 - **私有状态**: 每个 filter 有一份按名字隔离的私有上下文，贯穿一次 invoke（含工具循环各轮）
 - **日志/审计**: 记录调用日志、统计响应长度等
 
-每个 filter 就是**一层洋葱**——它最多绑定 3 个可选 around hook：chat 链的 `around_chat`、tool 链的 `around_tool`、turn 链的 `around_turn`（包整个工具循环，Agent 层使用）。一个 around 闭包形如：
+每个 filter 就是**一层洋葱**——它最多绑定 3 个可选 around hook：chat 链的 `around_chat`、tool 链的 `around_tool`、turn 链的 `around_turn`（包整个工具循环，Agent 层使用），外加流式专用的第四钩子 `token_transform`（token 流变换，不走洋葱，见专节）。一个 around 闭包形如：
 
 ```erlang
 fun(Request, FCtx, Next) -> Response | {Response, NewFCtx} end
@@ -97,16 +98,71 @@ filter 是一个标记 map：
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),                  %% 名称（调试标识，也是私有上下文的隔离键）
-    hooks := #{                        %% 3 个 around hook 的任意子集
+    hooks := #{                        %% 4 个 hook 的任意子集
         around_chat => around_fun(),
         around_tool => around_fun(),
-        around_turn => around_fun()
+        around_turn => around_fun(),
+        token_transform => token_transform()         %% 第四钩子（token 流变换，见下节）
     },
     init := map()                      %% 私有上下文初值（首次进入时种入，缺省 #{}）
 }.
 
 -type around_fun() :: fun((Request, FCtx, Next) -> Response | {Response, NewFCtx}).
 -type Next :: fun((Request) -> Response).
+```
+
+---
+
+## 第四钩子：token_transform（token 流变换）
+
+`token_transform` 是流式专用的第四钩子（对照 clj-agent `:token-xf`，Spring AI
+`StreamAdvisor` 的算子思想）：按 filters **注册顺序**组装成 token 变换链，
+作用于送往 on-token sink 的**出站流**。三链解决"改请求/改响应"，token_transform
+解决"逐 token 介入"——改写、吞掉、缓冲后批量放行。
+
+```erlang
+-type token_data() :: #{token := binary(), meta := map()}.
+-type token_transform() :: #{
+    init  => term(),      %% 状态初值（缺省 undefined）
+    step  := fun((token_data(), State) -> {[token_data()], State}),  %% 1→N
+    flush => fun((State) -> [token_data()])   %% 流正常结束时冲出缓冲残留（可选）
+}.
+```
+
+三条硬能力（Erlang 无 transducer，step/flush 是其等价表达）：
+
+- **1→N**：`step` 一个 token 进、0/1/N 个出（吞掉 = 空列表，缓冲 = 攒在 State 里）；
+- **跨 chunk 状态**：State 显式穿线，作用域 = **单次 LLM 流**（terminal 每次
+  执行现场按 `init` 初始化，工具循环每轮各自新状态）；
+- **流末 flush**：流**正常**结束后级联调用各层 `flush`（外层残留经内层 step
+  传播再送 sink，之后内层自己 flush）；**错误路径不 flush**——缓冲丢弃，
+  半截答案不外泄。
+
+**硬边界：token 链只改"交付"，不改"答案"。** 变换的仅是送给 TokenCallback
+的出站流；`invoke_chat_stream` 返回的归一化响应**不经过它**——memory 落库、
+turn 结果、后续工具循环用的都是原始完整答案。分工：
+
+| 要改什么 | 用哪条链 |
+|---|---|
+| 用户实时看到什么（脱敏/吞半截/缓冲放行） | `token_transform` |
+| 这个 turn 的最终答案是什么（校验重试/改写） | `around_turn`（validation_turn_filter） |
+
+同步路径（`invoke_chat`）完全忽略 `token_transform`；无 token_transform filter 时流式路径
+零开销退化（TokenCallback 原样直通）。
+
+**内置 token filter**（`beamai_filters`）：
+
+| filter | 说明 |
+|---|---|
+| `token_redact_filter(Pattern, Replacement)` | 无状态逐 token 正则脱敏。已知限制：秘密被切在两个 chunk 之间时漏检（跨 chunk 检测需有状态缓冲） |
+| `hold_release_filter(CheckFun)` | 先审后放：缓冲整流不外泄；完流时 `CheckFun(全文)` 返回 `ok`（缓冲原样放行）\| `{block, Text}`（只 emit 一个替换 token）。代价即语义：流结束前用户看不到任何 token |
+
+```erlang
+%% 流式脱敏：sink 看到脱敏后的 token，最终响应仍是原文
+K = beamai:kernel(#{}, [
+    beamai_filters:token_redact_filter(<<"sk-\\w+">>, <<"[KEY]">>)
+]),
+{ok, Resp, _} = beamai_kernel:invoke_chat_stream(K, Messages, #{}, OnToken).
 ```
 
 ---

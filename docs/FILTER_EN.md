@@ -8,6 +8,7 @@ beamai_core's Filter system provides a true **onion-style** interception mechani
 
 - [Overview](#overview)
 - [3 around hook points](#3-around-hook-points)
+- [The 4th hook: token_transform (token-stream transform)](#the-4th-hook-token_transform-token-stream-transform)
 - [Per-filter private context](#per-filter-private-context)
 - [Onion execution order](#onion-execution-order)
 - [API Reference](#api-reference)
@@ -28,7 +29,7 @@ A Filter is an onion-style interceptor around the Kernel's tool execution and ch
 - **Private state**: each filter has a per-name isolated private context that lives across one invoke (including each tool-loop iteration)
 - **Logging/auditing**: record call logs, measure response length, etc.
 
-Each filter is **one onion layer** — it binds at most 3 optional around hooks: `around_chat` for the chat chain, `around_tool` for the tool chain, and `around_turn` for the turn chain (wrapping the whole tool loop, used by the Agent layer). An around closure looks like:
+Each filter is **one onion layer** — it binds at most 3 optional around hooks: `around_chat` for the chat chain, `around_tool` for the tool chain, and `around_turn` for the turn chain (wrapping the whole tool loop, used by the Agent layer) — plus a streaming-only 4th hook `token_transform` (token-stream transform, not part of the onion; see its own section). An around closure looks like:
 
 ```erlang
 fun(Request, FCtx, Next) -> Response | {Response, NewFCtx} end
@@ -97,16 +98,75 @@ A filter is a tagged map:
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),                  %% name (debug id, also the private-context isolation key)
-    hooks := #{                        %% any subset of the 3 around hooks
+    hooks := #{                        %% any subset of the 4 hooks
         around_chat => around_fun(),
         around_tool => around_fun(),
-        around_turn => around_fun()
+        around_turn => around_fun(),
+        token_transform => token_transform()         %% the 4th hook (token-stream transform, see below)
     },
     init := map()                      %% private context initial value (seeded on first entry, default #{})
 }.
 
 -type around_fun() :: fun((Request, FCtx, Next) -> Response | {Response, NewFCtx}).
 -type Next :: fun((Request) -> Response).
+```
+
+---
+
+## The 4th hook: token_transform (token-stream transform)
+
+`token_transform` is a streaming-only 4th hook (mirroring clj-agent's `:token-xf` and the
+operator idea of Spring AI's `StreamAdvisor`): the `token_transform` values collected from
+the filters (in **registration order**) are composed into a token-transform chain
+applied to the **outbound stream** delivered to the on-token sink. The three chains
+handle "rewrite request/response"; `token_transform` handles "per-token intervention" —
+rewrite, swallow, or buffer-then-release.
+
+```erlang
+-type token_data() :: #{token := binary(), meta := map()}.
+-type token_transform() :: #{
+    init  => term(),      %% initial state (default undefined)
+    step  := fun((token_data(), State) -> {[token_data()], State}),  %% 1→N
+    flush => fun((State) -> [token_data()])   %% flush buffered residue on normal end (optional)
+}.
+```
+
+Three hard capabilities (Erlang has no transducers; step/flush is the equivalent):
+
+- **1→N**: `step` takes one token in, emits 0/1/N out (swallow = empty list, buffer = keep in State);
+- **Cross-chunk state**: State is threaded explicitly, scoped to **one LLM stream**
+  (instantiated from `init` on each terminal execution; each tool-loop round gets fresh state);
+- **End-of-stream flush**: after the stream ends **normally**, each layer's `flush` is
+  called in cascade (an outer layer's residue passes through inner steps before the sink,
+  then the inner layer flushes its own); **error paths never flush** — buffered content
+  is dropped, half-formed answers never leak.
+
+**Hard boundary: the token chain transforms delivery, not the answer.** Only the
+outbound stream to the TokenCallback is transformed; the normalized response returned
+by `invoke_chat_stream` bypasses it — memory persistence, turn results, and subsequent
+tool-loop rounds all use the original full answer.
+
+| What to change | Which chain |
+|---|---|
+| What the user sees in real time (redaction / withholding / buffered release) | `token_transform` |
+| What this turn's final answer is (validate-retry / rewrite) | `around_turn` (validation_turn_filter) |
+
+The synchronous path (`invoke_chat`) ignores `token_transform` entirely; with no token_transform
+filters the streaming path degrades to a zero-overhead passthrough.
+
+**Built-in token filters** (`beamai_filters`):
+
+| filter | Description |
+|---|---|
+| `token_redact_filter(Pattern, Replacement)` | Stateless per-token regex redaction. Known limitation: a secret split across two chunks escapes detection (cross-chunk detection needs stateful buffering) |
+| `hold_release_filter(CheckFun)` | Review-then-release: buffers the whole stream; on normal end `CheckFun(full_text)` returns `ok` (release buffered tokens in order) \| `{block, Text}` (emit a single replacement token). The cost is the semantics: the user sees no tokens until the stream ends |
+
+```erlang
+%% Streaming redaction: the sink sees redacted tokens; the final response is untouched
+K = beamai:kernel(#{}, [
+    beamai_filters:token_redact_filter(<<"sk-\\w+">>, <<"[KEY]">>)
+]),
+{ok, Resp, _} = beamai_kernel:invoke_chat_stream(K, Messages, #{}, OnToken).
 ```
 
 ---
