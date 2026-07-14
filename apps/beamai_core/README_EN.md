@@ -85,19 +85,21 @@ Framework behavior interface definitions:
 ### beamai_kernel
 
 ```erlang
-%% Create Kernel instance
+%% Create Kernel instance (filters given once; registration order is layer order:
+%% earlier in the list = more outer)
 beamai_kernel:new() -> kernel().
-beamai_kernel:new(Opts) -> kernel().
+beamai_kernel:new(Settings) -> kernel().
+beamai_kernel:new(Settings, Filters) -> kernel().       %% onion-style filter, see docs/FILTER_EN.md
+%% Conversation memory = put the memory filter first in Filters, see docs/MEMORY_EN.md:
+%% beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)])
 
 %% Add Tools
 beamai_kernel:add_tool(Kernel, ToolSpec) -> kernel().
 beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
 beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
 
-%% Add services and filters
+%% Add services
 beamai_kernel:add_service(Kernel, Service) -> kernel().
-beamai_kernel:add_filter(Kernel, Filter) -> kernel().  %% onion-style filter, see docs/FILTER_EN.md
-beamai_kernel:with_memory(Kernel, Store) -> kernel().   %% enable conversation memory, see docs/MEMORY_EN.md
 
 %% Invoke API (kernel is single-shot only; the ReAct tool-calling loop lives in beamai_agent)
 beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
@@ -200,9 +202,11 @@ The Kernel is stateless; each invoke passes only the latest message, and history
 by the Memory Filter keyed by `conversation_id`. See [docs/MEMORY_EN.md](../../docs/MEMORY_EN.md).
 
 ```erlang
-%% Start a conversation store and enable memory
+%% Start a conversation store; put the memory filter first (outermost) when building the kernel
 {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
-K = beamai_kernel:with_memory(Kernel1, beamai_chat_memory_ets:handle(my_mem)),
+Store = beamai_chat_memory_ets:handle(my_mem),
+K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+K = beamai_kernel:add_service(K0, LlmConfig),
 
 %% Identify the conversation with a conversation_id; pass only the latest message
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),

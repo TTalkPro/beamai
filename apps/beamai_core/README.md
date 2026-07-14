@@ -89,19 +89,20 @@ LLM 响应的统一抽象层：
 ### beamai_kernel
 
 ```erlang
-%% 创建 Kernel 实例
+%% 创建 Kernel 实例（filter 一次性给出，注册顺序即层序：列表靠前 = 外层）
 beamai_kernel:new() -> kernel().
-beamai_kernel:new(Opts) -> kernel().
+beamai_kernel:new(Settings) -> kernel().
+beamai_kernel:new(Settings, Filters) -> kernel().        %% 洋葱式 filter，详见 docs/FILTER.md
+%% 会话记忆 = memory filter 放 Filters 列表首位，详见 docs/MEMORY.md：
+%% beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)])
 
 %% 添加 Tool
 beamai_kernel:add_tool(Kernel, ToolSpec) -> kernel().
 beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
 beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
 
-%% 添加服务、filter、会话记忆
+%% 添加服务
 beamai_kernel:add_service(Kernel, Service) -> kernel().
-beamai_kernel:add_filter(Kernel, Filter) -> kernel().    %% 洋葱式 filter，详见 docs/FILTER.md
-beamai_kernel:with_memory(Kernel, Store) -> kernel().    %% 启用会话记忆，详见 docs/MEMORY.md
 
 %% 调用（kernel 只提供单次能力；ReAct 工具调用循环属于 Agent 层，见 beamai_agent）
 %% invoke_chat/3：单次 Chat Completion（经 around_chat 链）。Messages 为本轮新消息；
@@ -240,9 +241,11 @@ Kernel 无状态，每次 invoke 只传单条最新消息；历史由 Memory Fil
 `conversation_id` 管理。详见 [docs/MEMORY.md](../../docs/MEMORY.md)。
 
 ```erlang
-%% 启动会话存储并启用记忆
+%% 启动会话存储；构建 kernel 时把 memory filter 放 filters 列表首位（最外层）
 {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
-K = beamai_kernel:with_memory(Kernel1, beamai_chat_memory_ets:handle(my_mem)),
+Store = beamai_chat_memory_ets:handle(my_mem),
+K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+K = beamai_kernel:add_service(K0, LlmConfig),
 
 %% 用 conversation_id 标识会话，每次只传最新消息
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
