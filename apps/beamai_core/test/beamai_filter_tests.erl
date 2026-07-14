@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc Filter 洋葱链测试（around 模型）
+%%% @doc Filter 洋葱链测试（around 模型，注册顺序即层序）
 %%%-------------------------------------------------------------------
 -module(beamai_filter_tests).
 
@@ -13,38 +13,35 @@
 %%====================================================================
 
 new_shape_test() ->
-    F = beamai_filter:new(<<"a">>, #{around_chat => fun(R, _F, N) -> N(R) end}, 5),
+    F = beamai_filter:new(<<"a">>, #{around_chat => fun(R, _F, N) -> N(R) end}),
     ?assertEqual(<<"a">>, maps:get(name, F)),
-    ?assertEqual(5, maps:get(order, F)),
     ?assertEqual(#{}, beamai_filter:init(F)),
     ?assert(is_function(beamai_filter:hook(F, around_chat), 3)),
     ?assertEqual(undefined, beamai_filter:hook(F, around_tool)).
 
-new_default_order_test() ->
-    F = beamai_filter:new(<<"a">>, #{}),
-    ?assertEqual(0, maps:get(order, F)).
-
 new_with_init_test() ->
-    F = beamai_filter:new(<<"a">>, #{}, 0, #{seed => 42}),
+    F = beamai_filter:new(<<"a">>, #{}, #{seed => 42}),
     ?assertEqual(#{seed => 42}, beamai_filter:init(F)).
 
-sort_test() ->
-    F1 = beamai_filter:new(<<"a">>, #{}, 30),
-    F2 = beamai_filter:new(<<"b">>, #{}, 10),
-    F3 = beamai_filter:new(<<"c">>, #{}, 20),
-    ?assertEqual([<<"b">>, <<"c">>, <<"a">>],
-                 [maps:get(name, F) || F <- beamai_filter:sort([F1, F2, F3])]).
-
 %%====================================================================
-%% 洋葱顺序：外层前置先、外层后置后（回程自动逆序）
+%% 洋葱顺序：注册顺序即层序——列表靠前 = 外层
+%% （外层前置先执行、后置后执行，回程自动逆序）
 %%====================================================================
 
 onion_order_test() ->
-    A = trace_filter(<<"A">>, 1, a_before, a_after),
-    B = trace_filter(<<"B">>, 2, b_before, b_after),
+    A = trace_filter(<<"A">>, a_before, a_after),
+    B = trace_filter(<<"B">>, b_before, b_after),
     {ok, #{trace := Final}} =
-        beamai_filter_chain:run([B, A], ?CHAT, terminal(), req()),  % 乱序传入靠 order 排
+        beamai_filter_chain:run([A, B], ?CHAT, terminal(), req()),
     ?assertEqual([a_before, b_before, terminal, b_after, a_after], Final).
+
+registration_order_is_layer_order_test() ->
+    %% 同样两个 filter 反过来注册，层序随之反转（无排序、无 order 字段）
+    A = trace_filter(<<"A">>, a_before, a_after),
+    B = trace_filter(<<"B">>, b_before, b_after),
+    {ok, #{trace := Final}} =
+        beamai_filter_chain:run([B, A], ?CHAT, terminal(), req()),
+    ?assertEqual([b_before, a_before, terminal, a_after, b_after], Final).
 
 empty_chain_runs_terminal_test() ->
     {ok, #{trace := Final}} = beamai_filter_chain:run([], ?CHAT, terminal(), req()),
@@ -55,10 +52,10 @@ empty_chain_runs_terminal_test() ->
 %%====================================================================
 
 irrelevant_filter_skipped_test() ->
-    ChatF = trace_filter(<<"chat">>, 1, c_before, c_after),
+    ChatF = trace_filter(<<"chat">>, c_before, c_after),
     ToolOnly = beamai_filter:new(<<"tool">>, #{
         around_tool => fun(#{trace := T} = R, _F, N) -> N(R#{trace => T ++ [t_before]}) end
-    }, 0),
+    }),
     {ok, #{trace := Final}} =
         beamai_filter_chain:run([ChatF, ToolOnly], ?CHAT, terminal(), req()),
     %% tool-only filter 在 chat 链被跳过
@@ -69,13 +66,13 @@ irrelevant_filter_skipped_test() ->
 %%====================================================================
 
 short_circuit_test() ->
-    Outer = trace_filter(<<"outer">>, 1, o_before, o_after),
+    Outer = trace_filter(<<"outer">>, o_before, o_after),
     Halter = beamai_filter:new(<<"halt">>, #{
         around_chat => fun(#{trace := T} = Req, _F, _Next) ->
             Req#{trace => T ++ [halted]}   %% 不调 Next：跳过内层与 terminal
         end
-    }, 2),
-    Inner = trace_filter(<<"inner">>, 3, i_before, i_after),
+    }),
+    Inner = trace_filter(<<"inner">>, i_before, i_after),
     {ok, #{trace := Final}} =
         beamai_filter_chain:run([Outer, Halter, Inner], ?CHAT, terminal(), req()),
     ?assertEqual([o_before, halted, o_after], Final).
@@ -90,7 +87,7 @@ tool_phase_test() ->
             #{trace := T2} = Resp = Next(Req#{trace => T ++ [t_before]}),
             Resp#{trace => T2 ++ [t_after]}
         end
-    }, 0),
+    }),
     {ok, #{trace := Final}} = beamai_filter_chain:run([F], ?TOOL, terminal(), req()),
     ?assertEqual([t_before, terminal, t_after], Final).
 
@@ -99,7 +96,7 @@ tool_phase_test() ->
 %%====================================================================
 
 terminal_error_test() ->
-    F = trace_filter(<<"A">>, 1, a_before, a_after),
+    F = trace_filter(<<"A">>, a_before, a_after),
     Terminal = fun(_) -> throw(boom) end,
     ?assertEqual({error, boom},
                  beamai_filter_chain:run([F], ?CHAT, Terminal, req())).
@@ -139,7 +136,7 @@ filter_state_init_test() ->
             Resp = Next(Req),
             {Resp, FCtx#{seen => true}}
         end
-    }, 0, #{seed => 42}),
+    }, #{seed => 42}),
     {ok, #{context := Ctx}} = beamai_filter_chain:run([F], ?CHAT, terminal(), req()),
     ?assertEqual(#{seed => 42, seen => true}, beamai_context:filter_state(Ctx, <<"I">>, #{})).
 
@@ -156,13 +153,13 @@ terminal() ->
     fun(#{trace := T} = Req) -> Req#{trace => T ++ [terminal]} end.
 
 %% 前置追加 BeforeTag、后置追加 AfterTag 的 around_chat filter
-trace_filter(Name, Order, BeforeTag, AfterTag) ->
+trace_filter(Name, BeforeTag, AfterTag) ->
     beamai_filter:new(Name, #{
         around_chat => fun(#{trace := T} = Req, _FCtx, Next) ->
             #{trace := T2} = Resp = Next(Req#{trace => T ++ [BeforeTag]}),
             Resp#{trace => T2 ++ [AfterTag]}
         end
-    }, Order).
+    }).
 
 %% 私有上下文计数器 filter（每次调用 n+1，存于自身私有槽）
 counter_filter(Name) ->
@@ -172,4 +169,4 @@ counter_filter(Name) ->
             Resp = Next(Req),
             {Resp, FCtx#{n => N + 1}}
         end
-    }, 0).
+    }).

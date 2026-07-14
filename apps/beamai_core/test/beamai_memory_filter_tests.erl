@@ -213,10 +213,10 @@ cross_invoke_accumulation() ->
 %%====================================================================
 
 build_mock_kernel(Store) ->
-    K0 = beamai_kernel:new(),
+    %% memory filter 放 filters 列表首位（最外层），构建时一次性给出
+    K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
     LlmConfig = beamai_chat_completion:create({custom, ?MOCK_MODULE}, #{model => <<"mock">>}),
-    K1 = beamai_kernel:add_service(K0, LlmConfig),
-    beamai_kernel:with_memory(K1, Store).
+    beamai_kernel:add_service(K0, LlmConfig).
 
 unique_name(Prefix) ->
     list_to_atom(lists:concat([Prefix, "_", erlang:unique_integer([positive])])).

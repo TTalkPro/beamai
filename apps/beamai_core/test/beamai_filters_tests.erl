@@ -7,9 +7,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 kernel(Tools, Filters) ->
-    K0 = lists:foldl(fun(T, K) -> beamai_kernel:add_tool(K, T) end,
-                     beamai_kernel:new(), Tools),
-    lists:foldl(fun(F, K) -> beamai_kernel:add_filter(K, F) end, K0, Filters).
+    lists:foldl(fun(T, K) -> beamai_kernel:add_tool(K, T) end,
+                beamai_kernel:new(#{}, Filters), Tools).
 
 %% logging：透传不改结果
 logging_passthrough_test() ->

@@ -181,8 +181,6 @@ no_llm_service_chat_test() ->
 
 %% invoke_chat 与 invoke_tool 一致地把 kernel 绑进 context，around_chat filter 可取到
 context_binds_kernel_in_chat_test() ->
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{model => <<"m">>})),
     Self = self(),
     Filter = beamai_filter:new(<<"capture_kernel">>, #{
         around_chat => fun(#{context := Ctx} = Req, _F, Next) ->
@@ -190,7 +188,8 @@ context_binds_kernel_in_chat_test() ->
             Next(Req)
         end
     }),
-    K2 = beamai_kernel:add_filter(K1, Filter),
+    K0 = beamai_kernel:new(#{}, [Filter]),
+    K2 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{model => <<"m">>})),
     {ok, _Resp, _Ctx} = beamai_kernel:invoke_chat(K2, [#{role => user, content => <<"hi">>}], #{}),
     receive {kernel_bound, Bound} -> ?assert(Bound)
     after 1000 -> ?assert(false)
@@ -201,10 +200,6 @@ context_binds_kernel_in_chat_test() ->
 %%====================================================================
 
 invoke_with_pre_tool_filter_test() ->
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_tool(K0,
-        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
-    ),
     %% around_tool 前置：把参数翻倍
     Filter = beamai_filter:new(<<"doubler">>, #{
         around_tool => fun(#{args := Args} = Req, _FCtx, Next) ->
@@ -213,14 +208,13 @@ invoke_with_pre_tool_filter_test() ->
             Next(Req#{args => NewArgs})
         end
     }),
-    K2 = beamai_kernel:add_filter(K1, Filter),
+    K0 = beamai_kernel:new(#{}, [Filter]),
+    K2 = beamai_kernel:add_tool(K0,
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
+    ),
     ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_with_post_tool_filter_test() ->
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_tool(K0,
-        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
-    ),
     %% around_tool 后置：把结果翻倍
     Filter = beamai_filter:new(<<"result_doubler">>, #{
         around_tool => fun(Req, _FCtx, Next) ->
@@ -228,21 +222,23 @@ invoke_with_post_tool_filter_test() ->
             Resp#{result => R * 2}
         end
     }),
-    K2 = beamai_kernel:add_filter(K1, Filter),
+    K0 = beamai_kernel:new(#{}, [Filter]),
+    K2 = beamai_kernel:add_tool(K0,
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
+    ),
     ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_with_halt_tool_filter_test() ->
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_tool(K0,
-        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
-    ),
     %% around_tool 短路：不调 Next，直接返回缓存结果
     Filter = beamai_filter:new(<<"cache">>, #{
         around_tool => fun(#{context := Ctx}, _FCtx, _Next) ->
             #{result => cached_result, context => Ctx}
         end
     }),
-    K2 = beamai_kernel:add_filter(K1, Filter),
+    K0 = beamai_kernel:new(#{}, [Filter]),
+    K2 = beamai_kernel:add_tool(K0,
+        beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
+    ),
     ?assertMatch({ok, cached_result, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 %%====================================================================
