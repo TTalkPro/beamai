@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc token_xf 链 kernel 集成测试（invoke_chat_stream 组装点）
+%%% @doc token_transform 链 kernel 集成测试（invoke_chat_stream 组装点）
 %%%
 %%% 对照 clj token-stream-filter-design.md §6 锚点：变换生效、最终响应
 %%% 不被变换、异常不 flush、退化路径、同步路径忽略、hold-release 两分支。
@@ -71,7 +71,7 @@ composition_order_test() ->
     flush_mailbox(),
     mock_stream([<<"x">>], {ok, #{content => <<"x">>, finish_reason => <<"stop">>}}),
     Prefix = fun(Name, P) ->
-        beamai_filter:new(Name, #{token_xf => #{
+        beamai_filter:new(Name, #{token_transform => #{
             step => fun(#{token := T} = TD, S) ->
                 {[TD#{token => <<P/binary, T/binary>>}], S}
             end}})
@@ -140,15 +140,15 @@ error_no_flush_test() ->
     end.
 
 %%====================================================================
-%% 退化路径：无 token_xf 时 sink 原样收到原始 token
+%% 退化路径：无 token_transform 时 sink 原样收到原始 token
 %%====================================================================
 
-no_token_xf_passthrough_test() ->
+no_token_transform_passthrough_test() ->
     flush_mailbox(),
     mock_stream([<<"a">>, <<"b">>],
                 {ok, #{content => <<"ab">>, finish_reason => <<"stop">>}}),
     try
-        %% 有 chat filter 但无 token_xf：token 路径不受影响
+        %% 有 chat filter 但无 token_transform：token 路径不受影响
         ChatF = beamai_filter:new(<<"noop">>, #{
             around_chat => fun(Req, _F, Next) -> Next(Req) end}),
         K = kernel_with([ChatF]),
@@ -159,10 +159,10 @@ no_token_xf_passthrough_test() ->
     end.
 
 %%====================================================================
-%% 同步路径忽略 token_xf：invoke_chat 带 token_xf filter 照常工作
+%% 同步路径忽略 token_transform：invoke_chat 带 token_transform filter 照常工作
 %%====================================================================
 
-sync_ignores_token_xf_test() ->
+sync_ignores_token_transform_test() ->
     K = kernel_with([beamai_filters:token_redact_filter(<<"x">>, <<"y">>)]),
     {ok, Resp, _} = beamai_kernel:invoke_chat(
         K, [#{role => user, content => <<"hi">>}], #{}),

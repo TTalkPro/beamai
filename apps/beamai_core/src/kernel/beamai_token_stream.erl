@@ -1,10 +1,10 @@
 %%%-------------------------------------------------------------------
-%%% @doc Token 流变换链组装器（filter 第四钩子 token_xf）
+%%% @doc Token 流变换链组装器（filter 第四钩子 token_transform）
 %%%
-%%% 把 filters 上收集的 token_xf 列表（注册顺序）折成一条变换链，包裹
+%%% 把 filters 上收集的 token_transform 列表（注册顺序）折成一条变换链，包裹
 %%% 最终 on-token sink：
 %%%
-%%%   provider 原始 token → token_xf 链（注册顺序，靠前者先见原始 token）
+%%%   provider 原始 token → token_transform 链（注册顺序，靠前者先见原始 token）
 %%%                      → Sink(Token, Meta)
 %%%
 %%% 契约（对照 clj-agent token-stream-filter-design.md，transducer 的
@@ -22,7 +22,7 @@
 %%% （gun/hackney receive 循环），Wrap 返回的回调与 Flush 必须在同一
 %%% 进程使用。
 %%%
-%%% 无 token_xf 时零开销退化：Sink 原样直通，Flush 为空操作。
+%%% 无 token_transform 时零开销退化：Sink 原样直通，Flush 为空操作。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -36,12 +36,12 @@
 %% API
 %%====================================================================
 
-%% @doc 把 token_xf 列表与 sink 组装为 {TokenCallback, Flush}
+%% @doc 把 token_transform 列表与 sink 组装为 {TokenCallback, Flush}
 %%
 %% Xfs 按注册顺序给出（靠前者最先见原始 token）。TokenCallback 兼容
 %% on_llm_new_token 契约 fun(Token, Meta) -> ok；Flush 在流正常结束后
 %% 调用一次（异常路径不得调用）。
--spec wrap([beamai_filter:token_xf()], sink()) ->
+-spec wrap([beamai_filter:token_transform()], sink()) ->
     {fun((binary(), map()) -> ok), fun(() -> ok)}.
 wrap([], Sink) ->
     %% 零开销退化：原样直通

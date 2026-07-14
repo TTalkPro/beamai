@@ -2,7 +2,7 @@
 %%% @doc 内置 filter 集（三链示范 + 常用能力）
 %%%
 %%% 对照 clj-agent filter-chain-design.md §3。均为纯构造器，返回 beamai_filter
-%%% 的 filter map，用户经 beamai_kernel:add_filter/2 挂载。
+%%% 的 filter map，构建 kernel 时经 beamai_kernel:new/2 的 filters 列表一次性给出。
 %%%
 %%%   tool 链：logging_filter/0、timeout_filter/1、approval_filter/1
 %%%   turn 链：validation_turn_filter/2
@@ -107,19 +107,19 @@ validation_turn_filter(ValidateFun, MaxRetries)
     }).
 
 %%====================================================================
-%% token 链（token_xf，流式专用）
+%% token 链（token_transform，流式专用）
 %%====================================================================
 
-%% @doc token 脱敏 filter（token_xf）：无状态逐 token 正则替换
+%% @doc token 脱敏 filter（token_transform）：无状态逐 token 正则替换
 %%
 %% **已知限制**：秘密被切在两个 chunk 之间时漏检（跨 chunk 检测需有状态
-%% 缓冲，按需自写 token_xf 或用 hold_release_filter 整流后审）。
+%% 缓冲，按需自写 token_transform 或用 hold_release_filter 整流后审）。
 %% 只改送 sink 的出站流；最终归一化响应（memory 落库/turn 结果）不受影响。
 -spec token_redact_filter(iodata(), binary()) -> beamai_filter:filter().
 token_redact_filter(Pattern, Replacement) when is_binary(Replacement) ->
     {ok, MP} = re:compile(Pattern),
     beamai_filter:new(<<"token_redact">>, #{
-        token_xf => #{
+        token_transform => #{
             step => fun(#{token := T} = TD, S) ->
                 Redacted = re:replace(T, MP, Replacement,
                                       [global, {return, binary}]),
@@ -128,7 +128,7 @@ token_redact_filter(Pattern, Replacement) when is_binary(Replacement) ->
         }
     }).
 
-%% @doc 先审后放 filter（token_xf）：缓冲整流不外泄，完流时全文审查
+%% @doc 先审后放 filter（token_transform）：缓冲整流不外泄，完流时全文审查
 %%
 %% CheckFun(全文 binary) -> `ok`（通过：缓冲按原序放行）|
 %% `{block, Text}`（不通过：只 emit 一个替换 token）。
@@ -140,7 +140,7 @@ token_redact_filter(Pattern, Replacement) when is_binary(Replacement) ->
     beamai_filter:filter().
 hold_release_filter(CheckFun) when is_function(CheckFun, 1) ->
     beamai_filter:new(<<"hold_release">>, #{
-        token_xf => #{
+        token_transform => #{
             init => [],   %% 倒序缓冲
             step => fun(TD, Buf) -> {[], [TD | Buf]} end,
             flush => fun(Buf) ->

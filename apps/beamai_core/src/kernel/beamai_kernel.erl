@@ -359,12 +359,12 @@ chat_terminal(LlmConfig) ->
 
 %% @private 运行流式 chat filter 洋葱链（与 run_chat 同链，仅 terminal 不同）
 %%
-%% filters 上声明的 token_xf（第四钩子）在 terminal 内按注册顺序组装成
+%% filters 上声明的 token_transform（第四钩子）在 terminal 内按注册顺序组装成
 %% token 变换链，作用于送往 TokenCallback 的出站流；最终归一化响应不经过它。
 run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback) ->
     Req = #{messages => Messages, context => Context, opts => Opts},
     TokenXfs = lists:filtermap(fun(F) ->
-        case beamai_filter:hook(F, token_xf) of
+        case beamai_filter:hook(F, token_transform) of
             undefined -> false;
             Xf -> {true, Xf}
         end
@@ -378,7 +378,7 @@ run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback) ->
 %% @private 流式 chat 链最内层：调用 provider stream_chat，token 经回调实时回传，
 %% 返回汇聚后的统一响应（出错时 throw，由链统一捕获）。
 %%
-%% token_xf 链在 terminal **每次执行**时现场实例化（chat filter 重入 Next 时
+%% token_transform 链在 terminal **每次执行**时现场实例化（chat filter 重入 Next 时
 %% 每次流各自新状态）；Flush 只在 stream_chat 正常返回后调一次——错误路径
 %% 不 flush（缓冲丢弃，半截答案不外泄）。
 stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback) ->

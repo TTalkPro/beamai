@@ -35,17 +35,17 @@
 %%% 无 order 字段、无运行时排序——层次完全由构建 kernel 时给出的列表位置决定
 %%% （对齐 clj-agent advisor.clj 的扁平 vector 模型）。
 %%%
-%%% 第四钩子 `token_xf`（token 流变换，对照 clj-agent :token-xf）：
+%%% 第四钩子 `token_transform`（token 流变换，对照 clj-agent :token-xf）：
 %%% 不走三链洋葱，由流式 terminal（beamai_kernel invoke_chat_stream）按注册顺序
 %%% 组装成 token 变换链，作用于送往 on-token sink 的**出站流**。Erlang 无
-%%% transducer，契约为等价的 step/flush map（见 token_xf/0）：
+%%% transducer，契约为等价的 step/flush map（见 token_transform/0）：
 %%% - `step(TokenData, State) -> {Emit :: [TokenData], NewState}`——1→N（吞掉/
 %%%   改写/缓冲后批量放行）；
 %%% - `flush(State) -> [TokenData]`（可选）——流正常结束时冲出缓冲残留；
 %%% - `init`——状态初值，每次 LLM 流现场初始化（工具循环每轮各自新状态）。
 %%% 硬边界：token 链只改"交付"（sink 看到什么），不改"答案"——流末归一化
 %%% 响应不经过它（memory 落库/turn 结果用的都是原始完整答案）。
-%%% 同步路径（invoke_chat）完全忽略 token_xf。
+%%% 同步路径（invoke_chat）完全忽略 token_transform。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -58,9 +58,9 @@
 
 %% Types
 -export_type([filter/0, hooks/0, hook_type/0, request/0, response/0, fctx/0, next/0]).
--export_type([token_data/0, token_step/0, token_flush/0, token_xf/0]).
+-export_type([token_data/0, token_step/0, token_flush/0, token_transform/0]).
 
--type hook_type() :: around_chat | around_tool | around_turn | token_xf.
+-type hook_type() :: around_chat | around_tool | around_turn | token_transform.
 -type request() :: map().
 -type response() :: map() | tuple().  %% chat/tool 为 map；turn 为工具循环结果 tuple
 -type fctx() :: map().
@@ -72,7 +72,7 @@
 -type token_step() :: fun((token_data(), State :: term()) ->
     {[token_data()], NewState :: term()}).
 -type token_flush() :: fun((State :: term()) -> [token_data()]).
--type token_xf() :: #{
+-type token_transform() :: #{
     init => term(),          %% 状态初值（缺省 undefined）
     step := token_step(),    %% 1→N：一个 token 进、0/1/N 个出
     flush => token_flush()   %% 流正常结束时冲出缓冲残留（缺省无残留）
@@ -82,7 +82,7 @@
     around_chat => around_fun(),
     around_tool => around_fun(),
     around_turn => around_fun(),
-    token_xf => token_xf()
+    token_transform => token_transform()
 }.
 
 -type filter() :: #{
@@ -99,7 +99,7 @@
 %% @doc 创建 filter（私有状态初值 #{}）
 %%
 %% @param Name 名称（调试标识，也是私有上下文的隔离键）
-%% @param Hooks hook map，可含 around_chat/around_tool/around_turn/token_xf 任意子集
+%% @param Hooks hook map，可含 around_chat/around_tool/around_turn/token_transform 任意子集
 -spec new(binary(), hooks()) -> filter().
 new(Name, Hooks) ->
     new(Name, Hooks, #{}).
@@ -116,7 +116,7 @@ new(Name, Hooks, Init) when is_map(Hooks), is_map(Init) ->
 %%====================================================================
 
 %% @doc 取 filter 的某个 hook（不存在返回 undefined）
--spec hook(filter(), hook_type()) -> around_fun() | token_xf() | undefined.
+-spec hook(filter(), hook_type()) -> around_fun() | token_transform() | undefined.
 hook(#{hooks := Hooks}, HookType) ->
     maps:get(HookType, Hooks, undefined).
 
