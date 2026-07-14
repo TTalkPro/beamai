@@ -31,16 +31,18 @@
 %%% 某条链只会用到该链对应的 around（chat 链用 around_chat，tool 链用
 %%% around_tool，turn 链用 around_turn），不含相关 hook 的 filter 在该链中被跳过。
 %%%
-%%% order 越小越外层（前置越先执行、后置越后执行）。
+%%% **注册顺序即层序**：filters 列表靠前 = 外层（前置先执行、后置后执行）。
+%%% 无 order 字段、无运行时排序——层次完全由构建 kernel 时给出的列表位置决定
+%%% （对齐 clj-agent advisor.clj 的扁平 vector 模型）。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_filter).
 
 %% 构造器
--export([new/2, new/3, new/4]).
+-export([new/2, new/3]).
 %% 工具
--export([sort/1, hook/2, init/1]).
+-export([hook/2, init/1]).
 
 %% Types
 -export_type([filter/0, hooks/0, hook_type/0, request/0, response/0, fctx/0, next/0]).
@@ -60,7 +62,6 @@
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),
-    order := integer(),
     hooks := hooks(),
     init := fctx()
 }.
@@ -69,34 +70,24 @@
 %% 构造器
 %%====================================================================
 
-%% @doc 创建 filter（默认 order 0，私有状态初值 #{}）
+%% @doc 创建 filter（私有状态初值 #{}）
 %%
 %% @param Name 名称（调试标识，也是私有上下文的隔离键）
-%% @param Hooks hook map，可含 around_chat/around_tool 任意子集
+%% @param Hooks hook map，可含 around_chat/around_tool/around_turn 任意子集
 -spec new(binary(), hooks()) -> filter().
 new(Name, Hooks) ->
-    new(Name, Hooks, 0).
+    new(Name, Hooks, #{}).
 
-%% @doc 创建 filter（指定 order，越小越外层；私有状态初值 #{}）
--spec new(binary(), hooks(), integer()) -> filter().
-new(Name, Hooks, Order) ->
-    new(Name, Hooks, Order, #{}).
-
-%% @doc 创建 filter（指定 order 与私有状态初值）
+%% @doc 创建 filter（指定私有状态初值）
 %%
 %% @param Init filter 私有上下文初值，首次进入时种入（缺省 #{}）
--spec new(binary(), hooks(), integer(), fctx()) -> filter().
-new(Name, Hooks, Order, Init) when is_map(Hooks), is_map(Init) ->
-    #{'__filter__' => true, name => Name, order => Order, hooks => Hooks, init => Init}.
+-spec new(binary(), hooks(), fctx()) -> filter().
+new(Name, Hooks, Init) when is_map(Hooks), is_map(Init) ->
+    #{'__filter__' => true, name => Name, hooks => Hooks, init => Init}.
 
 %%====================================================================
 %% 工具
 %%====================================================================
-
-%% @doc 按 order 升序稳定排序（同 order 保持注册顺序）
--spec sort([filter()]) -> [filter()].
-sort(Filters) ->
-    lists:sort(fun(#{order := O1}, #{order := O2}) -> O1 =< O2 end, Filters).
 
 %% @doc 取 filter 的某个 hook（不存在返回 undefined）
 -spec hook(filter(), hook_type()) -> around_fun() | undefined.

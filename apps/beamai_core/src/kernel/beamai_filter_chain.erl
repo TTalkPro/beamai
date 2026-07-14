@@ -38,13 +38,14 @@
 %%
 %% Phase 指定该链用哪个 around hook：chat 链传 around_chat，tool 链传
 %% around_tool。只参与该链（含对应 around）的 filter 进入洋葱，其余跳过。
+%% 注册顺序即层序：列表靠前 = 外层（无排序）。
 %% Terminal 产出最内层响应，出错时 throw。
 %%
 %% @returns {ok, Response} | {error, Reason}
 -spec run([beamai_filter:filter()], phase(), terminal(), request()) ->
     {ok, response()} | {error, term()}.
 run(Filters, Phase, Terminal, Request) ->
-    Relevant = relevant(beamai_filter:sort(Filters), Phase),
+    Relevant = relevant(Filters, Phase),
     Run = compose(Relevant, Phase, Terminal),
     try
         {ok, Run(Request)}

@@ -2,7 +2,9 @@
 %%% @doc Memory Filter：会话历史的存储与注入（kernel 级，洋葱式）
 %%%
 %%% 这是 **kernel 级**的会话记忆：给"直接用 beamai_kernel / beamai facade"的
-%%% 调用方提供 filter 形态的记忆（beamai_kernel:with_memory/2 挂载本 filter）。
+%%% 调用方提供 filter 形态的记忆——构建 kernel 时放进 filters 列表**首位**
+%%% （最外层：先展开完整历史，再让内层 filter 处理），如
+%%% `beamai_kernel:new(Settings, [beamai_memory_filter:memory_filter(Store) | Rest])`。
 %%%
 %%% 注意：beamai_agent 层**不再**用本 filter——Agent 在自己的 tool loop 里通过
 %%% beamai_memory_provider 显式编排记忆（见该模块）。两者互不影响。
@@ -12,30 +14,22 @@
 %%%   再用 store 里的完整历史替换 messages 发给 LLM。
 %%% - 后置（调 LLM 后）：把 LLM 的 assistant 回复存入 store。
 %%%
-%%% 无 conversation_id 时原样透传（退化为单次无状态调用）。order 越小越外层。
+%%% 无 conversation_id 时原样透传（退化为单次无状态调用）。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_memory_filter).
 
 %% API
--export([memory_filter/1, memory_filter/2]).
-
-%% memory filter 默认 order（较小 → 外层：先展开历史，再让内层注入系统提示）
--define(DEFAULT_ORDER, -1000).
+-export([memory_filter/1]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
-%% @doc 构造绑定 store 的 memory filter（around_chat）
+%% @doc 构造绑定 store 的 memory filter（around_chat；放 filters 列表首位）
 -spec memory_filter(beamai_chat_memory:handle()) -> beamai_filter:filter().
 memory_filter(Store) ->
-    memory_filter(Store, ?DEFAULT_ORDER).
-
-%% @doc 构造 memory filter（指定 order）
--spec memory_filter(beamai_chat_memory:handle(), integer()) -> beamai_filter:filter().
-memory_filter(Store, Order) ->
     beamai_filter:new(<<"memory">>, #{
         around_chat => fun(#{messages := Delta, context := Ctx} = Req, _FCtx, Next) ->
             case beamai_context:conversation_id(Ctx) of
@@ -55,4 +49,4 @@ memory_filter(Store, Order) ->
                     Resp
             end
         end
-    }, Order).
+    }).

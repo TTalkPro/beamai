@@ -12,7 +12,7 @@
 -module(beamai).
 
 %% Kernel
--export([kernel/0, kernel/1]).
+-export([kernel/0, kernel/1, kernel/2]).
 
 %% Tool
 -export([tool/2, tool/3]).
@@ -24,10 +24,7 @@
 -export([add_llm/3, add_llm/2]).
 
 %% Filter（洋葱式过滤器）
--export([add_filter/2, add_filter/3]).
-
-%% Memory（会话记忆）
--export([with_memory/2]).
+-export([filter/2, filter/3]).
 
 %% Invoke
 -export([invoke_tool/4]).
@@ -47,17 +44,31 @@
 %% Kernel
 %%====================================================================
 
-%% @doc 创建空 Kernel（默认配置）
+%% @doc 创建空 Kernel（默认配置，无 filter）
 -spec kernel() -> beamai_kernel:kernel().
 kernel() ->
     beamai_kernel:new().
 
-%% @doc 创建 Kernel（自定义配置）
+%% @doc 创建 Kernel（自定义配置，无 filter）
 %%
 %% @param Settings 配置项（如 #{max_tool_iterations => 5}）
 -spec kernel(beamai_kernel:kernel_settings()) -> beamai_kernel:kernel().
 kernel(Settings) ->
     beamai_kernel:new(Settings).
+
+%% @doc 创建 Kernel（自定义配置 + 一次性给出全量 filter）
+%%
+%% Filters **注册顺序即层序**：列表靠前 = 外层（前置先执行、后置后执行）。
+%% 构建后不可增量追加。需要会话记忆时把 memory filter 放列表首位（最外层）：
+%%
+%%   K = beamai:kernel(#{}, [
+%%       beamai_memory_filter:memory_filter(Store),   %% 最外层：先展开历史
+%%       beamai:filter(<<"logger">>, #{around_chat => F})
+%%   ])
+-spec kernel(beamai_kernel:kernel_settings(), [beamai_filter:filter()]) ->
+    beamai_kernel:kernel().
+kernel(Settings, Filters) ->
+    beamai_kernel:new(Settings, Filters).
 
 %%====================================================================
 %% Tool
@@ -121,46 +132,24 @@ add_llm(Kernel, LlmConfig) ->
 %% Filter（洋葱式过滤器）
 %%====================================================================
 
-%% @doc 注册已构建的 filter 到 Kernel
--spec add_filter(beamai_kernel:kernel(), beamai_filter:filter()) -> beamai_kernel:kernel().
-add_filter(Kernel, Filter) ->
-    beamai_kernel:add_filter(Kernel, Filter).
-
-%% @doc 快捷创建并注册 filter（直接给 hook map）
+%% @doc 创建 filter（直接给 hook map；经 kernel/2 一次性注册）
 %%
-%% 一个 filter 含 around_chat/around_tool 任意子集，每个 around 用单个闭包
-%% `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用：前置改写
-%% 请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next 即短路。
+%% 一个 filter 含 around_chat/around_tool/around_turn 任意子集，每个 around
+%% 用单个闭包 `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用：
+%% 前置改写请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next 即短路。
 %%
-%% @param Kernel Kernel 实例
 %% @param Name filter 名称
 %% @param Hooks hook map（如 #{around_chat => F}）
-%% @returns 更新后的 Kernel
--spec add_filter(beamai_kernel:kernel(), binary(), beamai_filter:hooks()) ->
-    beamai_kernel:kernel().
-add_filter(Kernel, Name, Hooks) ->
-    Filter = beamai_filter:new(Name, Hooks),
-    beamai_kernel:add_filter(Kernel, Filter).
+%% @returns filter 定义（传入 beamai:kernel/2 的 Filters 列表）
+-spec filter(binary(), beamai_filter:hooks()) -> beamai_filter:filter().
+filter(Name, Hooks) ->
+    beamai_filter:new(Name, Hooks).
 
-%%====================================================================
-%% Memory（会话记忆）
-%%====================================================================
-
-%% @doc 启用会话记忆：绑定 store 句柄并挂载 Memory 过滤器
-%%
-%% 启用后，凡 context 带 conversation_id 的 chat/3（invoke_chat）调用会按该 id
-%% 自动存储与展开会话历史；无 conversation_id 时原样透传（单次无状态调用）。
-%%
-%% 示例:
-%%   {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
-%%   K1 = beamai:with_memory(K0, beamai_chat_memory_ets:handle(my_mem))
-%%
-%% @param Kernel Kernel 实例
-%% @param Store 会话存储句柄（beamai_chat_memory:handle/0）
-%% @returns 更新后的 Kernel
--spec with_memory(beamai_kernel:kernel(), beamai_chat_memory:handle()) -> beamai_kernel:kernel().
-with_memory(Kernel, Store) ->
-    beamai_kernel:with_memory(Kernel, Store).
+%% @doc 创建 filter（指定私有上下文初值）
+-spec filter(binary(), beamai_filter:hooks(), beamai_filter:fctx()) ->
+    beamai_filter:filter().
+filter(Name, Hooks, Init) ->
+    beamai_filter:new(Name, Hooks, Init).
 
 %%====================================================================
 %% Invoke

@@ -18,13 +18,11 @@
 -module(beamai_kernel).
 
 %% Build API
--export([new/0, new/1]).
+-export([new/0, new/1, new/2]).
 -export([add_tool/2]).
 -export([add_tools/2]).
 -export([add_tool_module/2]).
 -export([add_service/2]).
--export([add_filter/2]).
--export([with_memory/2]).
 
 %% Invoke API（仅单次 chat / tool；ReAct 循环属于 Agent 层）
 -export([invoke_tool/4]).
@@ -72,22 +70,36 @@
 %% Build API
 %%====================================================================
 
-%% @doc 创建空 Kernel（默认配置）
+%% @doc 创建空 Kernel（默认配置，无 filter）
 -spec new() -> kernel().
 new() ->
-    new(#{}).
+    new(#{}, []).
 
-%% @doc 创建 Kernel（自定义配置）
+%% @doc 创建 Kernel（自定义配置，无 filter）
 %%
 %% @param Settings 配置项（如 #{default_timeout => 30000}）
 %% @returns Kernel 实例
 -spec new(kernel_settings()) -> kernel().
 new(Settings) ->
+    new(Settings, []).
+
+%% @doc 创建 Kernel（自定义配置 + 一次性给出全量 filter）
+%%
+%% Filters 在构建时一次性给出，**注册顺序即层序**：列表靠前 = 外层
+%% （前置先执行、后置后执行）。构建后不可增量追加——需要记忆时把
+%% `beamai_memory_filter:memory_filter(Store)` 放在列表**首位**（最外层：
+%% 先展开完整历史，再让内层 filter 处理）。
+%%
+%% @param Settings 配置项
+%% @param Filters filter 列表（beamai_filter:new/2,3 创建）
+%% @returns Kernel 实例
+-spec new(kernel_settings(), [beamai_filter:filter()]) -> kernel().
+new(Settings, Filters) when is_map(Settings), is_list(Filters) ->
     #{
         '__kernel__' => true,
         tools => #{},
         llm_config => undefined,
-        filters => [],
+        filters => Filters,
         settings => Settings
     }.
 
@@ -115,6 +127,7 @@ add_tools(Kernel, ToolList) ->
 %%
 %% 模块需实现 beamai_tool_behaviour，至少实现 tools/0 回调。
 %% 加载失败时抛出 {tool_module_load_failed, Module, Reason} 错误。
+%% 注：模块只提供工具；filter 一律在 new/2 构建时一次性给出。
 %%
 %% @param Kernel Kernel 实例
 %% @param Module 实现了工具回调的模块
@@ -123,21 +136,9 @@ add_tools(Kernel, ToolList) ->
 add_tool_module(Kernel, Module) ->
     case beamai_tool:from_module(Module) of
         {ok, Tools} ->
-            %% 如果模块实现了 filters/0，也注册 filter
-            K1 = add_tools(Kernel, Tools),
-            maybe_add_filters(K1, Module);
+            add_tools(Kernel, Tools);
         {error, Reason} ->
             erlang:error({tool_module_load_failed, Module, Reason})
-    end.
-
-%% @private 如果模块实现了 filters/0，添加 filter
-maybe_add_filters(Kernel, Module) ->
-    case erlang:function_exported(Module, filters, 0) of
-        true ->
-            Filters = Module:filters(),
-            lists:foldl(fun(F, K) -> add_filter(K, F) end, Kernel, Filters);
-        false ->
-            Kernel
     end.
 
 %% @doc 设置 LLM 服务配置
@@ -151,35 +152,6 @@ maybe_add_filters(Kernel, Module) ->
 -spec add_service(kernel(), beamai_chat_behaviour:config()) -> kernel().
 add_service(Kernel, LlmConfig) ->
     Kernel#{llm_config => LlmConfig}.
-
-%% @doc 注册 filter 到 Kernel
-%%
-%% filter 追加到现有列表，执行时按 order 排序（越小越外层）。
-%% 一个 filter 可含 around_chat/around_tool 任意子集，
-%% chat 链用其 around_chat、tool 链用其 around_tool。
-%%
-%% @param Kernel Kernel 实例
-%% @param Filter filter 定义（通过 beamai_filter:new/2,3,4 创建）
-%% @returns 更新后的 Kernel
--spec add_filter(kernel(), beamai_filter:filter()) -> kernel().
-add_filter(#{filters := Filters} = Kernel, Filter) ->
-    Kernel#{filters => Filters ++ [Filter]}.
-
-%% @doc 启用会话记忆：绑定 store 句柄并挂载 Memory filter
-%%
-%% 挂载后，凡是 context 带 conversation_id 的 invoke_chat 调用都会经 Memory filter
-%% 的 around_chat：前置存入本轮消息并用完整历史替换 messages、调 LLM、后置存回复，
-%% 从而按 conversation_id 管理历史。context 无 conversation_id 时 Memory filter 原样
-%% 透传（退化为单次无状态调用）。ReAct 多轮编排由 Agent 层（beamai_agent_tool_loop）
-%% 以 delta 方式驱动。
-%%
-%% @param Kernel Kernel 实例
-%% @param Store 会话存储句柄（beamai_chat_memory:handle/0，如
-%%        beamai_chat_memory_ets:handle(Name)）
-%% @returns 更新后的 Kernel
--spec with_memory(kernel(), beamai_chat_memory:handle()) -> kernel().
-with_memory(Kernel, Store) ->
-    add_filter(Kernel, beamai_memory_filter:memory_filter(Store)).
 
 %%====================================================================
 %% Invoke API
@@ -214,8 +186,9 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
 %% 执行流程：chat filter 洋葱链（around_chat：前置改写请求 → LLM 调用 → 后置改写响应）。
 %% Kernel 需先通过 add_service/2 配置 LLM。
 %%
-%% Opts 可含 system_prompts：作为临时内层 filter 注入（不入存储），便于在启用
-%% Memory（with_memory/2）时让系统提示在历史展开后前置。
+%% Opts 可含 system_prompts：作为临时**最内层** filter 注入（追加在全量 filter
+%% 之后），在所有 filter 之后、LLM 之前前置系统消息且不入存储——memory filter
+%% 展开的历史永远不含系统提示，用户 chat filter 看到的 messages 也不含系统提示。
 %%
 %% @param Kernel Kernel 实例
 %% @param Messages 消息列表（[#{role => ..., content => ...}]）
@@ -231,8 +204,8 @@ invoke_chat(Kernel, Messages, Opts) ->
             %% beamai_context:get_kernel/1 拿到 kernel 做组合（如调工具/查 specs）。
             Context = beamai_context:with_kernel(
                         maps:get(context, Opts, beamai_context:new()), Kernel),
-            %% system_prompts 作为临时内层 chat filter 注入（不入存储），
-            %% 在 Memory 展开历史之后前置系统消息，且不写入存储。
+            %% system_prompts 作为临时最内层 chat filter 注入（追加在列表尾 =
+            %% 最内层）：在全部 filter 之后、LLM 之前前置系统消息，不入存储。
             SystemPrompts = maps:get(system_prompts, Opts, []),
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
             run_chat(LlmConfig, Filters, Messages, Opts, Context);
@@ -348,10 +321,11 @@ serial_tool(Kernel, ToolName) ->
 %% 内部函数 - 辅助
 %%====================================================================
 
-%% @private 构造 system_prompts 临时注入 filter（仅 around_chat，order -500）
+%% @private 构造 system_prompts 临时注入 filter（仅 around_chat）
 %%
-%% 在 Memory 展开完整历史之后（memory order 更小，更外层）、LLM 之前前置
-%% 系统消息，且不写入存储。
+%% invoke 时追加在 filters 列表尾 = **最内层**：在全部 filter 之后、LLM 之前
+%% 前置系统消息，且不写入存储。memory filter（列表首位、最外层）先展开完整
+%% 历史，系统提示在最内层才注入，故永远不会被存进历史。
 system_prompt_filter([]) ->
     [];
 system_prompt_filter(SystemPrompts) ->
@@ -359,7 +333,7 @@ system_prompt_filter(SystemPrompts) ->
         around_chat => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
             Next(Req#{messages => SystemPrompts ++ Msgs})
         end
-    }, -500)].
+    })].
 
 %% @private 运行 chat filter 洋葱链（用 around_chat hook）
 %%
