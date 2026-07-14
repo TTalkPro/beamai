@@ -27,14 +27,26 @@
     pause_store => beamai_pause_store:handle()
 }.
 
--export_type([deps/0]).
+%% 血缘记录 + 自身 conv-id（ancestry 返回用；对齐 clj 的 {:id :parent ...}）
+-type ancestry_record() :: #{
+    id := binary(),
+    parent := binary() | undefined,
+    fork_point := non_neg_integer() | all,
+    created_at := integer()
+}.
+
+-type fork_error() :: empty_source
+                    | {invalid_at, term()}
+                    | {target_exists, binary()}.
+
+-export_type([deps/0, ancestry_record/0, fork_error/0]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
 %% @doc 全量分支（复制整段历史到新会话）
--spec fork(deps(), binary()) -> {ok, binary()}.
+-spec fork(deps(), binary()) -> {ok, binary()} | {error, fork_error()}.
 fork(Deps, Source) ->
     fork(Deps, Source, #{}).
 
@@ -47,24 +59,54 @@ fork(Deps, Source) ->
 %% 全量分支且源处于暂停（配置了 pause_store 且有快照）→ **连带复制暂停快照**到新
 %% 会话（使分支可独立 resume）；部分前缀 fork 不带（暂停属于日志尖端）。
 %%
-%% @returns {ok, NewConvId}
--spec fork(deps(), binary(), map()) -> {ok, binary()}.
+%% 校验（对齐 clj）：源无历史→`{error, empty_source}`；`at` 越界（须 `1 =< N =< 总数`）
+%% →`{error, {invalid_at, N}}`；目标会话已存在（有历史）→`{error, {target_exists, Id}}`
+%% （拒绝而非静默覆盖）。
+%%
+%% @returns {ok, NewConvId} | {error, fork_error()}
+-spec fork(deps(), binary(), map()) -> {ok, binary()} | {error, fork_error()}.
 fork(#{memory := Mem, branch := Br} = Deps, Source, Opts) ->
-    NewConvId = maps:get(as, Opts, gen_conv_id()),
     AllMsgs = beamai_chat_memory:mem_get(Mem, Source),
-    {Prefix, ForkPoint, Full} = case maps:get(at, Opts, undefined) of
-        undefined -> {AllMsgs, all, true};
-        N when is_integer(N), N >= 0 -> {lists:sublist(AllMsgs, N), N, false}
-    end,
-    %% 复制前缀到新会话（先清空防御已有数据）
-    ok = beamai_chat_memory:mem_clear(Mem, NewConvId),
-    ok = beamai_chat_memory:mem_add(Mem, NewConvId, Prefix),
-    ok = beamai_branch_store:record(Br, NewConvId,
-        #{parent => Source, fork_point => ForkPoint,
-          created_at => erlang:system_time(millisecond)}),
-    %% 全量 fork 且源暂停 → 连带复制暂停快照
-    Full andalso maybe_copy_pause(Deps, Source, NewConvId),
-    {ok, NewConvId}.
+    Count = length(AllMsgs),
+    NewConvId = maps:get(as, Opts, gen_conv_id()),
+    case validate_fork(Mem, Count, maps:get(at, Opts, undefined), NewConvId) of
+        {error, _} = Err ->
+            Err;
+        {ok, N, ForkPoint, Full} ->
+            Prefix = lists:sublist(AllMsgs, N),
+            ok = beamai_chat_memory:mem_add(Mem, NewConvId, Prefix),
+            ok = beamai_branch_store:record(Br, NewConvId,
+                #{parent => Source, fork_point => ForkPoint,
+                  created_at => erlang:system_time(millisecond)}),
+            %% 全量 fork 且源暂停 → 连带复制暂停快照
+            Full andalso maybe_copy_pause(Deps, Source, NewConvId),
+            {ok, NewConvId}
+    end.
+
+%% @private fork 前置校验：空源 / at 越界 / 目标已存在
+%% 返回 `{ok, PrefixLen, ForkPoint, Full}`（Full 决定是否连带暂停快照）。
+-spec validate_fork(beamai_chat_memory:handle(), non_neg_integer(),
+                    term(), binary()) ->
+    {ok, non_neg_integer(), non_neg_integer() | all, boolean()}
+    | {error, fork_error()}.
+validate_fork(_Mem, 0, _At, _NewConvId) ->
+    {error, empty_source};
+validate_fork(Mem, Count, At, NewConvId) ->
+    case at_prefix(At, Count) of
+        {error, _} = Err ->
+            Err;
+        {ok, N, ForkPoint, Full} ->
+            case beamai_chat_memory:mem_get(Mem, NewConvId) of
+                [] -> {ok, N, ForkPoint, Full};
+                _  -> {error, {target_exists, NewConvId}}
+            end
+    end.
+
+%% @private 归一化 `at`：缺省=全量（Full）；否则须 `1 =< N =< Count`
+at_prefix(undefined, Count) -> {ok, Count, all, true};
+at_prefix(N, Count) when is_integer(N), N >= 1, N =< Count ->
+    {ok, N, N, N =:= Count};
+at_prefix(N, _Count) -> {error, {invalid_at, N}}.
 
 %% @doc 破坏性截断到前 N 条消息（"重新生成"用）
 %%
@@ -84,10 +126,12 @@ rollback(#{memory := Mem} = Deps, ConvId, N) ->
 lineage(#{branch := Br}, ConvId) ->
     beamai_branch_store:get(Br, ConvId).
 
-%% @doc 沿 parent 回溯到根，返回**根在前**的祖先链 [Root, ..., Parent, ConvId]
--spec ancestry(deps(), binary()) -> [binary()].
+%% @doc 沿 parent 回溯，返回**自身在前**的血缘记录链 [自身记录, 父记录, ...]
+%% （对齐 clj：每条记录含 `id`=该会话 conv-id；根会话无血缘记录，链止于最老的
+%% fork，故根本身返回 `[]`）。
+-spec ancestry(deps(), binary()) -> [ancestry_record()].
 ancestry(#{branch := Br}, ConvId) ->
-    ancestry_acc(Br, ConvId, [ConvId]).
+    lists:reverse(ancestry_acc(Br, ConvId, [])).
 
 %% @doc 删分支（历史 + 暂停快照 + 血缘）；有子分支时拒绝
 -spec prune(deps(), binary()) -> ok | {error, {has_children, [binary()]}}.
@@ -106,12 +150,16 @@ prune(#{memory := Mem, branch := Br} = Deps, ConvId) ->
 %% 内部
 %%====================================================================
 
-%% 前缀累积（prepend parent）天然得到根在前的顺序，无需反转
+%% @private 自身→根累积（每步 prepend 当前记录，末尾由调用方 reverse 成自身在前）
 ancestry_acc(Br, ConvId, Acc) ->
     case beamai_branch_store:get(Br, ConvId) of
-        {ok, #{parent := Parent}} when is_binary(Parent) ->
-            ancestry_acc(Br, Parent, [Parent | Acc]);
-        _ ->
+        {ok, #{parent := Parent} = Rec} ->
+            Acc1 = [Rec#{id => ConvId} | Acc],
+            case Parent of
+                _ when is_binary(Parent) -> ancestry_acc(Br, Parent, Acc1);
+                _ -> Acc1
+            end;
+        none ->
             Acc
     end.
 

@@ -28,6 +28,7 @@ timeline_test_() ->
          ?_test(fork_prefix(Deps)),
          ?_test(rollback_truncate(Deps)),
          ?_test(ancestry_chain(Deps)),
+         ?_test(fork_validations(Deps)),
          ?_test(prune_rejects_with_children(Deps)),
          ?_test(pause_fork_copies_snapshot(Deps))
         ]
@@ -63,10 +64,26 @@ ancestry_chain(Deps) ->
     ok = beamai_chat_memory:mem_add(Mem, <<"root">>, [msg(<<"x">>)]),
     {ok, B} = beamai_timeline:fork(Deps, <<"root">>, #{as => <<"branch-b">>}),
     {ok, C} = beamai_timeline:fork(Deps, B, #{as => <<"branch-c">>}),
-    ?assertEqual([<<"root">>, <<"branch-b">>, <<"branch-c">>],
+    %% 自身在前的血缘记录链（每条含 id/parent），根无记录故不入链
+    ?assertMatch([#{id := <<"branch-c">>, parent := <<"branch-b">>, fork_point := all},
+                  #{id := <<"branch-b">>, parent := <<"root">>, fork_point := all}],
                  beamai_timeline:ancestry(Deps, C)),
-    %% root 无血缘记录 → ancestry 仅自身
-    ?assertEqual([<<"root">>], beamai_timeline:ancestry(Deps, <<"root">>)).
+    %% root 无血缘记录 → ancestry 空
+    ?assertEqual([], beamai_timeline:ancestry(Deps, <<"root">>)).
+
+fork_validations(Deps) ->
+    #{memory := Mem} = Deps,
+    %% 空源 → empty_source
+    ?assertEqual({error, empty_source}, beamai_timeline:fork(Deps, <<"no-such-src">>)),
+    ok = beamai_chat_memory:mem_add(Mem, <<"fv">>, [msg(<<"1">>), msg(<<"2">>)]),
+    %% at 越界（须 1 =< N =< 2）
+    ?assertEqual({error, {invalid_at, 0}}, beamai_timeline:fork(Deps, <<"fv">>, #{at => 0})),
+    ?assertEqual({error, {invalid_at, 5}}, beamai_timeline:fork(Deps, <<"fv">>, #{at => 5})),
+    %% 目标已存在（有历史）→ target_exists，拒绝覆盖
+    ok = beamai_chat_memory:mem_add(Mem, <<"occupied">>, [msg(<<"z">>)]),
+    ?assertEqual({error, {target_exists, <<"occupied">>}},
+                 beamai_timeline:fork(Deps, <<"fv">>, #{as => <<"occupied">>})),
+    ?assertEqual([msg(<<"z">>)], beamai_chat_memory:mem_get(Mem, <<"occupied">>)).
 
 prune_rejects_with_children(Deps) ->
     #{memory := Mem} = Deps,
@@ -83,7 +100,7 @@ prune_rejects_with_children(Deps) ->
 
 pause_fork_copies_snapshot(Deps) ->
     #{memory := Mem, pause_store := PS} = Deps,
-    ok = beamai_chat_memory:mem_add(Mem, <<"psrc">>, [msg(<<"a">>)]),
+    ok = beamai_chat_memory:mem_add(Mem, <<"psrc">>, [msg(<<"a">>), msg(<<"b">>)]),
     Snap = #{version => 1, conversation_id => <<"psrc">>,
              interrupt_state => #{status => interrupted}},
     ok = beamai_pause_store:pause_save(PS, <<"psrc">>, Snap),
