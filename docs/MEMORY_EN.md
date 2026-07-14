@@ -35,6 +35,7 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 |--------|----------------|
 | `beamai_chat_memory` | ChatMemory **behaviour** + dispatch API, handle `{Module, Ref}` |
 | `beamai_chat_memory_ets` | Default ETS gen_server implementation (process owns the ETS table) |
+| `beamai_chat_memory_dets` | DETS persistent implementation (history recovered per conversation_id after restart) |
 | `beamai_chat_memory_window` | Sliding-window wrapper: full history kept underneath, windowed on `mem_get` |
 | `beamai_memory_filter` | A single filter: around_chat stores delta + expands history (before), stores reply (after) |
 | `beamai_kernel:new/2` | Put the memory filter into the filters list at build time (first = outermost) |
@@ -104,7 +105,19 @@ beamai_chat_memory:mem_add(Store, ConvId, Msgs).
 beamai_chat_memory:mem_clear(Store, ConvId).
 ```
 
-Implement this behaviour to provide a custom backend (e.g. a persistent SQLite store).
+Implement this behaviour to provide a custom backend (e.g. a SQLite/Redis store).
+
+### Persistent Backend (DETS)
+
+`beamai_chat_memory_dets` mirrors the ETS implementation but persists messages to a
+DETS file: after a process/node restart, reopening the same file restores every
+conversation's history (each write is followed by `dets:sync`).
+
+```erlang
+{ok, _Pid} = beamai_chat_memory_dets:start_link(my_mem, #{file => "data/chat.dets"}),
+Store = beamai_chat_memory_dets:handle(my_mem),   %% handle {beamai_chat_memory_dets, my_mem}
+%% Same usage as the ETS backend; restart with the same file to recover history
+```
 
 ## Windowed Store
 
@@ -150,6 +163,7 @@ and are **not written to the store**.
 |------|-------------|
 | `apps/beamai_core/src/behaviours/beamai_chat_memory.erl` | behaviour + dispatch API |
 | `apps/beamai_core/src/kernel/beamai_chat_memory_ets.erl` | ETS default implementation |
+| `apps/beamai_core/src/kernel/beamai_chat_memory_dets.erl` | DETS persistent implementation |
 | `apps/beamai_core/src/kernel/beamai_chat_memory_window.erl` | windowed wrapper |
 | `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | Memory Filter |
 | `apps/beamai_core/src/kernel/beamai_kernel.erl` | `new/2` (filters given once), invoke dual-mode |
