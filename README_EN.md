@@ -308,6 +308,7 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 
 - **[docs/API_REFERENCE_EN.md](docs/API_REFERENCE_EN.md)** - API Reference
 - **[docs/FILTER_EN.md](docs/FILTER_EN.md)** - Filter System Documentation
+- **[docs/MEMORY_EN.md](docs/MEMORY_EN.md)** - Conversation Memory (Memory Filter) documentation
 - **[docs/OUTPUT_PARSER.md](docs/OUTPUT_PARSER.md)** - Output Parser Guide
 - **[docs/DEPENDENCIES_EN.md](docs/DEPENDENCIES_EN.md)** - Dependency Relationship Details
 
@@ -334,9 +335,9 @@ rebar3 shell
 | Metric | Count |
 |--------|-------|
 | **OTP Applications** | 3 (beamai_core, beamai_agent, beamai_llm) |
-| **Source Modules** | ~60 |
-| **Test Files** | ~25 |
-| **Unit Tests** | ~260 |
+| **Source Modules** | ~73 |
+| **Test Files** | ~38 |
+| **Unit Tests** | ~380 |
 
 ### Running Tests
 

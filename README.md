@@ -305,6 +305,7 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 
 - **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API 参考文档
 - **[docs/FILTER.md](docs/FILTER.md)** - Filter 洋葱系统文档
+- **[docs/MEMORY.md](docs/MEMORY.md)** - 会话记忆（Memory Filter）文档
 - **[docs/OUTPUT_PARSER.md](docs/OUTPUT_PARSER.md)** - Output Parser 指南
 - **[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)** - 依赖关系详解
 
@@ -331,9 +332,9 @@ rebar3 shell
 | 指标 | 数量 |
 |------|------|
 | **OTP 应用** | 3 个（beamai_core、beamai_agent、beamai_llm） |
-| **源代码模块** | ~60 个 |
-| **测试文件** | ~25 个 |
-| **单元测试** | ~260 个 |
+| **源代码模块** | ~73 个 |
+| **测试文件** | ~38 个 |
+| **单元测试** | ~380 个 |
 
 ### 测试运行
 
