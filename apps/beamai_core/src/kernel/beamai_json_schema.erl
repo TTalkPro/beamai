@@ -168,12 +168,21 @@ type_matches(<<"integer">>, I) when is_float(I) -> I == trunc(I);
 type_matches(_Type, _Instance) -> false.
 
 %% @private enum：实例须与列表中某值 JSON 相等
+%%
+%% 错误信息**必须列出允许值**：这条反馈会被 schema_validation_turn_filter 原样
+%% 喂回模型自纠，只说「不在允许值之内」而不说允许什么，模型无从改起——真实
+%% 模型实测下会反复给出近义词（「晴朗」之于「晴」）直到重试耗尽。
 check_enum(Schema, Instance, Path, Acc, Limit) ->
     case sget(enum, Schema) of
         {ok, Values} when is_list(Values) ->
             case lists:any(fun(V) -> json_equal(V, Instance) end, Values) of
-                true -> Acc;
-                false -> add(Path, enum, <<"不在 enum 允许值之内"/utf8>>, Acc, Limit)
+                true ->
+                    Acc;
+                false ->
+                    Msg = <<"值 "/utf8, (fmt_value(Instance))/binary,
+                            " 不在 enum 允许值之内，只能是 "/utf8,
+                            (fmt_values(Values))/binary>>,
+                    add(Path, enum, Msg, Acc, Limit)
             end;
         _ ->
             Acc
@@ -186,8 +195,13 @@ check_const(Schema, Instance, Path, Acc, Limit) ->
             Acc;
         {ok, Const} ->
             case json_equal(Const, Instance) of
-                true -> Acc;
-                false -> add(Path, const, <<"与 const 约定值不符"/utf8>>, Acc, Limit)
+                true ->
+                    Acc;
+                false ->
+                    Msg = <<"值 "/utf8, (fmt_value(Instance))/binary,
+                            " 与 const 约定值不符，必须是 "/utf8,
+                            (fmt_value(Const))/binary>>,
+                    add(Path, const, Msg, Acc, Limit)
             end
     end.
 
@@ -253,7 +267,10 @@ len_bound(_Other, _Len, _Pred, _Keyword, _Msg, _Path, Acc, _Limit) ->
 %% @private pattern：每次现编现用（结构化输出实例小，无需缓存 MP）
 check_pattern({ok, Pattern}, Str, Path, Acc, Limit) ->
     try re:run(Str, Pattern, [{capture, none}, unicode]) of
-        nomatch -> add(Path, pattern, <<"不匹配 pattern"/utf8>>, Acc, Limit);
+        %% 带上 pattern 原文：模型得知道要匹配什么才改得对（同 check_enum 的理由）
+        nomatch ->
+            add(Path, pattern,
+                <<"不匹配 pattern "/utf8, (fmt_value(Pattern))/binary>>, Acc, Limit);
         _Match -> Acc
     catch
         %% 非法正则：不可断言 → 按未知关键字处理，忽略
@@ -483,3 +500,14 @@ type_name(_) -> <<"unknown">>.
 %% @private 数值转 binary（错误消息用）
 num_bin(N) when is_integer(N) -> integer_to_binary(N);
 num_bin(N) -> float_to_binary(N, [{decimals, 10}, compact]).
+
+%% @private 值渲染为错误消息里的可读片段（字符串加引号以便与字面量区分）
+fmt_value(V) when is_binary(V) -> <<$", V/binary, $">>;
+fmt_value(V) when is_integer(V) -> integer_to_binary(V);
+fmt_value(V) when is_float(V) -> num_bin(V);
+fmt_value(V) when is_atom(V) -> atom_to_binary(V, utf8);
+fmt_value(V) -> unicode:characters_to_binary(io_lib:format("~p", [V])).
+
+%% @private 值列表渲染为 `a、b、c`（enum 允许值用）
+fmt_values(Values) ->
+    iolist_to_binary(lists:join(<<"、"/utf8>>, [fmt_value(V) || V <- Values])).

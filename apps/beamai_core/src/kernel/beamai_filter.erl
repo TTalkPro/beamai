@@ -22,11 +22,19 @@
 %%% Request / Response：
 %%% - chat：Request `#{messages, context, opts}` → Response `#{response, context}`
 %%% - tool：Request `#{tool, args, context}`     → Response `#{result, context}`
-%%% - turn：Request `#{messages, context, resume}` → Response = 工具循环结果 tuple
-%%%   （`{ok, Response, ToolCallsMade, Iterations}` | `{interrupt, Type, Ctx}` |
-%%%   `{error, Reason}`）；turn filter 直接模式匹配该 tuple。
+%%% - turn：Request `#{messages, context, resume, load_history}` → Response = 工具循环
+%%%   结果 tuple（`{ok, Response, ToolCallsMade, Iterations, Messages}` |
+%%%   `{interrupt, Type, Ctx}` | `{error, Reason}`）；turn filter 直接模式匹配该 tuple。
 %%%   **硬规则**：`{interrupt,_,_}` / `{error,_}` 必须透传、不得重入 Next
 %%%   （暂停/错误态上重试破坏 HITL 语义）。
+%%%
+%%%   **重入要用第 5 元 `Messages`**（该跑完整消息序列：跨轮历史 + 本轮新增 +
+%%%   各轮 assistant/工具结果，直至最终答案）。要接着上一跑续走时，传
+%%%   `messages => Messages ++ 追加的`、`load_history => false`：上下文全由 filter
+%%%   重建，不依赖 agent 是否开了记忆。
+%%%   Request 的 `messages` 语义是**本轮新增消息**（非完整历史），`load_history`
+%%%   缺省 true（让 loop 前接跨轮历史）；只传新增消息而指望 loop 载入历史的写法，
+%%%   在 `memory => false` 时会丢掉原始问题——那正是 load_history 存在的理由。
 %%%
 %%% 某条链只会用到该链对应的 around（chat 链用 around_chat，tool 链用
 %%% around_tool，turn 链用 around_turn），不含相关 hook 的 filter 在该链中被跳过。

@@ -62,7 +62,7 @@ logging_filter() ->
     }).
 
 %% @private turn 结果的一句话摘要（turn 链响应是工具循环结果 tuple）
-turn_outcome({ok, _Resp, TCM, Iter}) ->
+turn_outcome({ok, _Resp, TCM, Iter, _Msgs}) ->
     io_lib:format("ok tool_calls=~p iterations=~p", [length(TCM), Iter]);
 turn_outcome({interrupt, Type, _Ctx}) ->
     io_lib:format("interrupt ~p", [Type]);
@@ -359,14 +359,22 @@ hold_release_filter(CheckFun) when is_function(CheckFun, 1) ->
 
 validate_loop(Req, Next, ValidateFun, Retries) ->
     case Next(Req) of
-        {ok, Response, _TCM, _Iter} = R ->
+        {ok, Response, _TCM, _Iter, Messages} = R ->
             case ValidateFun(Response) of
                 ok ->
                     R;
                 {invalid, Reason} when Retries > 0 ->
                     Feedback = #{role => user, content => feedback_text(Reason)},
-                    %% 重入：全新循环（有真实入口消息，resume=false 让请求侧 filter 照常）
-                    validate_loop(Req#{messages => [Feedback], resume => false},
+                    %% 重入：拿上一跑的**完整消息序列**接着走，并关掉 load_history
+                    %% ——上下文完全由这里重建，不依赖记忆是否开启。
+                    %%
+                    %% 曾经只传 [Feedback]、指望 loop 载入历史把原问题带回来：
+                    %% memory 开启时对，`memory => false` 时历史为空 → 模型只收到
+                    %% 一句「上次没通过请修正」、原始问题丢失，于是胡编（真实模型
+                    %% 实测确认）。而 memory=false + 结构化抽取恰恰是最自然的组合。
+                    validate_loop(Req#{messages => Messages ++ [Feedback],
+                                       load_history => false,
+                                       resume => false},
                                   Next, ValidateFun, Retries - 1);
                 {invalid, _Reason} ->
                     R   %% 重试耗尽，原样返回
