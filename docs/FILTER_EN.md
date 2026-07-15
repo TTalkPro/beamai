@@ -78,7 +78,24 @@ A filter without the corresponding around for a chain is **skipped** in that cha
 |-------|---------|----------|
 | chat | `#{messages, context, opts}` | `#{response, context}` (response is a beamai_llm_response) |
 | tool | `#{tool, args, context}` | `#{result, context}` |
-| turn | `#{messages, context, resume}` | tool-loop result tuple (`{ok, Resp, TCM, Iter}` \| `{interrupt, _, _}` \| `{error, _}`; interrupt/error must pass through, never re-enter) |
+| turn | `#{messages, context, resume, load_history}` | tool-loop result tuple (`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`; interrupt/error must pass through, never re-enter) |
+
+To **re-enter** the turn chain (validate-retry / evaluator), use the result's 5th element
+`Messages` — the complete message sequence of that run (cross-run history + this turn's new
+messages + every round's assistant/tool-result messages, up to the final answer):
+
+```erlang
+%% Continue from the previous run: the filter rebuilds the full context itself,
+%% independent of whether the agent has memory enabled.
+Next(Req#{messages => Messages ++ [Feedback], load_history => false})
+```
+
+The request's `messages` means **this turn's new messages** (not the full history), and
+`load_history` defaults to `true` (letting the tool loop prepend cross-run history). Passing
+only the new messages and relying on the loop to bring the original question back **loses that
+question when `memory => false`** — the model then receives nothing but "your last answer
+failed validation, please fix it" and hallucinates. That is exactly why `load_history` and the
+5th element exist.
 
 Here `context` is the **shared context** (`beamai_context`) threaded through the whole chain, readable/writable by filters and the terminal. It is distinct from the filter **private context** below.
 

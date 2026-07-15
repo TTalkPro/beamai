@@ -78,7 +78,20 @@ filter 链由 `beamai_filter_chain` 合成为嵌套调用，最内层是 **termi
 |----|---------|----------|
 | chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_llm_response） |
 | tool | `#{tool, args, context}` | `#{result, context}` |
-| turn | `#{messages, context, resume}` | 工具循环结果 tuple（`{ok, Resp, TCM, Iter}` \| `{interrupt, _, _}` \| `{error, _}`；interrupt/error 必须透传、不得重入） |
+| turn | `#{messages, context, resume, load_history}` | 工具循环结果 tuple（`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`；interrupt/error 必须透传、不得重入） |
+
+turn 链**重入**（校验重试 / evaluator）要用结果的第 5 元 `Messages` —— 该跑完整的消息序列
+（跨轮历史 + 本轮新增 + 各轮 assistant/工具结果，直至最终答案）：
+
+```erlang
+%% 接着上一跑续走：上下文全由 filter 重建，不依赖 agent 是否开了记忆
+Next(Req#{messages => Messages ++ [Feedback], load_history => false})
+```
+
+Request 的 `messages` 语义是**本轮新增消息**（不是完整历史），`load_history` 缺省 `true`
+（让工具循环前接跨轮历史）。只传新增消息、指望循环载入历史把原问题带回来的写法，在
+`memory => false` 时会**丢掉原始问题**——模型只收到一句「上次没通过请修正」然后胡编。
+这正是 `load_history` 与第 5 元存在的理由。
 
 其中 `context` 是贯穿全链的**共享上下文**（`beamai_context`），filter、terminal 都能读写。它与下文的 filter **私有上下文** 是两回事。
 
