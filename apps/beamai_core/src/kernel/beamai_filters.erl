@@ -4,8 +4,10 @@
 %%% 对照 clj-agent filter-chain-design.md §3。均为纯构造器，返回 beamai_filter
 %%% 的 filter map，构建 kernel 时经 beamai_kernel:new/2 的 filters 列表一次性给出。
 %%%
-%%%   tool 链：logging_filter/0、timeout_filter/1、approval_filter/1
-%%%   turn 链：validation_turn_filter/2
+%%%   chat 链：safeguard_filter/1,2
+%%%   tool 链：timeout_filter/1、approval_filter/1
+%%%   turn 链：validation_turn_filter/2、schema_validation_turn_filter/2,3
+%%%   三链通吃：logging_filter/0
 %%%   token 链：token_redact_filter/2、hold_release_filter/1
 %%%     （对照 clj-agent token-stream-filter-design.md §4）
 %%%
@@ -14,17 +16,42 @@
 -module(beamai_filters).
 
 -export([logging_filter/0, timeout_filter/1, approval_filter/1,
+         safeguard_filter/1, safeguard_filter/2,
          validation_turn_filter/2,
+         schema_validation_turn_filter/2, schema_validation_turn_filter/3,
          token_redact_filter/2, hold_release_filter/1]).
 
+%% 敏感词命中时的缺省答复（对照 Spring AI SafeGuardAdvisor 的 DEFAULT_FAILURE_RESPONSE）
+-define(DEFAULT_SAFEGUARD_RESPONSE,
+        <<"抱歉，由于涉及敏感内容，我无法回应。换个话题或换种问法好吗？"/utf8>>).
+
 %%====================================================================
-%% tool 链
+%% 三链通吃
 %%====================================================================
 
-%% @doc 日志 filter（tool 链）：调用前后记录（debug 级），不改结果
+%% @doc 日志 filter（三链）：每链调用前后记录（debug 级），不改结果
+%%
+%% 对标 Spring AI SimpleLoggerAdvisor（它只记 chat 请求/响应）——这里三个 hook
+%% 全带上：放哪条链就记哪条，一个 filter 覆盖 turn/chat/tool 三个粒度。
+%% 放在 filters 列表**首位**记全景，放在某个 filter 之后则只看得到那层之内的
+%% 改写结果（洋葱层序即可见范围，这正是排查 filter 改写的用法）。
 -spec logging_filter() -> beamai_filter:filter().
 logging_filter() ->
     beamai_filter:new(<<"logging">>, #{
+        around_turn => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
+            logger:debug("beamai turn start: ~p messages", [length(Msgs)]),
+            Resp = Next(Req),
+            logger:debug("beamai turn done: ~ts", [turn_outcome(Resp)]),
+            Resp
+        end,
+        around_chat => fun(#{messages := Msgs} = Req, _FCtx, Next) ->
+            logger:debug("beamai chat call: ~p messages", [length(Msgs)]),
+            #{response := Response} = Resp = Next(Req),
+            logger:debug("beamai chat done: finish_reason=~p tool_calls=~p",
+                         [beamai_llm_response:finish_reason(Response),
+                          length(beamai_llm_response:tool_calls(Response))]),
+            Resp
+        end,
         around_tool => fun(#{tool := ToolSpec, args := Args} = Req, _FCtx, Next) ->
             Name = beamai_tool:get_name(ToolSpec),
             logger:debug("beamai tool call: ~ts args=~p", [Name, Args]),
@@ -33,6 +60,97 @@ logging_filter() ->
             Resp
         end
     }).
+
+%% @private turn 结果的一句话摘要（turn 链响应是工具循环结果 tuple）
+turn_outcome({ok, _Resp, TCM, Iter}) ->
+    io_lib:format("ok tool_calls=~p iterations=~p", [length(TCM), Iter]);
+turn_outcome({interrupt, Type, _Ctx}) ->
+    io_lib:format("interrupt ~p", [Type]);
+turn_outcome({error, Reason}) ->
+    io_lib:format("error ~p", [Reason]);
+turn_outcome(_) ->
+    "unknown".
+
+%%====================================================================
+%% chat 链
+%%====================================================================
+
+%% @doc 敏感词拦截 filter（chat 链）：命中即短路，不调用 LLM
+%%
+%% 对标 Spring AI SafeGuardAdvisor。命中时**不调 Next**，直接合成一个
+%% finish_reason=content_filtered 的答复返回——不产生 tool_calls，故工具循环
+%% 见之即正常收尾。
+%%
+%% 放 chat 链（而非 turn 链）与 Spring 的层序一致（其 SafeGuardAdvisor order=0
+%% 落在 ToolCallingAdvisor 之内），效果是**循环内每次 LLM 调用都过一遍**：不止
+%% 拦用户输入，工具结果回灌时带出的敏感内容同样拦得住。
+%%
+%% Opts：
+%% - `failure_response` —— 命中时的答复文本（缺省见 ?DEFAULT_SAFEGUARD_RESPONSE）
+%% - `case_sensitive` —— 是否区分大小写（**缺省 false**）
+%%
+%% **能力边界要认清**：这是子串匹配，不是内容安全。Spring 的实现是区分大小写的
+%% `String.contains`（"bomb" 拦不住 "BOMB"），本实现缺省不区分大小写算是修了这一处；
+%% 但变形、拼音、Unicode 同形字、跨消息拼接一概拦不住。真要做内容安全请接专门的
+%% 审核模型，本 filter 只当粗筛与兜底。
+-spec safeguard_filter([binary()]) -> beamai_filter:filter().
+safeguard_filter(Words) ->
+    safeguard_filter(Words, #{}).
+
+-spec safeguard_filter([binary()], map()) -> beamai_filter:filter().
+safeguard_filter(Words, Opts) when is_list(Words), is_map(Opts) ->
+    Failure = maps:get(failure_response, Opts, ?DEFAULT_SAFEGUARD_RESPONSE),
+    CaseSensitive = maps:get(case_sensitive, Opts, false),
+    Patterns = case CaseSensitive of
+        true -> Words;
+        false -> [string:lowercase(W) || W <- Words]
+    end,
+    beamai_filter:new(<<"safeguard">>, #{
+        around_chat => fun(#{messages := Msgs, context := Ctx} = Req, _FCtx, Next) ->
+            case sensitive_hit(Patterns, Msgs, CaseSensitive) of
+                true -> #{response => refusal_response(Failure), context => Ctx};
+                false -> Next(Req)
+            end
+        end
+    }).
+
+%% @private 敏感词是否命中（全部消息文本拼一起后子串匹配）
+sensitive_hit([], _Msgs, _CaseSensitive) ->
+    false;
+sensitive_hit(Patterns, Msgs, CaseSensitive) ->
+    Text0 = iolist_to_binary([message_text(M) || M <- Msgs]),
+    Text = case CaseSensitive of
+        true -> Text0;
+        false -> string:lowercase(Text0)
+    end,
+    lists:any(fun(<<>>) -> false;
+                 (W) -> binary:match(Text, W) =/= nomatch
+              end, Patterns).
+
+%% @private 抽消息文本（多模态 content 列表只取 text 块；图片/音频等忽略）
+message_text(#{content := C}) when is_binary(C) ->
+    C;
+message_text(#{content := Blocks}) when is_list(Blocks) ->
+    iolist_to_binary([block_text(B) || B <- Blocks]);
+message_text(_) ->
+    <<>>.
+
+%% @private 抽 content 块文本（兼容 atom / binary 键）
+block_text(#{text := T}) when is_binary(T) -> T;
+block_text(#{<<"text">> := T}) when is_binary(T) -> T;
+block_text(_) -> <<>>.
+
+%% @private 合成拦截答复（不经 LLM）
+refusal_response(Text) ->
+    beamai_llm_response:new(#{
+        content => Text,
+        finish_reason => content_filtered,
+        metadata => #{safeguard => blocked}
+    }).
+
+%%====================================================================
+%% tool 链
+%%====================================================================
 
 %% @doc 超时 filter（tool 链）：单个工具执行超过 Ms 毫秒则超时短路
 %%
@@ -100,7 +218,88 @@ approval_filter(ApproveFun) when is_function(ApproveFun, 2) ->
     beamai_filter:filter().
 validation_turn_filter(ValidateFun, MaxRetries)
   when is_function(ValidateFun, 1), is_integer(MaxRetries), MaxRetries >= 0 ->
-    beamai_filter:new(<<"validation">>, #{
+    new_validation_filter(<<"validation">>, ValidateFun, MaxRetries).
+
+%% @doc 结构化输出 JSON Schema 校验 filter（turn 链）
+%%
+%% validation_turn_filter 的开箱即用特化：把「取文本 → 解 JSON → 过 Schema」
+%% 组成 ValidateFun，不合格则把 Schema 错误当反馈重入循环。配 provider 原生
+%% 结构化输出（json_schema）使用效果最好——原生约束负责大多数情形，本 filter
+%% 兜住漏网的（尤其不支持原生结构化输出的 provider）。
+%%
+%% Schema 直接复用 beamai_tool 的参数 Schema 形态（atom 键亦可），校验器见
+%% beamai_json_schema（DRAFT 2020-12 的实用子集）。
+%%
+%% Opts：
+%% - `max_errors` —— 单次最多收集几条错误（缺省全收；错误全塞进反馈会撑爆
+%%   提示词，字段多的 Schema 建议设 5~10）
+%% - `code_fence` —— 是否剥离 ```json 围栏再解析（**缺省 true**）。模型即便被
+%%   要求只输出 JSON 也爱裹围栏，Spring 靠原生结构化输出免了这一遭，我们没这
+%%   前提，故缺省宽容。
+%%
+%% **与 Spring 的一处分歧**：Spring 把错误追加到原 user 消息文本上重发，故错误
+%% 不跨重试累积；这里沿用 validation_turn_filter 的语义——反馈作为新 user 消息
+%% **重入全新循环**（resume=false）。重试耗尽则原样返回最后一次（仍不合格的）
+%% 响应，不抛错——与 Spring 一致，失败在下游解析时才浮现。
+-spec schema_validation_turn_filter(beamai_json_schema:schema(), non_neg_integer()) ->
+    beamai_filter:filter().
+schema_validation_turn_filter(Schema, MaxRetries) ->
+    schema_validation_turn_filter(Schema, MaxRetries, #{}).
+
+-spec schema_validation_turn_filter(beamai_json_schema:schema(), non_neg_integer(), map()) ->
+    beamai_filter:filter().
+schema_validation_turn_filter(Schema, MaxRetries, Opts)
+  when is_map(Schema), is_integer(MaxRetries), MaxRetries >= 0, is_map(Opts) ->
+    new_validation_filter(<<"schema_validation">>, schema_validator(Schema, Opts), MaxRetries).
+
+%% @private 组装「取文本 → 解 JSON → 过 Schema」的 ValidateFun
+schema_validator(Schema, Opts) ->
+    Fence = maps:get(code_fence, Opts, true),
+    ValOpts = maps:with([max_errors], Opts),
+    fun(Response) ->
+        case beamai_llm_response:content(Response) of
+            Content when is_binary(Content), Content =/= <<>> ->
+                validate_json(Schema, ValOpts, strip_fence(Fence, Content));
+            _ ->
+                {invalid, <<"响应没有文本内容，无法校验结构化输出"/utf8>>}
+        end
+    end.
+
+%% @private 解 JSON 后过 Schema
+validate_json(Schema, ValOpts, Text) ->
+    case decode_json(Text) of
+        {ok, Term} ->
+            case beamai_json_schema:validate(Schema, Term, ValOpts) of
+                ok -> ok;
+                {error, Errors} -> {invalid, beamai_json_schema:error_message(Errors)}
+            end;
+        error ->
+            {invalid, <<"输出不是合法 JSON"/utf8>>}
+    end.
+
+%% @private 宽容解码（jsx 出错即非法 JSON）
+decode_json(Text) ->
+    try
+        {ok, jsx:decode(Text, [return_maps])}
+    catch
+        _:_ -> error
+    end.
+
+%% @private 剥离 ```json ... ``` 围栏（无围栏则原样；仅取首个围栏内容）
+%%
+%% 换行不强求（```json{...}``` 也认），围栏内残留的空白交给 jsx。
+strip_fence(false, Text) ->
+    Text;
+strip_fence(true, Text) ->
+    case re:run(Text, "```(?:json)?\\s*(.*?)```",
+                [dotall, caseless, {capture, [1], binary}]) of
+        {match, [Inner]} -> Inner;
+        nomatch -> Text
+    end.
+
+%% @private 构造校验 turn filter（validation / schema_validation 共用）
+new_validation_filter(Name, ValidateFun, MaxRetries) when is_function(ValidateFun, 1) ->
+    beamai_filter:new(Name, #{
         around_turn => fun(Req, _FCtx, Next) ->
             validate_loop(Req, Next, ValidateFun, MaxRetries)
         end

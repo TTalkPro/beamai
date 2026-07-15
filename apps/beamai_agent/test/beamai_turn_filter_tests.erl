@@ -302,3 +302,131 @@ validation_turn_filter_exhausts_test() ->
     after
         meck:unload(beamai_chat_completion)
     end.
+
+%%====================================================================
+%% 内置 schema_validation_turn_filter：JSON Schema 不过则反馈重入
+%%====================================================================
+
+%% 待校验的结构化输出 Schema（复用 beamai_tool 的参数 Schema 形态）
+person_schema() ->
+    #{type => object,
+      properties => #{<<"name">> => #{type => string},
+                      <<"age">> => #{type => integer, minimum => 0}},
+      required => [<<"name">>, <<"age">>]}.
+
+%% 首答缺字段 → 反馈重入 → 合格
+schema_validation_reentry_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(N) ->
+        C = case N of
+            1 -> <<"{\"name\":\"bob\"}">>;                  %% 缺 age
+            _ -> <<"{\"name\":\"bob\",\"age\":30}">>
+        end,
+        {ok, #{content => C, finish_reason => <<"stop">>}}
+    end, Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(person_schema(), 2)]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(<<"{\"name\":\"bob\",\"age\":30}">>, maps:get(content, Result)),
+        ?assertEqual(2, length(drain_llm_calls([])))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% 反馈里带上 Schema 错误说明（模型得知道错在哪才改得对）
+schema_validation_feedback_carries_error_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(N) ->
+        C = case N of
+            1 -> <<"{\"name\":\"bob\"}">>;
+            _ -> <<"{\"name\":\"bob\",\"age\":30}">>
+        end,
+        {ok, #{content => C, finish_reason => <<"stop">>}}
+    end, Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(person_schema(), 2)]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, _Result, _} = beamai_agent:run(Agent, <<"go">>),
+        %% 第二次调用的入口消息应含缺失字段名 age
+        [_First, {2, Msgs} | _] = drain_llm_calls([]),
+        Text = iolist_to_binary([C || #{content := C} <- Msgs, is_binary(C)]),
+        ?assertNotEqual(nomatch, binary:match(Text, <<"age">>))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% 非法 JSON 同样触发重入
+schema_validation_rejects_non_json_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(N) ->
+        C = case N of
+            1 -> <<"我想想……"/utf8>>;
+            _ -> <<"{\"name\":\"bob\",\"age\":30}">>
+        end,
+        {ok, #{content => C, finish_reason => <<"stop">>}}
+    end, Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(person_schema(), 2)]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(<<"{\"name\":\"bob\",\"age\":30}">>, maps:get(content, Result)),
+        ?assertEqual(2, length(drain_llm_calls([])))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% ```json 围栏缺省剥离（模型爱裹围栏，裹了也算过）
+schema_validation_strips_code_fence_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(_N) ->
+        {ok, #{content => <<"```json\n{\"name\":\"bob\",\"age\":30}\n```">>,
+               finish_reason => <<"stop">>}}
+    end, Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(person_schema(), 2)]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, _Result, _} = beamai_agent:run(Agent, <<"go">>),
+        %% 一次过，不重入
+        ?assertEqual(1, length(drain_llm_calls([])))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% 关掉 code_fence 后围栏即不合法 JSON → 重入
+schema_validation_code_fence_off_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(_N) ->
+        {ok, #{content => <<"```json\n{\"name\":\"bob\",\"age\":30}\n```">>,
+               finish_reason => <<"stop">>}}
+    end, Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(
+        person_schema(), 1, #{code_fence => false})]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, _Result, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(2, length(drain_llm_calls([])))   %% 初 + 1 重试
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% 重试耗尽：原样返回最后一次（仍不合格的）响应，不抛错（与 Spring 一致）
+schema_validation_exhausts_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(_N) -> {ok, #{content => <<"{}">>, finish_reason => <<"stop">>}} end,
+                  Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(person_schema(), 1)]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(<<"{}">>, maps:get(content, Result)),
+        ?assertEqual(2, length(drain_llm_calls([])))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
