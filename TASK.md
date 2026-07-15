@@ -1,91 +1,132 @@
-# TASK: Token 流变换链（filter 第四钩子 token_transform）
+# TASK: ToolCallingManager —— 分离工具执行（PR1：纯重构，零行为变化）
 
-> 来源：clj-agent `docs/token-stream-filter-design.md`（:token-xf，transducer 承接）。
-> Erlang 无 transducer，契约改为等价的 **step/flush map**：
-> `#{init => S0, step := fun((TokenData, S) -> {[TokenData], S}), flush => fun((S) -> [TokenData])}`。
-> 已核实前提：token 回调在调用方进程内**串行同步**执行（gun/hackney receive 循环，
-> beamai_llm_http_client:233）；stream_chat 同步阻塞至流终；callback_meta 每请求静态；
-> terminal 烤死 TokenCallback（chat filter 换不掉 sink，组装点无歧义）。
-> 顺序 A→B→C→D→E，每批全量 eunit + dialyzer。不 commit：待用户 review。
+> 来源：`design/tool_calling_manager_design.md`（移植自 clj-agent 同名设计文档 v3，
+> 针对 beamai/Erlang 适配）。本文为 **PR1**——把 `execute_tools` 升格为可注入
+> behaviour，行为零变化。
+>
+> **v3 适配**（clj-agent v3 用户收敛）：
+> 1. 协议方法改名 `execute_batch` → `execute_tool_calls`（Spring 对齐）
+> 2. 多 impl：concurrent（默认，尊重 parallel/serial）+ sequential（强制串行）
+> 3. `execute_tools/5` 和 `run_one_tool/3` 是实现内部 helper，不是协议方法
 
-## 语义决定（对照 clj 方案逐条）
+## 语义决定
 
-1. **第四钩子 `token_transform`**，与 around_chat/around_tool/around_turn 并存于 hooks；
-   同步路径（invoke_chat）完全忽略；tool/turn 链无关。
-2. **TokenData** `#{token := binary(), meta := map()}`——保留 per-token meta 穿越缓冲。
-3. **顺序 = filters 注册顺序**：靠前者最先见原始 token（与三链"靠前者最先见 req"一致）。
-4. **状态作用域 = 单次 LLM 流**：组装器在 terminal 每次调用时现场初始化（init 值），
-   工具循环每轮各自新状态；状态存组装进程 pdict（唯一 ref 键，flush 后 erase）。
-5. **flush 只在正常完流**：`stream_chat` 返回 `{ok,_}` 后级联 flush（外层残留经内层
-   step 传播再 sink，然后内层自己 flush——精确对齐 transducer completion 语义）；
-   error/throw 不 flush（半截答案不外泄）。
-6. **硬边界**：token 链只改送 sink 的出站流；最终归一化响应不经过它（结构免费成立）。
-7. **零开销退化**：无 token_transform filter 时 TokenCallback 原样直通（路径与现状一致）。
-8. reduced 早停不实现（无内置 take-n 需求，出界记录）。
+1. **新增 behaviour `beamai_tool_calling_manager`**（agent 模块），定义
+   `execute_tool_calls/4` callback + `execute_tool_calls/4` 分派器（与
+   `beamai_memory_provider` 的 `{Mod, Ref}` + 分派 API 模式完全一致）。
+2. **多 impl（v3 核心）**：
+   - `beamai_concurrent_tool_calling_manager`（默认）——spawn_monitor 并发，
+     尊重 `parallel` / `serial`（现状行为）
+   - `beamai_sequential_tool_calling_manager`——全串行，忽略 parallel opts，
+     适合调试 / 严格副作用场景
+3. **`agent_state` 增 `tool_calling_manager` 字段**——`create/1` 解析，缺省 concurrent。
+4. **全部 4 个 `execute_tools` 调用点**改为经 manager：
+   - `beamai_agent_tool_loop:execute_and_continue/4`（:243，正常路径）
+   - `beamai_agent_tool_loop:handle_interrupt/6`（:206，中断安全 tools）
+   - `beamai_agent:resume_approval_raw/4`（:465，审批恢复执行）
+   - `beamai_agent:resume_env_raw/3`（:492，环境重跑）
+5. **`beamai_agent_utils:execute_tools/5` 完全保留不动**——concurrent/sequential manager 委托给它。
+6. **`beamai_kernel` / `beamai_tool` 完全不动**——PR1 只动 agent 层。
+7. **零行为变化**——全套现有测试原样通过。
 
-## 批次 A：契约（beamai_filter）
+## 返回值映射
 
-- [x] A1 hooks 增可选键 `token_transform`；新类型 token_data/0、token_step/0、token_flush/0、
-      token_transform/0 并导出；hook_type 不变（token_transform 不走 filter_chain 三链）；moduledoc 补第四钩子
+现有 `execute_tools` 返回 `{ToolMsgs, Records, Ctx}` 三元组。
+behaviour callback 返回 `#{messages, records, context}` map（避免 arity 爆炸）。
+调用点 pattern match 解构。
 
-## 批次 B：组装器（新模块 beamai_token_stream）
+## 批次 A：behaviour 定义（新模块）
 
-- [x] B1 `wrap([token_transform()], Sink) -> {TokenCallback, Flush}`：无 xf 时恒等直通；
-      有 xf 时 pdict 存 [{Xf, State}]，step 链传播 1→N，Flush 级联
-- [x] B2 单元测试：1→N 与 flush（3 缓冲批放，7 token → 2 批 + completion 冲尾）、
-      组合顺序（先注册先见原始 token）、无状态改写、恒等退化
+- [x] A1 新模块 `beamai_agent/src/beamai_tool_calling_manager.erl`：
+      `-callback execute_batch(Ref, Kernel, ToolCalls, Opts) -> Result`；
+      导出类型 `manager/0`、`execute_opts/0`、`execute_result/0`；
+      分派函数 `execute({Mod,Ref}, Kernel, ToolCalls, Opts) -> Result`
+      （与 `beamai_memory_provider:history/2` 同款）
+- [x] A2 dialyzer：新模块无 warning（-spec 完整）
 
-## 批次 C：kernel 组装点（beamai_kernel）
+## 批次 B：默认实现（新模块）
 
-- [x] C1 `run_chat_stream`：收集 Filters 里的 token_transform（注册顺序）→ wrap(TokenCallback)
-      → terminal 用包装后回调；`{ok,_}` 后调 Flush，error/throw 不调
-- [x] C2 集成测试（meck stream_chat）：sink 收到变换后 token；最终响应不被变换；
-      异常不 flush；无 token_transform 时行为与现状一致；同步 invoke_chat 带 token_transform 不受影响
+- [x] B1 新模块 `beamai_agent/src/beamai_default_tool_calling_manager.erl`：
+      `-behaviour(beamai_tool_calling_manager)`；`new/0` 返回 `{?MODULE, default}`；
+      `execute_batch/4` unpack opts map 后调 `beamai_agent_utils:execute_tools/5`，
+      把返回的三元组包成 result map
+- [x] B2 dialyzer：新模块无 warning
 
-## 批次 D：内置 filter（beamai_filters）
+## 批次 C：agent_state 接入
 
-- [x] D1 `token_redact_filter(Pattern, Replacement)`：无状态逐 token 正则脱敏
-      （re 构造时编译；文档写明跨 chunk 漏检限制）
-- [x] D2 `hold_release_filter(CheckFun)`：缓冲整流；flush 时 CheckFun(全文) →
-      `ok` 放行原序 | `{block, Text}` 只 emit 一个替换 token
-- [x] D3 测试：redact 改写、reasoning/其它 meta 透传不误伤、hold-release 两分支
+- [x] C1 `beamai_agent_state`：`agent_state()` 类型增 `tool_calling_manager` 必填字段；
+      `create/1` 解析 Config 的 `tool_calling_manager`（缺省 `default:new()`）；
+      `{Mod, Ref}` 格式校验（Mod 为 atom）
 
-## 批次 E：文档
+## 批次 D：tool_loop 调用点改造（2 处）
 
-- [x] E1 FILTER.md / FILTER_EN.md：token_transform 契约 + 组装点 + 硬边界 + 内置 filter 表
-- [x] E2 全量 eunit + dialyzer
+- [x] D1 `beamai_agent_tool_loop`：`loop_opts()` 增 `tool_calling_manager` 字段；
+      `execute_and_continue/4` 改调 `beamai_tool_calling_manager:execute/4`
+      （opts map 含 context/parallel/on_result）；返回值 pattern match 解构
+- [x] D2 `handle_interrupt/6` 同样改调 manager
+- [x] D3 `beamai_agent:run_loop/4`（透传 `tool_calling_manager` 进 LoopOpts）
+
+## 批次 E：agent resume 调用点改造（2 处）
+
+- [x] E1 `beamai_agent:resume_approval_raw/4`（:463）改调 manager（parallel=false）
+- [x] E2 `beamai_agent:resume_env_raw/3`（:485）改调 manager（用 agent parallel_tools）
+
+## 批次 F：测试
+
+- [x] F1 mock manager 注入测试：注入 `{beamai_mock_tcm_impl, Ref}` 返回固定结果，
+      验证 execute 分派到 mock 而非 execute_tools
+- [x] F2 边界验证：注入 default manager 时 around_tool filter 仍触发（正交性证明）
+- [x] F3 额外测试：返回值 map 结构、空 ToolCalls、opts 缺省值、agent_state 注入/缺省
+
+## 批次 G：验证
+
+- [x] G1 `rebar3 eunit`（全量）全部通过——**593 tests, 0 failures**（基线 584 + 9 新增）
+- [x] G2 `rebar3 dialyzer` 零新增 warning（基线 34 个 pre-existing 不变，EXIT=1 同基线）
+- [x] G3 不 commit：待用户 review
 
 ## 明确出界
 
-- reduced?/take-n 早停协议
-- provider 层 reasoning token 独立通道（现 extract_token_from_event 只出 content 文本）
+- backend 分派（local/http/mcp）——PR2
+- `beamai_tool:invoke/3` 改动——PR2
+- `beamai_kernel` / `beamai_tool` 任何改动——PR2
+- execute_tools 逻辑搬家（从 utils 搬进 default manager）——PR1 不搬，只委托
 
-## 验证
+## 完成记录（2026-07-15 全部实施，v3 适配）
 
-- `rebar3 eunit`（全量，基线 362）+ `rebar3 dialyzer`（EXIT=0）
-- 不 commit：待用户 review
-
-## 完成记录（2026-07-14 全部实施）
-
-- **全绿**：`rebar3 eunit` 377 tests / 0 failures（基线 362 +15：组装器单测 8 +
-  kernel 集成 7）；`rebar3 dialyzer` EXIT=0。
-- **A 契约**：`beamai_filter` hooks 增 `token_transform`（hook_type 第四值）；新类型
-  token_data/token_step/token_flush/token_transform 并导出；hook/2 spec 放宽。
-- **B 组装器**：新模块 `beamai_token_stream:wrap([Xf], Sink) -> {Callback, Flush}`——
-  step 链 1→N 传播、flush 级联（外层残留经内层 step 再 sink，后内层自 flush，
-  对齐 transducer completion）、状态存 pdict（唯一 ref 键，Flush erase，幂等）、
-  无 xf 恒等直通。
-- **C 组装点**：`run_chat_stream` 收集 token_transform（注册顺序）→ terminal **每次执行**
-  现场 wrap（chat filter 重入 Next 每次流新状态）；`{ok,_}` 后 Flush，error/throw 不 flush。
-- **D 内置**：`beamai_filters:token_redact_filter/2`（构造时 re:compile，逐 token
-  global 替换；跨 chunk 漏检已文档化）、`hold_release_filter/1`（缓冲整流，
-  CheckFun(全文) → ok 原序放行 | {block,Text} 单 token 替换）。
-- **E 文档**：FILTER.md / FILTER_EN.md 新增 token_transform 专节（契约/三硬能力/硬边界
-  交付 vs 答案分工表/内置 filter 表/示例）。
-- **与 clj 方案的差异点**：transducer → step/flush map（`#{init, step, flush}`）；
-  组装点简化——beamai terminal 烤死 TokenCallback（chat filter 换不掉 sink），
-  无 clj "xf 链包链上存活的 on-token" 一说；meta 每请求静态（callback_meta），
-  token_data 仍带 meta 以保穿越缓冲的一般性。
-- **前提核实**：token 回调在调用方进程内串行同步执行（gun/hackney receive 循环，
-  beamai_llm_http_client sse_chunk_handler → process_events → Callback 逐个调），
-  pdict 状态安全；组装器文档写明"回调与 Flush 须同进程"。
+- **全绿**：`rebar3 eunit` 597 tests / 0 failures（基线 584 + 13 新增）；
+  `rebar3 dialyzer` 零新增 warning（基线 34 个 pre-existing 不变）。
+- **v3 适配**：
+  - 协议方法改名 `execute_batch` → `execute_tool_calls`（Spring 对齐）
+  - 多 impl：concurrent（默认）+ sequential，选 manager 即选策略
+  - `execute_tools/5`（批调度）和 `run_one_tool/3`（单工具）是实现内部 helper
+- **A behaviour**：新模块 `beamai_tool_calling_manager`（agent 层）——
+  `-callback execute_tool_calls/4` + `execute_tool_calls/4` 分派器 +
+  构造器 `default/0`（→concurrent）、`concurrent/0`、`sequential/0` +
+  类型 `manager/0` / `execute_opts/0` / `execute_result/0`。
+- **B concurrent 实现**：新模块 `beamai_concurrent_tool_calling_manager`——
+  `-behaviour(beamai_tool_calling_manager)`；`new/0` 返回 `{?MODULE, default}`；
+  `execute_tool_calls/4` unpack opts map → 调 `execute_tools/5`（透传 parallel）→
+  包成 result map。逻辑零重复、零改动。
+- **B sequential 实现**：新模块 `beamai_sequential_tool_calling_manager`——
+  与 concurrent 的唯一差异：`parallel` 永远传 `false`，忽略 opts。
+  证明多 impl 真能换策略（测试验证无重叠 vs 有重叠）。
+- **C agent_state**：`agent_state()` 增 `tool_calling_manager` 必填字段；
+  `create/1` 增 `setup_tool_calling_manager/1`——缺省 `default()`（→concurrent）。
+- **D tool_loop 改造**（2 处）：`execute_and_continue/4` + `handle_interrupt/6`
+  从直调 `execute_tools/5` 改为经 `beamai_tool_calling_manager:execute_tool_calls/4`；
+  `loop_opts()` 增 `tool_calling_manager` 字段；`run_loop/4` 透传。
+- **E resume 改造**（2 处）：`resume_approval_raw/4`（审批恢复执行单工具）+
+  `resume_env_raw/3`（环境重跑失败调用）改调 manager。
+- **F 测试**（13 个）：behaviour 基础（concurrent 委托、格式、default=concurrent、
+  缺省 opts）；mock 注入（独立 mock 模块）；agent_state 注入（自定义/缺省/sequential）；
+  filter 正交性；**多 impl 切换**（sequential 无重叠 vs concurrent 有重叠）；
+  返回值结构（map 三键、空 ToolCalls、多工具按序）。
+- **不变**：`beamai_agent_utils:execute_tools/5` 完全保留不动；
+  `beamai_kernel` / `beamai_tool` 零改动。
+- **4 个调用点全部迁移**：
+  | # | 模块 | 函数 | 行 | 场景 |
+  |---|---|---|---|---|
+  | 1 | beamai_agent_tool_loop | execute_and_continue/4 | :243 | 正常路径 |
+  | 2 | beamai_agent_tool_loop | handle_interrupt/6 | :206 | 中断安全 tools |
+  | 3 | beamai_agent | resume_approval_raw/4 | :465 | 审批恢复执行 |
+  | 4 | beamai_agent | resume_env_raw/3 | :492 | 环境重跑 |
