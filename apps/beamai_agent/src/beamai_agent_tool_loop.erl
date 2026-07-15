@@ -56,11 +56,16 @@
 %%
 %% @param Opts 循环选项（kernel、完整 messages、memory、回调等）
 %% @param PrevToolCalls 之前已执行的 tool 调用记录（resume 时携带）
-%% @returns {ok, Response, ToolCallsMade, Iterations} |
+%% @returns {ok, Response, ToolCallsMade, Iterations, Messages} |
 %%          {interrupt, Type, Context} |
 %%          {error, Reason}
+%%
+%% Messages 为本轮跑完的**完整消息序列**（含载入的跨轮历史、本轮新增、各轮
+%% assistant 回合与工具结果，直至最终答案）。turn filter 要重入时全靠它：
+%% 拿到它再配 `load_history => false` 续跑，才能不依赖记忆是否开启就重建出
+%% 完整上下文（见 beamai_filters:validate_loop 与 design/spring_advisor_alignment.md §2）。
 -spec run(loop_opts(), [map()]) ->
-    {ok, map(), [map()], pos_integer()} |
+    {ok, map(), [map()], pos_integer(), [map()]} |
     {interrupt, atom(), map()} |
     {error, term()}.
 run(Opts, PrevToolCalls) ->
@@ -112,7 +117,7 @@ iterate(Opts, N, ToolCallsMade) ->
                     TCs = beamai_llm_response:tool_calls(Response),
                     handle_tool_calls(TCs, Opts1#{messages => Messages1}, N, ToolCallsMade);
                 false ->
-                    finish(Response, ToolCallsMade)
+                    finish(Response, ToolCallsMade, Messages1)
             end;
         {error, _} = Err ->
             Err
@@ -144,9 +149,9 @@ invoke_llm(#{kernel := Kernel, chat_opts := ChatOpts} = Opts, ToSend) ->
             beamai_kernel:invoke_chat_stream(Kernel, ToSend, ChatOpts, TokenCb)
     end.
 
-%% @private 无 tool_calls，返回最终响应
-finish(Response, ToolCallsMade) ->
-    {ok, Response, ToolCallsMade, compute_iterations(ToolCallsMade)}.
+%% @private 无 tool_calls，返回最终响应（Messages 为跑完的完整消息序列）
+finish(Response, ToolCallsMade, Messages) ->
+    {ok, Response, ToolCallsMade, compute_iterations(ToolCallsMade), Messages}.
 
 %%====================================================================
 %% 内部函数 - Tool Calls 处理
@@ -275,8 +280,8 @@ is_failed(_) -> false.
 %% assistant(tool_calls) → tool(result) → assistant(答案)），下一轮续接不残缺。
 finish_direct(#{messages := Messages} = Opts, ToolResults, ToolCallsMade) ->
     Response = direct_response(ToolResults),
-    _ = record_assistant(Opts, Response, Messages),
-    finish(Response, ToolCallsMade).
+    Messages1 = record_assistant(Opts, Response, Messages),
+    finish(Response, ToolCallsMade, Messages1).
 
 %% @private 由工具结果合成最终响应（多工具按原始序换行拼接）
 direct_response(ToolResults) ->

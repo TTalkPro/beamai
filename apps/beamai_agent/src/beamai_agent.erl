@@ -151,7 +151,8 @@ run(State, UserMessage, Opts) ->
                 resume => false},
     Terminal = fun(TReq) ->
         run_loop(State0,
-                 #{new => maps:get(messages, TReq), load_history => true},
+                 #{new => maps:get(messages, TReq),
+                   load_history => maps:get(load_history, TReq, true)},
                  [], Opts#{turn_context => maps:get(context, TReq)})
     end,
     dispatch_turn_result(State0, run_turn_chain(State0, TurnReq, Terminal),
@@ -176,7 +177,8 @@ initial_turn_context(State) ->
 %% @private 把工具循环结果 tuple 分派为 run/resume 的最终返回
 dispatch_turn_result(State0, TurnResult, Callbacks, Meta) ->
     case TurnResult of
-        {ok, Response, ToolCallsMade, Iterations} ->
+        %% Messages（第 5 元）只服务于 turn filter 重入，agent 的最终返回用不上
+        {ok, Response, ToolCallsMade, Iterations, _Messages} ->
             finalize_turn(State0, Response, ToolCallsMade, Iterations);
         {interrupt, Type, Context} ->
             UserMsg = #{role => user, content => <<"[turn]">>},
@@ -427,7 +429,8 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload) ->
                     _ ->
                         %% 递归重入：全新循环
                         run_loop(Agent1,
-                                 #{new => maps:get(messages, TReq), load_history => true},
+                                 #{new => maps:get(messages, TReq),
+                                   load_history => maps:get(load_history, TReq, true)},
                                  [], #{turn_context => maps:get(context, TReq)})
                 end
             end,
