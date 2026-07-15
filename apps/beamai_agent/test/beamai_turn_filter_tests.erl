@@ -86,7 +86,7 @@ around_observe_test() ->
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
         ?assertEqual(<<"answer-1">>, maps:get(content, Result)),
         receive {observed, Observed} ->
-            ?assertMatch({ok, _Resp, _TCM, _Iter}, Observed)
+            ?assertMatch({ok, _Resp, _TCM, _Iter, _Msgs}, Observed)
         after 1000 -> ?assert(false) end
     after
         meck:unload(beamai_chat_completion)
@@ -179,7 +179,7 @@ resume_through_turn_chain_reentry_test() ->
     %% 校验 turn filter：answer-1 不合格 → 反馈重入；interrupt/error 透传（硬规则）
     Validate = turn_filter(<<"validate">>, fun(Req, _F, Next) ->
         case Next(Req) of
-            {ok, Resp, _, _} = R ->
+            {ok, Resp, _, _, _} = R ->
                 case maps:get(content, Resp, undefined) of
                     <<"answer-1">> ->
                         Next(Req#{messages => [#{role => user, content => <<"be better">>}],
@@ -427,6 +427,63 @@ schema_validation_exhausts_test() ->
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
         ?assertEqual(<<"{}">>, maps:get(content, Result)),
         ?assertEqual(2, length(drain_llm_calls([])))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%%====================================================================
+%% 重入不依赖记忆（回归：memory=false 时原始问题曾丢失）
+%%====================================================================
+
+%% 重入靠 turn 结果第 5 元 Messages + load_history=false 重建上下文，
+%% 故 `memory => false` 时原始问题**仍在**。
+%%
+%% 回归的是真实模型下抓到的 bug：旧实现重入只传 [Feedback]、指望 loop 载入历史，
+%% memory=false 时历史为空 → 模型只收到一句「上次没通过请修正」，原始问题丢失，
+%% 于是胡编。mock 测试当年没抓到，是因为 mock 不看输入。
+schema_validation_reentry_keeps_question_without_memory_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(N) ->
+        C = case N of
+            1 -> <<"{\"name\":\"bob\"}">>;                  %% 缺 age → 触发重入
+            _ -> <<"{\"name\":\"bob\",\"age\":30}">>
+        end,
+        {ok, #{content => C, finish_reason => <<"stop">>}}
+    end, Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(person_schema(), 2)]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, _Result, _} = beamai_agent:run(Agent, <<"MY-QUESTION">>),
+        [{1, First}, {2, Second} | _] = drain_llm_calls([]),
+        ?assertEqual(1, length(First)),
+        %% 重入这次必须看得到：原始问题 + 上次的坏答案 + 反馈
+        Text = iolist_to_binary([C || #{content := C} <- Second, is_binary(C)]),
+        ?assertNotEqual(nomatch, binary:match(Text, <<"MY-QUESTION">>)),
+        ?assertNotEqual(nomatch, binary:match(Text, <<"{\"name\":\"bob\"}">>)),
+        ?assertNotEqual(nomatch, binary:match(Text, <<"age">>))
+    after
+        meck:unload(beamai_chat_completion)
+    end.
+
+%% 记忆开启时同样正确，且原始问题**不重复**（load_history=false 由 filter 接管上下文）
+schema_validation_reentry_no_duplicate_with_memory_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm2(fun(N) ->
+        C = case N of
+            1 -> <<"{\"name\":\"bob\"}">>;
+            _ -> <<"{\"name\":\"bob\",\"age\":30}">>
+        end,
+        {ok, #{content => C, finish_reason => <<"stop">>}}
+    end, Parent),
+    K = kernel_with_filters([beamai_filters:schema_validation_turn_filter(person_schema(), 2)]),
+    try
+        {ok, Agent} = beamai_agent:new(#{kernel => K}),   %% 缺省 = 启用记忆
+        {ok, _Result, _} = beamai_agent:run(Agent, <<"MY-QUESTION">>),
+        [_First, {2, Second} | _] = drain_llm_calls([]),
+        Qs = [M || #{content := <<"MY-QUESTION">>} = M <- Second],
+        ?assertEqual(1, length(Qs))
     after
         meck:unload(beamai_chat_completion)
     end.

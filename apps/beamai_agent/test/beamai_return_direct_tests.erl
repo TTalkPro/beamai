@@ -64,7 +64,7 @@ capture_filter(Parent) ->
         around_turn => fun(Req, _F, Next) ->
             Result = Next(Req),
             case Result of
-                {ok, Resp, _TCM, _Iter} -> Parent ! {captured, Resp};
+                {ok, Resp, _TCM, _Iter, _Msgs} -> Parent ! {captured, Resp};
                 _ -> ok
             end,
             Result

@@ -304,3 +304,41 @@ tool_generated_schema_test() ->
     ?assertEqual([{<<"">>, required}], kws(Schema, #{<<"days">> => 3})),
     ?assertEqual([{<<"/days">>, type}], kws(Schema, #{<<"city">> => <<"BJ">>,
                                                       <<"days">> => <<"3">>})).
+
+%%====================================================================
+%% 错误信息可操作性
+%%====================================================================
+%% 这些消息会被 schema_validation_turn_filter 原样喂回模型自纠。只说「不合格」
+%% 而不说「该是什么」，模型无从改起——真实模型实测下会反复给近义词直到重试耗尽。
+%% 故此处钉死：enum/const/pattern 的错误必须带上期望值。
+
+%% enum 错误须列出全部允许值
+enum_error_lists_allowed_values_test() ->
+    S = #{type => object, properties => #{<<"c">> => #{type => string,
+                                                       enum => [<<"晴"/utf8>>, <<"阴"/utf8>>]}}},
+    {error, Es} = beamai_json_schema:validate(S, #{<<"c">> => <<"晴朗"/utf8>>}),
+    Msg = beamai_json_schema:error_message(Es),
+    ?assertNotEqual(nomatch, binary:match(Msg, <<"晴"/utf8>>)),
+    ?assertNotEqual(nomatch, binary:match(Msg, <<"阴"/utf8>>)),
+    %% 也要带上实际给的值，模型才知道是哪个字段错了
+    ?assertNotEqual(nomatch, binary:match(Msg, <<"晴朗"/utf8>>)).
+
+%% const 错误须给出约定值
+const_error_shows_expected_test() ->
+    {error, Es} = beamai_json_schema:validate(#{const => <<"fixed">>}, <<"other">>),
+    Msg = beamai_json_schema:error_message(Es),
+    ?assertNotEqual(nomatch, binary:match(Msg, <<"fixed">>)).
+
+%% pattern 错误须给出 pattern 原文
+pattern_error_shows_pattern_test() ->
+    {error, Es} = beamai_json_schema:validate(#{type => string, pattern => <<"^[0-9]+$">>},
+                                              <<"abc">>),
+    Msg = beamai_json_schema:error_message(Es),
+    ?assertNotEqual(nomatch, binary:match(Msg, <<"^[0-9]+$">>)).
+
+%% required 错误须点名缺失字段（既有行为，一并钉死）
+required_error_names_field_test() ->
+    S = #{type => object, properties => #{<<"age">> => #{type => integer}},
+          required => [<<"age">>]},
+    {error, Es} = beamai_json_schema:validate(S, #{}),
+    ?assertNotEqual(nomatch, binary:match(beamai_json_schema:error_message(Es), <<"age">>)).
