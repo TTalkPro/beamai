@@ -16,6 +16,16 @@
 %%%
 %%% 无 conversation_id 时原样透传（退化为单次无状态调用）。
 %%%
+%%% **与 Spring AI MessageChatMemoryAdvisor 的一处对照**：它有个
+%%% isMemoryAlreadyInPrompt 滑窗查重，防的是「历史被重复**前置**进提示词」——
+%%% 那是它 prepend 语义的产物。本 filter 是 **replace** 语义（用 store 的完整
+%%% 历史整个替换 messages），结构上就不可能重复前置，故不需要对应的查重。
+%%%
+%%% 唯一的重入隐患是外层 filter 拿同一 delta 重跑内层（同一 delta 会被存两次）。
+%%% 这要求把重试类 filter 放在本 filter **之外**，与「memory 放列表首位」的约定
+%%% 相悖；且真要修得干净，得让「存 delta + 存回复」整体幂等，不是加个查重能了事
+%%% 的。故此处不设半吊子防护——按约定放首位即无此问题。
+%%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_memory_filter).
