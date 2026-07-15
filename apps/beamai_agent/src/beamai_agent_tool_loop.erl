@@ -8,6 +8,9 @@
 %%%   - 每轮：触发 on_llm_call → 经 memory provider 的 prepare 变换(窗口/摘要) →
 %%%     invoke_chat(_stream) → 把 assistant 回合并入 messages 并 append 持久化 →
 %%%     有 tool_calls 则执行(触发 on_tool_call/result)、把工具结果并入并持久化 → 递归。
+%%%   - 循环终止于四种情形：模型不再要工具（正常完成）、整批工具标注
+%%%     return_direct（工具结果即最终答案，不回灌模型）、中断（HITL/env_retry）、
+%%%     迭代耗尽。
 %%%   - 跨轮历史(cross-run)由 memory provider 的 history/append 负责；本模块只负责
 %%%     within-run 累积与按序持久化。memory=undefined 时仅在本轮内累积、不持久化。
 %%%
@@ -237,10 +240,53 @@ execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
         proceed ->
             persist(Opts, ToolResults),
             %% 穿线折叠后的 context：本轮工具写下的 state 槽下一轮工具/ filter 可见
-            Opts1 = with_ctx(Opts, NewCtx),
-            iterate(Opts1#{messages => Messages ++ ToolResults},
-                    N - 1, ToolCallsMade ++ NewToolCalls)
+            Opts0 = with_ctx(Opts, NewCtx),
+            Opts1 = Opts0#{messages => Messages ++ ToolResults},
+            AllCalls = ToolCallsMade ++ NewToolCalls,
+            case return_direct(Opts1, TCs, NewToolCalls) of
+                true -> finish_direct(Opts1, ToolResults, AllCalls);
+                false -> iterate(Opts1, N - 1, AllCalls)
+            end
     end.
+
+%% @private 整批是否直返（对标 Spring AI ToolExecutionResult.returnDirect）
+%%
+%% **AND 语义**：批内 tool_calls 全部标注 return_direct 才直返。混批时任一未标注
+%% 即照常回灌——否则未标注工具的结果会被静默丢弃、模型再没机会用上。
+%%
+%% **与 Spring 的一处有意分歧**：批内任一工具**失败**则不直返，退回正常回灌，
+%% 让模型看到错误后自行补救。Spring 不区分成败、一律直返，会把错误 JSON 当最终
+%% 答案端给用户——那与 errors-are-data（错误回模型、模型决定怎么办）相悖。
+return_direct(_Opts, [], _Records) -> false;
+return_direct(#{kernel := Kernel}, TCs, Records) ->
+    lists:all(fun(TC) ->
+        {_Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
+        beamai_kernel:return_direct_tool(Kernel, Name)
+    end, TCs)
+        andalso not lists:any(fun is_failed/1, Records).
+
+%% @private CallRecord 是否失败（失败时才带 error 键）
+is_failed(#{error := _}) -> true;
+is_failed(_) -> false.
+
+%% @private 直返：工具结果合成最终答案，落库后结束循环（不再回灌模型）
+%%
+%% 合成的 assistant 回合照常持久化：历史因此仍以 assistant 收尾（形如
+%% assistant(tool_calls) → tool(result) → assistant(答案)），下一轮续接不残缺。
+finish_direct(#{messages := Messages} = Opts, ToolResults, ToolCallsMade) ->
+    Response = direct_response(ToolResults),
+    _ = record_assistant(Opts, Response, Messages),
+    finish(Response, ToolCallsMade).
+
+%% @private 由工具结果合成最终响应（多工具按原始序换行拼接）
+direct_response(ToolResults) ->
+    Content = iolist_to_binary(
+        lists:join(<<"\n">>, [C || #{content := C} <- ToolResults])),
+    beamai_llm_response:new(#{
+        content => Content,
+        finish_reason => complete,
+        metadata => #{return_direct => true}
+    }).
 
 %% @private 环境类失败暂停判定：策略 pause 且批内有 environment 类失败 →
 %% {pause, FailedTCs}（FailedTCs 为环境失败的原始 tool_call，resume retry 用）；
