@@ -9,6 +9,7 @@ beamai_core's Filter system provides a true **onion-style** interception mechani
 - [Overview](#overview)
 - [3 around hook points](#3-around-hook-points)
 - [The 4th hook: token_transform (token-stream transform)](#the-4th-hook-token_transform-token-stream-transform)
+- [Built-in filters](#built-in-filters)
 - [Per-filter private context](#per-filter-private-context)
 - [Onion execution order](#onion-execution-order)
 - [API Reference](#api-reference)
@@ -154,12 +155,7 @@ tool-loop rounds all use the original full answer.
 The synchronous path (`invoke_chat`) ignores `token_transform` entirely; with no token_transform
 filters the streaming path degrades to a zero-overhead passthrough.
 
-**Built-in token filters** (`beamai_filters`):
-
-| filter | Description |
-|---|---|
-| `token_redact_filter(Pattern, Replacement)` | Stateless per-token regex redaction. Known limitation: a secret split across two chunks escapes detection (cross-chunk detection needs stateful buffering) |
-| `hold_release_filter(CheckFun)` | Review-then-release: buffers the whole stream; on normal end `CheckFun(full_text)` returns `ok` (release buffered tokens in order) \| `{block, Text}` (emit a single replacement token). The cost is the semantics: the user sees no tokens until the stream ends |
+The built-in `token_redact_filter` / `hold_release_filter` are covered in [Built-in filters](#built-in-filters).
 
 ```erlang
 %% Streaming redaction: the sink sees redacted tokens; the final response is untouched
@@ -168,6 +164,100 @@ K = beamai:kernel(#{}, [
 ]),
 {ok, Resp, _} = beamai_kernel:invoke_chat_stream(K, Messages, #{}, OnToken).
 ```
+
+---
+
+## Built-in filters
+
+The ready-made filters in `beamai_filters` are all pure constructors — put them in `new/2`'s
+filters list when building the kernel. (They broadly track Spring AI's Advisor system; the
+item-by-item trade-offs are in `design/spring_advisor_alignment.md`.)
+
+| filter | Chain | Description |
+|---|---|---|
+| `logging_filter()` | all 3 | One pair of debug logs each for turn/chat/tool. Put it first in the list for the full picture; placed after another filter it only sees rewrites made inside that layer |
+| `safeguard_filter(Words)` / `(Words, Opts)` | chat | Short-circuits on a sensitive-word hit without calling the LLM, returning a reply with `finish_reason=content_filtered`. Opts: `failure_response`, `case_sensitive` (default `false`) |
+| `timeout_filter(Ms)` | tool | Wall-clock timeout for a single tool execution → `{error, timeout}` (classified transient) |
+| `approval_filter(ApproveFun)` | tool | Only intercepts tools marked `sensitive => true`; a rejection goes back to the model as a normal tool result. Non-interactive — for interactive approval use the `on_tool_call` callback |
+| `validation_turn_filter(ValidateFun, MaxRetries)` | turn | Validates the final answer; on failure the reason is fed back and the loop re-entered; returns as-is once retries are exhausted |
+| `schema_validation_turn_filter(Schema, MaxRetries[, Opts])` | turn | The JSON Schema specialization of the above, see below |
+| `token_redact_filter(Pattern, Replacement)` | token | Stateless per-token regex redaction. Known limitation: a secret split across two chunks escapes detection |
+| `hold_release_filter(CheckFun)` | token | Review-then-release: buffers the whole stream so nothing leaks, and reviews the full text at end of stream |
+
+### safeguard_filter: capability boundary
+
+```erlang
+K = beamai:kernel(#{}, [beamai_filters:safeguard_filter([<<"forbidden-word">>])]).
+```
+
+Sitting on the chat chain means **every LLM call inside the loop passes through it**: it catches
+not only user input, but equally sensitive content carried back in when tool results are fed
+into the model.
+
+But it is plain substring matching, **not content safety**: obfuscation, transliteration,
+Unicode homoglyphs, and content split across messages all get through. Use it as a coarse
+pre-filter and backstop; for real content safety, plug in a dedicated moderation model.
+
+### schema_validation_turn_filter: self-correcting structured output
+
+```erlang
+Schema = #{type => object,
+           properties => #{<<"name">> => #{type => string},
+                           <<"age">> => #{type => integer, minimum => 0}},
+           required => [<<"name">>, <<"age">>]},
+K = beamai:kernel(#{}, [beamai_filters:schema_validation_turn_filter(Schema, 2)]).
+```
+
+"Take the text → parse JSON → check against the Schema"; on failure the Schema errors are fed
+back and the loop re-entered, retrying `MaxRetries` times. Once retries are exhausted it returns
+the last (still invalid) response as-is and **does not raise** — the failure only surfaces
+downstream at parse time.
+
+The Schema reuses `beamai_tool`'s parameter Schema shape directly (atom keys work too), and the
+validator is `beamai_json_schema` (zero dependencies, a practical subset of DRAFT 2020-12;
+`$ref`/`$defs`/`patternProperties`/`if-then-else`/`format` are not supported).
+
+Opts: `max_errors` (how many errors to collect per round, default all; for Schemas with many
+fields 5~10 is advisable, otherwise stuffing every error into the feedback blows up the prompt)
+and `code_fence` (whether to strip ```` ```json ```` fences, default `true`).
+
+It works best paired with the provider's native structured output (json_schema) — the native
+constraint handles most cases, and this filter catches what slips through.
+
+### Tool search: on-demand reveal for large tool sets
+
+`beamai_tool_search` separates "registration" (can it be executed) from "advertisement" (can the
+model see it): register everything, but advertise only a single `tool_search` tool on the first
+round. To get any work done the model must first describe what it needs and search; only on the
+next round do the matching tools become visible. Spring measured 34~64% token savings with 28
+tools.
+
+```erlang
+Tools = [...],                                    %% all tools
+{SearchTool, Filter} = beamai_tool_search:new(Tools, #{}),
+K0 = beamai_kernel:new(#{}, [Filter]),
+K = beamai_kernel:add_tools(K0, [SearchTool | Tools]).   %% register everything
+```
+
+Opts: `index_module` (default `beamai_tool_index_keyword`, `beamai_tool_index_regex` also
+available), `index_opts`, `max_results` (default 5), `accumulate` (default `true`, the union of
+all searches so far; `false` honors only the most recent one), and `tool_name` (default
+`<<"tool_search">>`).
+
+Key points:
+
+- **Unindexed tools pass through untouched** — anything in the advertised list the filter never
+  indexed (e.g. interrupt tools appended by the agent at runtime) is left alone, never silently
+  swallowed.
+- **The search tool is always advertised**, otherwise one missed round would leave no way to
+  search again.
+- **The model can still call non-advertised tools** (kernel execution does not consult the
+  advertised list), so a direct call from earlier context won't fail.
+- The index backend is a behaviour (`beamai_tool_index`); vector backends are left for
+  beamai_extra to plug in.
+- No automatic system-prompt injection (to avoid dual system messages); if you want stronger
+  steering, splice `beamai_tool_search:default_system_suffix/0` into your `system_prompt`
+  yourself.
 
 ---
 

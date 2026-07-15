@@ -9,6 +9,7 @@ beamai_core 的 Filter 系统提供了真正的**洋葱式（onion）**拦截机
 - [概述](#概述)
 - [3 个 around hook 点](#3-个-around-hook-点)
 - [第四钩子：token_transform（token 流变换）](#第四钩子token_transformtoken-流变换)
+- [内置 filter](#内置-filter)
 - [filter 私有上下文](#filter-私有上下文)
 - [洋葱执行顺序](#洋葱执行顺序)
 - [API 参考](#api-参考)
@@ -150,12 +151,7 @@ turn 结果、后续工具循环用的都是原始完整答案。分工：
 同步路径（`invoke_chat`）完全忽略 `token_transform`；无 token_transform filter 时流式路径
 零开销退化（TokenCallback 原样直通）。
 
-**内置 token filter**（`beamai_filters`）：
-
-| filter | 说明 |
-|---|---|
-| `token_redact_filter(Pattern, Replacement)` | 无状态逐 token 正则脱敏。已知限制：秘密被切在两个 chunk 之间时漏检（跨 chunk 检测需有状态缓冲） |
-| `hold_release_filter(CheckFun)` | 先审后放：缓冲整流不外泄；完流时 `CheckFun(全文)` 返回 `ok`（缓冲原样放行）\| `{block, Text}`（只 emit 一个替换 token）。代价即语义：流结束前用户看不到任何 token |
+内置的 `token_redact_filter` / `hold_release_filter` 见[内置 filter](#内置-filter)。
 
 ```erlang
 %% 流式脱敏：sink 看到脱敏后的 token，最终响应仍是原文
@@ -164,6 +160,85 @@ K = beamai:kernel(#{}, [
 ]),
 {ok, Resp, _} = beamai_kernel:invoke_chat_stream(K, Messages, #{}, OnToken).
 ```
+
+---
+
+## 内置 filter
+
+`beamai_filters` 里的现成 filter，均为纯构造器，建 kernel 时放进 `new/2` 的 filters 列表。
+（大体对标 Spring AI 的 Advisor 体系，逐项取舍见 `design/spring_advisor_alignment.md`。）
+
+| filter | 链 | 说明 |
+|---|---|---|
+| `logging_filter()` | 三链 | turn/chat/tool 各记一对 debug 日志。放列表首位记全景；放在某 filter 之后则只看得到那层之内的改写 |
+| `safeguard_filter(Words)` / `(Words, Opts)` | chat | 敏感词命中即短路，不调 LLM，返回 `finish_reason=content_filtered` 的答复。Opts：`failure_response`、`case_sensitive`（缺省 `false`） |
+| `timeout_filter(Ms)` | tool | 单个工具执行墙钟超时 → `{error, timeout}`（归类 transient） |
+| `approval_filter(ApproveFun)` | tool | 仅拦 `sensitive => true` 的工具；拒绝结果作正常工具结果回模型。非交互式——交互式审批用 callbacks 的 `on_tool_call` |
+| `validation_turn_filter(ValidateFun, MaxRetries)` | turn | 最终答案校验，不合格把原因作反馈重入循环；耗尽则原样返回 |
+| `schema_validation_turn_filter(Schema, MaxRetries[, Opts])` | turn | 上者的 JSON Schema 特化，见下 |
+| `token_redact_filter(Pattern, Replacement)` | token | 无状态逐 token 正则脱敏。已知限制：秘密被切在两个 chunk 之间时漏检 |
+| `hold_release_filter(CheckFun)` | token | 先审后放：缓冲整流不外泄，完流时全文审查 |
+
+### safeguard_filter：能力边界
+
+```erlang
+K = beamai:kernel(#{}, [beamai_filters:safeguard_filter([<<"敏感词"/utf8>>])]).
+```
+
+放 chat 链意味着**循环内每次 LLM 调用都过一遍**：不止拦用户输入，工具结果回灌时带出的
+敏感内容同样拦得住。
+
+但它就是子串匹配，**不是内容安全**：变形、拼音、Unicode 同形字、跨消息拼接一概拦不住。
+当粗筛与兜底用，真要做内容安全请接专门的审核模型。
+
+### schema_validation_turn_filter：结构化输出自纠
+
+```erlang
+Schema = #{type => object,
+           properties => #{<<"name">> => #{type => string},
+                           <<"age">> => #{type => integer, minimum => 0}},
+           required => [<<"name">>, <<"age">>]},
+K = beamai:kernel(#{}, [beamai_filters:schema_validation_turn_filter(Schema, 2)]).
+```
+
+「取文本 → 解 JSON → 过 Schema」不合格则把 Schema 错误当反馈重入循环，重试 `MaxRetries`
+次；耗尽则原样返回最后一次（仍不合格的）响应，**不抛错**——失败留到下游解析时才浮现。
+
+Schema 直接复用 `beamai_tool` 的参数 Schema 形态（atom 键亦可），校验器为 `beamai_json_schema`
+（零依赖，DRAFT 2020-12 的实用子集；不支持 `$ref`/`$defs`/`patternProperties`/`if-then-else`/`format`）。
+
+Opts：`max_errors`（单次最多收集几条错误，缺省全收；字段多的 Schema 建议设 5~10，
+否则错误全塞进反馈会撑爆提示词）、`code_fence`（是否剥离 ```` ```json ```` 围栏，缺省 `true`）。
+
+配 provider 原生结构化输出（json_schema）使用效果最好——原生约束负责大多数情形，本 filter
+兜住漏网的。
+
+### 工具检索：大工具集按需揭示
+
+`beamai_tool_search` 把「注册」（能不能执行）与「广播」（模型看不看得见）拆开：全量注册，
+但首轮只广播一个 `tool_search` 工具。模型想干活就得先描述需求检索，拿回工具名后下一轮才
+看得见对应工具。Spring 实测 28 个工具时省 34~64% token。
+
+```erlang
+Tools = [...],                                    %% 全量工具
+{SearchTool, Filter} = beamai_tool_search:new(Tools, #{}),
+K0 = beamai_kernel:new(#{}, [Filter]),
+K = beamai_kernel:add_tools(K0, [SearchTool | Tools]).   %% 全量注册
+```
+
+Opts：`index_module`（缺省 `beamai_tool_index_keyword`，另有 `beamai_tool_index_regex`）、
+`index_opts`、`max_results`（缺省 5）、`accumulate`（缺省 `true`，历次检索取并集；`false` 只
+认最近一次）、`tool_name`（缺省 `<<"tool_search">>`）。
+
+要点：
+
+- **未索引的工具原样透传**——广播列表里 filter 没索引过的（如 agent 运行时追加的中断工具）
+  一概不碰，不会被静默吃掉。
+- **检索工具永远广播**，否则一轮不中就再没机会检索。
+- **模型仍可调用未广播的工具**（kernel 执行不看广播列表），故它凭上文记忆直接调也不会失败。
+- 索引后端是 behaviour（`beamai_tool_index`），向量后端留给 beamai_extra 接。
+- 不自动注入 system 提示（避免双 system 消息）；需要加强引导时自行把
+  `beamai_tool_search:default_system_suffix/0` 拼进 `system_prompt`。
 
 ---
 
