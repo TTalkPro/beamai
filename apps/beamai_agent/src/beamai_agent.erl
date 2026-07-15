@@ -459,8 +459,13 @@ resume_approval_raw(Agent1, Decision, Payload, IntState) ->
             %% approved：真正执行被中断工具（可能已替换参数），用其结果
             Kernel = maps:get(kernel, Agent1),
             Ctx = resume_context(Agent1, InitState),
-            {Msgs, _Records, _Ctx2} =
-                beamai_agent_utils:execute_tools(Kernel, [ToolCall], Ctx, false),
+            TCM = maps:get(tool_calling_manager, Agent1,
+                           beamai_tool_calling_manager:default()),
+            #{messages := Msgs} =
+                beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, [ToolCall], #{
+                    context => Ctx,
+                    parallel => false
+                }),
             Msgs
     end,
     run_loop(Agent1,
@@ -481,8 +486,13 @@ resume_env_raw(Agent1, Decision, IntState) ->
         true ->
             Ctx = resume_context(Agent1, InitState),
             Parallel = maps:get(parallel_tools, Agent1, true),
-            {RetryMsgs, RetryRecords, _} =
-                beamai_agent_utils:execute_tools(Kernel, FailedCalls, Ctx, Parallel),
+            TCM = maps:get(tool_calling_manager, Agent1,
+                           beamai_tool_calling_manager:default()),
+            #{messages := RetryMsgs, records := RetryRecords} =
+                beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, FailedCalls, #{
+                    context => Ctx,
+                    parallel => Parallel
+                }),
             Corrected = beamai_agent_interrupt:replace_results_by_id(BatchMsgs, RetryMsgs),
             StillFailed = [TC || {TC, R} <- lists:zip(FailedCalls, RetryRecords),
                                  env_failed_record(R)],
@@ -644,6 +654,8 @@ run_loop(State, MsgSpec, PrevCalls, Opts) ->
         memory => beamai_agent_state:memory(State),
         conversation_id => beamai_agent_state:conversation_id(State),
         meta => beamai_agent_callbacks:build_metadata(State),
+        tool_calling_manager => maps:get(tool_calling_manager, State,
+                                         beamai_tool_calling_manager:default()),
         %% 流式时透传 token 处理器；非流式为 undefined
         stream_token_handler => maps:get(stream_token_handler, Opts, undefined)
     },

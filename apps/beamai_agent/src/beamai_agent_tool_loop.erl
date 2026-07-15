@@ -41,6 +41,7 @@
     memory := provider(),           %% 记忆 provider（undefined 则不持久/不变换）
     conversation_id := binary(),
     meta := map(),                  %% 回调元数据（on_llm_call 等）
+    tool_calling_manager := beamai_tool_calling_manager:manager(),
     %% 流式 token 处理器：设置时每轮 LLM 调用走 invoke_chat_stream，
     %% 文本 token 经此回调实时透出（undefined 则非流式）。
     stream_token_handler => undefined | fun((binary()) -> ok)
@@ -198,11 +199,15 @@ find_first_interrupt(TCs, Opts) ->
 handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls,
                  Opts, N, ToolCallsMade) ->
     #{kernel := Kernel, callbacks := Callbacks, messages := Messages,
-      max_tool_iterations := MaxIter} = Opts,
+      max_tool_iterations := MaxIter,
+      tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
-    {SafeResults, SafeCallRecords, NewCtx} =
-        beamai_agent_utils:execute_tools(Kernel, SafeCalls, ctx(Opts), Parallel,
-                                         tool_result_cb(Callbacks)),
+    #{messages := SafeResults, records := SafeCallRecords, context := NewCtx} =
+        beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, SafeCalls, #{
+            context => ctx(Opts),
+            parallel => Parallel,
+            on_result => tool_result_cb(Callbacks)
+        }),
     AllResults = SafeResults ++ [skipped_result(TC) || TC <- SkippedCalls],
     persist(Opts, AllResults),
     Context = build_interrupt_context(MaxIter - N, AllResults, InterruptedTC,
@@ -231,11 +236,15 @@ skipped_result(TC) ->
 %% （语义/瞬态/策略类结果照旧 errors-are-data 交模型）。
 execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
     #{kernel := Kernel, callbacks := Callbacks, messages := Messages,
-      max_tool_iterations := MaxIter} = Opts,
+      max_tool_iterations := MaxIter,
+      tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
-    {ToolResults, NewToolCalls, NewCtx} =
-        beamai_agent_utils:execute_tools(Kernel, TCs, ctx(Opts), Parallel,
-                                         tool_result_cb(Callbacks)),
+    #{messages := ToolResults, records := NewToolCalls, context := NewCtx} =
+        beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, TCs, #{
+            context => ctx(Opts),
+            parallel => Parallel,
+            on_result => tool_result_cb(Callbacks)
+        }),
     case env_pause(Opts, TCs, NewToolCalls) of
         {pause, FailedCalls} ->
             Context = build_env_interrupt_context(
