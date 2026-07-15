@@ -45,7 +45,8 @@
     run_id := binary() | undefined, %% 当前执行的唯一 ID
     interrupt_tools := [map()],     %% 中断 tool 定义列表
     on_env_error := proceed | pause, %% 环境类工具失败策略（缺省按是否 HITL 计算）
-    pause_store := beamai_pause_store:handle() | undefined %% 暂停持久化句柄（跨进程 HITL）
+    pause_store := beamai_pause_store:handle() | undefined, %% 暂停持久化句柄（跨进程 HITL）
+    tool_calling_manager := beamai_tool_calling_manager:manager() %% 工具批量执行管理器（可注入）
 }.
 
 -type interrupt_state() :: #{
@@ -108,6 +109,7 @@ create(Config) ->
         %% 解析记忆 provider：跨轮历史由 Agent 在 tool loop 里显式委托给 provider，
         %% 不再注入 kernel filter（callbacks 同理，全在 loop 触发）。
         Memory = setup_memory(Config),
+        TCM = setup_tool_calling_manager(Config),
         Id = maps:get(id, Config, beamai_id:gen_id(<<"agent">>)),
         State = #{
             '__agent__' => true,
@@ -130,7 +132,8 @@ create(Config) ->
             %% 环境类失败策略：显式配置优先，否则 HITL 已启用（有中断 tool 或
             %% on_tool_call 回调）自动升 pause，其余 proceed（无人值守不收意外暂停）
             on_env_error => resolve_on_env_error(Config, Callbacks),
-            pause_store => maps:get(pause_store, Config, undefined)
+            pause_store => maps:get(pause_store, Config, undefined),
+            tool_calling_manager => TCM
         },
         {ok, State}
     catch
@@ -158,6 +161,20 @@ memory(#{memory := Memory}) -> Memory.
 %% @doc 获取 agent 的会话标识
 -spec conversation_id(agent_state()) -> binary().
 conversation_id(#{conversation_id := ConvId}) -> ConvId.
+
+%% @private 解析 ToolCallingManager（Agent 在 tool loop 里显式使用）
+%%
+%% Config 的 tool_calling_manager 选项（统一解析为 {Mod, Ref}）：
+%%   - 缺省：并发实现（beamai_concurrent_tool_calling_manager，尊重 parallel/serial）
+%%   - {Module, Ref}：自定义实现（须实现 beamai_tool_calling_manager behaviour）
+-spec setup_tool_calling_manager(map()) -> beamai_tool_calling_manager:manager().
+setup_tool_calling_manager(Config) ->
+    case maps:get(tool_calling_manager, Config, undefined) of
+        undefined ->
+            beamai_tool_calling_manager:default();
+        {Module, _Ref} = Manager when is_atom(Module) ->
+            Manager
+    end.
 
 %% @doc 从 Config 构建 Kernel 实例
 %%
