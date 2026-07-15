@@ -38,6 +38,7 @@
 -export([get_service/1]).
 -export([state_slots/1]).
 -export([serial_tool/2]).
+-export([return_direct_tool/2]).
 
 %% Types
 -export_type([kernel/0, kernel_settings/0, chat_opts/0]).
@@ -314,6 +315,17 @@ state_slots(_) -> #{}.
 serial_tool(Kernel, ToolName) ->
     case get_tool(Kernel, ToolName) of
         {ok, ToolSpec} -> beamai_tool:is_serial(ToolSpec);
+        error -> false
+    end.
+
+%% @doc 按工具名查询该工具结果是否直接作为最终答案（不回灌模型）
+%%
+%% 未注册的工具名返回 false：未知工具不该触发直返（直返会终止循环、丢弃
+%% 同批其余结果，未知名字上取保守值）。
+-spec return_direct_tool(kernel(), binary()) -> boolean().
+return_direct_tool(Kernel, ToolName) ->
+    case get_tool(Kernel, ToolName) of
+        {ok, ToolSpec} -> beamai_tool:is_return_direct(ToolSpec);
         error -> false
     end.
 

@@ -28,6 +28,7 @@
 -export([get_tag/1, has_tag/2]).
 -export([is_serial/1]).
 -export([is_sensitive/1]).
+-export([is_return_direct/1]).
 
 %% API - 工具调用协议
 -export([parse_tool_call/1, encode_result/1]).
@@ -57,6 +58,11 @@
     serial => boolean(),
     %% sensitive：标记敏感工具，beamai_filters:approval_filter 据此拦截审批。缺省 false。
     sensitive => boolean(),
+    %% return_direct：工具结果**直接作为最终答案**返回，不再回灌模型续跑（对标
+    %% Spring AI ToolExecutionResult.returnDirect）。缺省 false。
+    %% 语义为整批 AND：一批 tool_calls 全部标注才直返（见 beamai_agent_tool_loop），
+    %% 混批时任一未标注即照常回灌——否则未标注工具的结果会被静默丢弃。
+    return_direct => boolean(),
     filters => [filter_ref()],
     metadata => map()
 }.
@@ -249,6 +255,11 @@ is_serial(_) -> false.
 -spec is_sensitive(tool_spec()) -> boolean().
 is_sensitive(#{sensitive := true}) -> true;
 is_sensitive(_) -> false.
+
+%% @doc 工具结果是否直接作为最终答案返回（不回灌模型续跑）
+-spec is_return_direct(tool_spec()) -> boolean().
+is_return_direct(#{return_direct := true}) -> true;
+is_return_direct(_) -> false.
 
 %%====================================================================
 %% API - 工具调用协议
