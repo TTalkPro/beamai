@@ -12,6 +12,10 @@
 %%%-------------------------------------------------------------------
 -module(beamai_tool).
 
+%% handler 执行的内置缺省超时。优先级最低——工具声明与 manager 注入都盖得住它
+%% （见 resolve_timeout/2）。
+-define(DEFAULT_TOOL_TIMEOUT, 30000).
+
 %% API - 创建
 -export([new/2, new/3]).
 -export([validate/1]).
@@ -46,7 +50,10 @@
     description => binary(),
     parameters => parameters_schema(),
     tag => binary() | [binary()],
-    timeout => pos_integer(),
+    %% timeout：handler 执行的硬上限（毫秒），缺省 30000。到点 kill 执行进程、
+    %% 归一为 transient 的 tool_timeout 错误。长耗时工具须显式声明更大的值或
+    %% `infinity`（后者仍受批级兜底约束，见 beamai_tool_batch_worker）。
+    timeout => pos_integer() | infinity,
     %% retry：仅对 transient 类错误重试（见 beamai_tool_error），指数退避。
     %% true 用缺省 #{max_retries=>2, initial_delay_ms=>200}；opt-in 即承诺幂等。
     %% 兼容旧 #{max, delay} 形态。
@@ -160,12 +167,31 @@ invoke(ToolSpec, Args) ->
 %% Context 为**只读运行环境**（env：kernel/conversation_id/vars）；handler 若
 %% 需写状态经返回值 `{ok, V, Writes}` 表达，不改 Context。
 %% 根据工具定义中的 timeout 和 retry 配置执行处理器。
-%% 默认超时 30 秒，默认不重试。
+%% 默认超时 30 秒（**强制执行**：handler 跑在受监控子进程中，到点 kill），
+%% 默认不重试。超时归为 transient 类——声明了 retry 的工具会被重试。
+%%
+%% handler 在子进程中执行，故**不得依赖调用者的进程身份**（self()、进程字典、
+%% 发往调用者的消息）。并发路径下本就如此，这里只是让所有路径一致。
 -spec invoke(tool_spec(), args(), beamai_context:t()) -> tool_result().
 invoke(#{handler := Handler} = ToolSpec, Args, Context) ->
-    Timeout = maps:get(timeout, ToolSpec, 30000),
+    Timeout = resolve_timeout(ToolSpec, Context),
     {MaxRetries, InitialDelay} = retry_conf(maps:get(retry, ToolSpec, false)),
     invoke_with_retry(Handler, Args, Context, MaxRetries, InitialDelay, Timeout).
+
+%% @private 超时优先级：工具自己声明 > ToolCallingManager 注入的缺省 > 内置 30 秒
+%%
+%% 工具声明最优先——它最了解自己要跑多久（`timeout => infinity' 即长任务的
+%% 逃生舱）。manager 级缺省次之，让部署方能整体放宽/收紧而不必逐个改工具。
+resolve_timeout(ToolSpec, Context) ->
+    case maps:get(timeout, ToolSpec, undefined) of
+        undefined ->
+            case beamai_context:default_tool_timeout(Context) of
+                undefined -> ?DEFAULT_TOOL_TIMEOUT;
+                Timeout -> Timeout
+            end;
+        Declared ->
+            Declared
+    end.
 
 %%====================================================================
 %% API - Schema 转换
@@ -384,26 +410,70 @@ invoke_with_retry(Handler, Args, Context, RetriesLeft, Delay, Timeout) ->
             Result
     end.
 
-%% @private 调用处理器：fun/1 形式（仅接收参数）
-call_handler(Fun, Args, _Context, _Timeout) when is_function(Fun, 1) ->
+%% @private 调用处理器：在受监控的子进程中执行，强制 timeout
+%%
+%% **为什么必须起进程**：BEAM 无法中断同进程内的内联调用——要让 `timeout' 声明
+%% 真正可执行，handler 就得跑在一个可以 kill 的进程里。try/catch 与时间无关，
+%% 挡不住卡死的 handler。
+%%
+%% 这不与「隔离在 manager 级」冲突（见 beamai_tool_batch_worker）：那一层的
+%% 职责是保护**调用者**、故障单元是「批」；这里的子进程是 timeout 的**执行
+%% 机制**，故障单元是「单个工具」。串行语义不受影响——串行路径依然是起一个、
+%% 等一个、再起下一个。
+%%
+%% 顺带收窄故障单元：工具内 spawn_link 的子进程崩溃（退出信号绕过 try/catch）
+%% 现在只打死该工具的子进程，经 DOWN 归一为该工具的 error，同批其它工具不受
+%% 牵连。批级 worker 仍是兜底（filter 崩溃等 handler 之外的故障）。
+call_handler(Handler, Args, Context, Timeout) ->
+    Parent = self(),
+    Tag = make_ref(),
+    {Pid, MRef} = spawn_monitor(fun() ->
+        Parent ! {Tag, apply_handler(Handler, Args, Context)}
+    end),
+    receive
+        {Tag, Result} ->
+            erlang:demonitor(MRef, [flush]),
+            Result;
+        {'DOWN', MRef, process, Pid, Reason} ->
+            %% handler 自身 raise 的异常已被 apply_handler 的 try/catch 归一；
+            %% 走到这里的是逃出 try/catch 的退出信号（如 link 传播、外部 kill）
+            {error, #{class => exit, reason => Reason, stacktrace => []}}
+    after Timeout ->
+        erlang:demonitor(MRef, [flush]),
+        exit(Pid, kill),
+        drain_handler_reply(Tag),
+        %% reason 用裸原子 tool_timeout：beamai_tool_error:classify/1 据此归为
+        %% transient（超时重试有意义），毫秒数另置一键，不破坏分类模式匹配
+        {error, #{class => timeout, reason => tool_timeout,
+                  timeout_ms => Timeout, stacktrace => []}}
+    end.
+
+%% @private 丢弃被 kill 的 handler 进程留在信箱里的迟到回复（Tag 唯一，不误伤）
+drain_handler_reply(Tag) ->
+    receive
+        {Tag, _} -> ok
+    after 0 -> ok
+    end.
+
+%% @private 四种 handler 形态的实际调用（跑在子进程内）
+%%
+%% try/catch 留在子进程内，保持既有错误形状 #{class, reason, stacktrace} 不变。
+apply_handler(Fun, Args, _Context) when is_function(Fun, 1) ->
     try Fun(Args)
     catch Class:Reason:Stack ->
         {error, #{class => Class, reason => Reason, stacktrace => Stack}}
     end;
-%% @private 调用处理器：fun/2 形式（接收参数和上下文）
-call_handler(Fun, Args, Context, _Timeout) when is_function(Fun, 2) ->
+apply_handler(Fun, Args, Context) when is_function(Fun, 2) ->
     try Fun(Args, Context)
     catch Class:Reason:Stack ->
         {error, #{class => Class, reason => Reason, stacktrace => Stack}}
     end;
-%% @private 调用处理器：{Module, Function} 形式
-call_handler({M, F}, Args, Context, _Timeout) ->
+apply_handler({M, F}, Args, Context) ->
     try M:F(Args, Context)
     catch Class:Reason:Stack ->
         {error, #{class => Class, reason => Reason, stacktrace => Stack}}
     end;
-%% @private 调用处理器：{Module, Function, ExtraArgs} 形式
-call_handler({M, F, ExtraArgs}, Args, Context, _Timeout) ->
+apply_handler({M, F, ExtraArgs}, Args, Context) ->
     try erlang:apply(M, F, [Args, Context | ExtraArgs])
     catch Class:Reason:Stack ->
         {error, #{class => Class, reason => Reason, stacktrace => Stack}}

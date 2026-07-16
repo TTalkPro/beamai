@@ -32,6 +32,7 @@
 -export([set/3, set_many/2]).
 -export([with_conversation_id/2, conversation_id/1]).
 -export([with_kernel/2, get_kernel/1]).
+-export([with_default_tool_timeout/2, default_tool_timeout/1]).
 %% state：用户状态槽（纯数据，工具经 Writes 写、屏障折叠）
 -export([state_get/2, state_get/3, get_state/1, with_state/2, apply_writes/3]).
 %% filter 私有状态（框架自管）
@@ -49,7 +50,12 @@
 -type env() :: #{
     kernel := term() | undefined,
     conversation_id := binary() | undefined,
-    vars := #{binary() => term()}
+    vars := #{binary() => term()},
+    %% 本轮执行的**缺省**工具超时（由 ToolCallingManager 注入）。工具自身声明的
+    %% tool_spec.timeout 优先级更高。可选键——缺席即回落 beamai_tool 的内置缺省。
+    %% 放 env 专用槽而非 vars：vars 是喂模板渲染的用户变量表（见 variables/1），
+    %% 执行策略漏进去会污染用户的提示词变量。
+    default_tool_timeout => pos_integer() | infinity
 }.
 
 %% 单个工具一轮的写意图（纯数据，屏障处折叠进 state）
@@ -165,6 +171,21 @@ with_kernel(#{env := Env} = Ctx, Kernel) ->
 -spec get_kernel(t()) -> term() | undefined.
 get_kernel(#{env := #{kernel := Kernel}}) -> Kernel;
 get_kernel(_) -> undefined.
+
+%% @doc 注入本轮执行的缺省工具超时（由 ToolCallingManager 在批执行前绑入）
+%%
+%% 传 undefined 表示**清除**——每批由其 manager 显式决定，不留上一批的残值
+%% （context 会跨轮穿线，不清则策略会粘住）。
+-spec with_default_tool_timeout(t(), pos_integer() | infinity | undefined) -> t().
+with_default_tool_timeout(#{env := Env} = Ctx, undefined) ->
+    Ctx#{env => maps:remove(default_tool_timeout, Env)};
+with_default_tool_timeout(#{env := Env} = Ctx, Timeout) ->
+    Ctx#{env => Env#{default_tool_timeout => Timeout}}.
+
+%% @doc 读取本轮的缺省工具超时（未注入返回 undefined，由调用方回落自身缺省）
+-spec default_tool_timeout(t()) -> pos_integer() | infinity | undefined.
+default_tool_timeout(#{env := #{default_tool_timeout := Timeout}}) -> Timeout;
+default_tool_timeout(_) -> undefined.
 
 %%====================================================================
 %% state：用户状态槽
