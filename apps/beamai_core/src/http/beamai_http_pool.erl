@@ -307,7 +307,10 @@ create_new_connection(Host, Port, Transport, HostKey,
     GunOpts = #{
         connect_timeout => ConnTimeout,
         transport => Transport,
-        protocols => [http2, http],
+        %% Gun 2.1 的 TCP 连接路径做 [Protocol] = maps:get(protocols, Opts, [http]) 单元素匹配，
+        %% 传 [http2, http] 会 {badmatch, [http2, http]} 崩掉所有连接。
+        %% 用 [http]（HTTP/1.1）保证 HTTP/HTTPS 均可用；TLS 路径仍可正常工作。
+        protocols => [http],
         tls_opts => get_tls_opts()
     },
 
