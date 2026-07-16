@@ -20,7 +20,7 @@
 -behaviour(beamai_tool_calling_manager).
 
 %% 构造
--export([new/0]).
+-export([new/0, new/1]).
 %% Behaviour callback
 -export([execute_tool_calls/4]).
 
@@ -28,27 +28,38 @@
 %% 构造
 %%====================================================================
 
-%% @doc 构造并发 manager（无状态，Ref 为 atom 占位）。
+%% @doc 构造并发 manager（缺省执行策略）。
 -spec new() -> beamai_tool_calling_manager:manager().
 new() ->
-    {?MODULE, default}.
+    new(#{}).
+
+%% @doc 构造并发 manager，Ref 携带执行策略
+%% （见 {@link beamai_tool_calling_manager:manager_opts()}）。
+-spec new(beamai_tool_calling_manager:manager_opts()) ->
+    beamai_tool_calling_manager:manager().
+new(Opts) when is_map(Opts) ->
+    {?MODULE, Opts}.
 
 %%====================================================================
 %% Behaviour callback
 %%====================================================================
 
-%% @doc 委托给 {@link beamai_agent_utils:execute_tools/5}。
+%% @doc 经 {@link beamai_tool_batch_worker:execute_isolated/5} 隔离执行。
 %%
-%% Unpack opts map 为 positional args，调 execute_tools，把返回的三元组
+%% Unpack opts map 为 positional args，把整批交给隔离 worker（其内部委托
+%% {@link beamai_agent_utils:execute_tools/5}），返回的三元组
 %% <code>&#123;ToolMsgs, CallRecords, NewContext&#125;</code> 包成 result map。
-%% parallel opts 透传给 execute_tools（由其内部判定并发退化）。
+%% parallel opts 透传，由 execute_tools 在 worker **内部**判定并发退化——
+%% 隔离与调度正交：并发与否不影响调用者恒定受保护。
 -spec execute_tool_calls(term(), beamai_kernel:kernel(), [map()],
                          beamai_tool_calling_manager:execute_opts()) ->
     beamai_tool_calling_manager:execute_result().
-execute_tool_calls(_Ref, Kernel, ToolCalls, Opts) ->
+execute_tool_calls(Ref, Kernel, ToolCalls, Opts) ->
     Context = maps:get(context, Opts, beamai_context:new()),
     Parallel = maps:get(parallel, Opts, false),
     OnResult = maps:get(on_result, Opts, fun(_CR) -> ok end),
+    MgrOpts = beamai_tool_calling_manager:opts_from_ref(Ref),
     {ToolMsgs, CallRecords, NewContext} =
-        beamai_agent_utils:execute_tools(Kernel, ToolCalls, Context, Parallel, OnResult),
+        beamai_tool_batch_worker:execute_isolated(Kernel, ToolCalls, Context,
+                                                  Parallel, OnResult, MgrOpts),
     #{messages => ToolMsgs, records => CallRecords, context => NewContext}.
