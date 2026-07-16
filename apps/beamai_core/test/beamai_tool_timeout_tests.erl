@@ -1,9 +1,12 @@
 %%%-------------------------------------------------------------------
-%%% @doc tool_spec 的 timeout 字段：强制执行
+%%% @doc tool_spec 的 timeout 字段：声明了才强制执行
 %%%
 %%% 此字段曾长期是**空转的**——`invoke/3' 读了它、传给 `call_handler/4'，而后者
-%%% 四个子句全部忽略该参数，同时文档写着"默认超时 30 秒"。声明 100ms 的工具
-%%% 能跑满 2 秒。这些测试钉住修复后的语义。
+%%% 四个子句全部忽略该参数。声明 100ms 的工具能跑满 2 秒。这些测试钉住修复后
+%%% 的语义。
+%%%
+%%% 策略是**声明式**的：不声明即不限时（框架不替调用者判断「多久算太久」），
+%%% 声明了才到点 kill。
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_tool_timeout_tests).
@@ -26,12 +29,12 @@ declared_timeout_enforced_test() ->
     ?assertMatch({error, #{class := timeout, reason := tool_timeout,
                            timeout_ms := 100}}, Result).
 
-%% 缺省 30 秒不会误伤正常工具
-default_timeout_allows_normal_tool_test() ->
+%% 不声明 timeout → 不限时，正常工具照常完成
+undeclared_timeout_allows_normal_tool_test() ->
     Tool = #{name => <<"fast">>, handler => fun(_) -> {ok, <<"done">>} end},
     ?assertEqual({ok, <<"done">>}, beamai_tool:invoke(Tool, #{})).
 
-%% infinity 是长耗时工具的逃生舱：不因缺省 30s 被杀
+%% 显式声明 infinity（等同不声明）
 infinity_timeout_not_enforced_test() ->
     Tool = #{name => <<"long">>, timeout => infinity,
              handler => fun(_) -> timer:sleep(50), {ok, <<"done">>} end},

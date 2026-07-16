@@ -12,9 +12,12 @@
 %%%-------------------------------------------------------------------
 -module(beamai_tool).
 
-%% handler 执行的内置缺省超时。优先级最低——工具声明与 manager 注入都盖得住它
-%% （见 resolve_timeout/2）。
--define(DEFAULT_TOOL_TIMEOUT, 30000).
+%% handler 执行的内置缺省：**不设超时**。
+%%
+%% 框架不替用户决定何时放弃一个工具——它无从知道某个调用「多久算太久」。
+%% 只有用户声明了超时元信息（tool_spec 的 timeout，或 ToolCallingManager 构造时
+%% 的 tool_timeout）才真的限时。缺省下工具跑多久就等多久，要不要杀由用户决定。
+-define(DEFAULT_TOOL_TIMEOUT, infinity).
 
 %% API - 创建
 -export([new/2, new/3]).
@@ -50,9 +53,9 @@
     description => binary(),
     parameters => parameters_schema(),
     tag => binary() | [binary()],
-    %% timeout：handler 执行的硬上限（毫秒），缺省 30000。到点 kill 执行进程、
-    %% 归一为 transient 的 tool_timeout 错误。长耗时工具须显式声明更大的值或
-    %% `infinity`（后者仍受批级兜底约束，见 beamai_tool_batch_worker）。
+    %% timeout：handler 执行的硬上限（毫秒），**缺省 infinity（不限时）**。
+    %% 声明了才限时——到点 kill 执行进程、归一为 transient 的 tool_timeout 错误。
+    %% 不声明即无限等待：框架不替调用者判断「多久算太久」。
     timeout => pos_integer() | infinity,
     %% retry：仅对 transient 类错误重试（见 beamai_tool_error），指数退避。
     %% true 用缺省 #{max_retries=>2, initial_delay_ms=>200}；opt-in 即承诺幂等。
@@ -167,8 +170,8 @@ invoke(ToolSpec, Args) ->
 %% Context 为**只读运行环境**（env：kernel/conversation_id/vars）；handler 若
 %% 需写状态经返回值 `{ok, V, Writes}` 表达，不改 Context。
 %% 根据工具定义中的 timeout 和 retry 配置执行处理器。
-%% 默认超时 30 秒（**强制执行**：handler 跑在受监控子进程中，到点 kill），
-%% 默认不重试。超时归为 transient 类——声明了 retry 的工具会被重试。
+%% **缺省不限时**——只有声明了 timeout 才强制执行（handler 跑在受监控子进程中，
+%% 到点 kill）。默认不重试。超时归为 transient 类——声明了 retry 的工具会被重试。
 %%
 %% handler 在子进程中执行，故**不得依赖调用者的进程身份**（self()、进程字典、
 %% 发往调用者的消息）。并发路径下本就如此，这里只是让所有路径一致。
@@ -178,10 +181,10 @@ invoke(#{handler := Handler} = ToolSpec, Args, Context) ->
     {MaxRetries, InitialDelay} = retry_conf(maps:get(retry, ToolSpec, false)),
     invoke_with_retry(Handler, Args, Context, MaxRetries, InitialDelay, Timeout).
 
-%% @private 超时优先级：工具自己声明 > ToolCallingManager 注入的缺省 > 内置 30 秒
+%% @private 超时优先级：工具自己声明 > ToolCallingManager 注入的缺省 > 不限时
 %%
-%% 工具声明最优先——它最了解自己要跑多久（`timeout => infinity' 即长任务的
-%% 逃生舱）。manager 级缺省次之，让部署方能整体放宽/收紧而不必逐个改工具。
+%% 工具声明最优先——它最了解自己要跑多久。manager 级缺省次之，让部署方能整体
+%% 收紧而不必逐个改工具。两者都没声明 → infinity，无限等待。
 resolve_timeout(ToolSpec, Context) ->
     case maps:get(timeout, ToolSpec, undefined) of
         undefined ->
