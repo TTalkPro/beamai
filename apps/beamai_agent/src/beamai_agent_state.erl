@@ -35,6 +35,7 @@
     conversation_id := binary(),    %% 本 agent 的会话标识，用于在记忆内定位历史
     system_prompt := binary() | undefined, %% 系统提示词
     max_tool_iterations := pos_integer(),  %% tool loop 最大迭代次数
+    max_tool_calls := pos_integer() | infinity, %% 整轮 run 的工具调用总数上限（默认 infinity）
     parallel_tools := boolean(),           %% 一轮多个 tool_call 是否并发执行（默认 true）
     callbacks := beamai_agent_callbacks:callbacks(), %% 回调函数表
     turn_count := non_neg_integer(),%% 已完成的对话轮数
@@ -86,6 +87,11 @@
 %%   plugins — 要加载的 plugin 模块列表 [module()]
 %%   system_prompt — 系统提示词（binary）
 %%   max_tool_iterations — 最大 tool loop 迭代次数（默认 10）
+%%   max_tool_calls — 整轮 run 的工具调用总数上限（默认 infinity，即不设限）。
+%%     与 max_tool_iterations 正交：后者限"来回几轮"，前者限"总共调了多少次工具"
+%%     ——一轮可以并发调 20 个工具，迭代上限拦不住。
+%%     缺省不设限：框架不替调用者判断"调几次算太多"（与 tool/gather/batch
+%%     三层超时的缺省一致）。
 %%   parallel_tools — 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
 %%   callbacks — 观察性回调 map（参见 beamai_agent_callbacks:callbacks()）
 %%   memory — 会话记忆（解析为 beamai_memory_provider，与 kernel 正交）：
@@ -120,6 +126,7 @@ create(Config) ->
             conversation_id => maps:get(conversation_id, Config, beamai_id:gen_id(<<"conv">>)),
             system_prompt => maps:get(system_prompt, Config, undefined),
             max_tool_iterations => maps:get(max_tool_iterations, Config, 10),
+            max_tool_calls => maps:get(max_tool_calls, Config, infinity),
             parallel_tools => maps:get(parallel_tools, Config, true),
             callbacks => Callbacks,
             turn_count => 0,

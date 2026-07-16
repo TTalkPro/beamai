@@ -648,6 +648,7 @@ run_loop(State, MsgSpec, PrevCalls, Opts) ->
         max_iterations => MaxIter,
         %% 只传 tool_loop 实际需要的字段，不传完整 agent state
         max_tool_iterations => maps:get(max_tool_iterations, State),
+        max_tool_calls => maps:get(max_tool_calls, State, infinity),
         parallel_tools => maps:get(parallel_tools, State, true),
         interrupt_tools => maps:get(interrupt_tools, State, []),
         on_env_error => maps:get(on_env_error, State, proceed),

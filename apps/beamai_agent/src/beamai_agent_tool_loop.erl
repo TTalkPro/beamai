@@ -35,6 +35,10 @@
     callbacks := map(),
     max_iterations := pos_integer(),
     max_tool_iterations := pos_integer(),  %% agent 配置的总迭代上限（中断上下文计数用）
+    %% 整轮 run 的工具调用总数上限，缺省 infinity（不设限）。
+    %% 与 max_tool_iterations 正交：后者限"来回几轮"，前者限"总共调了多少次工具"
+    %% ——一轮可以并发调 20 个工具，迭代上限拦不住。
+    max_tool_calls => pos_integer() | infinity,
     parallel_tools := boolean(),    %% 一轮多个 tool_call 是否并发执行
     interrupt_tools := [map()],     %% 中断 tool 定义列表
     on_env_error => proceed | pause, %% 环境类工具失败策略（缺省 proceed）
@@ -102,7 +106,30 @@ iterate(_Opts, 0, ToolCallsMade) ->
     {error, {max_tool_iterations, ToolCallsMade}};
 
 %% @private 主循环体：用本轮完整 messages 调用 LLM 并根据响应分支处理
+%%
+%% 限额在这里判、而不是放进 around_tool filter：filter 拿到的 context 是**每轮
+%% 初的只读快照**（见 beamai_agent_utils:execute_sequential/4 与
+%% design/context_split_parallel_tools.md §4.1「快照 + 屏障折叠，不引入批内穿线」），
+%% 批内每个工具读到的计数都一样，filter 里的计数器天生累加不起来。
+%% 循环这一层是串行的，length(ToolCallsMade) 无歧义——限额就该待在这。
 iterate(Opts, N, ToolCallsMade) ->
+    case over_tool_call_limit(Opts, ToolCallsMade) of
+        true -> {error, {max_tool_calls, ToolCallsMade}};
+        false -> do_iterate(Opts, N, ToolCallsMade)
+    end.
+
+%% @private 已发生的工具调用数是否已达上限
+%%
+%% 在开新一轮之前判：本批已经执行完的调用不回滚（也无从回滚——副作用已经发生），
+%% 所以实际执行数可能略微越过上限，就像 max_tool_iterations 一样是"不再往下走"
+%% 而非"事后撤销"。
+over_tool_call_limit(Opts, ToolCallsMade) ->
+    case maps:get(max_tool_calls, Opts, infinity) of
+        infinity -> false;
+        Max when is_integer(Max) -> length(ToolCallsMade) >= Max
+    end.
+
+do_iterate(Opts, N, ToolCallsMade) ->
     #{messages := Messages, callbacks := Callbacks, meta := Meta} = Opts,
     ToSend = prepare_messages(Opts, Messages),
     beamai_agent_callbacks:invoke(on_llm_call, [ToSend, Meta], Callbacks),
