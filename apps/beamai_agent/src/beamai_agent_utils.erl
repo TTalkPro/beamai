@@ -18,6 +18,7 @@
     execute_tools/4,
     execute_tools/5,
     run_one_tool/3,
+    synth_result/3,
     tool_error/1
 ]).
 
@@ -271,8 +272,12 @@ kill_pending(Workers, Acc, OnResult) ->
         end
     end, Acc, Workers).
 
-%% @private 合成 error tool 结果（保持与正常结果同构；Writes 空 → 不参与折叠）
+%% @doc 合成 error tool 结果（保持与正常结果同构；Writes 空 → 不参与折叠）
 %% crash/timeout 均归为 transient 类（重试/等待有意义），带 error 供屏障路由。
+%% 并发路径的 DOWN/超时兜底用它；批级隔离失败（{@link beamai_tool_batch_worker}）
+%% 也用它为整批合成结果——两处的 error 结果形状必须一致。
+-spec synth_result(map(), atom(), term()) ->
+    {map(), map(), beamai_context:writes()}.
 synth_result(TC, Type, Reason) ->
     {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
     Msg0 = iolist_to_binary(io_lib:format("~p", [Reason])),

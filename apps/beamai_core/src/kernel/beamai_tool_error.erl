@@ -57,6 +57,9 @@ classify({request_failed, _}) -> transient;
 classify({closed, _}) -> transient;
 classify(tool_timeout) -> transient;
 classify(tool_worker_crash) -> transient;
+%% 批级 worker 崩溃（beamai_tool_batch_worker）：与 tool_worker_crash 同源——
+%% 基础设施故障而非模型的语义错误，重试有意义
+classify(tool_batch_crash) -> transient;
 %% 5. 缺省语义类
 classify(_) -> semantic.
 

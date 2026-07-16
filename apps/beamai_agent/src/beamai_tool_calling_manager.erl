@@ -18,6 +18,20 @@
 %%% <code>execute_tools/5</code>（批调度）和 <code>run_one_tool/3</code>
 %%% （单工具执行）是各实现模块内部委托的 helper，不是协议方法。
 %%%
+%%% <b>隔离是本 behaviour 的契约，不是可选项</b>：manager 是工具执行引擎，
+%%% 持有进程模型。实现**必须**保证工具执行不会带崩调用者进程——用
+%%% {@link beamai_tool_batch_worker:execute_isolated/5} 即可满足（内置的两个
+%%% 实现都走它）。
+%%%
+%%% 边界划在 manager 级、而非每工具一个进程：工具存在必须串行执行的场景，
+%%% 每工具一进程会把「隔离」与「调度」绑死。正确的正交是：
+%%% <ul>
+%%%   <li><b>进程边界</b> = manager 级，恒定一层，与批次大小 / 策略无关</li>
+%%%   <li><b>串行 / 并发</b> = 边界**内部**的调度自由</li>
+%%% </ul>
+%%% 故 sequential manager 同样在独立进程里跑——串行不等于不隔离。
+%%% 代价：故障单元是「批」而非「单个工具」（批崩 → 整批合成 error）。
+%%%
 %%% 定位（vs 现有抽象）：
 %%% <ul>
 %%%   <li><b>不夺</b> <code>parallel_tools</code> / <code>serial</code> 的权——
@@ -39,11 +53,28 @@
 %% 调度 API
 -export([execute_tool_calls/4]).
 %% 构造
--export([default/0, concurrent/0, sequential/0]).
+-export([default/0, concurrent/0, concurrent/1, sequential/0, sequential/1]).
+%% 供实现模块解析 Ref
+-export([opts_from_ref/1]).
 
--export_type([manager/0, execute_opts/0, execute_result/0]).
+-export_type([manager/0, manager_opts/0, execute_opts/0, execute_result/0]).
 
 -type manager() :: {module(), term()}.
+
+%% 构造 manager 时给定的执行策略（存进 {Mod, Ref} 的 Ref）。
+%%
+%% manager 是执行引擎，时间上限属于执行策略，故在此配置——而非散落在 app env
+%% 或逐个工具声明。
+-type manager_opts() :: #{
+    %% 该 manager 执行的工具的**缺省**超时（毫秒）。工具自己声明的
+    %% tool_spec.timeout 优先。缺省回落 beamai_tool 的内置 30 秒。
+    %% 用 infinity 可整体解除限制（仍受 batch_timeout 兜底）。
+    tool_timeout => pos_integer() | infinity,
+    %% 批级兜底截止（毫秒）。缺省回落 app env `tool_gather_timeout' + `tool_batch_grace'。
+    %% 应大于并发收集截止 `tool_gather_timeout'，否则并发路径本可保住的部分结果
+    %% 会被整批冲成错误（见 beamai_tool_batch_worker:batch_timeout/1）。
+    batch_timeout => pos_integer() | infinity
+}.
 
 -type execute_opts() :: #{
     context => beamai_context:t(),
@@ -112,7 +143,17 @@ default() ->
 %% 否则串行。适合大多数场景。
 -spec concurrent() -> manager().
 concurrent() ->
-    beamai_concurrent_tool_calling_manager:new().
+    concurrent(#{}).
+
+%% @doc 构造并发 manager，并给定执行策略（见 {@link manager_opts()}）。
+%%
+%% 例：整体放宽工具超时到 5 分钟，不必逐个改 tool_spec：
+%% ```
+%% beamai_tool_calling_manager:concurrent(#{tool_timeout => 300000})
+%% '''
+-spec concurrent(manager_opts()) -> manager().
+concurrent(Opts) ->
+    beamai_concurrent_tool_calling_manager:new(Opts).
 
 %% @doc 构造串行 manager（永远按序执行、无并发）。
 %%
@@ -120,4 +161,16 @@ concurrent() ->
 %% 适合调试或严格副作用场景。
 -spec sequential() -> manager().
 sequential() ->
-    beamai_sequential_tool_calling_manager:new().
+    sequential(#{}).
+
+%% @doc 构造串行 manager，并给定执行策略（见 {@link manager_opts()}）。
+-spec sequential(manager_opts()) -> manager().
+sequential(Opts) ->
+    beamai_sequential_tool_calling_manager:new(Opts).
+
+%% @doc 从 {@link manager()} 的 Ref 解析出 manager_opts。
+%%
+%% 兼容早期把 Ref 当占位原子（`default'）的构造形态——彼时 manager 无配置可携。
+-spec opts_from_ref(term()) -> manager_opts().
+opts_from_ref(Opts) when is_map(Opts) -> Opts;
+opts_from_ref(_Legacy) -> #{}.
