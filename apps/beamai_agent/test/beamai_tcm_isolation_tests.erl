@@ -105,46 +105,60 @@ batch_crash_rolls_back_context_test() ->
     ?assertEqual(<<"before">>, beamai_context:state_get(Ctx1, <<"k">>, undefined)).
 
 %%====================================================================
-%% 卡死工具不能冻住调用者（串行路径唯一的时间防线）
+%% 缺省不限时：框架不替调用者决定何时放弃
 %%====================================================================
 
-%% 串行路径没有内层 gather 截止，批级截止是它唯一的防线：
-%% 工具无限阻塞 → 到点 kill worker、整批合成 timeout error，调用者拿回控制权。
-hanging_tool_does_not_freeze_caller_test_() ->
-    {setup,
-     fun() ->
-         Old = {application:get_env(beamai_agent, tool_gather_timeout),
-                application:get_env(beamai_agent, tool_batch_grace)},
-         application:set_env(beamai_agent, tool_gather_timeout, 300),
-         application:set_env(beamai_agent, tool_batch_grace, 200),
-         Old
-     end,
-     fun({OldGather, OldGrace}) ->
-         restore_env(tool_gather_timeout, OldGather),
-         restore_env(tool_batch_grace, OldGrace)
-     end,
-     {timeout, 10, fun hanging_tool_times_out/0}}.
+%% 卡死的工具**不会**被框架擅自杀掉——缺省一直等，直到调用方自己处置。
+%% 这是「不替用户做决策」的可执行表述：没有任何声明时，超时不该凭空发生。
+default_never_kills_on_its_own_test_() ->
+    {timeout, 10, fun() ->
+        Pid = spawn_hanging_batch(beamai_tool_calling_manager:sequential()),
+        MRef = erlang:monitor(process, Pid),
+        %% 若框架擅自超时，这里会收到合成的 timeout 结果
+        receive
+            {Pid, returned, R} ->
+                erlang:demonitor(MRef, [flush]),
+                ?assertEqual(should_still_be_waiting, R);
+            {'DOWN', MRef, process, Pid, Reason} ->
+                ?assertEqual(should_still_be_waiting, {died, Reason})
+        after 1000 ->
+            %% 仍在等 —— 正确
+            erlang:demonitor(MRef, [flush]),
+            ?assert(is_process_alive(Pid)),
+            %% 处置权在调用方手里：要杀是调用方说了算
+            exit(Pid, kill)
+        end
+    end}.
 
-hanging_tool_times_out() ->
-    Tool = #{
-        name => <<"hang">>,
-        description => <<"blocks forever">>,
-        handler => fun(_Args) -> timer:sleep(infinity) end
-    },
+%% 并发路径同理：gather 缺省也不设截止
+default_never_kills_on_its_own_concurrent_test_() ->
+    {timeout, 10, fun() ->
+        Pid = spawn_hanging_batch(beamai_tool_calling_manager:concurrent()),
+        MRef = erlang:monitor(process, Pid),
+        receive
+            {Pid, returned, R} ->
+                erlang:demonitor(MRef, [flush]),
+                ?assertEqual(should_still_be_waiting, R)
+        after 1000 ->
+            erlang:demonitor(MRef, [flush]),
+            ?assert(is_process_alive(Pid)),
+            exit(Pid, kill)
+        end
+    end}.
+
+%% 起一个跑「卡死工具」批次的进程，返回其 pid（结果会以 {Pid, returned, R} 回传）
+spawn_hanging_batch(TCM) ->
+    Tool = #{name => <<"hang">>, description => <<"blocks forever">>,
+             handler => fun(_Args) -> timer:sleep(infinity) end},
     K = beamai_kernel:add_tools(beamai_kernel:new(), [Tool]),
-    TCs = [#{id => <<"1">>, name => <<"hang">>, arguments => #{}}],
-    {Elapsed, #{messages := Msgs, records := Records}} = timer:tc(fun() ->
-        beamai_tool_calling_manager:execute_tool_calls(
-            beamai_tool_calling_manager:sequential(), K, TCs, #{})
-    end),
-    %% 到点返回，而非永远挂起
-    ?assert(Elapsed div 1000 < 3000),
-    %% 每个 tool_call 仍有同构的 error 结果
-    ?assertEqual(1, length(Msgs)),
-    ?assertMatch([#{error := #{}}], Records).
-
-restore_env(Key, undefined) -> application:unset_env(beamai_agent, Key);
-restore_env(Key, {ok, V}) -> application:set_env(beamai_agent, Key, V).
+    TCs = [#{id => <<"1">>, name => <<"hang">>, arguments => #{}},
+           #{id => <<"2">>, name => <<"hang">>, arguments => #{}}],
+    Parent = self(),
+    spawn(fun() ->
+        R = beamai_tool_calling_manager:execute_tool_calls(
+                TCM, K, TCs, #{parallel => true}),
+        Parent ! {self(), returned, R}
+    end).
 
 %%====================================================================
 %% 正常路径不受影响
@@ -200,8 +214,8 @@ declared_tool_timeout_beats_manager_default_test() ->
     ?assertNot(maps:is_key(error, Record)),
     ?assertEqual(<<"slow-done">>, maps:get(result, Record)).
 
-%% 不给 manager 策略 → 回落 beamai_tool 内置缺省（30s），慢工具照常完成
-no_manager_timeout_falls_back_to_builtin_test() ->
+%% 两处都不声明 → 不限时，慢工具照常完成（缺省不设超时）
+no_declaration_means_no_timeout_test() ->
     TCM = beamai_tool_calling_manager:sequential(),
     #{records := [Record]} = run_slow_tool(TCM, _Declared = undefined),
     ?assertNot(maps:is_key(error, Record)),

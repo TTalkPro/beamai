@@ -28,10 +28,14 @@
 %%% </ul>
 %%% 二者都只有进程边界能挡。
 %%%
-%%% <b>失败语义（批粒度）</b>：worker 崩溃或超时 → 为**整批**每个 tool_call
-%%% 合成 error 结果（与正常结果同构，Writes 空），Context 退回批前快照（本批
-%%% 工具的 writes 全部丢弃）。这是 manager 级隔离的代价：故障单元是「批」而
-%%% 非「单个工具」。换来的是调用者恒定存活。
+%%% <b>失败语义（批粒度）</b>：worker 崩溃 → 为**整批**每个 tool_call 合成
+%%% error 结果（与正常结果同构，Writes 空），Context 退回批前快照（本批工具的
+%%% writes 全部丢弃）。这是 manager 级隔离的代价：故障单元是「批」而非「单个
+%%% 工具」。换来的是调用者恒定存活。
+%%%
+%%% <b>缺省不限时</b>：本层只管隔离，不替调用者决定何时放弃——工具跑多久就等
+%%% 多久（见 {@link batch_timeout/1}）。要限时须显式声明：工具级经 tool_spec 的
+%%% `timeout'，批级经 manager 构造时的 `batch_timeout'。
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_tool_batch_worker).
@@ -104,7 +108,8 @@ await_batch(Tag, Pid, MRef, ToolCalls, Context, OnResult, Deadline) ->
             %% worker 被工具带崩（含 link 传播的退出信号）：整批合成 error
             synth_batch(ToolCalls, Context, tool_batch_crash, Reason, OnResult)
     after remaining(Deadline) ->
-        %% 批级兜底：worker 卡死（如工具无限阻塞）——kill 之，整批合成 timeout
+        %% 仅当调用方显式配了 batch_timeout 才会走到这里（缺省 infinity）：
+        %% kill worker，整批合成 timeout
         erlang:demonitor(MRef, [flush]),
         exit(Pid, kill),
         drain(Tag),
@@ -135,28 +140,17 @@ synth_batch(ToolCalls, Context, Type, Reason, OnResult) ->
     end || TC <- ToolCalls],
     {[M || {M, _R, _W} <- Ordered], [R || {_M, R, _W} <- Ordered], Context}.
 
-%% @doc 批级执行的截止时长（毫秒）= `tool_gather_timeout' + `tool_batch_grace'。
+%% @doc 批级执行的截止时长（毫秒），**缺省 infinity —— 不设截止**。
 %%
-%% <b>宽限不能省</b>：本层的计时从 spawn **之前**开始，worker 内并发路径的
-%% `tool_gather_timeout' 从 spawn **之后**才起算——同值则本层必然先到，会把
-%% 并发路径本可保住的**部分结果**（其他工具的真结果 + 卡死者的 timeout error）
-%% 整批冲成错误。留出宽限后次序才对：
-%% <ul>
-%%   <li>内层（并发收集截止）先响 → 保住部分结果，这是正常的超时处理</li>
-%%   <li>本层只在内层机制本身失灵、或串行路径卡死时响 —— 真兜底</li>
-%% </ul>
-%% 串行路径没有内层防线，本层是其唯一的时间防线。
+%% 本层的职责是**隔离**（调用者恒存活），不是替调用者决定何时放弃：工具跑多久
+%% 就等多久，要不要杀由调用者决定。故缺省一直等 worker 交付或 DOWN。
 %%
-%% 优先级：manager 构造时给的 `batch_timeout' > app env（`tool_gather_timeout'
-%% + `tool_batch_grace'，后者默认 5 秒）。manager 是执行引擎，时间上限属于它的
-%% 策略；app env 是没有显式配置时的部署级兜底。
+%% 只有 manager 构造时显式给了 `batch_timeout' 才限时。给的时候注意它与内层
+%% `tool_gather_timeout' 的次序：本层计时从 spawn **之前**开始、内层从 spawn
+%% **之后**才起算，故本层若不严格大于内层，就会抢在内层前面响，把并发路径本可
+%% 保住的**部分结果**（其他工具的真结果 + 卡死者的 timeout error）整批冲成
+%% 错误。缺省 infinity 时这个次序天然成立。
 -spec batch_timeout(beamai_tool_calling_manager:manager_opts()) ->
     pos_integer() | infinity.
 batch_timeout(MgrOpts) ->
-    case maps:get(batch_timeout, MgrOpts, undefined) of
-        undefined ->
-            application:get_env(beamai_agent, tool_gather_timeout, 120000)
-                + application:get_env(beamai_agent, tool_batch_grace, 5000);
-        Configured ->
-            Configured
-    end.
+    maps:get(batch_timeout, MgrOpts, infinity).

@@ -65,14 +65,16 @@
 %%
 %% manager 是执行引擎，时间上限属于执行策略，故在此配置——而非散落在 app env
 %% 或逐个工具声明。
+%%
+%% <b>两项都缺省 infinity</b>：框架不替调用者判断「多久算太久」，缺省一直等到
+%% 工具交付，谁完成了、谁还没完成经 on_result 实时可见。要杀须显式声明。
 -type manager_opts() :: #{
     %% 该 manager 执行的工具的**缺省**超时（毫秒）。工具自己声明的
-    %% tool_spec.timeout 优先。缺省回落 beamai_tool 的内置 30 秒。
-    %% 用 infinity 可整体解除限制（仍受 batch_timeout 兜底）。
+    %% tool_spec.timeout 优先。不给即 infinity——工具跑多久等多久。
     tool_timeout => pos_integer() | infinity,
-    %% 批级兜底截止（毫秒）。缺省回落 app env `tool_gather_timeout' + `tool_batch_grace'。
-    %% 应大于并发收集截止 `tool_gather_timeout'，否则并发路径本可保住的部分结果
-    %% 会被整批冲成错误（见 beamai_tool_batch_worker:batch_timeout/1）。
+    %% 批级截止（毫秒）。不给即 infinity。给的时候应严格大于并发收集截止
+    %% （app env `tool_gather_timeout'），否则并发路径本可保住的部分结果会被
+    %% 整批冲成错误（见 beamai_tool_batch_worker:batch_timeout/1）。
     batch_timeout => pos_integer() | infinity
 }.
 
@@ -147,7 +149,8 @@ concurrent() ->
 
 %% @doc 构造并发 manager，并给定执行策略（见 {@link manager_opts()}）。
 %%
-%% 例：整体放宽工具超时到 5 分钟，不必逐个改 tool_spec：
+%% 例：给未声明 timeout 的工具统一加 5 分钟上限（缺省是不限时），不必逐个改
+%% tool_spec：
 %% ```
 %% beamai_tool_calling_manager:concurrent(#{tool_timeout => 300000})
 %% '''

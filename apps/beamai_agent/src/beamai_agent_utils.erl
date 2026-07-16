@@ -184,10 +184,11 @@ fire_result(OnResult, {_Msg, CallRecord, _Writes} = Result) ->
 %%
 %% 工作进程把 {tool_result, self(), {Msg, CallRecord, Writes}} 回传给父进程；
 %% 进程意外崩溃（未走 invoke_tool 的 {error,_} 路径）由 'DOWN' 兜底合成 error
-%% tool 消息（Writes 空）。全局收集有截止时间（app env `tool_gather_timeout`，
-%% 默认 2 分钟）：超时后 kill 未完成的工作进程、为其合成 timeout error 结果，
-%% 避免单个卡死工具冻结整个 tool loop 并泄漏 worker。结果按原 tool_call 顺序
-%% （索引）重排，屏障处折叠 writes。
+%% tool 消息（Writes 空）。全局收集**缺省不设截止**（app env
+%% `tool_gather_timeout`，缺省 infinity）——一直等到每个 worker 交付，完成情况
+%% 经 OnResult 实时可见。显式配了截止才到点 kill 未交付者、为其合成 timeout
+%% error 结果（已完成的结果照常保留）。结果按原 tool_call 顺序（索引）重排，
+%% 屏障处折叠 writes。
 execute_concurrent(Kernel, ToolCalls, Context, OnResult) ->
     Parent = self(),
     Indexed = lists:zip(lists:seq(1, length(ToolCalls)), ToolCalls),
@@ -197,8 +198,7 @@ execute_concurrent(Kernel, ToolCalls, Context, OnResult) ->
         end),
         Acc#{Pid => #{idx => Idx, tc => TC, mref => MRef}}
     end, #{}, Indexed),
-    Deadline = erlang:monotonic_time(millisecond) + gather_timeout(),
-    ResultMap = collect_tools(Workers, #{}, Deadline, OnResult),
+    ResultMap = collect_tools(Workers, #{}, deadline(gather_timeout()), OnResult),
     Ordered = [maps:get(Idx, ResultMap) || {Idx, _TC} <- Indexed],
     finalize(Kernel, Context, Ordered).
 
@@ -228,7 +228,6 @@ warn_conflicts(Conflicts) ->
 collect_tools(Workers, Acc, _Deadline, _OnResult) when map_size(Acc) =:= map_size(Workers) ->
     Acc;
 collect_tools(Workers, Acc, Deadline, OnResult) ->
-    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
     receive
         {tool_result, Pid, RC} ->
             case maps:get(Pid, Workers, undefined) of
@@ -253,9 +252,17 @@ collect_tools(Workers, Acc, Deadline, OnResult) ->
                             collect_tools(Workers, Acc#{Idx => R}, Deadline, OnResult)
                     end
             end
-    after Remaining ->
+    after remaining(Deadline) ->
         kill_pending(Workers, Acc, OnResult)
     end.
+
+%% @private infinity 的截止即无截止（缺省——不替用户决定何时放弃）
+deadline(infinity) -> infinity;
+deadline(Timeout) -> erlang:monotonic_time(millisecond) + Timeout.
+
+%% @private 距截止还剩多久；infinity 即一直等到所有 worker 交付或 DOWN
+remaining(infinity) -> infinity;
+remaining(Deadline) -> max(0, Deadline - erlang:monotonic_time(millisecond)).
 
 %% @private 超时收尾：kill 所有未交付结果的 worker，并合成 timeout error 结果
 kill_pending(Workers, Acc, OnResult) ->
@@ -288,7 +295,11 @@ synth_result(TC, Type, Reason) ->
                    error => #{class => beamai_tool_error:classify(Type), message => Msg0}},
     {Msg, CallRecord, #{}}.
 
-%% @private 并发收集的全局截止时长（毫秒，默认 2 分钟）
-%% 长耗时工具场景请通过 app env tool_gather_timeout 显式调大
+%% @private 并发收集的全局截止时长（毫秒，**缺省 infinity —— 不设截止**）
+%%
+%% 缺省一直等到每个 worker 都交付结果：框架不替调用者判断「多久算太久」，
+%% 每个工具完成即经 OnResult 实时汇报，谁完成了、谁还没完成是可见的。
+%% 要限时请显式配 app env tool_gather_timeout（到点 kill 未交付者、为其合成
+%% timeout 错误、保留已完成的结果）。
 gather_timeout() ->
-    application:get_env(beamai_agent, tool_gather_timeout, 120000).
+    application:get_env(beamai_agent, tool_gather_timeout, infinity).
