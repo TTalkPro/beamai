@@ -282,6 +282,10 @@ do_request(Method, Url, ExtraHeaders, Body, Opts, Attempt) ->
     UrlBin = beamai_utils:to_binary(Url),
     BodyBin = beamai_utils:encode_body(Body),
 
+    %% 池选择：调用方经 Opts#{pool => http_pool_short | http_pool_stream |
+    %% http_pool_longpoll} 指定；Opts 原样透传给后端，未指定时
+    %% beamai_http_gun 默认 http_pool_short（Hackney 后端把 pool 当
+    %% hackney 池名，勿传 Gun 池名——见 beamai_llm_http_client:maybe_inject_pool/2）。
     case Backend:request(Method, UrlBin, Headers, BodyBin, Opts) of
         {ok, _} = Success ->
             Success;

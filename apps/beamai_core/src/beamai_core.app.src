@@ -1,7 +1,10 @@
 {application, beamai_core, [
     {description, "BeamAI Core - Kernel 框架"},
     {vsn, "1.0.0"},
-    {registered, [beamai_core_sup, beamai_http_pool]},
+    {registered, [beamai_core_sup,
+                  http_pool_short,
+                  http_pool_stream,
+                  http_pool_longpoll]},
     {mod, {beamai_core_app, []}},
     {applications, [kernel, stdlib, jsx, uuid, hackney]},
     {optional_applications, [gun, beamai_llm]},

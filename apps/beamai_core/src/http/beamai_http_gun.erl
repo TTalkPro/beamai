@@ -52,10 +52,10 @@ request(Method, Url, Headers, Body, Opts) ->
     Timeout = maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
 
     case request_async(Method, Url, Headers, Body, Opts) of
-        {ok, ConnPid, StreamRef} ->
+        {ok, ConnPid, StreamRef, PoolName} ->
             Result = await_response(ConnPid, StreamRef, Timeout),
             %% 归还连接
-            beamai_http_pool:return_connection(ConnPid),
+            beamai_http_pool:return_connection(PoolName, ConnPid),
             Result;
         {error, Reason} ->
             {error, Reason}
@@ -72,9 +72,9 @@ request_meta(Method, Url, Headers, Body, Opts) ->
     Timeout = maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
 
     case request_async(Method, Url, Headers, Body, Opts) of
-        {ok, ConnPid, StreamRef} ->
+        {ok, ConnPid, StreamRef, PoolName} ->
             Result = receive_response_meta(ConnPid, StreamRef, <<>>, undefined, [], Timeout),
-            beamai_http_pool:return_connection(ConnPid),
+            beamai_http_pool:return_connection(PoolName, ConnPid),
             Result;
         {error, Reason} ->
             {error, Reason}
@@ -93,10 +93,10 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
     FwdHeaders = maps:get(forward_headers, Opts, false),
 
     case request_async(Method, Url, Headers, Body, Opts) of
-        {ok, ConnPid, StreamRef} ->
+        {ok, ConnPid, StreamRef, PoolName} ->
             Result = stream_receive_loop(ConnPid, StreamRef, InitAcc, Handler, Timeout, FwdHeaders),
             %% 归还连接
-            beamai_http_pool:return_connection(ConnPid),
+            beamai_http_pool:return_connection(PoolName, ConnPid),
             Result;
         {error, Reason} ->
             {error, Reason}
@@ -107,43 +107,50 @@ stream_request(Method, Url, Headers, Body, Opts, Handler) ->
 %%====================================================================
 
 %% @doc 发送异步请求
+%% 返回 4 元组（多了池名，供调用方归还连接到正确的池）。
+%% 破坏性变更：Phase 2 之前返回 {ok, ConnPid, StreamRef} 3 元组。
 -spec request_async(atom(), binary() | string(), [{binary(), binary()}],
-                    binary(), map()) -> {ok, pid(), reference()} | {error, term()}.
-request_async(Method, Url, Headers, Body, _Opts) ->
-    UrlBin = beamai_utils:to_binary(Url),
+                    binary(), map()) ->
+    {ok, pid(), reference(), beamai_http_pool:pool_name()} | {error, term()}.
+request_async(Method, Url, Headers, Body, Opts) ->
+    case resolve_pool_name(Opts) of
+        {error, _} = Err ->
+            Err;
+        {ok, PoolName} ->
+            UrlBin = beamai_utils:to_binary(Url),
+            case beamai_http_pool:get_connection(PoolName, UrlBin) of
+                {ok, ConnPid} ->
+                    {Path, Query} = parse_path_and_query(UrlBin),
+                    FullPath = case Query of
+                        <<>> -> Path;
+                        _ -> <<Path/binary, "?", Query/binary>>
+                    end,
 
-    case beamai_http_pool:get_connection(UrlBin) of
-        {ok, ConnPid} ->
-            {Path, Query} = parse_path_and_query(UrlBin),
-            FullPath = case Query of
-                <<>> -> Path;
-                _ -> <<Path/binary, "?", Query/binary>>
-            end,
+                    %% 准备请求头
+                    ReqHeaders = prepare_headers(Headers),
 
-            %% 准备请求头
-            ReqHeaders = prepare_headers(Headers),
+                    %% 发送请求
+                    StreamRef = case Method of
+                        get ->
+                            gun:get(ConnPid, FullPath, ReqHeaders);
+                        head ->
+                            gun:head(ConnPid, FullPath, ReqHeaders);
+                        delete ->
+                            gun:delete(ConnPid, FullPath, ReqHeaders);
+                        post ->
+                            gun:post(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
+                        put ->
+                            gun:put(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
+                        patch ->
+                            gun:patch(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
+                        options ->
+                            gun:options(ConnPid, FullPath, ReqHeaders)
+                    end,
 
-            %% 发送请求
-            StreamRef = case Method of
-                get ->
-                    gun:get(ConnPid, FullPath, ReqHeaders);
-                head ->
-                    gun:head(ConnPid, FullPath, ReqHeaders);
-                delete ->
-                    gun:delete(ConnPid, FullPath, ReqHeaders);
-                post ->
-                    gun:post(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
-                put ->
-                    gun:put(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
-                patch ->
-                    gun:patch(ConnPid, FullPath, ReqHeaders, beamai_utils:encode_body(Body));
-                options ->
-                    gun:options(ConnPid, FullPath, ReqHeaders)
-            end,
-
-            {ok, ConnPid, StreamRef};
-        {error, Reason} ->
-            {error, {connection_failed, Reason}}
+                    {ok, ConnPid, StreamRef, PoolName};
+                {error, Reason} ->
+                    {error, {connection_failed, Reason}}
+            end
     end.
 
 %% @doc 等待响应（同步）
@@ -155,6 +162,18 @@ await_response(ConnPid, StreamRef, Timeout) ->
 %%====================================================================
 %% 内部函数
 %%====================================================================
+
+%% @private 从 Opts 解析池名；未指定时默认 http_pool_short。
+%% 非法池名返回错误（fail fast，不静默落到默认池）。
+resolve_pool_name(Opts) ->
+    case maps:get(pool, Opts, http_pool_short) of
+        P when P =:= http_pool_short;
+               P =:= http_pool_stream;
+               P =:= http_pool_longpoll ->
+            {ok, P};
+        Other ->
+            {error, {invalid_pool_name, Other}}
+    end.
 
 %% @private 接收 HTTP 响应（递归收集 body 数据）
 %%

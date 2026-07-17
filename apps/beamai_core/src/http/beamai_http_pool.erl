@@ -7,28 +7,43 @@
 %%% - 空闲连接清理
 %%% - 按主机分组管理
 %%%
+%%% 本模块是"池实例"的实现：beamai_core_sup 按用途启动三个实例
+%%% （http_pool_short / http_pool_stream / http_pool_longpoll），
+%%% 分别承载短请求、SSE 流式、异步长轮询三类流量，互不争用连接预算。
+%%%
 %%% == 使用示例 ==
 %%%
 %%% ```erlang
-%%% %% 获取连接
-%%% {ok, ConnPid} = beamai_http_pool:get_connection("https://api.example.com").
+%%% %% 获取连接（第一个参数是池名）
+%%% {ok, ConnPid} = beamai_http_pool:get_connection(http_pool_short,
+%%%                                                 "https://api.example.com").
 %%%
 %%% %% 归还连接
-%%% beamai_http_pool:return_connection(ConnPid).
+%%% beamai_http_pool:return_connection(http_pool_short, ConnPid).
 %%%
 %%% %% 标记连接失败（不再复用）
-%%% beamai_http_pool:connection_failed(ConnPid).
+%%% beamai_http_pool:connection_failed(http_pool_short, ConnPid).
 %%% ```
 %%%
 %%% == 配置 ==
 %%%
+%%% 池配置由 beamai_core_sup 解析后经 start_link/2 传入，
+%%% 本模块不读 app env（这是按池差异化配置的关键）。
+%%% 用户侧配置入口见 beamai_core_sup（遗留 http_pool 键仍兼容）：
+%%%
 %%% ```erlang
 %%% application:set_env(beamai_core, http_pool, #{
 %%%     max_connections_per_host => 10,
-%%%     connection_timeout => 5000,
-%%%     idle_timeout => 60000
+%%%     connect_timeout => 5000,       %% 旧键名 connection_timeout 仍兼容（优先生效）
+%%%     idle_timeout => 60000,
+%%%     protocols => [http]            %% 可配 [http2, http] 启用 HTTP/2（先验证，见下）
 %%% }).
 %%% ```
+%%%
+%%% 注意：Gun 2.1 的 TCP 连接路径对 protocols 做单元素匹配
+%%% （`[Protocol] = maps:get(protocols, Opts, [http])`），
+%%% 配置 [http2, http] 在纯 TCP（http://）下会 badmatch 崩掉连接，
+%%% TLS（https://）路径正常。默认 [http] 保证两种 scheme 均可用。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -36,22 +51,28 @@
 
 -behaviour(gen_server).
 
-%% API
--export([start_link/0, start_link/1]).
--export([get_connection/1, get_connection/2]).
--export([return_connection/1]).
--export([connection_failed/1]).
--export([close_all/0]).
--export([stats/0]).
+%% API（全部以池名为第一个参数）
+-export([start_link/2]).
+-export([get_connection/2, get_connection/3]).
+-export([return_connection/2]).
+-export([connection_failed/2]).
+-export([close_all/1]).
+-export([stats/1]).
 
 %% gen_server 回调
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+
+-ifdef(TEST).
+-export([merge_config/1, validate_protocols/1]).
+-endif.
 
 %%====================================================================
 %% 类型定义
 %%====================================================================
 
 -record(state, {
+    %% 池注册名（http_pool_short 等）
+    name :: atom(),
     %% 连接池: #{HostKey => [ConnPid]}
     pools = #{} :: #{binary() => [pid()]},
     %% 连接信息: #{ConnPid => #{host, created_at, last_used}}
@@ -62,11 +83,17 @@
     config :: map()
 }).
 
+-type pool_name() :: http_pool_short | http_pool_stream | http_pool_longpoll.
+
 -type pool_config() :: #{
     max_connections_per_host => pos_integer(),
-    connection_timeout => pos_integer(),
-    idle_timeout => pos_integer()
+    connect_timeout => pos_integer(),      %% ms，对应 gun:open 的 connect_timeout
+    connection_timeout => pos_integer(),   %% 已废弃：connect_timeout 的旧键名，仍兼容
+    idle_timeout => pos_integer(),
+    protocols => [http | http2]            %% 传给 gun:open 的 protocols
 }.
+
+-export_type([pool_name/0, pool_config/0]).
 
 %%====================================================================
 %% 默认配置
@@ -81,59 +108,62 @@
 %% API
 %%====================================================================
 
-%% @doc 启动连接池
--spec start_link() -> {ok, pid()} | {error, term()}.
-start_link() ->
-    start_link(#{}).
-
-%% @doc 启动连接池（带配置）
--spec start_link(pool_config()) -> {ok, pid()} | {error, term()}.
-start_link(Config) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
+%% @doc 启动指定名字的连接池实例（由 beamai_core_sup 调用）
+-spec start_link(pool_name(), pool_config()) -> {ok, pid()} | {error, term()}.
+start_link(PoolName, Config) ->
+    gen_server:start_link({local, PoolName}, ?MODULE, [PoolName, Config], []).
 
 %% @doc 获取到指定 URL 的连接
--spec get_connection(binary() | string()) -> {ok, pid()} | {error, term()}.
-get_connection(Url) ->
-    get_connection(Url, #{}).
+-spec get_connection(pool_name(), binary() | string()) -> {ok, pid()} | {error, term()}.
+get_connection(PoolName, Url) ->
+    get_connection(PoolName, Url, #{}).
 
 %% @doc 获取连接（带选项）
--spec get_connection(binary() | string(), map()) -> {ok, pid()} | {error, term()}.
-get_connection(Url, Opts) ->
-    ensure_started(),
-    gen_server:call(?MODULE, {get_connection, Url, Opts}, infinity).
+%% 池未启动时返回 {error, {pool_not_started, PoolName}}（不再 throw 跨进程边界）
+-spec get_connection(pool_name(), binary() | string(), map()) -> {ok, pid()} | {error, term()}.
+get_connection(PoolName, Url, Opts) ->
+    case whereis(PoolName) of
+        undefined ->
+            {error, {pool_not_started, PoolName}};
+        _ ->
+            gen_server:call(PoolName, {get_connection, Url, Opts}, infinity)
+    end.
 
 %% @doc 归还连接到池
--spec return_connection(pid()) -> ok.
-return_connection(ConnPid) ->
-    gen_server:cast(?MODULE, {return_connection, ConnPid}).
+-spec return_connection(pool_name(), pid()) -> ok.
+return_connection(PoolName, ConnPid) ->
+    gen_server:cast(PoolName, {return_connection, ConnPid}).
 
 %% @doc 标记连接失败
--spec connection_failed(pid()) -> ok.
-connection_failed(ConnPid) ->
-    gen_server:cast(?MODULE, {connection_failed, ConnPid}).
+-spec connection_failed(pool_name(), pid()) -> ok.
+connection_failed(PoolName, ConnPid) ->
+    gen_server:cast(PoolName, {connection_failed, ConnPid}).
 
 %% @doc 关闭所有连接
--spec close_all() -> ok.
-close_all() ->
-    gen_server:call(?MODULE, close_all).
+-spec close_all(pool_name()) -> ok.
+close_all(PoolName) ->
+    gen_server:call(PoolName, close_all).
 
 %% @doc 获取池统计信息
--spec stats() -> map().
-stats() ->
-    gen_server:call(?MODULE, stats).
+-spec stats(pool_name()) -> map().
+stats(PoolName) ->
+    gen_server:call(PoolName, stats).
 
 %%====================================================================
 %% gen_server 回调
 %%====================================================================
 
-init(Config) ->
+init([PoolName, Config]) ->
     %% 合并默认配置
     FullConfig = merge_config(Config),
+
+    %% 配置错误在启动时报出，而不是等到第一次建连
+    ok = validate_protocols(maps:get(protocols, FullConfig)),
 
     %% 启动定时清理
     erlang:send_after(?CLEANUP_INTERVAL, self(), cleanup_idle),
 
-    {ok, #state{config = FullConfig}}.
+    {ok, #state{name = PoolName, config = FullConfig}}.
 
 handle_call({get_connection, Url, Opts}, _From, State) ->
     case do_get_connection(Url, Opts, State) of
@@ -147,12 +177,16 @@ handle_call(close_all, _From, State) ->
     do_close_all(State),
     {reply, ok, State#state{pools = #{}, conn_info = #{}, in_use = #{}}};
 
-handle_call(stats, _From, #state{pools = Pools, conn_info = ConnInfo, in_use = InUse} = State) ->
+handle_call(stats, _From, #state{name = Name, pools = Pools, conn_info = ConnInfo,
+                                 in_use = InUse, config = Config} = State) ->
     Stats = #{
+        name => Name,
         pools => maps:map(fun(_, Conns) -> length(Conns) end, Pools),
         total_connections => maps:size(ConnInfo),
         in_use => maps:size(InUse),
-        idle => maps:size(ConnInfo) - maps:size(InUse)
+        idle => maps:size(ConnInfo) - maps:size(InUse),
+        %% 回显生效配置，便于运维核对 sys.config 是否真正生效
+        config => Config
     },
     {reply, Stats, State};
 
@@ -200,28 +234,38 @@ terminate(_Reason, State) ->
 %% 内部函数
 %%====================================================================
 
-%% @private 确保连接池已启动
-%% 连接池应该由 beamai_core_sup 启动
-%% 如果未启动，返回错误而不是尝试懒启动
-ensure_started() ->
-    case whereis(?MODULE) of
-        undefined ->
-            throw({error, {pool_not_started,
-                "beamai_http_pool should be started by beamai_core_sup. "
-                "Make sure beamai_core application is started."}});
-        _Pid ->
-            ok
-    end.
-
 %% @private 合并配置
+%% 池实例不读 app env（env 解析在 beamai_core_sup，这是按池差异化配置的关键）；
+%% 这里只做模块级默认值兜底 + 旧键名归一化。
+%% 旧键名 connection_timeout 归一化为 connect_timeout（旧键优先，保证遗留配置行为不变）。
 merge_config(Config) ->
-    AppConfig = application:get_env(beamai_core, http_pool, #{}),
     Defaults = #{
         max_connections_per_host => ?DEFAULT_MAX_CONNECTIONS,
-        connection_timeout => ?DEFAULT_CONN_TIMEOUT,
-        idle_timeout => ?DEFAULT_IDLE_TIMEOUT
+        connect_timeout => ?DEFAULT_CONN_TIMEOUT,
+        idle_timeout => ?DEFAULT_IDLE_TIMEOUT,
+        %% Gun 2.1 的 TCP 连接路径做 [Protocol] = maps:get(protocols, Opts, [http]) 单元素匹配，
+        %% 传 [http2, http] 会 {badmatch, [http2, http]} 崩掉所有 http:// 连接，
+        %% 故默认 [http]（HTTP/1.1）；需要 HTTP/2 的部署显式配置 protocols => [http2, http]。
+        protocols => [http]
     },
-    maps:merge(maps:merge(Defaults, AppConfig), Config).
+    normalize_legacy_keys(maps:merge(Defaults, Config)).
+
+%% @private 旧键名 connection_timeout -> connect_timeout（gun 选项名）
+normalize_legacy_keys(#{connection_timeout := V} = Config) ->
+    maps:remove(connection_timeout, Config#{connect_timeout => V});
+normalize_legacy_keys(Config) ->
+    Config.
+
+%% @private 校验 protocols 配置，只接受 http / http2
+validate_protocols([_ | _] = Protocols) ->
+    lists:foreach(fun
+        (http) -> ok;
+        (http2) -> ok;
+        (Other) -> error({invalid_protocol, Other})
+    end, Protocols),
+    ok;
+validate_protocols(Other) ->
+    error({invalid_protocols, Other}).
 
 %% @private 获取连接
 do_get_connection(Url, _Opts, #state{pools = Pools, conn_info = ConnInfo,
@@ -303,14 +347,11 @@ get_idle_from_list([Conn | Rest], InUse) ->
 create_new_connection(Host, Port, Transport, HostKey,
                       #state{pools = _Pools, conn_info = ConnInfo,
                              in_use = InUse, config = Config} = State) ->
-    ConnTimeout = maps:get(connection_timeout, Config),
+    ConnTimeout = maps:get(connect_timeout, Config),
     GunOpts = #{
         connect_timeout => ConnTimeout,
         transport => Transport,
-        %% Gun 2.1 的 TCP 连接路径做 [Protocol] = maps:get(protocols, Opts, [http]) 单元素匹配，
-        %% 传 [http2, http] 会 {badmatch, [http2, http]} 崩掉所有连接。
-        %% 用 [http]（HTTP/1.1）保证 HTTP/HTTPS 均可用；TLS 路径仍可正常工作。
-        protocols => [http],
+        protocols => maps:get(protocols, Config),
         tls_opts => get_tls_opts()
     },
 
