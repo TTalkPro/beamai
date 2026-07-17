@@ -4,7 +4,7 @@
 %%% 定义对话历史存储的统一接口。Kernel 不再自己记录消息，
 %%% 由实现本 Behaviour 的 store 按 conversation_id 管理会话历史。
 %%%
-%%% 句柄约定 `{Module, Ref}`（与 {beamai_store_ets, Name} 一致）：
+%%% 句柄约定 `{Module, Ref}`（如 {beamai_chat_memory_ets, Name}）：
 %%% - Module 实现本 Behaviour
 %%% - Ref 为该实现的实例标识（如注册名、pid、配置元组）
 %%%
