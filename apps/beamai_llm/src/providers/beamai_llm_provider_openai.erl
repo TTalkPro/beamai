@@ -83,10 +83,10 @@ chat(Config, Request) ->
     Url = build_url(Config, ?OPENAI_ENDPOINT),
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request),
-    Opts = #{
+    Opts = beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, openai),
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
+    }, Config),
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_openai()).
 
 %% @doc 发送流式聊天请求
@@ -96,13 +96,13 @@ stream_chat(Config, Request, Callback) ->
     Url = build_url(Config, ?OPENAI_ENDPOINT),
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request#{stream => true}),
-    Opts = #{
+    Opts = beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, openai),
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_openai_stream(Acc, openai)
         end,
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
+    }, Config),
     beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
                                           fun beamai_llm_provider_common:accumulate_openai_event/2).
 

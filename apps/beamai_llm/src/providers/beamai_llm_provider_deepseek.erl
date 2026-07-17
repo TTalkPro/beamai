@@ -120,10 +120,10 @@ chat(Config, Request) ->
     Url = build_url(Config, chat_endpoint(Request)),
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request),
-    Opts = #{
+    Opts = beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
+    }, Config),
     beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_deepseek()).
 
 %% @doc 发送流式聊天请求
@@ -133,13 +133,13 @@ stream_chat(Config, Request, Callback) ->
     Url = build_url(Config, chat_endpoint(Request)),
     Headers = build_headers(Config),
     Body = build_request_body(Config, Request#{stream => true}),
-    Opts = #{
+    Opts = beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_openai_stream(Acc, deepseek)
         end,
         on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
+    }, Config),
     beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
                                           fun beamai_llm_provider_common:accumulate_openai_event/2).
 
@@ -171,7 +171,9 @@ fim(Config, Request) ->
     Url = build_fim_url(Config),
     Headers = build_headers(Config),
     Body = build_fim_request_body(Config, Request),
-    Opts = #{timeout => beamai_llm_provider_common:request_timeout(Config, deepseek)},
+    Opts = beamai_llm_provider_common:with_pool_opt(
+               #{timeout => beamai_llm_provider_common:request_timeout(Config, deepseek)},
+               Config),
     beamai_llm_http_client:request(Url, Headers, Body, Opts,
                                    beamai_llm_response_parser:parser_deepseek_fim()).
 
@@ -181,13 +183,13 @@ stream_fim(Config, Request, Callback) ->
     Url = build_fim_url(Config),
     Headers = build_headers(Config),
     Body = build_fim_request_body(Config, Request#{stream => true}),
-    Opts = #{
+    Opts = beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
         finalizer => fun(Acc) ->
             beamai_llm_provider_common:finalize_completions_stream(
                 Acc, beamai_llm_response_parser:parser_deepseek_fim())
         end
-    },
+    }, Config),
     beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
                                           fun beamai_llm_provider_common:accumulate_completions_event/2).
 

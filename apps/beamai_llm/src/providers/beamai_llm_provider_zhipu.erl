@@ -224,11 +224,12 @@ handle_async_response(Resp) ->
 
 %% @private 执行 GET 请求（用于异步结果查询）
 %% 使用 beamai_http 作为底层 HTTP 客户端。
-%% 异步任务轮询可能持连数分钟，路由到 http_pool_longpoll，
+%% 异步任务轮询可能持连数分钟，默认路由到 http_pool_longpoll，
 %% 不与同步 chat 流量争抢 http_pool_short 的连接预算
-%% （经 maybe_inject_pool 门控，非 Gun 后端不注入）。
+%% （经 maybe_inject_pool 门控：Opts 里显式指定的 pool 优先，
+%% 否则仅 Gun 后端注入默认池）。
 do_get_request(Url, Headers, Opts) ->
-    HttpOpts = beamai_llm_http_client:maybe_inject_pool(async_poll, #{
+    HttpOpts = beamai_llm_http_client:maybe_inject_pool(async_poll, Opts, #{
         timeout => beamai_llm_provider_common:request_timeout(Opts, zhipu),
         connect_timeout => maps:get(connect_timeout, Opts, ?ZHIPU_CONNECT_TIMEOUT),
         headers => Headers
@@ -279,12 +280,12 @@ build_anthropic_headers(#{api_key := ApiKey}) ->
         {<<"Content-Type">>, <<"application/json">>}
     ].
 
-%% @private 构建请求选项
+%% @private 构建请求选项（Config 的 pool 可按 provider 覆盖连接池路由）
 build_request_opts(Config) ->
-    #{
+    beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, zhipu),
         connect_timeout => maps:get(connect_timeout, Config, ?ZHIPU_CONNECT_TIMEOUT)
-    }.
+    }, Config).
 
 %% @private 构建 OpenAI 兼容模式请求体
 build_openai_request_body(Config, Request) ->

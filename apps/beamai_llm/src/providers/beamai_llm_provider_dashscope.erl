@@ -143,12 +143,12 @@ build_headers(#{api_key := ApiKey}, IsStream) ->
         false -> BaseHeaders
     end.
 
-%% @private 构建请求选项
+%% @private 构建请求选项（Config 的 pool 可按 provider 覆盖连接池路由）
 build_request_opts(Config) ->
-    #{
+    beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, dashscope),
         connect_timeout => maps:get(connect_timeout, Config, ?DASHSCOPE_CONNECT_TIMEOUT)
-    }.
+    }, Config).
 
 %% @private 构建请求体 - DashScope 原生格式
 %% 格式: {model, input: {messages}, parameters: {...}}
