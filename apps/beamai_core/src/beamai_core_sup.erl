@@ -11,8 +11,24 @@
 %%%
 %%% == 配置 ==
 %%%
+%%% 按池配置（推荐，可只配需要覆盖的池，其余用默认值）：
+%%%
+%%% ```erlang
+%%% {beamai_core, [
+%%%     {http_pools, #{
+%%%         http_pool_stream => #{max_connections_per_host => 20,
+%%%                               idle_timeout => 120000},
+%%%         http_pool_longpoll => #{idle_timeout => 300000}
+%%%     }}
+%%% ]}.
+%%% ```
+%%%
+%%% 未知池名在启动时报 {invalid_pool_names, [...]}（应用启动失败，
+%%% 不静默生成幽灵池）。详见 docs/HTTP.md。
+%%%
 %%% 遗留的 http_pool env 键仍兼容：其值统一应用到三个池
-%%% （保持旧的单池语义），并在启动时打一次废弃警告。
+%%% （保持旧的单池语义），并在启动时打一次废弃警告；
+%%% 两个键同时设置时 http_pools 按池覆盖遗留值。
 %%%
 %%% 注：Process 框架（worker 池 + runtime supervisor）已迁出至独立的
 %%% beamai_process 应用，不再由本 supervisor 管理。
@@ -105,10 +121,12 @@ pool_spec(PoolName, PoolConfig) ->
 
 %% @private 解析各池配置
 %% 池实例本身不读 app env；env 在这里统一解析后经 start_link/2 传入。
-%% 遗留 http_pool 键：值统一应用到三个池（保持旧的单池语义），
+%% 优先级：http_pools 按池覆盖 > 遗留 http_pool（统一应用到三池，
+%% 保持旧的单池语义）> 默认值。
 %% connection_timeout 旧键名由 beamai_http_pool:merge_config/1 归一化。
 resolve_pool_configs() ->
     Legacy = application:get_env(beamai_core, http_pool, undefined),
+    New = application:get_env(beamai_core, http_pools, #{}),
     case Legacy of
         undefined -> ok;
         _ ->
@@ -116,7 +134,22 @@ resolve_pool_configs() ->
                 "beamai_core: config key 'http_pool' is deprecated, "
                 "use 'http_pools' with per-pool configs instead")
     end,
-    maps:from_list([{Name, resolve_one_pool(Name, Legacy)} || Name <- ?POOL_NAMES]).
+    validate_pool_names(New),
+    Base = maps:from_list([{Name, resolve_one_pool(Name, Legacy)} || Name <- ?POOL_NAMES]),
+    maps:fold(fun(PoolName, PoolCfg, Acc) ->
+        Acc#{PoolName => maps:merge(maps:get(PoolName, Acc), PoolCfg)}
+    end, Base, New).
+
+%% @private 校验 http_pools 的池名，未知名字启动即失败
+%% （error/1 从 supervisor init 抛出会让应用启动失败并带清晰报错，
+%% 好过静默生成一个没人路由到的幽灵池）
+validate_pool_names(New) when is_map(New) ->
+    case maps:keys(New) -- ?POOL_NAMES of
+        [] -> ok;
+        Unknown -> error({invalid_pool_names, Unknown})
+    end;
+validate_pool_names(Other) ->
+    error({invalid_http_pools_config, Other}).
 
 resolve_one_pool(PoolName, undefined) ->
     default_pool_config(PoolName);

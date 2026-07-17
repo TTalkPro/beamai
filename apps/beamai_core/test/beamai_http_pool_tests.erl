@@ -102,17 +102,19 @@ merge_config_test_() ->
 
 resolve_pool_configs_test_() ->
     {foreach,
-     fun() -> application:get_env(beamai_core, http_pool) end,
-     fun(Saved) ->
-         case Saved of
-             undefined -> application:unset_env(beamai_core, http_pool);
-             {ok, V} -> application:set_env(beamai_core, http_pool, V)
-         end
+     fun() ->
+         {application:get_env(beamai_core, http_pool),
+          application:get_env(beamai_core, http_pools)}
+     end,
+     fun({SavedLegacy, SavedNew}) ->
+         restore_env(http_pool, SavedLegacy),
+         restore_env(http_pools, SavedNew)
      end,
      [
       {"无 env 时三个池均为默认配置（等于拆分前单池默认）",
        fun() ->
            application:unset_env(beamai_core, http_pool),
+           application:unset_env(beamai_core, http_pools),
            Pools = beamai_core_sup:resolve_pool_configs(),
            ?assertEqual([http_pool_longpoll, http_pool_short, http_pool_stream],
                         lists:sort(maps:keys(Pools))),
@@ -125,6 +127,7 @@ resolve_pool_configs_test_() ->
 
       {"遗留 http_pool env 统一应用到三个池（含旧键名，池 init 时归一化）",
        fun() ->
+           application:unset_env(beamai_core, http_pools),
            application:set_env(beamai_core, http_pool,
                                #{max_connections_per_host => 50,
                                  connection_timeout => 5000}),
@@ -139,11 +142,70 @@ resolve_pool_configs_test_() ->
 
       {"遗留 env 可配置 protocols（不再硬编码）",
        fun() ->
+           application:unset_env(beamai_core, http_pools),
            application:set_env(beamai_core, http_pool,
                                #{protocols => [http2, http]}),
            Pools = beamai_core_sup:resolve_pool_configs(),
            maps:foreach(fun(_Name, Cfg) ->
                ?assertEqual([http2, http], maps:get(protocols, Cfg))
            end, Pools)
+       end},
+
+      {"http_pools 按池覆盖，未配置的池用默认值（mix-and-match）",
+       fun() ->
+           application:unset_env(beamai_core, http_pool),
+           application:set_env(beamai_core, http_pools,
+                               #{http_pool_stream =>
+                                     #{max_connections_per_host => 20,
+                                       idle_timeout => 120000}}),
+           Pools = beamai_core_sup:resolve_pool_configs(),
+           Stream = maps:get(http_pool_stream, Pools),
+           ?assertEqual(20, maps:get(max_connections_per_host, Stream)),
+           ?assertEqual(120000, maps:get(idle_timeout, Stream)),
+           %% 未覆盖的键保持默认
+           ?assertEqual([http], maps:get(protocols, Stream)),
+           %% 其他池完全用默认值
+           ?assertEqual(10, maps:get(max_connections_per_host,
+                                     maps:get(http_pool_short, Pools))),
+           ?assertEqual(60000, maps:get(idle_timeout,
+                                        maps:get(http_pool_longpoll, Pools)))
+       end},
+
+      {"http_pools 与遗留 http_pool 同时设置时按池覆盖遗留值",
+       fun() ->
+           application:set_env(beamai_core, http_pool,
+                               #{max_connections_per_host => 50}),
+           application:set_env(beamai_core, http_pools,
+                               #{http_pool_short =>
+                                     #{max_connections_per_host => 7}}),
+           Pools = beamai_core_sup:resolve_pool_configs(),
+           ?assertEqual(7, maps:get(max_connections_per_host,
+                                    maps:get(http_pool_short, Pools))),
+           %% 未被 http_pools 覆盖的池仍继承遗留值
+           ?assertEqual(50, maps:get(max_connections_per_host,
+                                     maps:get(http_pool_stream, Pools)))
+       end},
+
+      {"未知池名启动即报错（不静默生成幽灵池）",
+       fun() ->
+           application:unset_env(beamai_core, http_pool),
+           application:set_env(beamai_core, http_pools,
+                               #{http_pool_xyz => #{}}),
+           ?assertError({invalid_pool_names, [http_pool_xyz]},
+                        beamai_core_sup:resolve_pool_configs())
+       end},
+
+      {"http_pools 非 map 报错",
+       fun() ->
+           application:unset_env(beamai_core, http_pool),
+           application:set_env(beamai_core, http_pools, [not_a_map]),
+           ?assertError({invalid_http_pools_config, [not_a_map]},
+                        beamai_core_sup:resolve_pool_configs())
        end}
      ]}.
+
+%% @private 恢复单个 env 键
+restore_env(Key, undefined) ->
+    application:unset_env(beamai_core, Key);
+restore_env(Key, {ok, V}) ->
+    application:set_env(beamai_core, Key, V).
