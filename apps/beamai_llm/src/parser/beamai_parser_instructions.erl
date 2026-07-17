@@ -73,7 +73,7 @@ maybe_add_examples(_) ->
 format_examples(Examples) ->
     lists:foldl(
         fun(Example, Acc) ->
-            Json = jsx:encode(Example),
+            Json = beamai_utils:encode_json(Example),
             <<Acc/binary, Json/binary, "\n">>
         end,
         <<>>,

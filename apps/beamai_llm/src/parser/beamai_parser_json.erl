@@ -332,7 +332,7 @@ remove_trailing_semicolon(Text) ->
 %% @doc 尝试解析 JSON
 -spec try_parse(binary()) -> parse_result().
 try_parse(Text) ->
-    try jsx:decode(Text, [return_maps]) of
+    try json:decode(Text) of
         Result ->
             {ok, Result}
     catch
