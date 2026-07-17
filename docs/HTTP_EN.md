@@ -80,16 +80,29 @@ For HTTP/2-capable providers (OpenAI, Anthropic, etc. — all HTTPS) you can opt
 
 Invalid protocol names (anything other than `http`/`http2`) fail at pool startup with `{invalid_protocol, Name}`.
 
-## Per-Request Pool Selection (Advanced)
+## Overriding the Default Routing (Advanced)
 
-Code calling `beamai_http` directly can pick a pool via Opts:
+Two explicit override levels sit above the automatic routing. Precedence: request Opts > provider Config > default routing table.
+
+**Per provider** — set `pool` in the provider Config and all of that provider's requests (chat/stream, including Zhipu's async polling) are rerouted, e.g. to put a heavy reasoning model's traffic into the stream pool:
+
+```erlang
+LLM = beamai_chat_completion:create(deepseek,
+          #{api_key => ..., model => <<"deepseek-reasoner">>,
+            pool => http_pool_stream}).
+```
+
+**Per request** — when calling `beamai_llm_http_client` or `beamai_http` directly, set it in Opts:
 
 ```erlang
 beamai_http:request(post, Url, Headers, Body, #{pool => http_pool_stream}).
 ```
 
-- The Gun backend defaults to `http_pool_short` when unset; an invalid pool name returns `{error, {invalid_pool_name, Name}}`.
-- **The Hackney backend interprets `pool` as a hackney pool name** — never pass Gun pool atoms to it. The LLM layer's automatic injection is already gated by `beamai_llm_http_client:maybe_inject_pool/2` (injects only under the Gun backend); reuse that helper if you call `beamai_http` directly and the backend is switchable.
+Rules:
+
+- When unset, the Gun backend applies the default routing table per request shape (other backends get no injection); an invalid pool name returns `{error, {invalid_pool_name, Name}}`.
+- **An explicitly set `pool` is passed through as-is under any backend** (setting it explicitly means you know which backend runs): the Gun backend accepts only the three pool names; **the Hackney backend interprets `pool` as a hackney pool name** — when switching backends, re-check any `pool` values in provider Configs.
+- The automatic-injection gate lives in `beamai_llm_http_client:maybe_inject_pool/3`; reuse that helper if you call `beamai_http` directly and the backend is switchable.
 
 ## Troubleshooting Quick Reference
 

@@ -80,16 +80,34 @@ BeamAI 的 Gun 后端使用三个按用途划分的连接池实例（均为 `bea
 
 非法协议名（`http`/`http2` 之外）在池启动时即报 `{invalid_protocol, Name}`。
 
-## 按请求指定池（高级）
+## 覆盖默认路由（高级）
 
-直接调用 `beamai_http` 的代码可经 Opts 指定池：
+自动路由之上有两级显式覆盖，优先级：请求 Opts > provider Config > 默认路由表。
+
+**按 provider 覆盖**——在 provider Config 里配 `pool`，该 provider 的所有请求
+（chat/stream，智谱含异步轮询）整体改道，例如把重推理模型放进 stream 池：
+
+```erlang
+LLM = beamai_chat_completion:create(deepseek,
+          #{api_key => ..., model => <<"deepseek-reasoner">>,
+            pool => http_pool_stream}).
+```
+
+**按请求覆盖**——直接调 `beamai_llm_http_client` 或 `beamai_http` 时在 Opts 指定：
 
 ```erlang
 beamai_http:request(post, Url, Headers, Body, #{pool => http_pool_stream}).
 ```
 
-- 未指定时 Gun 后端默认 `http_pool_short`；非法池名返回 `{error, {invalid_pool_name, Name}}`。
-- **Hackney 后端把 `pool` 当作 hackney 池名**，勿向其传 Gun 池名。LLM 层的自动注入已由 `beamai_llm_http_client:maybe_inject_pool/2` 门控（仅 Gun 后端注入）；自己直调 `beamai_http` 且后端可切换时，请复用该函数。
+规则：
+
+- 未指定时 Gun 后端按请求形态走默认路由表（其他后端不注入）；非法池名返回
+  `{error, {invalid_pool_name, Name}}`。
+- **显式指定的 `pool` 在任何后端下原样透传**（显式指定视为你对后端知情）：
+  Gun 后端只接受三个池名之一；**Hackney 后端把 `pool` 解释为 hackney 池名**，
+  切后端时记得同步检查 provider Config 里的 `pool` 值。
+- 自动注入的门控逻辑在 `beamai_llm_http_client:maybe_inject_pool/3`；
+  自己直调 `beamai_http` 且后端可切换时，请复用该函数。
 
 ## 排查速查
 

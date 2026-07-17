@@ -1,6 +1,6 @@
 # Refactoring Plan: Split `beamai_http_pool` into Purpose-Shaped Pool Instances
 
-**Status:** Draft for review
+**Status:** Implemented — Phases 1–4 landed 2026-07-17 (see docs/HTTP.md for the operator-facing docs)
 **Target branch:** `feature/http-pool-sharding`
 **Owner:** TBD
 **Estimated effort:** 4 phases × ~1 day = 4 dev-days (plus 1 day for tests/docs)
