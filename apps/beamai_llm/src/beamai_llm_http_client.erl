@@ -21,6 +21,9 @@
 %% 流式请求 API
 -export([stream_request/5, stream_request/6]).
 
+%% 连接池路由（供直接调 beamai_http 的 provider 复用，如智谱异步轮询）
+-export([maybe_inject_pool/2]).
+
 %% SSE 解析工具
 -export([parse_sse/1, parse_sse_lines/2]).
 
@@ -67,10 +70,10 @@ request(Url, Headers, Body, Opts) ->
 -spec request(binary(), [{binary(), binary()}], map(), request_opts(), response_parser()) ->
     {ok, map()} | {error, term()}.
 request(Url, Headers, Body, Opts, ResponseParser) ->
-    HttpOpts = #{
+    HttpOpts = maybe_inject_pool(chat, #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
         connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT)
-    },
+    }),
     %% 使用 beamai_http:request 直接传入 headers，避免 post_json 重复添加 Content-Type
     JsonBody = jsx:encode(Body),
     case maps:get(on_headers, Opts, undefined) of
@@ -110,6 +113,31 @@ request_with_headers(Url, Headers, JsonBody, HttpOpts, ResponseParser, OnHeaders
         {error, Reason} ->
             {error, {request_failed, Reason}}
     end.
+
+%%====================================================================
+%% 连接池路由
+%%====================================================================
+
+%% @doc 按请求形态注入连接池名——仅当活动后端是 Gun 后端时。
+%%
+%% 本模块与后端无关：它调 beamai_http，由后者分发到 http_backend 配置的
+%% 任意后端。Gun 池名（http_pool_short 等）若泄漏给 beamai_http_hackney，
+%% 会被当作从未启动过的 *hackney* 池名。因此非 Gun 后端（含测试 fake
+%% 后端）下不注入，且移除已有 pool 键防止上层误传。
+%%
+%% 路由表（硬编码）：chat -> short，stream -> stream，async_poll -> longpoll。
+%% 导出供直接调 beamai_http 的 provider 复用（智谱异步轮询）。
+-spec maybe_inject_pool(chat | stream | async_poll, map()) -> map().
+maybe_inject_pool(RequestType, HttpOpts) ->
+    case beamai_http:get_backend() of
+        beamai_http_gun -> HttpOpts#{pool => select_pool(RequestType)};
+        _ -> maps:remove(pool, HttpOpts)
+    end.
+
+%% @private 请求形态 -> 池名
+select_pool(chat)       -> http_pool_short;
+select_pool(stream)     -> http_pool_stream;
+select_pool(async_poll) -> http_pool_longpoll.
 
 %% @private 解析响应体（map 直接解析；binary 先解 JSON）
 parse_response_body(Response, ResponseParser) when is_map(Response) ->
@@ -178,14 +206,14 @@ stream_request(Url, Headers, Body, Opts, Callback, Accumulator) ->
 do_stream_request(Url, Headers, Body, Opts, Callback, Accumulator, Finalizer) ->
     OnHeaders = maps:get(on_headers, Opts, undefined),
     StreamBody = Body#{<<"stream">> => true},
-    HttpOpts = #{
+    HttpOpts = maybe_inject_pool(stream, #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
         connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
         headers => Headers,
         %% 设置了 on_headers 时，请求后端把首个响应头以 {http_headers, _} 回传
         forward_headers => is_function(OnHeaders, 1),
         init_acc => #{buffer => <<>>, acc => init_stream_acc(), callback => Callback, accumulator => Accumulator}
-    },
+    }),
     %% 使用 beamai_http 的流式请求，传入 SSE 处理器
     case beamai_http:stream_request(post, Url, [], StreamBody, HttpOpts, fun sse_chunk_handler/2) of
         {ok, State} when is_map(State) ->
