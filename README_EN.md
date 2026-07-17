@@ -1,7 +1,7 @@
 # BeamAI - Erlang Agent Framework
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-26%2B-red.svg)](https://www.erlang.org/)
+[![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-27%2B-red.svg)](https://www.erlang.org/)
 [![Build](https://img.shields.io/badge/build-rebar3-brightgreen.svg)](https://rebar3.org/)
 
 English | [中文](README.md)
@@ -171,8 +171,7 @@ apps/
 │   ├── Kernel         # beamai_kernel, beamai_tool, beamai_context,
 │   │                  # beamai_filter, beamai_prompt, beamai_result
 │   ├── Memory Filter  # beamai_memory_filter (history keyed by conversation_id)
-│   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_hackney,
-│   │                  # beamai_http_pool
+│   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_pool
 │   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
@@ -282,7 +281,8 @@ LLM = beamai_chat_completion:create(zhipu, #{
 
 ### HTTP Backend Configuration
 
-BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (supports HTTP/2).
+BeamAI's HTTP backend is pluggable via `beamai_http_behaviour`. Gun (with HTTP/2
+support) is the only built-in implementation and the default — no configuration needed.
 
 ```erlang
 %% Configure in sys.config (optional); the Gun backend runs three
@@ -298,12 +298,10 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 ]}.
 ```
 
-| Feature | Gun (default) | Hackney |
-|---------|---------------|---------|
-| HTTP/2 | Supported | Not supported |
-| Connection Pool | Built-in purpose-shaped pools (beamai_http_pool instances) | Relies on hackney pool |
-| TLS | Automatically uses system CA certificates | hackney default config |
-| Use Case | Recommended for production | Legacy system compatibility |
+Everything runs on the Gun backend (`beamai_http_gun`): HTTP/2 support, built-in
+purpose-shaped pools (`beamai_http_pool` instances), and system CA certificates for
+TLS. The backend itself is pluggable via `beamai_http_behaviour`, but Gun is the only
+built-in implementation and needs no configuration.
 
 ## Documentation
 
@@ -321,7 +319,7 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 | Module | Description | Documentation |
 |--------|-------------|---------------|
 | **beamai_core** | Core framework: Kernel, Context, Filter, Tool, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
-| **beamai_agent** | SimpleAgent: ReAct Agent framework (multi-turn, callbacks, interrupt/resume) | [README](apps/beamai_agent/README_EN.md) |
+| **beamai_agent** | SimpleAgent: ReAct Agent framework (multi-turn, callbacks, interrupt/resume) | [README](apps/beamai_agent/README.md) (zh) |
 | **beamai_llm** | LLM client: 6 providers with unified sync/streaming; multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure | [README](apps/beamai_llm/README_EN.md) |
 
 ## Running Examples

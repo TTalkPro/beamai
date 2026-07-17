@@ -508,7 +508,7 @@ DeepSeek API is fully compatible with OpenAI API format, using the same request/
 ## Dependencies
 
 - beamai_core
-- jsx - JSON encoding/decoding
+- OTP's built-in `json` module - JSON encoding/decoding (requires OTP 27+)
 
 HTTP requests go through beamai_core's `beamai_http` abstraction rather than a specific client.
 

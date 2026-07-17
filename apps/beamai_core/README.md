@@ -54,7 +54,7 @@ LLM 响应的统一抽象层：
 
 ### HTTP 子系统
 
-可插拔的 HTTP 客户端，支持 Gun 和 Hackney 后端：
+可插拔的 HTTP 客户端（后端经 `beamai_http_behaviour` 替换，内置只有 Gun）：
 
 - **beamai_http** - HTTP 客户端统一接口
 - **beamai_http_gun** - Gun HTTP/2 后端实现（唯一内置后端）
@@ -256,7 +256,7 @@ Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>)
 
 ## 依赖
 
-- jsx - JSON 编解码
+- OTP 内置 `json` 模块 - JSON 编解码（需 OTP 27+）
 - uuid - UUID 生成
 - gun - HTTP/2 客户端
 - poolboy - 连接池

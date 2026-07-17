@@ -1,7 +1,7 @@
 # BeamAI - Erlang Agent Framework
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-26%2B-red.svg)](https://www.erlang.org/)
+[![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-27%2B-red.svg)](https://www.erlang.org/)
 [![Build](https://img.shields.io/badge/build-rebar3-brightgreen.svg)](https://rebar3.org/)
 
 [English](README_EN.md) | 中文
@@ -170,8 +170,7 @@ apps/
 │   ├── Kernel         # beamai_kernel, beamai_tool, beamai_context,
 │   │                  # beamai_filter, beamai_prompt, beamai_result
 │   ├── Memory Filter  # beamai_memory_filter（会话历史按 conversation_id 管理）
-│   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_hackney,
-│   │                  # beamai_http_pool
+│   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_pool
 │   ├── Behaviours     # beamai_chat_behaviour, beamai_http_behaviour
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
@@ -279,7 +278,8 @@ LLM = beamai_chat_completion:create(zhipu, #{
 
 ### HTTP 后端配置
 
-BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTTP/2）。
+BeamAI 的 HTTP 后端经 `beamai_http_behaviour` 可插拔，内置实现只有 Gun
+（支持 HTTP/2），即默认后端，无需配置。
 
 ```erlang
 %% 在 sys.config 中配置（可选）；Gun 后端有三个用途分池
@@ -294,12 +294,9 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 ]}.
 ```
 
-| 特性 | Gun（默认） | Hackney |
-|------|-------------|---------|
-| HTTP/2 | 支持 | 不支持 |
-| 连接池 | 内置三个用途分池（beamai_http_pool 实例） | 依赖 hackney 池 |
-| TLS | 自动使用系统 CA 证书 | hackney 默认配置 |
-| 适用场景 | 推荐生产环境 | 兼容旧系统 |
+HTTP 全线走 Gun 后端（`beamai_http_gun`）：支持 HTTP/2、内置三个用途分池
+（`beamai_http_pool` 实例）、TLS 自动使用系统 CA 证书。后端本身经
+`beamai_http_behaviour` 可插拔，但 Gun 是唯一内置实现，无需配置。
 
 ## 文档
 

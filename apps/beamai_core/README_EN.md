@@ -50,7 +50,7 @@ Orchestratable process engine supporting step definitions, conditional branching
 
 ### HTTP Subsystem
 
-Pluggable HTTP client supporting Gun and Hackney backends:
+Pluggable HTTP client (backend swappable via `beamai_http_behaviour`; Gun is the only built-in):
 
 - **beamai_http** - Unified HTTP client interface
 - **beamai_http_gun** - Gun HTTP/2 backend implementation (the only built-in backend)
@@ -246,7 +246,7 @@ Builder3 = beamai_process_builder:add_step(Builder2, <<"save">>, #{
 
 ## Dependencies
 
-- jsx - JSON encoding/decoding
+- OTP's built-in `json` module - JSON encoding/decoding (requires OTP 27+)
 - uuid - UUID generation
 - gun - HTTP/2 client
 - poolboy - Connection pooling

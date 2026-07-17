@@ -597,7 +597,7 @@ Usage = beamai_llm_response:usage(Response),
 ## 依赖
 
 - beamai_core
-- jsx - JSON 编解码
+- OTP 内置 `json` 模块 - JSON 编解码（需 OTP 27+）
 
 HTTP 请求经 beamai_core 的 `beamai_http` 抽象层发出，不直接依赖具体客户端。
 
