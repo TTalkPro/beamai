@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | 中文
 
-BeamAI 框架的核心模块，提供 Kernel 架构、Process Framework、HTTP 客户端和行为定义。
+BeamAI 框架的核心模块，提供 Kernel 架构、Filter/会话记忆、HTTP 客户端和行为定义。
 
 ## 模块概览
 
@@ -36,22 +36,6 @@ LLM 响应的统一抽象层：
 
 - **beamai_llm_response** - LLM 统一响应访问器，抽象不同 Provider 的响应差异
 
-### Process Framework 子系统
-
-可编排的流程引擎，支持步骤定义、条件分支、并行执行和时间旅行：
-
-- **beamai_process** - 统一 Facade API（Builder + Runtime + Time Travel + Branch）
-- **beamai_process_builder** - 流程构建器（Builder 模式）
-- **beamai_process_engine** - 流程执行引擎
-- **beamai_process_runtime** - 流程运行时
-- **beamai_process_step** - 步骤定义
-- **beamai_process_step_transform** - 步骤转换
-- **beamai_process_executor** - 流程执行器
-- **beamai_process_event** - 事件系统
-- **beamai_process_state** - 流程状态管理
-- **beamai_process_worker** - 流程工作进程
-- **beamai_process_sup** - 流程监督树
-
 ### HTTP 子系统
 
 可插拔的 HTTP 客户端（后端经 `beamai_http_behaviour` 替换，内置只有 Gun）：
@@ -65,9 +49,9 @@ LLM 响应的统一抽象层：
 框架的行为接口定义：
 
 - **beamai_chat_behaviour** - LLM 聊天接口（原 beamai_llm_behaviour）
+- **beamai_chat_memory** - 会话存储接口（存储层：mem_get/mem_add/mem_clear）
 - **beamai_http_behaviour** - HTTP 后端行为接口
-- **beamai_step_behaviour** - 流程步骤行为接口
-- **beamai_process_store_behaviour** - 流程存储行为接口（含分支/时间旅行可选回调）
+- **beamai_memory_provider** - Agent 记忆策略接口（策略层：history/append/prepare/clear）
 - **beamai_tool_behaviour** - 工具模块行为接口
 
 ### 工具与协议
@@ -141,31 +125,6 @@ ToolSpec = #{
 beamai_tool:to_tool_schema(ToolSpec, openai | anthropic) -> map().
 ```
 
-### beamai_process（统一 Facade API）
-
-```erlang
-%% Builder API
-beamai_process:builder(Name) -> spec().
-beamai_process:add_step(Spec, StepName, Module, Config) -> spec().
-beamai_process:on_event(Spec, StepName, EventName, TargetStep) -> spec().
-beamai_process:set_initial_event(Spec, StepName, Data) -> spec().
-beamai_process:set_execution_mode(Spec, Mode) -> spec().
-beamai_process:build(Spec) -> {ok, ProcessSpec} | {error, Reason}.
-
-%% Runtime API
-beamai_process:start(ProcessSpec) -> {ok, pid()} | {error, Reason}.
-beamai_process:run_sync(ProcessSpec) -> {ok, Result} | {paused, Reason, Snapshot} | {error, Reason}.
-beamai_process:run_sync(ProcessSpec, Opts) -> {ok, Result} | {paused, Reason, Snapshot} | {error, Reason}.
-beamai_process:resume(Pid, Data) -> ok.
-beamai_process:snapshot(Pid) -> {ok, Snapshot}.
-beamai_process:restore(Snapshot) -> {ok, pid()}.
-
-%% Time Travel & Branch API
-beamai_process:go_back(Store, Steps, ProcessSpec) -> {ok, pid()} | {error, Reason}.
-beamai_process:branch_from(Store, BranchName, Opts) -> {ok, Info} | {error, Reason}.
-beamai_process:list_history(Store) -> {ok, [map()]} | {error, Reason}.
-```
-
 ## 使用示例
 
 ### Kernel + Tool
@@ -200,27 +159,6 @@ Kernel1 = beamai_kernel:add_tool(Kernel, ReadFile),
 {ok, Content, _Writes} = beamai_kernel:invoke_tool(Kernel1, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
-```
-
-### Process Framework
-
-```erlang
-%% 构建多步流程
-Spec = beamai_process:builder(<<"data_pipeline">>),
-Spec1 = beamai_process:add_step(Spec, <<"fetch">>, my_step_module, #{type => fetch}),
-Spec2 = beamai_process:add_step(Spec1, <<"transform">>, my_step_module, #{type => transform}),
-Spec3 = beamai_process:add_step(Spec2, <<"save">>, my_step_module, #{type => save}),
-
-%% 设置事件驱动链路
-Spec4 = beamai_process:on_event(Spec3, <<"fetch">>, <<"fetch_done">>, <<"transform">>),
-Spec5 = beamai_process:on_event(Spec4, <<"transform">>, <<"transform_done">>, <<"save">>),
-
-%% 设置初始事件和构建
-Spec6 = beamai_process:set_initial_event(Spec5, <<"fetch">>, #{}),
-{ok, Built} = beamai_process:build(Spec6),
-
-%% 同步执行
-{ok, Result} = beamai_process:run_sync(Built, #{timeout => 30000}).
 ```
 
 ### 加载工具模块

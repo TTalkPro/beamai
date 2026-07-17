@@ -2,7 +2,7 @@
 
 English | [中文](README.md)
 
-The core module of the BeamAI framework, providing Kernel architecture, Process Framework, HTTP client, and behavior definitions.
+The core module of the BeamAI framework, providing the Kernel architecture, Filter/conversation memory, HTTP client, and behaviour definitions.
 
 ## Module Overview
 
@@ -22,31 +22,17 @@ Core abstraction based on Semantic Kernel concepts, managing Tool registration a
 
 History storage and injection, decoupled from the Kernel and keyed by `conversation_id` (see [docs/MEMORY_EN.md](../../docs/MEMORY_EN.md)):
 
-- **beamai_chat_memory** - ChatMemory behaviour + dispatch API (handle `{Module, Ref}`)
+- **beamai_chat_memory** - ChatMemory storage behaviour + dispatch API (handle `{Module, Ref}`)
 - **beamai_chat_memory_ets** - Default ETS conversation store
-- **beamai_chat_memory_window** - Sliding-window wrapper (count-based trim on read)
-- **beamai_memory_filter** - Memory Filter (single filter: around_chat stores delta + expands history before the call, stores reply after)
+- **beamai_memory_filter** - Memory Filter (kernel-level: around_chat stores delta + expands history before the call, stores reply after)
+- **beamai_memory_provider** - Agent memory policy behaviour (history/append/prepare/clear)
+- **beamai_memory_provider_default** - Default policy implementation (wraps a store; `new/2` adds an optional sliding window)
 
 ### LLM Subsystem
 
 Unified abstraction layer for LLM responses:
 
 - **beamai_llm_response** - Unified LLM response accessors (content, tool_calls, usage, etc.)
-
-### Process Framework Subsystem
-
-Orchestratable process engine supporting step definitions, conditional branching, parallel execution, and time travel:
-
-- **beamai_process** - Process definitions and core data structures
-- **beamai_process_builder** - Process builder (Builder pattern)
-- **beamai_process_runtime** - Process runtime
-- **beamai_process_step** - Step definitions
-- **beamai_process_step_transform** - Step transformations
-- **beamai_process_executor** - Process executor
-- **beamai_process_event** - Event system
-- **beamai_process_state** - Process state management
-- **beamai_process_worker** - Process worker
-- **beamai_process_sup** - Process supervisor tree
 
 ### HTTP Subsystem
 
@@ -61,9 +47,9 @@ Pluggable HTTP client (backend swappable via `beamai_http_behaviour`; Gun is the
 Framework behavior interface definitions:
 
 - **beamai_chat_behaviour** - LLM chat interface (formerly beamai_llm_behaviour)
+- **beamai_chat_memory** - Conversation store interface (storage layer: mem_get/mem_add/mem_clear)
 - **beamai_http_behaviour** - HTTP backend behavior interface
-- **beamai_step_behaviour** - Process step behavior interface
-- **beamai_process_store_behaviour** - Process store behavior interface (with optional branch/time-travel callbacks)
+- **beamai_memory_provider** - Agent memory policy interface (policy layer: history/append/prepare/clear)
 - **beamai_tool_behaviour** - Tool module behavior interface
 
 ### Utilities and Protocols
@@ -123,27 +109,6 @@ beamai_tool:new(Name, Handler, Opts) -> tool_spec().
 %% Name: Tool name (binary)
 %% Handler: fun(Args, Context) -> {ok, Result} | {error, Reason}
 %% Opts: #{description => Description, parameters => Schema, ...}
-```
-
-### beamai_process_builder
-
-```erlang
-%% Create process builder
-beamai_process_builder:new(Name) -> builder().
-
-%% Add step
-beamai_process_builder:add_step(Builder, StepName, StepOpts) -> builder().
-
-%% Build process
-beamai_process_builder:build(Builder) -> {ok, Process} | {error, Reason}.
-```
-
-### beamai_process_executor
-
-```erlang
-%% Execute process
-beamai_process_executor:run(Process, Input) -> {ok, Result} | {error, Reason}.
-beamai_process_executor:run(Process, Input, Opts) -> {ok, Result} | {error, Reason}.
 ```
 
 ## Usage Examples
@@ -213,35 +178,6 @@ Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>)
 {ok, R2, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"What's my name?">>}], #{context => Ctx}).
 %% The second round's LLM sees the full history; without memory it is a stateless single-shot call.
 %% For automatic tool execution with a multi-round loop, use beamai_agent (ReAct).
-```
-
-### Process Framework
-
-```erlang
-%% Build multi-step process
-Builder = beamai_process_builder:new(<<"data_pipeline">>),
-
-Builder1 = beamai_process_builder:add_step(Builder, <<"fetch">>, #{
-    handler => fun(Input, _Ctx) ->
-        {ok, Input#{data => fetch_data()}}
-    end
-}),
-
-Builder2 = beamai_process_builder:add_step(Builder1, <<"transform">>, #{
-    handler => fun(#{data := Data} = Input, _Ctx) ->
-        {ok, Input#{data => transform(Data)}}
-    end
-}),
-
-Builder3 = beamai_process_builder:add_step(Builder2, <<"save">>, #{
-    handler => fun(#{data := Data} = Input, _Ctx) ->
-        ok = save_data(Data),
-        {ok, Input#{saved => true}}
-    end
-}),
-
-{ok, Process} = beamai_process_builder:build(Builder3),
-{ok, Result} = beamai_process_executor:run(Process, #{}).
 ```
 
 ## Dependencies
