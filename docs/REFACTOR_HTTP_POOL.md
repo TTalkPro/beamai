@@ -27,7 +27,7 @@
 
    Splitting the pool lets each traffic shape carry its own budget without starving the others.
 
-4. **Keep default behavior bit-identical** for users that don't override anything.
+4. **Keep default behavior identical per traffic class** for users that don't override anything: every pool ships with today's single-pool defaults (10/30 s/60 s/`[http]`). The one intended difference is that traffic classes no longer share (and starve) one budget — see the aggregate note in Section 2.1.
 
 ### Non-Goals
 
@@ -49,12 +49,12 @@ Registered names (atoms):
 | Pool name               | Use case                                | Default `max_connections_per_host` | Default `connect_timeout` | Default `idle_timeout` | Default `protocols` |
 |-------------------------|-----------------------------------------|------------------------------------|---------------------------|------------------------|---------------------|
 | `http_pool_short`       | Synchronous chat / tool-call requests   | 10                                 | 30 000 ms                 | 60 000 ms              | `[http]`            |
-| `http_pool_stream`      | SSE streaming chat completions          | 20                                 | 30 000 ms                 | 120 000 ms             | `[http]`            |
-| `http_pool_longpoll`    | Async task status polling (Zhipu)       | 5                                  | 30 000 ms                 | 300 000 ms             | `[http]`            |
+| `http_pool_stream`      | SSE streaming chat completions          | 10                                 | 30 000 ms                 | 60 000 ms              | `[http]`            |
+| `http_pool_longpoll`    | Async task status polling (Zhipu)       | 10                                 | 30 000 ms                 | 60 000 ms              | `[http]`            |
 
 Rationale:
-- `stream` and `longpoll` get more generous budgets than `short` because they hold connections longer per request; the per-host cap matters less than the idle-timeout-vs-budget trade-off.
-- `longpoll` is small (5 conns) because a polling client is single-threaded and shouldn't open many parallel pollers; this also forces back-pressure on misbehaving callers.
+- **All three pools ship with identical defaults, equal to today's single-pool defaults.** This keeps Goal 4 honest: a no-config user sees exactly today's per-traffic-class behavior — each class gets the same 10-conn/60s-idle budget it effectively competes for now, except classes no longer starve each other. Purpose-tuned values (bigger stream budget, longer longpoll idle) are *recommendations* documented in Appendix B and applied by operators via `http_pools` (Phase 3), not baked-in defaults.
+- Note the aggregate: with three pools, a single host can now hold up to 3×10 connections across traffic classes (vs. 10 total today). This is the intended effect of eliminating cross-class contention (Goal 3), not an accident — but it is *not* bit-identical at the host level, and the docs must say so.
 - All three default to `[http]` (HTTP/1.1) to preserve the current workaround; HTTP/2 is opt-in per pool.
 
 ### 2.2 Supervisor tree
@@ -142,6 +142,8 @@ The old atom `beamai_http_pool` is removed from the registered list (the process
 ]}.
 ```
 
+(The example above shows an *operator-tuned* config; the built-in defaults are uniform — see Section 3.2.)
+
 Per-pool config shape:
 
 ```erlang
@@ -167,23 +169,13 @@ The rename `connection_timeout` → `connect_timeout` is a **breaking change** t
 
 ### 3.2 Default pool configs (when user doesn't override)
 
-If `http_pools` is missing entirely, the three pools start with these defaults baked into `beamai_core_sup:default_pool_config/1`:
+If `http_pools` is missing entirely, the three pools start with these defaults baked into `beamai_core_sup:default_pool_config/1`. **All three are identical and equal to today's single-pool defaults** — purpose-tuning is an operator decision (Appendix B), not a default:
 
 ```erlang
-default_pool_config(http_pool_short) ->
+default_pool_config(_PoolName) ->
     #{max_connections_per_host => 10,
       connect_timeout => 30000,
       idle_timeout => 60000,
-      protocols => [http]};
-default_pool_config(http_pool_stream) ->
-    #{max_connections_per_host => 20,
-      connect_timeout => 30000,
-      idle_timeout => 120000,
-      protocols => [http]};
-default_pool_config(http_pool_longpoll) ->
-    #{max_connections_per_host => 5,
-      connect_timeout => 30000,
-      idle_timeout => 300000,
       protocols => [http]}.
 ```
 
@@ -483,15 +475,10 @@ resolve_pool_configs() ->
 #### 4.2.4 New helpers
 
 ```erlang
-default_pool_config(http_pool_short) ->
+%% 三个池默认值完全一致，等于今天单池的默认值（见 Section 3.2）
+default_pool_config(_PoolName) ->
     #{max_connections_per_host => 10, connect_timeout => 30000,
-      idle_timeout => 60000, protocols => [http]};
-default_pool_config(http_pool_stream) ->
-    #{max_connections_per_host => 20, connect_timeout => 30000,
-      idle_timeout => 120000, protocols => [http]};
-default_pool_config(http_pool_longpoll) ->
-    #{max_connections_per_host => 5, connect_timeout => 30000,
-      idle_timeout => 300000, protocols => [http]}.
+      idle_timeout => 60000, protocols => [http]}.
 
 legacy_to_pools(Legacy, Defaults) ->
     Merged = maps:fold(fun(PoolName, Default, Acc) ->
@@ -648,7 +635,7 @@ request_async(Method, Url, Headers, Body, Opts) ->
     end.
 ```
 
-The 4-tuple return is a behavior change. **Update all 3 callers** (`request/5`, `request_meta/5`, `stream_request/6`) to destructure the new shape. Audit shows only those 3 callers exist; no external code calls `request_async/5` (it's not in `-export` outside this module's group).
+The 4-tuple return is a behavior change. **Update all 3 callers** (`request/5`, `request_meta/5`, `stream_request/6`) to destructure the new shape. Note: `request_async/5` **is publicly exported** from `beamai_http_gun` (line 27, under "额外 API（用于高级场景）"). In-repo callers are only the 3 wrappers in the same module, but the 3→4 tuple change breaks any downstream user of this advanced API — it must appear under "Breaking changes" in CHANGELOG (Acceptance criterion 7).
 
 #### 4.4.6 Lines NOT changing
 
@@ -699,6 +686,20 @@ Add a helper to inject the right pool name based on request type, and apply it t
 select_pool(chat)       -> http_pool_short;
 select_pool(stream)     -> http_pool_stream;
 select_pool(async_poll) -> http_pool_longpoll.
+
+%% @doc Inject the pool name for a request shape — ONLY when the active
+%% backend is the Gun backend. `beamai_llm_http_client` is backend-agnostic:
+%% it calls `beamai_http`, which dispatches to whatever backend is configured.
+%% Passing a Gun pool atom (`http_pool_short` etc.) to `beamai_http_hackney`
+%% would be interpreted as a *hackney* pool name that was never started.
+%% Exported so providers that call `beamai_http` directly (Zhipu async poll)
+%% can reuse the same gate.
+-spec maybe_inject_pool(chat | stream | async_poll, map()) -> map().
+maybe_inject_pool(RequestType, HttpOpts) ->
+    case beamai_http:get_backend() of
+        beamai_http_gun -> HttpOpts#{pool => select_pool(RequestType)};
+        _ -> maps:remove(pool, HttpOpts)
+    end.
 ```
 
 #### 4.6.2 `request/5` (line 69)
@@ -707,12 +708,11 @@ Inject pool into `HttpOpts` *before* calling `beamai_http`:
 
 ```erlang
 request(Url, Headers, Body, Opts, ResponseParser) ->
-    PoolName = select_pool(chat),
-    HttpOpts = (maps:without([pool], Opts))#{
+    HttpOpts0 = (maps:without([pool], Opts))#{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
-        connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
-        pool => PoolName
+        connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT)
     },
+    HttpOpts = maybe_inject_pool(chat, HttpOpts0),
     %% ... rest unchanged but uses HttpOpts
 ```
 
@@ -724,15 +724,14 @@ Use `maps:without([pool], Opts)` to defend against a caller explicitly setting `
 do_stream_request(Url, Headers, Body, Opts, Callback, Accumulator, Finalizer) ->
     OnHeaders = maps:get(on_headers, Opts, undefined),
     StreamBody = Body#{<<"stream">> => true},
-    HttpOpts = #{
+    HttpOpts = maybe_inject_pool(stream, #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
         connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
         headers => Headers,
         forward_headers => is_function(OnHeaders, 1),
         init_acc => #{buffer => <<>>, acc => init_stream_acc(),
-                     callback => Callback, accumulator => Accumulator},
-        pool => select_pool(stream)
-    },
+                     callback => Callback, accumulator => Accumulator}
+    }),
     %% ... rest unchanged
 ```
 
@@ -755,18 +754,17 @@ Only one site needs editing: `do_get_request/3` (line 227) used by `get_async_re
 
 ```erlang
 do_get_request(Url, Headers, Opts) ->
-    HttpOpts = #{
+    HttpOpts = beamai_llm_http_client:maybe_inject_pool(async_poll, #{
         timeout => beamai_llm_provider_common:request_timeout(Opts, zhipu),
         connect_timeout => maps:get(connect_timeout, Opts, ?ZHIPU_CONNECT_TIMEOUT),
-        headers => Headers,
-        pool => http_pool_longpoll                  %% NEW
-    },
+        headers => Headers
+    }),
     case beamai_http:get(Url, #{}, HttpOpts) of
         %% ... unchanged
     end.
 ```
 
-One-line addition. This makes Zhipu's async-task status polling pin a small number of long-lived connections in `http_pool_longpoll` instead of competing with synchronous chat traffic for `http_pool_short` slots.
+One-line addition (via the backend-gated helper from 4.6.1 — do NOT hardcode `pool => http_pool_longpoll` here, or a Hackney-backend deployment would pass a Gun pool atom to hackney). This makes Zhipu's async-task status polling pin a small number of long-lived connections in `http_pool_longpoll` instead of competing with synchronous chat traffic for `http_pool_short` slots.
 
 #### 4.7.2 Other providers — no change
 
@@ -800,25 +798,27 @@ Detection is in `beamai_core_sup:resolve_pool_configs/0` (Section 4.2.3). When `
 
 | Scenario                                          | Before refactor                                 | After refactor (with legacy `http_pool` set)                                              |
 |---------------------------------------------------|-------------------------------------------------|-------------------------------------------------------------------------------------------|
-| User has no sys.config for either key             | Pool starts with module defaults (`max_connections_per_host=10`, `connection_timeout=30000`, `idle_timeout=60000`, `protocols=[http]`) | All three pools start with those same defaults — **bit-identical** |
+| User has no sys.config for either key             | Pool starts with module defaults (`max_connections_per_host=10`, `connection_timeout=30000`, `idle_timeout=60000`, `protocols=[http]`) | All three pools start with those same defaults — identical *per traffic class*; note the per-host aggregate across classes can now reach 3×10 (Section 2.1) |
 | User has `http_pool => #{max_connections_per_host => 50}` only | Single pool with 50 conns                       | All three pools get 50 conns (matches old behavior, just split across 3 instances)       |
 | User has `http_pool => #{protocols => [http2, http]}` | Hardcoded `[http]` — setting ignored           | All three pools get `protocols=[http2, http]` — operators can finally tune (Section 7 risk 4) |
 | User has `http_pools => #{...}` only               | N/A                                             | Per-pool overrides applied; no warning                                                    |
 | User has both                                     | N/A                                             | `http_pools` wins per-pool; legacy still logged as warning                                |
 
-### 5.3 Hackney backend unaffected
+### 5.3 Hackney backend — pool injection MUST be backend-gated
 
-`beamai_http_hackney` (line 46) already reads `pool => atom()` from opts. The refactor changes the default atom (`default` → `http_pool_short`), but Hackney doesn't touch the Gun pool. To avoid surprising Hackney users, keep the default `default` value when Hackney is the active backend:
+`beamai_http_hackney` (line 46) already reads `pool => atom()` from opts and passes it to hackney as a *hackney* pool name. `beamai_llm_http_client` is backend-agnostic — it calls `beamai_http`, which dispatches to whatever backend `http_backend` names. So an unconditional `pool => http_pool_short` injection would leak Gun pool atoms into hackney, naming a hackney pool that was never started.
 
-- This is automatic — `select_pool/1` only fires inside `beamai_llm_http_client` (Gun path). `beamai_http_hackney` reads `pool` directly from Opts and the LLM HTTP client never passes `pool` for Hackney paths.
-- No code change needed; verify with a Hackney-mode integration test (Section 6).
+The fix is `maybe_inject_pool/2` (Section 4.6.1): pool injection happens **only when `beamai_http:get_backend() =:= beamai_http_gun`**. When Hackney (or any other backend, including the test fake) is active, no `pool` key is injected and hackney keeps its existing `default` pool behavior.
+
+- Zhipu's `do_get_request/3` (4.7.1) reuses the same exported helper — no call site hardcodes a Gun pool atom.
+- Verify with a Hackney-mode integration test (Section 6): with `http_backend => beamai_http_hackney`, assert the opts reaching `Backend:request/5` contain no `pool` key (or only a caller-supplied one).
 
 ### 5.4 Module API breakage
 
 - `beamai_http_pool:get_connection/1,2` → removed. Callers (only `beamai_http_gun`) updated to `get_connection/2,3`.
 - `beamai_http_pool:return_connection/1` → removed. Callers updated to `return_connection/2`.
 - `beamai_http_pool:start_link/0,1` → removed. Only the supervisor calls `start_link/2` now.
-- `beamai_http_gun:request_async/5` return tuple grew from 3 to 4 elements. The 3 callers in the same file are updated; no other callers exist in the repo (`grep -rn "request_async"` shows only the gun module).
+- `beamai_http_gun:request_async/5` return tuple grew from 3 to 4 elements. **This is a public exported API** (advanced-use export at `beamai_http_gun.erl:27`), not an internal helper. The 3 callers in the same file are updated; no other callers exist in the repo (`grep -rn "request_async"` shows only the gun module), but downstream users of the advanced API are broken — CHANGELOG entry required.
 - `beamai_core.app.src` `registered` list changed. External code that depended on `whereis(beamai_http_pool)` would break — but no such callers exist (`grep -rn "beamai_http_pool" apps/` returns only the four files this plan touches).
 
 ---
@@ -831,7 +831,7 @@ EUnit. Each test starts an isolated pool with a unique registered name (e.g., vi
 
 #### 6.1.1 `config_merging_test_/0`
 
-Verify that the supervisor's `resolve_pool_configs/0` correctly merges defaults + legacy + new:
+Verify that the supervisor's `resolve_pool_configs/0` correctly merges defaults + legacy + new. (`resolve_pool_configs_for_test/0` is not a normal export — expose it via `-ifdef(TEST). -export([...]). -endif.` in `beamai_core_sup`.)
 
 ```erlang
 config_merging_test_() ->
@@ -921,10 +921,12 @@ Action: **No LLM test changes required.** Run the full LLM test suite after Phas
 
 Add `apps/beamai_llm/test/beamai_http_pool_routing_tests.erl` (one small module, ~80 lines).
 
+Caveat: `beamai_llm_fake_backend` intercepts at `Backend:request/5`, *before* any pool is touched — a meck on `beamai_http_pool:get_connection/2` never fires under the fake backend. Assert routing at the layer that actually runs: meck `beamai_http` (or inspect the opts the fake backend receives) and check the injected `pool` key. Also note `maybe_inject_pool/2` only injects when the Gun backend is active, so the test must either force `http_backend => beamai_http_gun` with a meck'd `beamai_http_gun`, or assert the *absence* of `pool` under non-Gun backends (which doubles as the Hackney regression test from 5.3).
+
 ```erlang
 %% Asserts that a stream request goes to http_pool_stream and a chat
-%% request goes to http_pool_short, by counting which pool was
-%% touched via a meck on beamai_http_pool:get_connection/2.
+%% request goes to http_pool_short, by inspecting the `pool` key in the
+%% opts that reach the HTTP layer (sketch — adapt per the caveat above).
 
 routing_chat_uses_short_pool_test() ->
     meck:new(beamai_http_pool, [passthrough]),
@@ -978,9 +980,9 @@ Expect ≥80% line coverage. If below, add tests for: `do_close_all/1`, `termina
 |---|--------------------------------------------------------------------------------------------------------------------------------------------|------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 1 | Breaking all LLM traffic during migration.                                                                                                  | Medium     | High   | Phased rollout (Section 8). Defaults are bit-identical to current behavior (Section 5.2). A failed Phase 1 deployment leaves the system unchanged. Smoke test `rebar3 eunit` after each phase. Add a canary config in production that sets `http_pools` to override only `idle_timeout` for one pool — any bug surfaces in a non-critical path first. |
 | 2 | Pool name typos silently fall through to wrong pool.                                                                                         | Medium     | Medium | `validate_pool_names/1` in supervisor (4.2.4) fails fast at startup for *sys.config* typos. Runtime typos (`pool => typo`) caught by `resolve_pool_name/1` in gun (4.4.1) returning `{error, {invalid_pool_name, _}}` — bubbles up as `{error, {connection_failed, {invalid_pool_name, typo}}}` so the LLM error layer marks it non-retryable.        |
-| 3 | `idle_timeout` per pool leaks connections if misconfigured.                                                                                 | Low        | Medium | Defaults match current behavior (60 s for short, 120 s for stream, 300 s for longpoll — last is the only one that *increases* vs current 60 s, intentionally, for Zhipu async). Document tuning in `docs/HTTP.md`. The 30 s `cleanup_idle` interval in `beamai_http_pool.erl:78` stays as the upper bound on leak duration.                       |
+| 3 | `idle_timeout` per pool leaks connections if misconfigured.                                                                                 | Low        | Medium | Defaults match current behavior (60 s for all three pools). Longer idle timeouts (e.g. 300 s for Zhipu async longpoll) are operator opt-in via `http_pools` — Appendix B documents the recommended values. The 30 s `cleanup_idle` interval in `beamai_http_pool.erl:78` stays as the upper bound on leak duration.                       |
 | 4 | Gun 2.1 `protocols` `badmatch` regression re-surfaces if we enable HTTP/2.                                                                  | Medium     | High   | All three pools default to `protocols => [http]`. HTTP/2 requires explicit `protocols => [http2, http]` in sys.config — opt-in only. Add a regression test in `beamai_http_pool_tests.erl` that asserts the default config contains `[http]`. Add a docs note in `docs/HTTP.md` quoting the Gun 2.1 single-element match issue.                  |
-| 5 | `beamai_http_gun:request_async/5` 3-tuple → 4-tuple return breaks unknown external callers.                                                | Low        | Medium | `request_async/5` is not in `beamai_http_behaviour` (not a public callback) and is not exported in any other module's `-export`. Grep confirms only intra-module callers. If a downstream user has monkey-patched this, the Dialyzer warning will surface it.                                                                          |
+| 5 | `beamai_http_gun:request_async/5` 3-tuple → 4-tuple return breaks unknown external callers.                                                | Low        | Medium | `request_async/5` is not in `beamai_http_behaviour` (not a behaviour callback), but it **is exported from `beamai_http_gun` as an advanced API**. Grep confirms only intra-module callers in this repo; downstream callers are broken by design. Mandatory CHANGELOG "Breaking changes" entry (Acceptance 7); Dialyzer will surface any missed in-repo caller.                                                                          |
 | 6 | Three pools vs. one pool increases idle memory.                                                                                             | Low        | Low    | Each pool holds zero connections until first use. The gen_server state is small (a map per host). Negligible vs. Gun's own per-connection overhead.                                                                                                                                                                                       |
 | 7 | `http_pool_short` becomes a load-bearing default; misuse creates an even worse single-pool bottleneck.                                       | Low        | Medium | Document the routing table in `docs/HTTP.md` (Section 9). Encourage callers who need a different pool to pass `pool => http_pool_stream` explicitly. Phase 4 (Section 8) adds per-request override so LLM providers can opt for `http_pool_stream` for long-context tool calls if needed.                                                  |
 | 8 | Migration `connection_timeout` → `connect_timeout` rename is silent (no log) if user only sets the new key.                                  | Low        | Low    | The rename only matters for users using the *old* `http_pool` key — and they're already getting a warning. Users on the new `http_pools` always use `connect_timeout`.                                                                                                                                                                      |
@@ -1026,8 +1028,8 @@ Each phase is independently mergeable, can be reverted without breaking the othe
 - `beamai_core_sup.erl`: `http_pool_specs/0` per Section 4.2.
 - `beamai_core.app.src`: update `registered` list per Section 4.3.1.
 - `beamai_http_gun.erl`: 4-tuple return, `resolve_pool_name/1` defaulting to `http_pool_short` per Section 4.4.
-- `beamai_llm_http_client.erl`: add `select_pool/1`, inject into HttpOpts per Section 4.6.
-- `beamai_llm_provider_zhipu.erl`: add `pool => http_pool_longpoll` in `do_get_request/3` per Section 4.7.1.
+- `beamai_llm_http_client.erl`: add `select_pool/1` + backend-gated `maybe_inject_pool/2`, inject into HttpOpts per Section 4.6.
+- `beamai_llm_provider_zhipu.erl`: use `beamai_llm_http_client:maybe_inject_pool(async_poll, ...)` in `do_get_request/3` per Section 4.7.1.
 
 **Validation:**
 - All existing tests pass.
