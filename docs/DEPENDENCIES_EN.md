@@ -52,76 +52,52 @@ and are not auto-injected for other backends — see [HTTP_EN.md](HTTP_EN.md).
 
 ### Dependency Hierarchy Diagram
 
-```
-                         +-----------------+
-                         | beamai_examples |
-                         +--------+--------+
-                                  | depends on all modules
-        +-------------------------+-------------------------+
-        |                         |                         |
-        v                         v                         v
-+---------------+       +-----------------+       +---------------+
-|  beamai_mcp   |       |beamai_deepagent |       |  beamai_a2a   |
-|(Protocol Ext) |       |  (Advanced Agent)|      | (A2A Protocol)|
-+-------+-------+       +--------+--------+       +-------+-------+
-        |                        |                        |
-        |                        |                        v
-        |                        |               +---------------+
-        |                        |               | beamai_agent  |
-        |                        |               |   (Agent)     |
-        |                        |               +-------+-------+
-        |                        |                       |
-        +------------------------+-----------------------+
-                                 |
-    +----------------------------+----------------------------+
-    |                 +----------+----------+                 |
-    v                 v          v          v                 v
-+-----------+   +-----------+  +-----------+  +-------------------+
-|beamai_rag |   |beamai_llm |  | beamai_   |  |    beamai_tools   |
-|  (RAG)    |   |  (LLM)    |  |  memory   |  | (Tools+Middleware)|
-+-----+-----+   +-----+-----+  +-----+-----+  +---------+---------+
-      |               |              |                  |
-      |               | implements   |                  |
-      |               | Behaviour   |                  |
-      |               +------+------+                  |
-      |                      |                          |
-      |                      v                          |
-      |         +------------------------+              |
-      |         | Behaviour Interface    |              |
-      |         | Definition             |              |
-      |         | (beamai_chat_behaviour,|              |
-      |         |  beamai_process_store_ |              |
-      |         |  behaviour)            |              |
-      |         +------------+-----------+              |
-      |                      |                          |
-      +----------------------+--------------------------+
-                             v
-                  +---------------------------+
-                  |       beamai_core         |  <- Base Layer
-                  | (Types, Behaviour) |
-                  +---------------------------+
-                                 |
-                                 v
-                  +---------------------------+
-                  |   Erlang/OTP + External   |
-                  |       Dependencies        |
-                  +---------------------------+
+This repository (beamai) contains only the three core apps; `beamai_tools` /
+`beamai_mcp` / `beamai_a2a` / `beamai_rag` live in the extension project
+[beamai_extra](https://github.com/TTalkPro/beamai_extra). The diagram below is the
+combined view; the edges are taken from each app's `.app.src`:
 
-        - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-        Runtime Optional Dependencies (injected via Adapter, not compile-time):
-        beamai_tools ···> beamai_llm (llm_client)
+```
+                     extension project beamai_extra
+    +---------------+  +---------------+  +---------------+  +-------------------+
+    |  beamai_mcp   |  |  beamai_rag   |  |  beamai_a2a   |  |    beamai_tools   |
+    | (MCP protocol)|  |    (RAG)      |  | (A2A protocol)|  | (Tools+Middleware)|
+    +-------+-------+  +-------+-------+  +-------+-------+  +---------+---------+
+            |                  |                  |                    |
+            |                  |                  v                    |
+            |                  |        +------------------+           |
+            |                  |        |   beamai_agent   |           |
+            |                  |        |  (SimpleAgent)   |           |
+            |                  |        +--------+---------+           |
+            |                  |                 |                     |
+            |                  |                 v                     |
+            |                  |        +------------------+           |
+            |                  |        |    beamai_llm    |<----------+
+            |                  |        |      (LLM)       |
+            |                  |        +--------+---------+
+            |                  |                 | implements beamai_chat_behaviour
+            +------------------+-----------------+
+                                                 v
+                              +-----------------------------------+
+                              |           beamai_core             |  <- Base Layer
+                              |  Types / Kernel / Filter / HTTP   |
+                              |  Behaviours: chat_behaviour,      |
+                              |  chat_memory, memory_provider,    |
+                              |  http_behaviour, tool_behaviour   |
+                              +-----------------+-----------------+
+                                                v
+                              +-----------------------------------+
+                              |  Erlang/OTP 27+ + external deps   |
+                              |  (gun / uuid / esqlite / poolboy) |
+                              +-----------------------------------+
 ```
 
 **Dependency Direction Notes**:
-- Solid arrows (->) indicate **compile-time dependencies** (top to bottom)
-- Dashed arrows (···>) indicate **runtime optional dependencies** (injected via Adapter)
-- `beamai_deepagent` **does not depend on** `beamai_agent`, they are parallel implementations
+- Arrows (->) indicate **compile-time dependencies** (the `applications` key of each `.app.src`)
+- `beamai_agent` depends only on `beamai_core` + `beamai_llm` — **not** on `beamai_tools`
 - `beamai_a2a` depends on `beamai_agent` (for Agent execution)
-- `beamai_mcp` **optionally depends on** `beamai_agent` at the adapter layer (for tool conversion)
-- `beamai_tools`, `beamai_llm`, `beamai_memory` are at the same level, all only depend on `beamai_core`
-- `beamai_core` defines Behaviour interfaces (`beamai_chat_behaviour`, `beamai_process_store_behaviour`, etc.), upper-layer modules implement these interfaces
-- `beamai_core` does not depend on `beamai_memory`, decoupled via `{Module, Ref}` dynamic dispatch
-- `beamai_tools` uses beamai_llm/context at **runtime** via Adapter pattern, no compile-time dependency
+- `beamai_mcp` and `beamai_rag` depend only on `beamai_core`; `beamai_tools` depends on `beamai_core` + `beamai_llm`
+- `beamai_core` defines the Behaviour interfaces and upper layers implement them; `beamai_core` is unaware of concrete implementations, decoupled via `{Module, Ref}` handle dispatch
 
 ### Application Dependency Details
 
@@ -140,43 +116,25 @@ and are not auto-injected for other backends — see [HTTP_EN.md](HTTP_EN.md).
   - `beamai_http_pool` - Gun connection pool management
 - **Behaviour Definitions** (for dependency decoupling)
   - `beamai_chat_behaviour` - LLM chat interface (formerly beamai_llm_behaviour)
-  - `beamai_process_store_behaviour` - Process store interface (with optional branch/time-travel callbacks)
+  - `beamai_chat_memory` - Conversation store interface (storage layer)
+  - `beamai_memory_provider` - Agent memory policy interface (policy layer)
   - `beamai_http_behaviour` - HTTP client interface
-
-#### beamai_memory (Pure Storage Engine)
-
-**Dependencies**: beamai_core
-
-**Provides**:
-- Storage backends
-  - ETS storage (beamai_store_ets)
-  - SQLite storage (beamai_store_sqlite)
-- Snapshot management (beamai_process_snapshot)
-- Process store (beamai_process_memory_store) — implements beamai_process_store_behaviour
-- State store (beamai_state_store)
+  - `beamai_tool_behaviour` - Tool module interface
 
 #### beamai_tools (Tool System + Middleware System)
 
 **Dependencies**:
 - beamai_core (Behaviour definitions, type definitions)
-
-**Optional Dependencies** (decoupled via Adapter pattern):
-- beamai_llm (LLM client, for intelligent tool filtering/simulation Middleware)
-- beamai_memory (Conversation buffer, for summarization Middleware)
-
-**Adapter Modules**:
-- `beamai_llm_adapter` - Wraps LLM calls, defaults to `llm_client`
-- `beamai_buffer_adapter` - Wraps conversation buffer, defaults to `beamai_conversation_buffer`
+- beamai_llm
 
 **Provides**:
-- Tool definition and registration (beamai_tool, beamai_tool_registry)
-- Tool provider (beamai_tool_provider)
+- Entry point (beamai_tools)
 - Tool security (beamai_tool_security)
 - Built-in tools
-  - File tools (beamai_tools_file)
-  - Shell tools (beamai_tools_shell)
-  - Todo tools (beamai_tools_todo)
-  - Human interaction tools (beamai_tools_human)
+  - File tools (beamai_tool_file)
+  - Shell tools (beamai_tool_shell)
+  - Todo tools (beamai_tool_todo)
+  - Human interaction tools (beamai_tool_human)
 - Middleware system
   - Middleware behaviour definition (beamai_middleware)
   - Middleware runner (beamai_middleware_runner)
@@ -215,37 +173,31 @@ and are not auto-injected for other backends — see [HTTP_EN.md](HTTP_EN.md).
 #### beamai_agent (Agent System)
 
 **Dependencies**:
-- beamai_core (headers: type definitions)
+- beamai_core (Kernel, Filter, types, memory behaviours)
 - beamai_llm (LLM calls)
-- beamai_memory (checkpoints, memory management)
-- beamai_tools (headers: tool definitions)
 
-> **Note**: beamai_agent is the core orchestration layer, **does not depend on** beamai_mcp.
-> MCP tools are integrated into Agent through beamai_mcp's adapter layer, not reverse dependency.
-
-**Provides**:
-- Agent lifecycle management (beamai_agent)
-- Agent initialization (beamai_agent_init)
-- Agent runner (beamai_agent_runner)
-- Callback system (beamai_callback_utils)
-
-#### beamai_deepagent (Deep Agent System)
-
-**Dependencies**:
-- beamai_core
-- beamai_llm
-- beamai_memory
-- beamai_tools (includes Middleware system)
+> **Note**: beamai_agent is the core orchestration layer and depends on **neither**
+> beamai_tools **nor** beamai_mcp. Tools are registered into the kernel as maps /
+> `beamai_tool`; MCP tools are integrated through beamai_mcp's adapter layer, not a
+> reverse dependency.
 
 **Provides**:
-- Deep Agent core (beamai_deepagent)
-- Planning system (beamai_deepagent_plan)
-- Tool system
-  - Filesystem tools (beamai_deepagent_fs_*)
-  - Todo tools (beamai_deepagent_todo_*)
-  - Human interaction tools (beamai_deepagent_human_*)
-- Execution tracing (beamai_deepagent_trace)
-- CLI UI (beamai_deepagent_cli_ui)
+- Agent lifecycle (beamai_agent: new/run/stream/resume; beamai_agent_state: state and config resolution)
+- ReAct tool loop (beamai_agent_tool_loop) — not a graph engine; the Agent has no notion of filters
+- ToolCallingManager (tool-batch execution strategy; behaviour + `{Mod, Ref}` dispatch)
+  - Behaviour definition (beamai_tool_calling_manager)
+  - Concurrent implementation (beamai_concurrent_tool_calling_manager, default)
+  - Sequential implementation (beamai_sequential_tool_calling_manager)
+  - Batch worker (beamai_tool_batch_worker)
+- Sub-agents (beamai_subagent_manager, beamai_agent_delegate)
+- Callback system (beamai_agent_callbacks) — the Agent's only observation extension point, fired by the tool loop
+- HITL interrupt/resume (beamai_agent_interrupt, beamai_agent_pause, beamai_pause_store[_ets])
+- Branching and timeline (beamai_branch_store[_ets], beamai_timeline)
+
+> **Memory is not listed here**: the Agent's cross-run memory is provided by
+> `beamai_core`'s `beamai_memory_provider`, which the Agent calls explicitly in its tool
+> loop (`memory` is a construction parameter orthogonal to `kernel`). See
+> [MEMORY_EN.md](MEMORY_EN.md).
 
 #### beamai_a2a (Agent-to-Agent Protocol)
 
@@ -265,17 +217,17 @@ and are not auto-injected for other backends — see [HTTP_EN.md](HTTP_EN.md).
 
 **Dependencies**:
 - beamai_core (JSON-RPC, SSE support)
-- beamai_tools (headers: tool definitions)
-- beamai_agent (**optional**, only used by adapter layer)
+- gun (HTTP/SSE transports); cowboy (**optional**, only for the server-side handler)
 
 **Provides**:
-- MCP server (beamai_mcp_server)
-- MCP client (beamai_mcp_client)
-- Transport layer
+- MCP server (beamai_mcp_server, beamai_mcp_handler, beamai_mcp_session_registry;
+  beamai_mcp_cowboy_handler is the cowboy entry point)
+- MCP client (beamai_mcp_client, beamai_mcp_client_registry)
+- Transport layer (dispatched by beamai_mcp_transport)
   - HTTP transport (beamai_mcp_transport_http_gun)
   - SSE transport (beamai_mcp_transport_sse_gun)
   - Stdio transport (beamai_mcp_transport_stdio)
-- Tool proxy (beamai_mcp_tool_proxy)
+- Protocol types and JSON-RPC (beamai_mcp_types, beamai_mcp_jsonrpc)
 - Agent adapter (beamai_mcp_adapter) - Converts MCP tools to Agent tools
 
 **Transport Layer Backend Configuration**:
@@ -293,22 +245,17 @@ Config = #{
 > **Note**: MCP core functionality can run independently, does not depend on beamai_agent.
 > Only use the adapter layer when you need to integrate MCP tools into the Agent system.
 
-#### beamai_examples (Examples)
+#### beamai_examples (Examples, under `examples/`)
 
-**Dependencies**:
-- beamai_core
-- beamai_llm
-- beamai_memory
-- beamai_tools
-- beamai_agent
-- beamai_deepagent
-- beamai_a2a
-- beamai_mcp
+**Dependencies**: poolboy (beamai_core / beamai_llm / beamai_agent are supplied via
+`ERL_LIBS`; see `examples/rebar.config`)
 
 **Provides**:
-- Simple Agent example (example_agent_simple)
-- Deep Agent example (example_agent_deep)
-- Interactive Agent example (example_agent_interactive)
+- LLM config helper (example_llm_config)
+- Kernel chat (example_kernel_chat)
+- Streaming responses (example_streaming)
+- Filter example (example_filter)
+- Tool example (example_tool_refactored)
 
 ## Erlang/OTP Dependencies
 
@@ -325,7 +272,6 @@ BeamAI Framework uses the following Erlang/OTP standard libraries:
 | crypto | Cryptographic functions |
 | ssl | SSL/TLS support |
 | json | JSON encoding/decoding (OTP 27+, replaces the former jsx dependency) |
-| inets/httpc | HTTP client (backup) |
 
 ## Installing Dependencies
 

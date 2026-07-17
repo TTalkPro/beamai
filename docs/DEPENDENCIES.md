@@ -48,74 +48,52 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
 
 ### 依赖层级图
 
-```
-                         ┌─────────────────┐
-                         │ beamai_examples │
-                         └────────┬────────┘
-                                  │ 依赖所有模块
-        ┌─────────────────────────┼─────────────────────────┐
-        │                         │                         │
-        ▼                         ▼                         ▼
-┌───────────────┐       ┌─────────────────┐       ┌───────────────┐
-│  beamai_mcp   │       │beamai_deepagent │       │  beamai_a2a   │
-│  (协议扩展)    │       │   (高级Agent)    │       │ (A2A协议)     │
-└───────┬───────┘       └────────┬────────┘       └───────┬───────┘
-        │                        │                        │
-        │                        │                        ▼
-        │                        │               ┌───────────────┐
-        │                        │               │ beamai_agent  │
-        │                        │               │   (Agent)     │
-        │                        │               └───────┬───────┘
-        │                        │                       │
-        └────────────────────────┼───────────────────────┘
-                                 │
-    ┌────────────────────────────┼────────────────────────────┐
-    │                 ┌──────────┼──────────┐                 │
-    ▼                 ▼          ▼          ▼                 ▼
-┌───────────┐   ┌───────────┐  ┌───────────┐  ┌───────────────────┐
-│beamai_rag │   │beamai_llm │  │ beamai_   │  │    beamai_tools   │
-│  (RAG)    │   │  (LLM)    │  │  memory   │  │ (工具+Middleware) │
-└─────┬─────┘   └─────┬─────┘  └─────┬─────┘  └─────────┬─────────┘
-      │               │              │                  │
-      │               │ 实现         │                  │
-      │               │ Behaviour   │                  │
-      │               └──────┬──────┘                  │
-      │                      │                          │
-      │                      ▼                          │
-      │         ┌────────────────────────┐              │
-      │         │ Behaviour 接口定义      │              │
-      │         │ (beamai_chat_behaviour,│              │
-      │         │  beamai_process_store_  │              │
-      │         │  behaviour)            │              │
-      │         └────────────┬───────────┘              │
-      │                      │                          │
-      └──────────────────────┤──────────────────────────┘
-                             ▼
-                  ┌───────────────────────────┐
-                  │       beamai_core         │  ← 基础层
-                  │ (类型、Behaviour)   │
-                  └───────────────────────────┘
-                                 │
-                                 ▼
-                  ┌───────────────────────────┐
-                  │   Erlang/OTP + 外部依赖    │
-                  └───────────────────────────┘
+本仓库（beamai）只含三个核心 app；`beamai_tools` / `beamai_mcp` / `beamai_a2a` /
+`beamai_rag` 属于扩展项目 [beamai_extra](https://github.com/TTalkPro/beamai_extra)。
+下图为两仓合并视角，依赖关系取自各 app 的 `.app.src`：
 
-        - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-        运行时可选依赖（通过 Adapter 注入，非编译依赖）：
-        beamai_tools ···> beamai_llm (llm_client)
+```
+                     扩展项目 beamai_extra
+    ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌───────────────────┐
+    │  beamai_mcp   │  │  beamai_rag   │  │  beamai_a2a   │  │    beamai_tools   │
+    │  (MCP 协议)    │  │   (RAG)       │  │  (A2A 协议)    │  │ (工具+Middleware) │
+    └───────┬───────┘  └───────┬───────┘  └───────┬───────┘  └─────────┬─────────┘
+            │                  │                  │                    │
+            │                  │                  ▼                    │
+            │                  │        ┌──────────────────┐           │
+            │                  │        │   beamai_agent   │           │
+            │                  │        │ (SimpleAgent)    │           │
+            │                  │        └────────┬─────────┘           │
+            │                  │                 │                     │
+            │                  │                 ▼                     │
+            │                  │        ┌──────────────────┐           │
+            │                  │        │    beamai_llm    │◄──────────┘
+            │                  │        │      (LLM)       │
+            │                  │        └────────┬─────────┘
+            │                  │                 │ 实现 beamai_chat_behaviour
+            └──────────────────┴─────────────────┤
+                                                 ▼
+                              ┌───────────────────────────────────┐
+                              │           beamai_core             │  ← 基础层
+                              │  类型 / Kernel / Filter / HTTP     │
+                              │  Behaviour: chat_behaviour,       │
+                              │  chat_memory, memory_provider,    │
+                              │  http_behaviour, tool_behaviour   │
+                              └─────────────────┬─────────────────┘
+                                                ▼
+                              ┌───────────────────────────────────┐
+                              │  Erlang/OTP 27+ + 外部依赖         │
+                              │  (gun / uuid / esqlite / poolboy) │
+                              └───────────────────────────────────┘
 ```
 
 **依赖方向说明**：
-- 实线箭头(→)表示**编译时依赖**（从上到下）
-- 虚线箭头(···>)表示**运行时可选依赖**（通过 Adapter 注入）
-- `beamai_deepagent` **不依赖** `beamai_agent`，它们是平行的实现
+- 箭头(→)表示**编译时依赖**（`.app.src` 的 `applications`）
+- `beamai_agent` 只依赖 `beamai_core` + `beamai_llm`——**不依赖** `beamai_tools`
 - `beamai_a2a` 依赖 `beamai_agent`（用于 Agent 执行）
-- `beamai_mcp` 在适配器层**可选依赖** `beamai_agent`（用于工具转换）
-- `beamai_tools`、`beamai_llm`、`beamai_memory` 同层级，都只依赖 `beamai_core`
-- `beamai_core` 定义 Behaviour 接口（`beamai_chat_behaviour`、`beamai_process_store_behaviour` 等），上层模块实现这些接口
-- `beamai_core` 不依赖 `beamai_memory`，通过 `{Module, Ref}` 动态分发实现解耦
-- `beamai_tools` 通过 Adapter 模式在**运行时**使用 beamai_llm/context，无编译依赖
+- `beamai_mcp`、`beamai_rag` 只依赖 `beamai_core`；`beamai_tools` 依赖 `beamai_core` + `beamai_llm`
+- `beamai_core` 定义 Behaviour 接口，上层模块实现；`beamai_core` 不感知具体实现，
+  通过 `{Module, Ref}` 句柄动态分发实现解耦
 
 ### 各应用依赖详情
 
@@ -134,48 +112,31 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
   - `beamai_http_pool` - Gun 连接池管理
 - **Behaviour 定义**（用于解耦依赖）
   - `beamai_chat_behaviour` - LLM 聊天接口（原 beamai_llm_behaviour）
-  - `beamai_process_store_behaviour` - 流程存储接口（含分支/时间旅行可选回调）
+  - `beamai_chat_memory` - 会话存储接口（存储层）
+  - `beamai_memory_provider` - Agent 记忆策略接口（策略层）
   - `beamai_http_behaviour` - HTTP 客户端接口
-
-#### beamai_memory（纯存储引擎）
-
-**依赖**: beamai_core
-
-**提供功能**:
-- 存储后端
-  - ETS 存储（beamai_store_ets）
-  - SQLite 存储（beamai_store_sqlite）
-- 快照管理（beamai_process_snapshot）
-- 流程存储（beamai_process_memory_store）— 实现 beamai_process_store_behaviour
-- 状态存储（beamai_state_store）
+  - `beamai_tool_behaviour` - 工具模块接口
 
 #### beamai_tools（工具系统 + 中间件系统）
 
 **依赖**:
 - beamai_core（Behaviour 定义、类型定义）
-
-**可选依赖**（通过 Adapter 模式解耦）:
-- beamai_llm（LLM 客户端，用于智能工具筛选/模拟 Middleware）
-- beamai_memory（对话缓冲，用于摘要 Middleware）
-
-**Adapter 模块**:
-- `beamai_llm_adapter` - 封装 LLM 调用，默认使用 `llm_client`
-- `beamai_buffer_adapter` - 封装对话缓冲，默认使用 `beamai_conversation_buffer`
+- beamai_llm
 
 **提供功能**:
-- 工具定义与注册（beamai_tool, beamai_tool_registry）
-- 工具提供者（beamai_tool_provider）
+- 入口（beamai_tools）
 - 工具安全（beamai_tool_security）
 - 内置工具
-  - 文件工具（beamai_tools_file）
-  - Shell 工具（beamai_tools_shell）
-  - Todo 工具（beamai_tools_todo）
-  - 人机交互工具（beamai_tools_human）
-- Middleware 系统
+  - 文件工具（beamai_tool_file）
+  - Shell 工具（beamai_tool_shell）
+  - Todo 工具（beamai_tool_todo）
+  - 人机交互工具（beamai_tool_human）
+- Middleware 系统（经 `beamai_middleware_runner:to_filters/1` 桥接到 core 的 filter 洋葱链）
   - Middleware 行为定义（beamai_middleware）
   - Middleware 运行器（beamai_middleware_runner）
   - 预设 Middleware（beamai_middleware_presets）
-  - 内置 Middleware（middleware_call_limit, middleware_summarization 等）
+  - 内置 Middleware（middleware_call_limit、middleware_tool_retry、middleware_model_retry、
+    middleware_model_fallback、middleware_human_approval）
 
 #### beamai_llm（LLM 集成）
 
@@ -209,41 +170,29 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
 #### beamai_agent（Agent 系统）
 
 **依赖**:
-- beamai_core（头文件：类型定义）
+- beamai_core（Kernel、Filter、类型、记忆 behaviour）
 - beamai_llm（LLM 调用）
-- beamai_memory（检查点、记忆管理）
-- beamai_tools（头文件：工具定义）
 
-> **注意**: beamai_agent 是核心编排层，**不依赖** beamai_mcp。
-> MCP 工具通过 beamai_mcp 的适配器层集成到 Agent，而非反向依赖。
-
-**提供功能**:
-- Agent 生命周期管理（beamai_agent）
-- Agent 初始化（beamai_agent_init）
-- Agent 运行器（beamai_agent_runner）
-- 图节点
-  - LLM 节点（beamai_llm_node）
-  - 工具节点（beamai_tool_node）
-  - Middleware 集成节点（beamai_middleware_nodes）
-- 回调系统（beamai_callback_utils）
-
-#### beamai_deepagent（Deep Agent 系统）
-
-**依赖**:
-- beamai_core
-- beamai_llm
-- beamai_memory
-- beamai_tools（包含 Middleware 系统）
+> **注意**: beamai_agent 是核心编排层，**不依赖** beamai_tools，也不依赖 beamai_mcp。
+> 工具以 map/`beamai_tool` 形式注册进 kernel；MCP 工具通过 beamai_mcp 的适配器层
+> 集成到 Agent，而非反向依赖。
 
 **提供功能**:
-- Deep Agent 核心（beamai_deepagent）
-- 计划系统（beamai_deepagent_plan）
-- 工具系统
-  - 文件系统工具（beamai_deepagent_fs_*）
-  - Todo 工具（beamai_deepagent_todo_*）
-  - 人机交互工具（beamai_deepagent_human_*）
-- 执行追踪（beamai_deepagent_trace）
-- CLI UI（beamai_deepagent_cli_ui）
+- Agent 生命周期（beamai_agent：new/run/stream/resume；beamai_agent_state：状态与配置解析）
+- ReAct 工具循环（beamai_agent_tool_loop）——不是图引擎；Agent 无 filter 概念
+- ToolCallingManager（工具批次执行策略，behaviour + `{Mod, Ref}` 分派）
+  - 行为定义（beamai_tool_calling_manager）
+  - 并发实现（beamai_concurrent_tool_calling_manager，默认）
+  - 串行实现（beamai_sequential_tool_calling_manager）
+  - 批次工作进程（beamai_tool_batch_worker）
+- 子 Agent（beamai_subagent_manager、beamai_agent_delegate）
+- 回调系统（beamai_agent_callbacks）——Agent 唯一的观察扩展点，由 tool loop 直接触发
+- HITL 中断/恢复（beamai_agent_interrupt、beamai_agent_pause、beamai_pause_store[_ets]）
+- 分支与时间线（beamai_branch_store[_ets]、beamai_timeline）
+
+> **记忆不在此列**：Agent 的跨轮记忆由 `beamai_core` 的 `beamai_memory_provider` 承担，
+> Agent 在 tool loop 里显式调用（`memory` 是与 `kernel` 正交的创建参数）。详见
+> [MEMORY.md](MEMORY.md)。
 
 #### beamai_a2a（Agent-to-Agent 协议）
 
@@ -263,17 +212,17 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
 
 **依赖**:
 - beamai_core（JSON-RPC、SSE 支持）
-- beamai_tools（头文件：工具定义）
-- beamai_agent（**可选**，仅适配器层使用）
+- gun（HTTP/SSE 传输）、cowboy（**可选**，仅 server 端 handler 需要）
 
 **提供功能**:
-- MCP 服务器（beamai_mcp_server）
-- MCP 客户端（beamai_mcp_client）
-- 传输层
+- MCP 服务器（beamai_mcp_server、beamai_mcp_handler、beamai_mcp_session_registry；
+  beamai_mcp_cowboy_handler 为 cowboy 接入层）
+- MCP 客户端（beamai_mcp_client、beamai_mcp_client_registry）
+- 传输层（beamai_mcp_transport 分派）
   - HTTP 传输（beamai_mcp_transport_http_gun）
   - SSE 传输（beamai_mcp_transport_sse_gun）
   - Stdio 传输（beamai_mcp_transport_stdio）
-- 工具代理（beamai_mcp_tool_proxy）
+- 协议类型与 JSON-RPC（beamai_mcp_types、beamai_mcp_jsonrpc）
 - Agent 适配器（beamai_mcp_adapter）- 将 MCP 工具转换为 Agent 工具
 
 **传输层后端配置**:
@@ -291,22 +240,17 @@ Config = #{
 > **注意**: MCP 核心功能可独立运行，不依赖 beamai_agent。
 > 仅在需要将 MCP 工具集成到 Agent 系统时，才使用适配器层。
 
-#### beamai_examples（示例）
+#### beamai_examples（示例，位于 `examples/`）
 
-**依赖**:
-- beamai_core
-- beamai_llm
-- beamai_memory
-- beamai_tools
-- beamai_agent
-- beamai_deepagent
-- beamai_a2a
-- beamai_mcp
+**依赖**: poolboy（beamai_core / beamai_llm / beamai_agent 经 `ERL_LIBS` 提供，
+见 `examples/rebar.config`）
 
 **提供功能**:
-- 简单 Agent 示例（example_agent_simple）
-- Deep Agent 示例（example_agent_deep）
-- 交互式 Agent 示例（example_agent_interactive）
+- LLM 配置助手（example_llm_config）
+- Kernel 对话（example_kernel_chat）
+- 流式响应（example_streaming）
+- Filter 示例（example_filter）
+- 工具示例（example_tool_refactored）
 
 ## Erlang/OTP 依赖
 
@@ -323,7 +267,6 @@ BeamAI Framework 使用以下 Erlang/OTP 标准库：
 | crypto | 加密功能 |
 | ssl | SSL/TLS 支持 |
 | json | JSON 编解码（OTP 27+，取代原 jsx 依赖） |
-| inets/httpc | HTTP 客户端（备用） |
 
 ## 安装依赖
 
