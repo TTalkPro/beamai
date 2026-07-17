@@ -6,8 +6,10 @@
                   http_pool_stream,
                   http_pool_longpoll]},
     {mod, {beamai_core_app, []}},
-    {applications, [kernel, stdlib, jsx, uuid, hackney]},
-    {optional_applications, [gun, beamai_llm]},
+    %% gun 是硬依赖：beamai_core_sup 无条件启动三个 beamai_http_pool
+    %% （http_pool_short/stream/longpoll），它们直接调 gun:open。
+    {applications, [kernel, stdlib, jsx, uuid, gun]},
+    {optional_applications, [beamai_llm]},
     {env, []},
     {modules, [
         %% OTP 应用
@@ -38,7 +40,6 @@
         beamai_memory_filter,
         %% HTTP 客户端
         beamai_http,
-        beamai_http_hackney,
         beamai_http_gun,
         beamai_http_pool,
         %% JSON-RPC
