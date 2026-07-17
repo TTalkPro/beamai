@@ -55,7 +55,7 @@ search_round(Id, Names) ->
        tool_calls => [#{id => Id, type => <<"function">>,
                         function => #{name => <<"tool_search">>,
                                       arguments => <<"{}">>}}]},
-     #{role => tool, tool_call_id => Id, content => jsx:encode(Names)}].
+     #{role => tool, tool_call_id => Id, content => beamai_utils:encode_json(Names)}].
 
 user(Text) -> [#{role => user, content => Text}].
 
@@ -167,7 +167,7 @@ other_tool_result_not_claimed_test() ->
                                 function => #{name => <<"get_weather">>,
                                               arguments => <<"{}">>}}]},
              #{role => tool, tool_call_id => <<"x1">>,
-               content => jsx:encode([<<"send_email">>])}],
+               content => beamai_utils:encode_json([<<"send_email">>])}],
         %% get_weather 的结果碰巧长得像检索结果，但不是 tool_search 发起的，不认
         ?assertEqual([<<"tool_search">>], advertised(K, Msgs))
     end).
@@ -221,7 +221,7 @@ search_tool_chinese_query_test() ->
 %% 工具返回经 encode_result 编码后，正是 filter 认得的形态（闭合两端的契约）
 encoded_result_round_trip_test() ->
     Encoded = beamai_tool:encode_result(search(#{}, <<"weather">>)),
-    ?assertEqual([<<"get_weather">>], jsx:decode(Encoded, [return_maps])).
+    ?assertEqual([<<"get_weather">>], json:decode(Encoded)).
 
 %% 自定义工具名贯穿工具与 filter
 custom_tool_name_test() ->

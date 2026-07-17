@@ -153,7 +153,7 @@ post_json(Url, Data) ->
 %% @doc 发送带选项的 JSON POST 请求
 -spec post_json(url(), map() | list(), options()) -> response().
 post_json(Url, Data, Opts) ->
-    Body = jsx:encode(Data),
+    Body = beamai_utils:encode_json(Data),
     post(Url, <<"application/json">>, Body, Opts).
 
 %%====================================================================

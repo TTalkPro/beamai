@@ -277,17 +277,17 @@ validate_json(Schema, ValOpts, Text) ->
             {invalid, <<"输出不是合法 JSON"/utf8>>}
     end.
 
-%% @private 宽容解码（jsx 出错即非法 JSON）
+%% @private 宽容解码（json:decode 出错即非法 JSON）
 decode_json(Text) ->
     try
-        {ok, jsx:decode(Text, [return_maps])}
+        {ok, json:decode(Text)}
     catch
         _:_ -> error
     end.
 
 %% @private 剥离 ```json ... ``` 围栏（无围栏则原样；仅取首个围栏内容）
 %%
-%% 换行不强求（```json{...}``` 也认），围栏内残留的空白交给 jsx。
+%% 换行不强求（```json{...}``` 也认），围栏内残留的空白交给 json:decode。
 strip_fence(false, Text) ->
     Text;
 strip_fence(true, Text) ->

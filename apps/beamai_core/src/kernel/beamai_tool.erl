@@ -309,11 +309,11 @@ parse_tool_call(TC) ->
 -spec encode_result(term()) -> binary().
 encode_result(Value) when is_binary(Value) -> Value;
 encode_result(Value) when is_map(Value) ->
-    try jsx:encode(Value)
+    try beamai_utils:encode_json(Value)
     catch _:_ -> iolist_to_binary(io_lib:format("~p", [Value]))
     end;
 encode_result(Value) when is_list(Value) ->
-    try jsx:encode(Value)
+    try beamai_utils:encode_json(Value)
     catch _:_ -> iolist_to_binary(io_lib:format("~p", [Value]))
     end;
 encode_result(Value) when is_number(Value) ->
@@ -553,7 +553,7 @@ extract_args(_) -> #{}.
 %% @private 解析参数（JSON 字符串或已解码的 map）
 parse_args(Args) when is_map(Args) -> Args;
 parse_args(Args) when is_binary(Args) ->
-    try jsx:decode(Args, [return_maps])
+    try json:decode(Args)
     catch _:_ -> #{<<"raw">> => Args}
     end;
 parse_args(_) -> #{}.

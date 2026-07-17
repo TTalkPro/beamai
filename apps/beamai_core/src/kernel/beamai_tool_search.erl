@@ -194,7 +194,7 @@ search_call_ids(Msgs, SearchName) ->
 
 %% @private 解检索结果（JSON 字符串数组）；解不动即当没检索过
 decode_names(Content) when is_binary(Content) ->
-    try jsx:decode(Content, [return_maps]) of
+    try json:decode(Content) of
         Names when is_list(Names) -> [N || N <- Names, is_binary(N)];
         _ -> []
     catch
