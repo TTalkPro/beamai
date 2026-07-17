@@ -19,7 +19,7 @@
 %%%
 %%% 状态存调用进程 pdict（唯一 ref 键，Flush 后 erase）。前提（已核实）：
 %%% token 回调由 provider 流式循环在**同一进程内串行**调用
-%%% （gun/hackney receive 循环），Wrap 返回的回调与 Flush 必须在同一
+%%% （gun receive 循环），Wrap 返回的回调与 Flush 必须在同一
 %%% 进程使用。
 %%%
 %%% 无 token_transform 时零开销退化：Sink 原样直通，Flush 为空操作。

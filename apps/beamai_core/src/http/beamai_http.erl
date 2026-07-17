@@ -1,25 +1,28 @@
 %%%-------------------------------------------------------------------
 %%% @doc HTTP 客户端工具模块
 %%%
-%%% 提供统一的 HTTP 请求接口，支持多种后端实现。
-%%% 默认使用 hackney，可通过配置切换到 gun。
+%%% 提供统一的 HTTP 请求接口。后端经 beamai_http_behaviour 可插拔，
+%%% 内置实现只有 beamai_http_gun（HTTP/2 + 连接池），即默认后端。
 %%%
 %%% == 后端切换 ==
 %%%
-%%% ```erlang
-%%% %% 使用 Gun（支持 HTTP/2）
-%%% application:set_env(beamai_core, http_backend, beamai_http_gun).
+%%% 抽象层保留是为了让调用方（尤其是测试）能换掉后端，例如 beamai_llm
+%%% 测试里的 beamai_llm_fake_backend：
 %%%
-%%% %% 使用 Hackney（默认）
-%%% application:set_env(beamai_core, http_backend, beamai_http_hackney).
+%%% ```erlang
+%%% application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
 %%% ```
+%%%
+%%% 注：曾并存的 beamai_http_hackney 已删除，全线统一到 Gun。自定义后端
+%%% 需实现 beamai_http_behaviour；连接池语义是 Gun 专有的，见下方 do_request/6
+%%% 的池选择注释。
 %%%
 %%% == 功能特性 ==
 %%% - GET/POST/PUT/DELETE 请求
 %%% - JSON 自动编解码
 %%% - 超时和重试机制
 %%% - 流式请求支持
-%%% - 可插拔后端（hackney/gun）
+%%% - 可插拔后端（beamai_http_behaviour）
 %%%
 %%% == 使用示例 ==
 %%%
@@ -284,8 +287,9 @@ do_request(Method, Url, ExtraHeaders, Body, Opts, Attempt) ->
 
     %% 池选择：调用方经 Opts#{pool => http_pool_short | http_pool_stream |
     %% http_pool_longpoll} 指定；Opts 原样透传给后端，未指定时
-    %% beamai_http_gun 默认 http_pool_short（Hackney 后端把 pool 当
-    %% hackney 池名，勿传 Gun 池名——见 beamai_llm_http_client:maybe_inject_pool/2）。
+    %% beamai_http_gun 默认 http_pool_short。池名是 Gun 后端专有语义，非 Gun
+    %% 后端（如测试 fake）会按自己的方式解释，故不自动注入——见
+    %% beamai_llm_http_client:maybe_inject_pool/3。
     case Backend:request(Method, UrlBin, Headers, BodyBin, Opts) of
         {ok, _} = Success ->
             Success;
