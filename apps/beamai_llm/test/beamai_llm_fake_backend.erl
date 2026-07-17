@@ -13,6 +13,7 @@
 
 -export([request/5, request_meta/5, stream_request/6, ensure_started/0]).
 -export([set_response/2, set_stream/2, set_error/3, install/0, uninstall/1]).
+-export([last_opts/0]).
 
 %% 用 application env 跨进程传递响应（beamai_http 同进程调用，进程字典亦可，
 %% 这里用 application env 更稳妥）。
@@ -41,12 +42,19 @@ install() ->
 uninstall(Prev) ->
     beamai_http:set_backend(Prev).
 
+%% 取最近一次请求（request/request_meta/stream_request）收到的 Opts，
+%% 供测试断言透传行为（如连接池路由的 pool 键）。
+last_opts() ->
+    application:get_env(beamai_core, fake_backend_last_opts, #{}).
+
 ensure_started() -> ok.
 
-request(_Method, _Url, _Headers, _Body, _Opts) ->
+request(_Method, _Url, _Headers, _Body, Opts) ->
+    record_opts(Opts),
     {ok, body()}.
 
-request_meta(_Method, _Url, _Headers, _Body, _Opts) ->
+request_meta(_Method, _Url, _Headers, _Body, Opts) ->
+    record_opts(Opts),
     case application:get_env(beamai_core, fake_backend_error, undefined) of
         {Status, Body, Headers} ->
             {error, {http_error, Status, Body, Headers}};
@@ -57,6 +65,7 @@ request_meta(_Method, _Url, _Headers, _Body, _Opts) ->
 %% 模拟流式：可选回传响应头，再按顺序把 SSE 数据块喂给 Handler，
 %% 返回最终累加状态（与真实后端的 {ok, State} 一致）。
 stream_request(_Method, _Url, _Headers, _Body, Opts, Handler) ->
+    record_opts(Opts),
     InitAcc = maps:get(init_acc, Opts, <<>>),
     Acc0 = case maps:get(forward_headers, Opts, false) of
         true -> apply_handler(Handler, {http_headers, headers()}, InitAcc);
@@ -71,6 +80,9 @@ apply_handler(Handler, Input, Acc) ->
         {continue, NewAcc} -> NewAcc;
         {done, NewAcc} -> NewAcc
     end.
+
+record_opts(Opts) ->
+    application:set_env(beamai_core, fake_backend_last_opts, Opts).
 
 body() ->
     application:get_env(beamai_core, fake_backend_body, #{}).
