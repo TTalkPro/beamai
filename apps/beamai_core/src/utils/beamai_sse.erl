@@ -137,7 +137,7 @@ parse_event_line(_Line, Acc) ->
 ensure_binary(Data) when is_binary(Data) -> Data;
 ensure_binary(Data) ->
     try
-        jsx:encode(Data, [])
+        beamai_utils:encode_json(Data)
     catch
         _:_ -> iolist_to_binary(io_lib:format("~p", [Data]))
     end.

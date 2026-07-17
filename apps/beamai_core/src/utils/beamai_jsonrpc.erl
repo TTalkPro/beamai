@@ -64,7 +64,7 @@ encode_request(Id, Method, Params) ->
         <<"method">> => Method,
         <<"params">> => Params
     },
-    jsx:encode(Msg, []).
+    beamai_utils:encode_json(Msg).
 
 %% @doc 编码 JSON-RPC 通知（无 id 字段）
 -spec encode_notification(binary(), map()) -> binary().
@@ -74,7 +74,7 @@ encode_notification(Method, Params) ->
         <<"method">> => Method,
         <<"params">> => Params
     },
-    jsx:encode(Msg, []).
+    beamai_utils:encode_json(Msg).
 
 %% @doc 编码 JSON-RPC 成功响应
 -spec encode_response(term(), term()) -> binary().
@@ -84,7 +84,7 @@ encode_response(Id, Result) ->
         <<"id">> => Id,
         <<"result">> => Result
     },
-    jsx:encode(Msg, []).
+    beamai_utils:encode_json(Msg).
 
 %% @doc 编码 JSON-RPC 错误响应
 -spec encode_error(term(), integer(), binary()) -> binary().
@@ -97,7 +97,7 @@ encode_error(Id, Code, Message) ->
             <<"message">> => Message
         }
     },
-    jsx:encode(Msg, []).
+    beamai_utils:encode_json(Msg).
 
 %% @doc 编码 JSON-RPC 错误响应（带额外数据）
 -spec encode_error(term(), integer(), binary(), term()) -> binary().
@@ -112,7 +112,7 @@ encode_error(Id, Code, Message, Data) ->
         <<"id">> => Id,
         <<"error">> => Error
     },
-    jsx:encode(Msg, []).
+    beamai_utils:encode_json(Msg).
 
 %%====================================================================
 %% 解码 API
@@ -125,7 +125,7 @@ encode_error(Id, Code, Message, Data) ->
 -spec decode(binary()) -> {ok, map() | {batch, [map()]}} | {error, term()}.
 decode(JsonBin) ->
     try
-        case jsx:decode(JsonBin, [return_maps]) of
+        case json:decode(JsonBin) of
             Msgs when is_list(Msgs) ->
                 {ok, {batch, Msgs}};
             Msg when is_map(Msg) ->
