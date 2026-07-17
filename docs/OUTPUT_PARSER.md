@@ -712,7 +712,6 @@ custom_repair_json(Text) ->
 
 ## 更多资源
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - 架构设计文档
-- [DESIGN_PATTERNS.md](DESIGN_PATTERNS.md) - 设计模式文档
+- [ARCHITECTURE.md](../design/ARCHITECTURE.md) - 架构设计文档
 - [API_REFERENCE.md](API_REFERENCE.md) - API 参考文档
 - [beamai_llm README](../apps/beamai_llm/README.md) - LLM 模块文档
