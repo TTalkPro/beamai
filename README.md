@@ -10,7 +10,9 @@
 
 > **项目说明**: 本项目是 BeamAI 框架的核心库，提供 Kernel、Filter（含会话记忆）、LLM 客户端和 SimpleAgent 等核心功能。
 >
-> 高级功能（Deep Agent、Process Framework 流程编排、存储/快照引擎、Tools 库、RAG、A2A/MCP 协议等）已迁移到 [beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中。
+> 扩展功能（Tools 库、RAG、A2A/MCP 协议）位于 [beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目。
+>
+> Process Framework 流程编排引擎与存储/快照引擎（原 `beamai_process` / `beamai_memory`）已**移除**，两个仓库均不再包含。
 
 ## 核心功能与扩展
 
@@ -21,11 +23,11 @@
 - **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、DashScope、Ollama）
 
 ### 扩展项目 ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
-基于核心库构建的高级功能：
-- **Deep Agent** - 基于 SubAgent 架构的递归规划 Agent
-- **Tools 库** - 文件、Shell、HTTP 等常用工具集合
-- **RAG** - 检索增强生成
-- **协议支持** - A2A (Agent-to-Agent)、MCP (Model Context Protocol)
+基于核心库构建的扩展功能（共四个 app）：
+- **beamai_tools** - 文件、Shell、Todo、人机交互工具 + Middleware 系统
+- **beamai_rag** - 检索增强生成
+- **beamai_mcp** - MCP (Model Context Protocol)
+- **beamai_a2a** - A2A (Agent-to-Agent) 协议
 
 ## 特性
 
@@ -36,7 +38,7 @@
 
 - **会话记忆 (Memory Filter)**: 对话历史与 Kernel 解耦
   - 每次 invoke 只传单条最新消息，历史由 Memory Filter 按 `conversation_id` 管理
-  - 可插拔存储后端（ETS 默认实现 / 滑动窗口包装 / 自定义 behaviour）
+  - 可插拔存储后端（ETS / DETS 持久化 / 自定义 behaviour）；滑动窗口由 Agent 侧的 memory provider 提供
   - 详见 [docs/MEMORY.md](docs/MEMORY.md)
 
 - **统一 LLM 客户端**: 6 家 Provider 统一同步/流式
@@ -185,8 +187,8 @@ apps/
                        # beamai_agent_callbacks, beamai_agent_interrupt
 ```
 
-> **流程编排引擎与存储/快照引擎**（原 beamai_process / beamai_memory）已迁移到
-> [beamai_extra](https://github.com/TTalkPro/beamai_extra)，不再属于本项目。
+> **流程编排引擎与存储/快照引擎**（原 `beamai_process` / `beamai_memory`）已**移除**，
+> beamai 与 beamai_extra 两个仓库均不再包含。
 
 ### 依赖关系
 
@@ -241,7 +243,7 @@ Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
 
 Kernel 本身无状态、不记录消息；多轮对话历史由 **Memory Filter**（`beamai_memory_filter`）以 `conversation_id` 为单位管理。每次 invoke 只携带单条最新消息，filter 负责注入历史与持久化增量。
 
-- 可插拔存储后端（ETS 默认实现 / 滑动窗口包装 / 自定义 behaviour）
+- 可插拔存储后端（ETS / DETS 持久化 / 自定义 behaviour）；滑动窗口由 Agent 侧的 memory provider 提供
 - SimpleAgent 的跨轮记忆即基于此实现
 - 详见 [docs/MEMORY.md](docs/MEMORY.md)
 

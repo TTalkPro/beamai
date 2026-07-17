@@ -10,7 +10,9 @@ A high-performance AI Agent framework core library based on Erlang/OTP, providin
 
 > **Note**: This project is the core library of the BeamAI framework, providing Kernel, Filter (incl. conversation memory), LLM Client, and SimpleAgent core features.
 >
-> Advanced features (Deep Agent, Process Framework orchestration, storage/snapshot engine, Tools Library, RAG, A2A/MCP protocols, etc.) have been moved to the [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project.
+> Extension features (Tools Library, RAG, A2A/MCP protocols) live in the [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project.
+>
+> The Process Framework orchestration engine and the storage/snapshot engine (formerly `beamai_process` / `beamai_memory`) have been **removed** — neither repository contains them any more.
 
 ## Core vs Extension
 
@@ -22,10 +24,10 @@ Foundational infrastructure for building AI Agents (three core responsibilities)
 
 ### Extension Project ([beamai_extra](https://github.com/TTalkPro/beamai_extra))
 Advanced features built on top of the core library:
-- **Deep Agent** - Recursive planning Agent based on SubAgent architecture
-- **Tools Library** - Common tools like File, Shell, HTTP, etc.
-- **RAG** - Retrieval-Augmented Generation
-- **Protocol Support** - A2A (Agent-to-Agent), MCP (Model Context Protocol)
+- **beamai_tools** - File, Shell, Todo and human-interaction tools + the Middleware system
+- **beamai_rag** - Retrieval-Augmented Generation
+- **beamai_mcp** - MCP (Model Context Protocol)
+- **beamai_a2a** - A2A (Agent-to-Agent) protocol
 
 ## Features
 
@@ -36,7 +38,7 @@ Advanced features built on top of the core library:
 
 - **Conversation Memory (Memory Filter)**: history decoupled from the Kernel
   - Each invoke passes only the latest message; history managed by the Memory Filter keyed by `conversation_id`
-  - Pluggable storage backends (default ETS / sliding-window wrapper / custom behaviour)
+  - Pluggable storage backends (ETS / DETS persistence / custom behaviour); the sliding window is provided by the Agent-side memory provider
   - See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
 
 - **Unified LLM Client**: 6 providers with unified sync/streaming
@@ -140,7 +142,7 @@ K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
 
 See the [Filter docs](docs/FILTER_EN.md).
 
-> **Process orchestration / state snapshots** have been moved to [beamai_extra](https://github.com/TTalkPro/beamai_extra) (Process Framework, storage/snapshot engine).
+> **Process orchestration / state snapshots** (the Process Framework and storage/snapshot engine) have been **removed** and exist in neither repository.
 
 ### 5. Output Parser (Structured Output)
 
@@ -186,8 +188,8 @@ apps/
                        # beamai_agent_callbacks, beamai_agent_interrupt
 ```
 
-> **The process-orchestration engine and storage/snapshot engine** (formerly beamai_process / beamai_memory)
-> have been moved to [beamai_extra](https://github.com/TTalkPro/beamai_extra) and are no longer part of this project.
+> **The process-orchestration engine and storage/snapshot engine** (formerly `beamai_process` /
+> `beamai_memory`) have been **removed**; neither beamai nor beamai_extra contains them.
 
 ### Dependency Relationships
 
@@ -244,7 +246,7 @@ Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
 
 The Kernel itself is stateless and does not record messages; multi-turn conversation history is managed by the **Memory Filter** (`beamai_memory_filter`) keyed by `conversation_id`. Each invoke carries only the latest message; the filter injects history and persists deltas.
 
-- Pluggable storage backends (default ETS / sliding-window wrapper / custom behaviour)
+- Pluggable storage backends (ETS / DETS persistence / custom behaviour); the sliding window is provided by the Agent-side memory provider
 - SimpleAgent's cross-turn memory is built on this
 - See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
 
