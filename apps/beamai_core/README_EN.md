@@ -53,8 +53,7 @@ Orchestratable process engine supporting step definitions, conditional branching
 Pluggable HTTP client supporting Gun and Hackney backends:
 
 - **beamai_http** - Unified HTTP client interface
-- **beamai_http_gun** - Gun HTTP/2 backend implementation
-- **beamai_http_hackney** - Hackney HTTP/1.1 backend implementation
+- **beamai_http_gun** - Gun HTTP/2 backend implementation (the only built-in backend)
 - **beamai_http_pool** - HTTP connection pool management
 
 ### Behaviour Definitions
@@ -250,7 +249,6 @@ Builder3 = beamai_process_builder:add_step(Builder2, <<"save">>, #{
 - jsx - JSON encoding/decoding
 - uuid - UUID generation
 - gun - HTTP/2 client
-- hackney - HTTP/1.1 client
 - poolboy - Connection pooling
 
 ## License
