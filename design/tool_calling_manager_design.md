@@ -1,7 +1,22 @@
 # ToolCallingManager 设计：统一工具执行管理（beamai/Erlang 移植）
 
-> **状态：📋 设计阶段（移植自 clj-agent `tool-calling-manager-design.md`，针对 Erlang/OTP
-> 与 beamai 项目实际架构适配）。待用户确认进入实施。**
+> **状态：✅ ToolCallingManager 部分已实施（落地形态与本文有分叉）；🚧 Tool Backend 部分未实施。**
+> 当前行为以 `apps/beamai_agent/src/beamai_tool_calling_manager.erl` 及其实现模块为准；
+> 本文保留为设计决策的历史记录。
+>
+> **已落地**（但与本文命名不同）：
+>
+> | 本文设计 | 实际落地 |
+> |---|---|
+> | `-callback execute_batch/4` | **`execute_tool_calls/4`**（改名） |
+> | 可选 `-callback execute_single/4` | **未实现**（本文即注明"首版不实现"） |
+> | 单一默认实现 `beamai_default_tool_calling_manager` | **拆成两个**：`beamai_concurrent_tool_calling_manager`（默认，尊重 parallel/serial）+ `beamai_sequential_tool_calling_manager` |
+> | `beamai_subagent_manager` | 已存在 |
+>
+> **未落地**：Tool Backend 一节所设计的 `beamai_tool_backend_http`、`beamai_tool_backend_mcp`、
+> `beamai_tool_result` 均未建成。该节仍是待实施的设计。
+>
+> （移植自 clj-agent `tool-calling-manager-design.md`，针对 Erlang/OTP 与 beamai 项目实际架构适配。）
 >
 > 本文以 clj-agent 的同名设计文档为蓝本，逐节对照 beamai 的实际代码与 Erlang 语言特性
 > 做针对性移植。原设计基于 Clojure protocol + defrecord + defmulti；beamai 使用 Erlang
