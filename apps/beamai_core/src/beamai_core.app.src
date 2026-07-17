@@ -8,7 +8,7 @@
     {mod, {beamai_core_app, []}},
     %% gun 是硬依赖：beamai_core_sup 无条件启动三个 beamai_http_pool
     %% （http_pool_short/stream/longpoll），它们直接调 gun:open。
-    {applications, [kernel, stdlib, jsx, uuid, gun]},
+    {applications, [kernel, stdlib, uuid, gun]},
     {optional_applications, [beamai_llm]},
     {env, []},
     {modules, [
