@@ -238,7 +238,7 @@ do_get_request(Url, Headers, Opts) ->
         {ok, Response} when is_map(Response) ->
             {ok, Response};
         {ok, Response} when is_binary(Response) ->
-            {ok, jsx:decode(Response, [return_maps])};
+            {ok, json:decode(Response)};
         {error, {http_error, Code, RespBody}} ->
             {error, {http_error, Code, RespBody}};
         {error, Reason} ->

@@ -79,7 +79,7 @@ request(Url, Headers, Body, Opts, ResponseParser) ->
         connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT)
     }),
     %% 使用 beamai_http:request 直接传入 headers，避免 post_json 重复添加 Content-Type
-    JsonBody = jsx:encode(Body),
+    JsonBody = beamai_utils:encode_json(Body),
     case maps:get(on_headers, Opts, undefined) of
         OnHeaders when is_function(OnHeaders, 1) ->
             request_with_headers(Url, Headers, JsonBody, HttpOpts, ResponseParser, OnHeaders);
@@ -307,7 +307,7 @@ parse_sse_lines([_ | Rest], Acc) ->
 %% @private 安全解析 JSON
 -spec safe_decode_json(binary()) -> map() | skip.
 safe_decode_json(Json) ->
-    try jsx:decode(Json, [return_maps])
+    try json:decode(Json)
     catch _:_ -> skip
     end.
 

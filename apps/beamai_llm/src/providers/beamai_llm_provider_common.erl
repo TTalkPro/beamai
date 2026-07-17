@@ -609,7 +609,7 @@ finalize_anthropic_block(Block) ->
 
 %% @private 解析 JSON，失败时返回空 map
 decode_json_or_empty(Bin) ->
-    try jsx:decode(Bin, [return_maps])
+    try json:decode(Bin)
     catch _:_ -> #{}
     end.
 
