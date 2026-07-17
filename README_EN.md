@@ -285,12 +285,15 @@ LLM = beamai_chat_completion:create(zhipu, #{
 BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (supports HTTP/2).
 
 ```erlang
-%% Configure in sys.config (optional)
+%% Configure in sys.config (optional); the Gun backend runs three
+%% purpose-shaped pools (short requests / SSE streaming / async
+%% long-polling) — set only the pools and keys you want to override.
+%% The legacy http_pool key still works. See docs/HTTP_EN.md
 {beamai_core, [
     {http_backend, beamai_http_gun},
-    {http_pool, #{
-        max_connections => 100,
-        connection_timeout => 30000
+    {http_pools, #{
+        http_pool_stream => #{max_connections_per_host => 20,
+                              idle_timeout => 120000}
     }}
 ]}.
 ```
@@ -298,7 +301,7 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 | Feature | Gun (default) | Hackney |
 |---------|---------------|---------|
 | HTTP/2 | Supported | Not supported |
-| Connection Pool | Built-in beamai_http_pool | Relies on hackney pool |
+| Connection Pool | Built-in purpose-shaped pools (beamai_http_pool instances) | Relies on hackney pool |
 | TLS | Automatically uses system CA certificates | hackney default config |
 | Use Case | Recommended for production | Legacy system compatibility |
 
@@ -309,6 +312,7 @@ BeamAI supports both Gun and Hackney HTTP backends, with Gun as the default (sup
 - **[docs/API_REFERENCE_EN.md](docs/API_REFERENCE_EN.md)** - API Reference
 - **[docs/FILTER_EN.md](docs/FILTER_EN.md)** - Filter System Documentation
 - **[docs/MEMORY_EN.md](docs/MEMORY_EN.md)** - Conversation Memory (Memory Filter) documentation
+- **[docs/HTTP_EN.md](docs/HTTP_EN.md)** - HTTP connection pools (purpose-shaped pools, config & tuning)
 - **[docs/OUTPUT_PARSER.md](docs/OUTPUT_PARSER.md)** - Output Parser Guide
 - **[docs/DEPENDENCIES_EN.md](docs/DEPENDENCIES_EN.md)** - Dependency Relationship Details
 

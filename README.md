@@ -282,12 +282,14 @@ LLM = beamai_chat_completion:create(zhipu, #{
 BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTTP/2）。
 
 ```erlang
-%% 在 sys.config 中配置（可选）
+%% 在 sys.config 中配置（可选）；Gun 后端有三个用途分池
+%% （短请求/SSE 流式/异步长轮询），只需配置要覆盖的池和键。
+%% 遗留 http_pool 键仍兼容。详见 docs/HTTP.md
 {beamai_core, [
     {http_backend, beamai_http_gun},
-    {http_pool, #{
-        max_connections => 100,
-        connection_timeout => 30000
+    {http_pools, #{
+        http_pool_stream => #{max_connections_per_host => 20,
+                              idle_timeout => 120000}
     }}
 ]}.
 ```
@@ -295,7 +297,7 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 | 特性 | Gun（默认） | Hackney |
 |------|-------------|---------|
 | HTTP/2 | 支持 | 不支持 |
-| 连接池 | 内置 beamai_http_pool | 依赖 hackney 池 |
+| 连接池 | 内置三个用途分池（beamai_http_pool 实例） | 依赖 hackney 池 |
 | TLS | 自动使用系统 CA 证书 | hackney 默认配置 |
 | 适用场景 | 推荐生产环境 | 兼容旧系统 |
 
@@ -306,6 +308,7 @@ BeamAI 支持 Gun 和 Hackney 两种 HTTP 后端，默认使用 Gun（支持 HTT
 - **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API 参考文档
 - **[docs/FILTER.md](docs/FILTER.md)** - Filter 洋葱系统文档
 - **[docs/MEMORY.md](docs/MEMORY.md)** - 会话记忆（Memory Filter）文档
+- **[docs/HTTP.md](docs/HTTP.md)** - HTTP 连接池（用途分池、配置与调优）
 - **[docs/OUTPUT_PARSER.md](docs/OUTPUT_PARSER.md)** - Output Parser 指南
 - **[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)** - 依赖关系详解
 

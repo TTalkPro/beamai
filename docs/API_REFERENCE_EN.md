@@ -912,19 +912,31 @@ Backend comparison:
 
 | Feature | Gun (default) | Hackney |
 |---------|---------------|---------|
-| HTTP/2 | Supported | Not supported |
-| Connection pool | Built-in `beamai_http_pool` | Uses hackney's own pool |
+| HTTP/2 | Supported (opt-in per pool via `protocols`, see [HTTP_EN.md](HTTP_EN.md)) | Not supported |
+| Connection pool | Built-in purpose-shaped pools (`beamai_http_pool` instances) | Uses hackney's own pool |
 | TLS | System CA certificates | hackney default |
 | Use case | Recommended for production | Legacy compatibility |
+
+The Gun backend runs three purpose-shaped pools (`http_pool_short` for short
+requests, `http_pool_stream` for SSE streaming, `http_pool_longpoll` for async
+polling), configured per pool via `http_pools` — set only the pools and keys
+you want to override. See [HTTP_EN.md](HTTP_EN.md):
 
 ```erlang
 %% Configure the backend via sys.config (optional)
 {beamai_core, [
     {http_backend, beamai_http_gun},
-    {http_pool, #{max_connections => 100,
-                  connection_timeout => 30000}}
+    {http_pools, #{
+        http_pool_stream   => #{max_connections_per_host => 20,
+                                idle_timeout => 120000},
+        http_pool_longpoll => #{idle_timeout => 300000}
+    }}
 ]}.
 ```
+
+The legacy `http_pool` key still works (applied uniformly to all three pools,
+with a deprecation warning at startup; the legacy key name `connection_timeout`
+is normalized to `connect_timeout`).
 
 ---
 
