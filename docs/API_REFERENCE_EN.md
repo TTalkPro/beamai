@@ -561,7 +561,7 @@ Persistent implementation backed by a DETS file. Each write is followed by `dets
 -spec mem_clear(atom(), binary()) -> ok.
 ```
 
-For a count-based sliding-window wrapper that keeps the full history underneath and trims only on read, see `beamai_chat_memory_window` described in [MEMORY_EN.md](MEMORY_EN.md#windowed-store).
+For a count-based sliding window that keeps the full history underneath and trims only before sending, see `beamai_memory_provider_default:new/2` described in [MEMORY_EN.md](MEMORY_EN.md#sliding-window).
 
 ---
 

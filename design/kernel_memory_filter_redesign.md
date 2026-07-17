@@ -1,6 +1,26 @@
 # Kernel 重新设计：消息存储下沉到 Memory Filter
 
-> 状态：设计已定稿，待实现
+> **状态：已实施，但落地形态与本文有分叉。**
+> 当前行为以 [docs/MEMORY.md](../docs/MEMORY.md) 为准；本文保留为设计决策的历史记录。
+>
+> 核心目标（Kernel 不记录 messages、invoke 只传 delta、历史由 store 承担）已如本文所述落地：
+> `beamai_memory_filter`、`beamai_chat_memory`（behaviour）、`beamai_chat_memory_ets` 均已存在。
+>
+> **与本文的四处分叉**（阅读下文时请对照）：
+>
+> 1. **§4.3 的 `beamai_chat_memory_window` 从未建成**。滑动窗口最终落在**策略层**
+>    `beamai_memory_provider_default:prepare/3`（发送前裁剪），而非 store 包装（读取时裁剪）。
+>    窗口规则本身与本文一致：system 置顶全留、非系统留最近 N 条、丢弃裁剪后头部的孤立 tool 消息。
+> 2. **多出一整层本文未预见的 `beamai_memory_provider`**（策略层：history/append/prepare/clear）。
+>    记忆因此分为存储层（`beamai_chat_memory`）与策略层（`beamai_memory_provider`）。
+>    **`beamai_agent` 不使用本文设计的 memory filter**——它在自己的 tool loop 里显式编排
+>    provider。filter 只服务于直接使用 kernel/facade 的调用方。
+> 3. **本文引用的 `beamai_memory`、`beamai_conversation_buffer`、`beamai_store_ets` 均已不存在**
+>    （随存储引擎一并移除）。故 §4.3 "复用 conversation_buffer 的 apply_window/trim_to_tokens/
+>    summarize_messages" 已无所指；基于 Token 的裁剪与摘要现由上层实现 `beamai_memory_provider` 提供。
+> 4. **持久化后端落在 core 内**：`beamai_chat_memory_dets`（DETS），而非本文设想的「由
+>    `beamai_memory` 之后提供 SQLite 等后端」。
+>
 > 参考：`~/workspace/clj-agent/modules/`（clj-agent 的 memory filter 机制）
 
 ## 1. 目标
