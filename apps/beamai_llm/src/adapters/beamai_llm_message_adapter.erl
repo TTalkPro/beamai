@@ -351,7 +351,7 @@ extract_tool_uses(Content) ->
        type => function,
        function => #{
            name => maps:get(<<"name">>, C, <<>>),
-           arguments => jsx:encode(maps:get(<<"input">>, C, #{}))
+           arguments => beamai_utils:encode_json(maps:get(<<"input">>, C, #{}))
        }}
      || C <- Content, maps:get(<<"type">>, C, <<>>) =:= <<"tool_use">>].
 

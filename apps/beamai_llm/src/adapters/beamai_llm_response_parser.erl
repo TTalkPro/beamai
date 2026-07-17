@@ -411,7 +411,7 @@ extract_anthropic_content([#{<<"type">> := <<"tool_use">>} = B | Rest], Content,
         id => Id,
         name => Name,
         arguments => Input,
-        raw_arguments => jsx:encode(Input)
+        raw_arguments => beamai_utils:encode_json(Input)
     },
     Block = #{type => tool_use, id => Id, name => Name, input => Input},
     extract_anthropic_content(Rest, Content, [ToolCall | ToolCalls], [Block | Blocks]);
@@ -578,7 +578,7 @@ normalize_finish_reason_dashscope(_) -> unknown.
 
 %% @private 安全解码 JSON
 safe_decode_json(Bin) when is_binary(Bin) ->
-    try jsx:decode(Bin, [return_maps])
+    try json:decode(Bin)
     catch _:_ -> #{}
     end;
 safe_decode_json(_) -> #{}.
