@@ -598,7 +598,8 @@ Usage = beamai_llm_response:usage(Response),
 
 - beamai_core
 - jsx - JSON 编解码
-- hackney - HTTP 客户端
+
+HTTP 请求经 beamai_core 的 `beamai_http` 抽象层发出，不直接依赖具体客户端。
 
 ## 许可证
 

@@ -509,7 +509,8 @@ DeepSeek API is fully compatible with OpenAI API format, using the same request/
 
 - beamai_core
 - jsx - JSON encoding/decoding
-- hackney - HTTP client
+
+HTTP requests go through beamai_core's `beamai_http` abstraction rather than a specific client.
 
 ## License
 
