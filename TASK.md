@@ -169,7 +169,7 @@ behaviour callback 返回 `#{messages, records, context}` map（避免 arity 爆
 
 **args 键类型**：维持 **binary key**。全项目零个 atom-key handler，所有真实工具
 （shell / human / file / todo）都是 `maps:get(<<"command">>, Args)`。
-`beamai_tool:parse_args/1` 走 `jsx:decode(return_maps)`，不 atom 化。
+`beamai_tool:parse_args/1` 走 `json:decode/1`，不 atom 化。
 注意 `parameters` 用 **atom key 声明**、handler 用 **binary key 读**——这个不对称
 已经坑过一次（见「二」）。
 

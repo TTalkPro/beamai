@@ -494,11 +494,11 @@ ToolSearch 索引的是 tool **specs/schemas**（`beamai_tool:to_tool_spec/1`）
 
 ```erlang
 invoke(#{endpoint := Url, method := Method, headers := Headers}, Args, Context) ->
-    Body = jsx:encode(#{<<"args">> => Args}),
+    Body = beamai_utils:encode_json(#{<<"args">> => Args}),
     ReqHeaders = maps:merge(default_headers(), Headers),
     case beamai_http:request(Method, Url, ReqHeaders, Body, #{timeout => 30000}) of
         {ok, StatusCode, RespHeaders, RespBody} when StatusCode >= 200, StatusCode < 300 ->
-            case jsx:decode(RespBody, [return_maps]) of
+            case json:decode(RespBody) of
                 #{<<"result">> := Result} -> {ok, Result};
                 #{<<"error">> := Error} -> {error, Error};
                 Other -> {ok, Other}
@@ -518,13 +518,14 @@ invoke(#{endpoint := Url, method := Method, headers := Headers}, Args, Context) 
 **首版范围**：
 
 - 复用 `beamai_http`（Gun 默认，支持 HTTP/2 连接池）
-- JSON 序列化用 `jsx`（**beamai_core 已依赖 jsx**——与 clj-agent 的 cheshire 问题不同，
-  beamai 无模块依赖障碍）
+- JSON 序列化用 OTP 27+ stdlib 内置的 `json` 模块（编码经 `beamai_utils:encode_json/1`，
+  它抹平 iodata/proplist 两处差异；解码直接 `json:decode/1`）——JSON 在标准库里，
+  与 clj-agent 的 cheshire 问题不同，beamai 无任何依赖障碍
 - 超时：默认 30s（tool_spec `timeout` 字段透传），超时分类为 `transient`
 - 鉴权：通过 `headers` 字段传入
 
 > **与 clj-agent 的差异**：clj-agent 的 HTTP transport 必须放 client 模块（core 没有 cheshire）。
-> beamai 的 `jsx` 是 core 依赖，`beamai_http` 也在 core——HTTP backend handler 可以放在
+> beamai 的 JSON 来自 stdlib，`beamai_http` 也在 core——HTTP backend handler 可以放在
 > `beamai_core` 或 `beamai_agent`，无模块依赖障碍。**推荐放 `beamai_agent`**（transport 是
 > agent 级配置，core 不应感知 HTTP 工具这种应用层概念）。
 
@@ -863,7 +864,7 @@ settings 又能拿到 `mcp_clients`——**问题在 beamai 不存在**：
 | 宏展开期严格模式检查 | `validate/1` 运行时检查 | Erlang 无编译期宏 |
 | `defmulti invoke-backend`（core，公开） | `beamai_tool:invoke/3` 模式匹配 + tool_backends 注册表 | Erlang 无 multimethod |
 | `:http` 方法 client `defmethod` 注册 | `tool_backends => #{http => beamai_tool_backend_http}` | 显式注册 vs 隐式 ns require |
-| cheshire 在 client → HTTP transport 放 client | `jsx` 在 core → 无模块依赖障碍 | beamai_core 已依赖 jsx |
+| cheshire 在 client → HTTP transport 放 client | JSON 在 stdlib → 无模块依赖障碍 | OTP 27+ 内置 `json` 模块 |
 | mcp-clients 访问悬而未决（三候选） | context → kernel → settings.mcp_clients（已解决） | beamai_context 已绑定 kernel |
 | 虚拟线程池生命周期 | spawn_monitor 已就绪 | beamai 已有成熟并发模型 |
 | inline tools 绕过 tool/invoke | **不存在** | beamai 所有工具经 invoke/3，无盲区 |
