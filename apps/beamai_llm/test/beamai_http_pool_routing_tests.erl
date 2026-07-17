@@ -5,8 +5,8 @@
 %%% - Gun 后端下按请求形态注入默认池名（chat/stream/async_poll 路由表）
 %%% - 调用方在 Opts 显式指定 pool 时优先，且任何后端下原样透传
 %%%   （显式指定视为调用方对后端知情）
-%%% - 未显式指定时非 Gun 后端（如 Hackney）不注入，且移除已有 pool 键——
-%%%   防止 Gun 池名自动泄漏为从未启动的 hackney 池名
+%%% - 未显式指定时非 Gun 后端（如测试 fake）不注入，且移除已有 pool 键——
+%%%   防止 Gun 专有的池名自动泄漏给按别的语义解释它的后端
 %%%
 %%% 以及 Phase 4 的两级覆盖入口：
 %%% - beamai_llm_provider_common:with_pool_opt/2（provider Config 的 pool）
@@ -52,24 +52,24 @@ routing_test_() ->
            ?assertEqual(http_pool_stream, maps:get(pool, Opts))
        end},
 
-      {"Hackney 后端：未显式指定时不注入，且移除已有 pool 键",
+      {"非 Gun 后端：未显式指定时不注入，且移除已有 pool 键",
        fun() ->
-           beamai_http:set_backend(beamai_http_hackney),
+           beamai_http:set_backend(beamai_llm_fake_backend),
            Opts = beamai_llm_http_client:maybe_inject_pool(
                       chat, #{}, #{timeout => 1, pool => http_pool_short}),
            ?assertNot(maps:is_key(pool, Opts)),
            ?assertEqual(1, maps:get(timeout, Opts))
        end},
 
-      {"Hackney 后端：显式指定 pool 时原样透传（hackney 池名语义）",
+      {"非 Gun 后端：显式指定 pool 时原样透传（由该后端自行解释池名）",
        fun() ->
-           beamai_http:set_backend(beamai_http_hackney),
+           beamai_http:set_backend(beamai_llm_fake_backend),
            Opts = beamai_llm_http_client:maybe_inject_pool(
-                      chat, #{pool => my_hackney_pool}, #{}),
-           ?assertEqual(my_hackney_pool, maps:get(pool, Opts))
+                      chat, #{pool => my_own_pool}, #{}),
+           ?assertEqual(my_own_pool, maps:get(pool, Opts))
        end},
 
-      {"其他后端（如测试 fake）：未显式指定时同样不注入",
+      {"非 Gun 后端：stream 形态未显式指定时同样不注入",
        fun() ->
            beamai_http:set_backend(beamai_llm_fake_backend),
            Opts = beamai_llm_http_client:maybe_inject_pool(stream, #{}, #{}),

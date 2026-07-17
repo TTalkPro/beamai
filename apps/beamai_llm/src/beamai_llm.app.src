@@ -6,7 +6,6 @@
         kernel,
         stdlib,
         jsx,
-        hackney,
         beamai_core
     ]},
     {env, [

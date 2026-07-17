@@ -42,7 +42,7 @@
     on_headers => header_handler(),
     %% 显式指定连接池，覆盖按请求形态的默认路由（Gun 后端：
     %% http_pool_short | http_pool_stream | http_pool_longpoll；
-    %% Hackney 后端按其语义解释为 hackney 池名）
+    %% 非 Gun 后端按其自身语义解释池名）
     pool => atom()
 }.
 
@@ -127,12 +127,11 @@ request_with_headers(Url, Headers, JsonBody, HttpOpts, ResponseParser, OnHeaders
 %% 优先级：
 %% 1. 调用方在请求 Opts 里显式指定的 pool（按请求/按 provider 覆盖）——
 %%    原样透传，不做后端门控：显式指定视为调用方对后端知情。Gun 后端下
-%%    非法池名由 beamai_http_gun:resolve_pool_name/1 拒绝；Hackney 后端
-%%    按其语义解释为 hackney 池名。
+%%    非法池名由 beamai_http_gun:resolve_pool_name/1 拒绝。
 %% 2. 未指定时按请求形态走默认路由表——仅当活动后端是 Gun 后端。
 %%    本模块与后端无关：它调 beamai_http，由后者分发到 http_backend 配置的
-%%    任意后端。Gun 池名（http_pool_short 等）若自动泄漏给 beamai_http_hackney，
-%%    会被当作从未启动过的 *hackney* 池名。因此非 Gun 后端（含测试 fake
+%%    任意后端。池名（http_pool_short 等）是 Gun 专有语义，自动泄漏给别的
+%%    后端只会指向它那边从未启动过的池，因此非 Gun 后端（如测试 fake
 %%    后端）下不自动注入。
 %%
 %% 默认路由表：chat -> short，stream -> stream，async_poll -> longpoll。
