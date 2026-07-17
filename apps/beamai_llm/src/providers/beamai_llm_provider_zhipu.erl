@@ -223,13 +223,16 @@ handle_async_response(Resp) ->
     beamai_llm_response_parser:from_zhipu(Resp).
 
 %% @private 执行 GET 请求（用于异步结果查询）
-%% 使用 beamai_http 作为底层 HTTP 客户端
+%% 使用 beamai_http 作为底层 HTTP 客户端。
+%% 异步任务轮询可能持连数分钟，路由到 http_pool_longpoll，
+%% 不与同步 chat 流量争抢 http_pool_short 的连接预算
+%% （经 maybe_inject_pool 门控，非 Gun 后端不注入）。
 do_get_request(Url, Headers, Opts) ->
-    HttpOpts = #{
+    HttpOpts = beamai_llm_http_client:maybe_inject_pool(async_poll, #{
         timeout => beamai_llm_provider_common:request_timeout(Opts, zhipu),
         connect_timeout => maps:get(connect_timeout, Opts, ?ZHIPU_CONNECT_TIMEOUT),
         headers => Headers
-    },
+    }),
     case beamai_http:get(Url, #{}, HttpOpts) of
         {ok, Response} when is_map(Response) ->
             {ok, Response};
