@@ -104,10 +104,13 @@ beamai_http:request(post, Url, Headers, Body, #{pool => http_pool_stream}).
 - 未指定时 Gun 后端按请求形态走默认路由表（其他后端不注入）；非法池名返回
   `{error, {invalid_pool_name, Name}}`。
 - **显式指定的 `pool` 在任何后端下原样透传**（显式指定视为你对后端知情）：
-  Gun 后端只接受三个池名之一；**Hackney 后端把 `pool` 解释为 hackney 池名**，
+  Gun 后端只接受三个池名之一；**非 Gun 后端按其自身语义解释 `pool`**，
   切后端时记得同步检查 provider Config 里的 `pool` 值。
 - 自动注入的门控逻辑在 `beamai_llm_http_client:maybe_inject_pool/3`；
   自己直调 `beamai_http` 且后端可切换时，请复用该函数。
+
+> 池名是 Gun 后端专有语义。内置后端只有 `beamai_http_gun`，上述门控主要
+> 在测试替换后端（如 `beamai_llm_fake_backend`）或自定义后端时生效。
 
 ## 排查速查
 

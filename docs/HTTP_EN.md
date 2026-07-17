@@ -101,8 +101,12 @@ beamai_http:request(post, Url, Headers, Body, #{pool => http_pool_stream}).
 Rules:
 
 - When unset, the Gun backend applies the default routing table per request shape (other backends get no injection); an invalid pool name returns `{error, {invalid_pool_name, Name}}`.
-- **An explicitly set `pool` is passed through as-is under any backend** (setting it explicitly means you know which backend runs): the Gun backend accepts only the three pool names; **the Hackney backend interprets `pool` as a hackney pool name** — when switching backends, re-check any `pool` values in provider Configs.
+- **An explicitly set `pool` is passed through as-is under any backend** (setting it explicitly means you know which backend runs): the Gun backend accepts only the three pool names; **a non-Gun backend interprets `pool` by its own semantics** — when switching backends, re-check any `pool` values in provider Configs.
 - The automatic-injection gate lives in `beamai_llm_http_client:maybe_inject_pool/3`; reuse that helper if you call `beamai_http` directly and the backend is switchable.
+
+> Pool names are Gun-specific semantics. `beamai_http_gun` is the only built-in
+> backend, so this gate mainly matters when a test swaps the backend (e.g.
+> `beamai_llm_fake_backend`) or you supply a custom one.
 
 ## Troubleshooting Quick Reference
 

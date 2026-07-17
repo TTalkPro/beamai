@@ -1,6 +1,15 @@
 # Refactoring Plan: Split `beamai_http_pool` into Purpose-Shaped Pool Instances
 
 **Status:** Implemented — Phases 1–4 landed 2026-07-17 (see docs/HTTP.md for the operator-facing docs)
+
+> **Historical record — superseded in part.** This plan was written while the
+> Hackney backend still existed; its Non-Goal 3 ("No drop of Hackney backend")
+> and every Hackney-related consideration below reflect that era. `beamai_http_hackney`
+> has since been deleted and Gun is the only built-in backend. The backend gate in
+> `beamai_llm_http_client:maybe_inject_pool/3` still stands, but now guards against
+> non-Gun backends generally (e.g. the test fake) rather than Hackney specifically.
+> Left unedited as a record of the decisions made at the time — see docs/HTTP.md
+> for current behaviour.
 **Target branch:** `feature/http-pool-sharding`
 **Owner:** TBD
 **Estimated effort:** 4 phases × ~1 day = 4 dev-days (plus 1 day for tests/docs)

@@ -872,7 +872,7 @@ Constructors and accessors for the unified message shape (`role`, `content`, `to
 
 ### HTTP Client: beamai_http
 
-Wraps the `beamai_http_behaviour` backend (Gun by default, Hackney as alternative). The backend is selected via the application environment and can be swapped at runtime.
+Wraps the `beamai_http_behaviour` backend. `beamai_http_gun` is the only built-in implementation and the default; the backend is selected via the application environment and can be swapped at runtime (mainly so tests can substitute a fake).
 
 ```erlang
 -spec get(url()) -> response().
@@ -908,14 +908,11 @@ Wraps the `beamai_http_behaviour` backend (Gun by default, Hackney as alternativ
 -spec set_backend(module()) -> ok.
 ```
 
-Backend comparison:
+Gun backend characteristics:
 
-| Feature | Gun (default) | Hackney |
-|---------|---------------|---------|
-| HTTP/2 | Supported (opt-in per pool via `protocols`, see [HTTP_EN.md](HTTP_EN.md)) | Not supported |
-| Connection pool | Built-in purpose-shaped pools (`beamai_http_pool` instances) | Uses hackney's own pool |
-| TLS | System CA certificates | hackney default |
-| Use case | Recommended for production | Legacy compatibility |
+- **HTTP/2** — opt-in per pool via `protocols`, see [HTTP_EN.md](HTTP_EN.md)
+- **Connection pool** — built-in purpose-shaped pools (`beamai_http_pool` instances)
+- **TLS** — system CA certificates (OTP 25+)
 
 The Gun backend runs three purpose-shaped pools (`http_pool_short` for short
 requests, `http_pool_stream` for SSE streaming, `http_pool_longpoll` for async
@@ -2103,7 +2100,7 @@ Modules that ship tool collections implement this. The Kernel calls `tool_info/0
 
 ### beamai_http_behaviour
 
-Every HTTP backend (Gun, Hackney, test doubles) implements this.
+Every HTTP backend implements this — the built-in `beamai_http_gun`, plus test doubles such as `beamai_llm_fake_backend`.
 
 ```erlang
 -callback request(Method :: method(),
