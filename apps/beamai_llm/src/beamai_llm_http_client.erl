@@ -22,7 +22,7 @@
 -export([stream_request/5, stream_request/6]).
 
 %% 连接池路由（供直接调 beamai_http 的 provider 复用，如智谱异步轮询）
--export([maybe_inject_pool/2]).
+-export([maybe_inject_pool/3]).
 
 %% SSE 解析工具
 -export([parse_sse/1, parse_sse_lines/2]).
@@ -39,7 +39,11 @@
     connect_timeout => pos_integer(),
     stream_timeout => pos_integer(),
     finalizer => stream_finalizer(),
-    on_headers => header_handler()
+    on_headers => header_handler(),
+    %% 显式指定连接池，覆盖按请求形态的默认路由（Gun 后端：
+    %% http_pool_short | http_pool_stream | http_pool_longpoll；
+    %% Hackney 后端按其语义解释为 hackney 池名）
+    pool => atom()
 }.
 
 %% 响应头处理器：从响应头提取要合并进 response.metadata 的 map
@@ -70,7 +74,7 @@ request(Url, Headers, Body, Opts) ->
 -spec request(binary(), [{binary(), binary()}], map(), request_opts(), response_parser()) ->
     {ok, map()} | {error, term()}.
 request(Url, Headers, Body, Opts, ResponseParser) ->
-    HttpOpts = maybe_inject_pool(chat, #{
+    HttpOpts = maybe_inject_pool(chat, Opts, #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
         connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT)
     }),
@@ -118,20 +122,31 @@ request_with_headers(Url, Headers, JsonBody, HttpOpts, ResponseParser, OnHeaders
 %% 连接池路由
 %%====================================================================
 
-%% @doc 按请求形态注入连接池名——仅当活动后端是 Gun 后端时。
+%% @doc 解析请求应使用的连接池并写入 HttpOpts。
 %%
-%% 本模块与后端无关：它调 beamai_http，由后者分发到 http_backend 配置的
-%% 任意后端。Gun 池名（http_pool_short 等）若泄漏给 beamai_http_hackney，
-%% 会被当作从未启动过的 *hackney* 池名。因此非 Gun 后端（含测试 fake
-%% 后端）下不注入，且移除已有 pool 键防止上层误传。
+%% 优先级：
+%% 1. 调用方在请求 Opts 里显式指定的 pool（按请求/按 provider 覆盖）——
+%%    原样透传，不做后端门控：显式指定视为调用方对后端知情。Gun 后端下
+%%    非法池名由 beamai_http_gun:resolve_pool_name/1 拒绝；Hackney 后端
+%%    按其语义解释为 hackney 池名。
+%% 2. 未指定时按请求形态走默认路由表——仅当活动后端是 Gun 后端。
+%%    本模块与后端无关：它调 beamai_http，由后者分发到 http_backend 配置的
+%%    任意后端。Gun 池名（http_pool_short 等）若自动泄漏给 beamai_http_hackney，
+%%    会被当作从未启动过的 *hackney* 池名。因此非 Gun 后端（含测试 fake
+%%    后端）下不自动注入。
 %%
-%% 路由表（硬编码）：chat -> short，stream -> stream，async_poll -> longpoll。
+%% 默认路由表：chat -> short，stream -> stream，async_poll -> longpoll。
 %% 导出供直接调 beamai_http 的 provider 复用（智谱异步轮询）。
--spec maybe_inject_pool(chat | stream | async_poll, map()) -> map().
-maybe_inject_pool(RequestType, HttpOpts) ->
-    case beamai_http:get_backend() of
-        beamai_http_gun -> HttpOpts#{pool => select_pool(RequestType)};
-        _ -> maps:remove(pool, HttpOpts)
+-spec maybe_inject_pool(chat | stream | async_poll, request_opts(), map()) -> map().
+maybe_inject_pool(RequestType, Opts, HttpOpts) ->
+    case maps:find(pool, Opts) of
+        {ok, Pool} ->
+            HttpOpts#{pool => Pool};
+        error ->
+            case beamai_http:get_backend() of
+                beamai_http_gun -> HttpOpts#{pool => select_pool(RequestType)};
+                _ -> maps:remove(pool, HttpOpts)
+            end
     end.
 
 %% @private 请求形态 -> 池名
@@ -206,7 +221,7 @@ stream_request(Url, Headers, Body, Opts, Callback, Accumulator) ->
 do_stream_request(Url, Headers, Body, Opts, Callback, Accumulator, Finalizer) ->
     OnHeaders = maps:get(on_headers, Opts, undefined),
     StreamBody = Body#{<<"stream">> => true},
-    HttpOpts = maybe_inject_pool(stream, #{
+    HttpOpts = maybe_inject_pool(stream, Opts, #{
         timeout => maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
         connect_timeout => maps:get(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
         headers => Headers,
