@@ -41,11 +41,12 @@ tcm_live_concurrent_test_() ->
 tcm_live_sequential_test_() ->
     live_case(fun test_sequential/0).
 
-%% @private 有 key 才跑，否则 skip
+%% @private 有 key 才跑，否则返回空测试集跳过
+%% （eunit 不支持 {skip, _}，会当 bad descriptor 取消并让套件报错）
 live_case(Fun) ->
     case os:getenv("MINIMAX_API_KEY") of
         false ->
-            {skip, "MINIMAX_API_KEY not set"};
+            [];
         _ ->
             {setup, fun ensure_apps/0, fun(_) -> {timeout, 60, Fun} end}
     end.
