@@ -5,8 +5,6 @@
     {applications, [
         kernel,
         stdlib,
-        jsx,
-        hackney,
         poolboy
     ]},
     {env, []},
