@@ -90,7 +90,10 @@
 
     %% 超时默认值（集中管理，Config 的 timeout 可覆盖）
     default_timeout/1,
-    request_timeout/2
+    request_timeout/2,
+
+    %% 连接池选择（Config 的 pool 可按 provider 覆盖默认路由）
+    with_pool_opt/2
 ]).
 
 %%====================================================================
@@ -132,6 +135,23 @@ default_timeout(_) -> 60000.
 -spec request_timeout(map(), atom()) -> timeout().
 request_timeout(Config, Provider) ->
     maps:get(timeout, Config, default_timeout(Provider)).
+
+%%====================================================================
+%% 连接池选择
+%%====================================================================
+
+%% @doc 若 provider Config 指定了 pool，则并入请求 Opts
+%%
+%% 让运维可以按 provider 覆盖连接池路由，例如把重推理模型的
+%% 流量整体放进 stream 池：
+%%   beamai_chat_completion:create(deepseek, #{..., pool => http_pool_stream})
+%% 未配置时不改动 Opts，由 beamai_llm_http_client 按请求形态走默认路由。
+-spec with_pool_opt(map(), map()) -> map().
+with_pool_opt(Opts, Config) ->
+    case maps:find(pool, Config) of
+        {ok, Pool} -> Opts#{pool => Pool};
+        error -> Opts
+    end.
 
 %%====================================================================
 %% 请求头构建
