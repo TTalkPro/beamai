@@ -10,28 +10,30 @@ This document describes the dependencies of the BeamAI Framework, including exte
 
 | Package | Version | Purpose |
 |-------|------|------|
-| [jsx](https://github.com/talentdeficit/jsx) | 3.1.0 | JSON encoding/decoding |
-| [hackney](https://github.com/benoitc/hackney) | 1.20.1 | HTTP client (default backend) |
-| [gun](https://github.com/ninenines/gun) | 2.1.0 | HTTP/1.1, HTTP/2, WebSocket client (optional backend) |
+| [gun](https://github.com/ninenines/gun) | 2.1.0 | HTTP/1.1, HTTP/2, WebSocket client (the only built-in HTTP backend) |
 | [uuid](https://github.com/okeuday/uuid) | 2.0.6 | UUID generation (package name: uuid_erl) |
 | [esqlite](https://github.com/mmzeeman/esqlite3) | 0.8.8 | SQLite database support (for persistent storage) |
 
 ### HTTP Backend Configuration
 
-BeamAI supports two HTTP client backends, configurable via settings:
+The HTTP backend is pluggable via `beamai_http_behaviour`. The only built-in
+implementation is `beamai_http_gun` (HTTP/2, async, backed by the three
+purpose-shaped pools in `beamai_http_pool`); it is the default and needs no
+configuration.
+
+The abstraction remains so callers can swap the backend, primarily for testing:
 
 ```erlang
-%% Use Gun (default, supports HTTP/2)
-application:set_env(beamai_core, http_backend, beamai_http_gun).
-
-%% Use Hackney (stable and mature)
-application:set_env(beamai_core, http_backend, beamai_http_hackney).
+%% e.g. the fake backend used by the beamai_llm tests
+application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
 ```
 
-| Backend | Features | Use Cases |
-|------|------|----------|
-| gun | HTTP/2 support, async, modern design | Default backend, high-concurrency scenarios |
-| hackney | Sync API, built-in connection pool, stable | Legacy code compatibility |
+A custom backend must implement `beamai_http_behaviour`. Note that connection
+pool semantics (`http_pool_short` and friends) are specific to the Gun backend
+and are not auto-injected for other backends — see [HTTP_EN.md](HTTP_EN.md).
+
+> A `beamai_http_hackney` (HTTP/1.1) backend once existed alongside Gun. It has
+> been removed; everything now goes through Gun.
 
 ### Test Dependencies
 
@@ -134,8 +136,7 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - SSE support (beamai_sse)
 - **HTTP Client** (pluggable backends)
   - `beamai_http` - Unified API
-  - `beamai_http_hackney` - Hackney backend (default)
-  - `beamai_http_gun` - Gun backend (HTTP/2 support)
+  - `beamai_http_gun` - Gun backend (HTTP/2, the only built-in implementation)
   - `beamai_http_pool` - Gun connection pool management
 - **Behaviour Definitions** (for dependency decoupling)
   - `beamai_chat_behaviour` - LLM chat interface (formerly beamai_llm_behaviour)
@@ -271,12 +272,8 @@ application:set_env(beamai_core, http_backend, beamai_http_hackney).
 - MCP server (beamai_mcp_server)
 - MCP client (beamai_mcp_client)
 - Transport layer
-  - HTTP transport
-    - beamai_mcp_transport_http (Hackney backend, default)
-    - beamai_mcp_transport_http_gun (Gun backend, HTTP/2 support)
-  - SSE transport
-    - beamai_mcp_transport_sse (Hackney backend, default)
-    - beamai_mcp_transport_sse_gun (Gun backend, HTTP/2 support)
+  - HTTP transport (beamai_mcp_transport_http_gun)
+  - SSE transport (beamai_mcp_transport_sse_gun)
   - Stdio transport (beamai_mcp_transport_stdio)
 - Tool proxy (beamai_mcp_tool_proxy)
 - Agent adapter (beamai_mcp_adapter) - Converts MCP tools to Agent tools
@@ -289,14 +286,9 @@ Config = #{
     transport => http,  %% or sse
     url => <<"https://example.com/mcp">>
 }.
-
-%% Use Hackney backend
-Config = #{
-    transport => http,  %% or sse
-    backend => hackney,
-    url => <<"https://example.com/mcp">>
-}.
 ```
+
+> The HTTP/SSE transports all run on Gun. The old `backend => hackney` config key is gone.
 
 > **Note**: MCP core functionality can run independently, does not depend on beamai_agent.
 > Only use the adapter layer when you need to integrate MCP tools into the Agent system.
@@ -332,6 +324,7 @@ BeamAI Framework uses the following Erlang/OTP standard libraries:
 | logger | Logging |
 | crypto | Cryptographic functions |
 | ssl | SSL/TLS support |
+| json | JSON encoding/decoding (OTP 27+, replaces the former jsx dependency) |
 | inets/httpc | HTTP client (backup) |
 
 ## Installing Dependencies
@@ -350,7 +343,7 @@ rebar3 ct
 
 ## Version Compatibility
 
-- **Erlang/OTP**: 25.0 or higher
+- **Erlang/OTP**: 27.0 or higher (JSON encoding/decoding relies on the `json` module built into stdlib since OTP 27)
 - **rebar3**: 3.20.0 or higher
 
 ## Optional Dependencies
