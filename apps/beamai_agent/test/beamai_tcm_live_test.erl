@@ -130,7 +130,7 @@ price_tool(Tab) ->
                       description => <<"item name, e.g. widget or gadget">>}
         },
         %% 注意：parameters 用 atom key 声明，但 handler 收到的 args 是 **binary key**
-        %% （beamai_tool:parse_args/1 走 jsx:decode(return_maps)，不 atom 化）。
+        %% （beamai_tool:parse_args/1 走 json:decode/1，不 atom 化）。
         handler => fun(#{<<"item">> := Item}) ->
             Norm = normalize(Item),
             ets:insert(Tab, {{call, erlang:unique_integer([monotonic])}, Norm}),

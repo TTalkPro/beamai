@@ -246,7 +246,7 @@ get_tool_call_id(_) -> <<"unknown">>.
 format_human_input(Input) when is_binary(Input) ->
     Input;
 format_human_input(Input) when is_map(Input) ->
-    jsx:encode(Input);
+    beamai_utils:encode_json(Input);
 format_human_input(Input) when is_list(Input) ->
     list_to_binary(Input);
 format_human_input(Input) ->

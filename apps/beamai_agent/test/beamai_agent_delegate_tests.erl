@@ -102,15 +102,15 @@ management_tools_test() ->
     try
         %% spawn → 拿 id
         {ok, J1} = Spawn(#{<<"task">> => <<"hi">>}, Ctx),
-        #{<<"id">> := Id, <<"status">> := <<"running">>} = jsx:decode(J1, [return_maps]),
+        #{<<"id">> := Id, <<"status">> := <<"running">>} = json:decode(J1),
         %% list（本 owner）含 1 个
         {ok, J2} = List(#{}, Ctx),
-        #{<<"agents">> := Agents} = jsx:decode(J2, [return_maps]),
+        #{<<"agents">> := Agents} = json:decode(J2),
         ?assertEqual(1, length(Agents)),
         %% 等完成后 result = done
         {ok, _} = beamai_subagent_manager:await(Id, 2000),
         {ok, J3} = Result(#{<<"id">> => Id}, Ctx),
-        #{<<"status">> := <<"done">>, <<"result">> := <<"R:hi">>} = jsx:decode(J3, [return_maps]),
+        #{<<"status">> := <<"done">>, <<"result">> := <<"R:hi">>} = json:decode(J3),
         beamai_subagent_manager:drop(Id)
     after
         meck:unload(beamai_chat_completion)
