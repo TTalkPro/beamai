@@ -24,14 +24,19 @@
 -type role_atom() :: user | assistant | system | tool.
 -type role() :: role_atom() | binary().  %% 支持 atom 和 binary
 
-%% 多模态内容部件（content 为列表时的元素）
+%% 多模态内容部件（content 为列表时的元素），构造函数见 beamai_llm_content
 %% - text:     #{type => text, text => binary()}
-%% - image:    #{type => image, source => media_source()}
-%% - audio:    #{type => audio, data => binary(), format => binary()}（OpenAI 输入音频）
-%% - document: #{type => document, source => media_source(), citations => boolean()}（Anthropic PDF）
--type media_source() ::
-    #{type := base64, media_type := binary(), data := binary()} |
-    #{type := url, url := binary()}.
+%% - image:    #{type => image, source => media_source(), detail => binary()}
+%% - audio:    #{type => audio, source => media_source(), format => binary()}
+%%             （兼容旧形态 #{type => audio, data => binary(), format => binary()}）
+%% - video:    #{type => video, source => media_source()}（Qwen-VL / GLM-4V 等）
+%% - document: #{type => document, source => media_source(),
+%%               filename => binary(), title => binary(), context => binary(),
+%%               citations => boolean()}
+%%
+%% 任意部件均可带 cache_control（Anthropic prompt 缓存断点），
+%% 不支持该能力的 Provider 会忽略。
+-type media_source() :: beamai_llm_media:media_source().
 -type content_part() :: #{type := atom(), _ => _}.
 -type content() :: binary() | null | [content_part()].
 -type message() :: #{
@@ -40,7 +45,8 @@
     name => binary(),
     tool_call_id => binary(),
     tool_calls => [map()],
-    prefix => boolean()    %% DeepSeek Chat Prefix Completion（beta）
+    prefix => boolean(),   %% DeepSeek Chat Prefix Completion（beta）
+    partial => boolean()   %% Moonshot / Kimi 部分模式续写
 }.
 
 -export_type([role_atom/0, role/0, message/0, content/0, content_part/0, media_source/0]).
@@ -54,10 +60,9 @@
 
 %% @doc 转换为指定 Provider 格式
 -spec to_provider([message()], atom()) -> [map()].
-to_provider(Messages, openai) -> to_openai(Messages);
 to_provider(Messages, anthropic) -> to_anthropic(Messages);
-to_provider(Messages, ollama) -> to_openai(Messages);  %% Ollama 使用 OpenAI 格式
-to_provider(Messages, zhipu) -> to_openai(Messages);   %% 智谱使用 OpenAI 兼容格式
+%% 其余 Provider 均为 OpenAI 兼容格式（openai / ollama / zhipu / deepseek /
+%% dashscope / xai / moonshot / kimi / openrouter / siliconflow ...）
 to_provider(Messages, _) -> to_openai(Messages).
 
 %% @doc 提取系统提示（Anthropic 风格 API 需要单独的 system 字段）
@@ -73,10 +78,8 @@ extract_system_prompt(Messages) ->
 
 %% @doc 从指定 Provider 格式转换
 -spec from_provider([map()], atom()) -> [message()].
-from_provider(Messages, openai) -> from_openai(Messages);
 from_provider(Messages, anthropic) -> from_anthropic(Messages);
-from_provider(Messages, ollama) -> from_openai(Messages);
-from_provider(Messages, zhipu) -> from_openai(Messages);  %% 智谱使用 OpenAI 兼容格式
+%% 其余 Provider 均为 OpenAI 兼容格式
 from_provider(Messages, _) -> from_openai(Messages).
 
 %%====================================================================
@@ -95,11 +98,20 @@ to_openai_message(#{role := Role, content := Content} = Msg) ->
     Base3 = maybe_add_prefix(Base2, Msg),
     maybe_add_tool_calls_openai(Base3, Msg).
 
-%% @private 透传 prefix 标志（DeepSeek Chat Prefix Completion，beta）
-%% 末尾 assistant 消息标记 prefix => true 表示强制模型从该内容续写。
+%% @private 透传续写标志
+%% - prefix（DeepSeek Chat Prefix Completion，beta）
+%% - partial（Moonshot / Kimi 部分模式）
+%% 末尾 assistant 消息标记后表示强制模型从该内容续写。
 %% 仅在显式设置为 true 时透传，其他 Provider 的消息不受影响。
-maybe_add_prefix(Base, #{prefix := true}) -> Base#{<<"prefix">> => true};
-maybe_add_prefix(Base, _) -> Base.
+maybe_add_prefix(Base, Msg) ->
+    Base1 = case maps:get(prefix, Msg, undefined) of
+        true -> Base#{<<"prefix">> => true};
+        _ -> Base
+    end,
+    case maps:get(partial, Msg, undefined) of
+        true -> Base1#{<<"partial">> => true};
+        _ -> Base1
+    end.
 
 maybe_add_tool_calls_openai(Base, #{tool_calls := Calls}) when is_list(Calls), Calls =/= [] ->
     Base#{<<"tool_calls">> => [format_tool_call_openai(C) || C <- Calls]};
@@ -134,11 +146,37 @@ format_content_openai(Other) -> Other.
 %% @private 转换单个多模态部件为 OpenAI 格式
 format_part_openai(#{type := text, text := T}) ->
     #{<<"type">> => <<"text">>, <<"text">> => T};
-format_part_openai(#{type := image, source := Src}) ->
-    #{<<"type">> => <<"image_url">>, <<"image_url">> => #{<<"url">> => media_url_openai(Src)}};
+format_part_openai(#{type := image, source := #{type := file_id, file_id := Id}}) ->
+    %% 已上传到 Files API 的图片按 file 部件引用
+    #{<<"type">> => <<"file">>, <<"file">> => #{<<"file_id">> => Id}};
+format_part_openai(#{type := image, source := Src} = Part) ->
+    ImageUrl0 = #{<<"url">> => media_url_openai(Src)},
+    ImageUrl = case maps:get(detail, Part, undefined) of
+        undefined -> ImageUrl0;
+        Detail -> ImageUrl0#{<<"detail">> => Detail}
+    end,
+    #{<<"type">> => <<"image_url">>, <<"image_url">> => ImageUrl};
 format_part_openai(#{type := audio, data := Data, format := Fmt}) ->
+    %% 兼容旧形态：直接给出 base64 数据与格式
     #{<<"type">> => <<"input_audio">>,
       <<"input_audio">> => #{<<"data">> => Data, <<"format">> => Fmt}};
+format_part_openai(#{type := audio, source := #{type := base64, data := Data} = Src} = Part) ->
+    Fmt = audio_format_of(Part, Src),
+    #{<<"type">> => <<"input_audio">>,
+      <<"input_audio">> => #{<<"data">> => Data, <<"format">> => Fmt}};
+format_part_openai(#{type := audio, source := #{type := url, url := Url} = Src} = Part) ->
+    %% Qwen-Omni 等兼容实现允许 input_audio.data 直接给音频 URL
+    #{<<"type">> => <<"input_audio">>,
+      <<"input_audio">> => #{<<"data">> => Url, <<"format">> => audio_format_of(Part, Src)}};
+format_part_openai(#{type := audio, source := #{type := file_id, file_id := Id}}) ->
+    #{<<"type">> => <<"file">>, <<"file">> => #{<<"file_id">> => Id}};
+format_part_openai(#{type := video, source := #{type := file_id, file_id := Id}}) ->
+    #{<<"type">> => <<"file">>, <<"file">> => #{<<"file_id">> => Id}};
+format_part_openai(#{type := video, source := Src}) ->
+    %% Qwen-VL / GLM-4V 等 OpenAI 兼容 VL 模型的视频输入约定
+    #{<<"type">> => <<"video_url">>, <<"video_url">> => #{<<"url">> => media_url_openai(Src)}};
+format_part_openai(#{type := document, source := #{type := file_id, file_id := Id}}) ->
+    #{<<"type">> => <<"file">>, <<"file">> => #{<<"file_id">> => Id}};
 format_part_openai(#{type := document, source := Src} = Part) ->
     File0 = #{<<"file_data">> => media_url_openai(Src)},
     File1 = case maps:get(filename, Part, undefined) of
@@ -151,6 +189,17 @@ format_part_openai(#{<<"type">> := _} = Already) ->
     Already;
 format_part_openai(_) ->
     #{<<"type">> => <<"text">>, <<"text">> => <<>>}.
+
+%% @private 取音频格式：部件显式声明优先，否则由 MIME 类型推断
+audio_format_of(Part, Src) ->
+    case maps:get(format, Part, undefined) of
+        undefined ->
+            case beamai_llm_media:audio_format(beamai_llm_media:media_type(Src)) of
+                undefined -> <<"wav">>;
+                Fmt -> Fmt
+            end;
+        Fmt -> Fmt
+    end.
 
 %% @private 构建 OpenAI 媒体 URL（base64 转 data URI，或直接 url）
 media_url_openai(#{type := base64, media_type := MT, data := Data}) ->
@@ -169,7 +218,8 @@ from_openai_message(#{<<"role">> := RoleBin} = Msg) ->
     Base1 = maybe_parse_field(Base, name, Msg, <<"name">>),
     Base2 = maybe_parse_field(Base1, tool_call_id, Msg, <<"tool_call_id">>),
     Base3 = maybe_parse_field(Base2, prefix, Msg, <<"prefix">>),
-    maybe_parse_tool_calls_openai(Base3, Msg).
+    Base4 = maybe_parse_field(Base3, partial, Msg, <<"partial">>),
+    maybe_parse_tool_calls_openai(Base4, Msg).
 
 maybe_parse_tool_calls_openai(Base, #{<<"tool_calls">> := Calls}) when is_list(Calls) ->
     Base#{tool_calls => [parse_tool_call_openai(C) || C <- Calls]};
@@ -246,19 +296,26 @@ format_content_anthropic(Parts) when is_list(Parts) ->
 format_content_anthropic(Other) -> Other.
 
 %% @private 转换单个多模态部件为 Anthropic 格式
-format_part_anthropic(#{type := text, text := T}) ->
-    #{<<"type">> => <<"text">>, <<"text">> => T};
-format_part_anthropic(#{type := image, source := Src}) ->
-    #{<<"type">> => <<"image">>, <<"source">> => media_source_anthropic(Src)};
+format_part_anthropic(#{type := text, text := T} = Part) ->
+    with_cache_control_anthropic(#{<<"type">> => <<"text">>, <<"text">> => T}, Part);
+format_part_anthropic(#{type := image, source := Src} = Part) ->
+    with_cache_control_anthropic(
+        #{<<"type">> => <<"image">>, <<"source">> => media_source_anthropic(Src)}, Part);
 format_part_anthropic(#{type := document, source := Src} = Part) ->
-    Block = #{<<"type">> => <<"document">>,
-              <<"source">> => media_source_anthropic(Src)},
-    case maps:get(citations, Part, false) of
-        true -> Block#{<<"citations">> => #{<<"enabled">> => true}};
-        _ -> Block
-    end;
+    Block0 = #{<<"type">> => <<"document">>,
+               <<"source">> => document_source_anthropic(Src)},
+    Block1 = case maps:get(citations, Part, false) of
+        true -> Block0#{<<"citations">> => #{<<"enabled">> => true}};
+        _ -> Block0
+    end,
+    Block2 = maybe_put_binary(Block1, <<"title">>, maps:get(title, Part, undefined)),
+    Block3 = maybe_put_binary(Block2, <<"context">>, maps:get(context, Part, undefined)),
+    with_cache_control_anthropic(Block3, Part);
 format_part_anthropic(#{type := audio}) ->
     %% Anthropic 暂不支持音频输入，丢弃
+    skip;
+format_part_anthropic(#{type := video}) ->
+    %% Anthropic 暂不支持视频输入，丢弃
     skip;
 format_part_anthropic(#{<<"type">> := _} = Already) ->
     %% 已是 API 格式（binary key），原样透传
@@ -266,11 +323,38 @@ format_part_anthropic(#{<<"type">> := _} = Already) ->
 format_part_anthropic(_) ->
     #{<<"type">> => <<"text">>, <<"text">> => <<>>}.
 
-%% @private 构建 Anthropic 媒体 source（base64 或 url）
+%% @private 在内容块上注入 cache_control（部件显式声明时）
+with_cache_control_anthropic(Block, Part) ->
+    case maps:get(cache_control, Part, undefined) of
+        undefined -> Block;
+        CC -> Block#{<<"cache_control">> => CC}
+    end.
+
+%% @private 可选字段写入（undefined 时不写）
+maybe_put_binary(Block, _Key, undefined) -> Block;
+maybe_put_binary(Block, Key, Value) -> Block#{Key => Value}.
+
+%% @private 构建 Anthropic 媒体 source（base64 / url / file_id）
 media_source_anthropic(#{type := base64, media_type := MT, data := Data}) ->
     #{<<"type">> => <<"base64">>, <<"media_type">> => MT, <<"data">> => Data};
 media_source_anthropic(#{type := url, url := U}) ->
-    #{<<"type">> => <<"url">>, <<"url">> => U}.
+    #{<<"type">> => <<"url">>, <<"url">> => U};
+media_source_anthropic(#{type := file_id, file_id := Id}) ->
+    #{<<"type">> => <<"file">>, <<"file_id">> => Id}.
+
+%% @private 构建 Anthropic 文档 source
+%% 纯文本文档（text/plain）走 text 源，Claude 直接按文本处理并支持引用。
+document_source_anthropic(#{type := base64, media_type := <<"text/plain">>, data := Data}) ->
+    #{<<"type">> => <<"text">>, <<"media_type">> => <<"text/plain">>,
+      <<"data">> => decode_base64_text(Data)};
+document_source_anthropic(Src) ->
+    media_source_anthropic(Src).
+
+%% @private base64 文本解码失败时原样返回（已是明文）
+decode_base64_text(Data) ->
+    try base64:decode(Data)
+    catch _:_ -> Data
+    end.
 
 format_role_anthropic(user) -> <<"user">>;
 format_role_anthropic(assistant) -> <<"assistant">>;
