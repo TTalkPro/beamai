@@ -129,6 +129,10 @@ default_timeout(ollama) -> 120000;
 default_timeout(zhipu) -> 300000;
 default_timeout(dashscope) -> 300000;
 default_timeout(deepseek) -> 60000;  %% FIM / reasoner 如需更长在此调整
+default_timeout(moonshot) -> 300000;   %% Kimi 思考模式耗时较长
+default_timeout(siliconflow) -> 300000;
+default_timeout(openrouter) -> 120000; %% 网关转发叠加上游耗时
+default_timeout(xai) -> 60000;
 default_timeout(_) -> 60000.
 
 %% @doc 从 Config 取请求超时，未配置时用 provider 默认值
