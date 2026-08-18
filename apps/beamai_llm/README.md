@@ -32,6 +32,17 @@
 | Ollama | `beamai_embedding_provider_ollama` | nomic-embed-text | 64 |
 | Mock（测试） | `beamai_embedding_provider_mock` | mock-embedding | 1000 |
 
+### 重排序（Rerank）提供商
+
+| 提供商 | 模块 | 默认模型 | 单次文档上限 |
+|--------|------|----------|--------------|
+| SiliconFlow | `beamai_rerank_provider_siliconflow` | BAAI/bge-reranker-v2-m3 | 1000 |
+| 阿里云百炼 | `beamai_rerank_provider_dashscope` | gte-rerank-v2 | 500 |
+| Jina AI | `beamai_rerank_provider_jina` | jina-reranker-v2-base-multilingual | 1000 |
+| Cohere | `beamai_rerank_provider_cohere` | rerank-v3.5 | 1000 |
+| Voyage AI | `beamai_rerank_provider_voyage` | rerank-2.5 | 1000 |
+| Mock（测试） | `beamai_rerank_provider_mock` | mock-rerank | 10000 |
+
 ## 模块概览
 
 ### 客户端
@@ -60,6 +71,12 @@
 - **beamai_embedding** - 向量化统一入口（多 Provider 路由、自动分批、重试、向量工具）
 - **beamai_embedding_provider_behaviour** - 向量化提供商行为定义
 - **beamai_embedding_common** - 向量化公共函数（请求体构建、响应解析、分批合并）
+
+### 重排序
+
+- **beamai_rerank** - 重排序统一入口（多 Provider 路由、结果归一与文档回填、重试）
+- **beamai_rerank_provider_behaviour** - 重排序提供商行为定义
+- **beamai_rerank_common** - 重排序公共函数（请求体构建、三类响应解析、usage 归一）
 
 ### 适配器
 
@@ -388,6 +405,28 @@ Score = beamai_embedding:cosine_similarity(V1, V2).
 - 检索场景可传 `#{text_type => <<"query">>}` / `#{text_type => <<"document">>}`（DashScope 等支持）
 - Provider 不支持 `dimensions` 时（如 Ollama）自动剔除该参数，避免 400
 - `#{batch_size => N}` 可调小单批条数，但不会超过 Provider 上限
+
+### 文档重排序（Rerank）
+
+RAG 两阶段检索的第二阶段：向量召回一批候选后，用 Cross-Encoder 重排序模型按 query 相关性重新打分，取 top_n 入上下文。
+
+```erlang
+Config = beamai_rerank:create(siliconflow, #{
+    api_key => ApiKey,
+    model => <<"BAAI/bge-reranker-v2-m3">>
+}),
+
+{ok, Results} = beamai_rerank:rerank(Config, Query, Candidates, #{top_n => 5}),
+
+%% 每条结果：#{index => 原始下标, score => 相关性得分, document => 文档原文}
+TopDocs = beamai_rerank:documents(Results),
+Indices = beamai_rerank:indices(Results).
+```
+
+- 结果统一按得分**降序**，`index` 指回入参 `Candidates` 的下标（从 0 开始），便于把得分挂回上层元数据
+- 服务端未回传原文时按 `index` **自动回填** `document`，无需再对着原列表取值
+- 文档条数超过 Provider 上限时返回 `{error, {too_many_documents, Count, Max}}`：重排序是全局比较，不能像向量化那样分批，是否先粗筛由上层决定
+- 需要 usage / 原始响应时用 `beamai_rerank:rerank_full/3,4`
 
 ### Anthropic Prompt 缓存（cache_control）
 

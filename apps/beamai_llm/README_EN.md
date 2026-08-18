@@ -32,6 +32,17 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 | Ollama | `beamai_embedding_provider_ollama` | nomic-embed-text | 64 |
 | Mock (testing) | `beamai_embedding_provider_mock` | mock-embedding | 1000 |
 
+### Rerank Providers
+
+| Provider | Module | Default Model | Max Documents |
+|----------|--------|---------------|---------------|
+| SiliconFlow | `beamai_rerank_provider_siliconflow` | BAAI/bge-reranker-v2-m3 | 1000 |
+| Alibaba Cloud DashScope | `beamai_rerank_provider_dashscope` | gte-rerank-v2 | 500 |
+| Jina AI | `beamai_rerank_provider_jina` | jina-reranker-v2-base-multilingual | 1000 |
+| Cohere | `beamai_rerank_provider_cohere` | rerank-v3.5 | 1000 |
+| Voyage AI | `beamai_rerank_provider_voyage` | rerank-2.5 | 1000 |
+| Mock (testing) | `beamai_rerank_provider_mock` | mock-rerank | 10000 |
+
 ## Module Overview
 
 ### Clients
@@ -59,6 +70,12 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 - **beamai_embedding** - Unified embedding entry point (provider routing, auto batching, retries, vector utilities)
 - **beamai_embedding_provider_behaviour** - Embedding provider behavior definition
 - **beamai_embedding_common** - Shared embedding helpers (request building, response parsing, batch merging)
+
+### Reranking
+
+- **beamai_rerank** - Unified rerank entry point (provider routing, result normalization, document backfill, retries)
+- **beamai_rerank_provider_behaviour** - Rerank provider behavior definition
+- **beamai_rerank_common** - Shared rerank helpers (request building, three response shapes, usage normalization)
 
 ### Adapters
 
@@ -384,6 +401,28 @@ Score = beamai_embedding:cosine_similarity(V1, V2).
 - Retrieval workloads can pass `#{text_type => <<"query">>}` / `#{text_type => <<"document">>}` (DashScope and others)
 - `dimensions` is dropped automatically for providers that do not support it (e.g. Ollama) to avoid 400s
 - `#{batch_size => N}` shrinks a batch but never exceeds the provider limit
+
+### Document Reranking
+
+The second stage of two-stage RAG retrieval: after vector recall produces candidates, a cross-encoder rescores them against the query so only the top N enter the context.
+
+```erlang
+Config = beamai_rerank:create(siliconflow, #{
+    api_key => ApiKey,
+    model => <<"BAAI/bge-reranker-v2-m3">>
+}),
+
+{ok, Results} = beamai_rerank:rerank(Config, Query, Candidates, #{top_n => 5}),
+
+%% Each result: #{index => original index, score => relevance, document => text}
+TopDocs = beamai_rerank:documents(Results),
+Indices = beamai_rerank:indices(Results).
+```
+
+- Results are always sorted by score **descending**; `index` points back into the input list (0-based) so scores can be attached to your own metadata
+- `document` is **backfilled by index** when the provider does not echo the text back
+- Exceeding a provider's document limit returns `{error, {too_many_documents, Count, Max}}` — reranking compares globally and cannot be batched like embeddings, so pre-filtering is the caller's call
+- Use `beamai_rerank:rerank_full/3,4` when you need usage stats or the raw response
 
 ### Anthropic Prompt Caching (cache_control)
 
