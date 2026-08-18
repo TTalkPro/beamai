@@ -125,64 +125,23 @@ build_request(Messages, Opts) ->
 %% Internal - Retry Logic
 %%====================================================================
 
+%% @private 重试配置（与 embedding 共用 beamai_llm_retry）
 get_retry_opts(Opts) ->
-    #{
-        max_retries => maps:get(max_retries, Opts, ?DEFAULT_MAX_RETRIES),
-        retry_delay => maps:get(retry_delay, Opts, ?DEFAULT_RETRY_DELAY),
-        on_retry => maps:get(on_retry, Opts, undefined)
-    }.
+    beamai_llm_retry:opts(Opts).
 
 do_chat(Config, Request, RetryOpts) ->
     Module = provider_module(maps:get(provider, Config)),
-    do_chat_with_retry(Module, Config, Request, RetryOpts, 0).
+    beamai_llm_retry:run(fun() -> Module:chat(Config, Request) end, RetryOpts).
 
-do_chat_with_retry(Module, Config, Request, #{max_retries := Max}, Attempt) when Attempt >= Max ->
-    Module:chat(Config, Request);
-do_chat_with_retry(Module, Config, Request, RetryOpts, Attempt) ->
-    case Module:chat(Config, Request) of
-        {ok, _} = Success ->
-            Success;
-        {error, Reason} = Error ->
-            case is_retryable(Reason) of
-                true ->
-                    Delay = compute_delay(RetryOpts, Attempt, Reason),
-                    invoke_retry_callback(RetryOpts, #{
-                        attempt => Attempt + 1,
-                        max_retries => maps:get(max_retries, RetryOpts),
-                        error => Reason,
-                        delay => Delay
-                    }),
-                    timer:sleep(Delay),
-                    do_chat_with_retry(Module, Config, Request, RetryOpts, Attempt + 1);
-                false ->
-                    Error
-            end
-    end.
-
-%% 重试上限退避（避免 Retry-After 过大时长时间阻塞）
--define(MAX_RETRY_DELAY, 60000).
-
-%% @private 是否可重试（统一委托给 beamai_llm_error 分类，单一事实源）
+-ifdef(TEST).
+%% @private 重试判定与退避计算已下沉到 beamai_llm_retry，
+%% 此处保留薄封装供既有测试用例调用。
 is_retryable(Reason) ->
-    beamai_llm_error:retryable(beamai_llm_error:from_reason(Reason)).
+    beamai_llm_retry:is_retryable(Reason).
 
-%% @private 计算退避时长
-%% 错误携带 Retry-After（服务端建议）时按其退避（上限 ?MAX_RETRY_DELAY），
-%% 否则使用指数退避 retry_delay * (Attempt + 1)。
 compute_delay(RetryOpts, Attempt, Reason) ->
-    case beamai_llm_error:retry_after_ms(beamai_llm_error:from_reason(Reason)) of
-        Ms when is_integer(Ms), Ms > 0 ->
-            min(Ms, ?MAX_RETRY_DELAY);
-        _ ->
-            maps:get(retry_delay, RetryOpts) * (Attempt + 1)
-    end.
-
-invoke_retry_callback(#{on_retry := undefined}, _) -> ok;
-invoke_retry_callback(#{on_retry := Callback}, RetryState) when is_function(Callback) ->
-    try Callback(RetryState)
-    catch _:_ -> ok
-    end;
-invoke_retry_callback(_, _) -> ok.
+    beamai_llm_retry:compute_delay(RetryOpts, Attempt, Reason).
+-endif.
 
 %%====================================================================
 %% Internal - Streaming
