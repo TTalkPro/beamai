@@ -15,23 +15,40 @@
     {modules, [
         %% Client
         beamai_chat_completion,
+        beamai_embedding,
         beamai_llm_http_client,
         beamai_llm_helper,
+        beamai_llm_retry,
         %% Behaviour
         beamai_llm_provider_behaviour,
-        %% Providers
+        beamai_embedding_provider_behaviour,
+        %% Providers - Chat
         beamai_llm_provider_openai,
         beamai_llm_provider_anthropic,
         beamai_llm_provider_deepseek,
         beamai_llm_provider_ollama,
         beamai_llm_provider_zhipu,
         beamai_llm_provider_dashscope,
+        beamai_llm_provider_xai,
+        beamai_llm_provider_moonshot,
+        beamai_llm_provider_openrouter,
+        beamai_llm_provider_siliconflow,
         beamai_llm_provider_common,
+        %% Providers - Embedding
+        beamai_embedding_common,
+        beamai_embedding_provider_openai,
+        beamai_embedding_provider_dashscope,
+        beamai_embedding_provider_zhipu,
+        beamai_embedding_provider_siliconflow,
+        beamai_embedding_provider_ollama,
+        beamai_embedding_provider_mock,
         %% Note: beamai_llm_response 已移至 beamai_core
         %% Adapters
         beamai_llm_message_adapter,
         beamai_llm_tool_adapter,
-        beamai_llm_response_parser
+        beamai_llm_response_parser,
+        beamai_llm_media,
+        beamai_llm_content
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}
