@@ -14,6 +14,23 @@
 | Ollama | `beamai_llm_provider_ollama` | OpenAI 兼容 | 本地模型部署 |
 | 智谱 AI | `beamai_llm_provider_zhipu` | OpenAI 兼容 | GLM-4.7 等国产模型 |
 | 阿里云百炼 | `beamai_llm_provider_dashscope` | DashScope 原生 | 通义千问系列 (qwen-plus, qwen-max 等) |
+| xAI | `beamai_llm_provider_xai` | OpenAI 兼容 | Grok 系列（reasoning_effort / 思维链） |
+| Moonshot / Kimi | `beamai_llm_provider_moonshot` | OpenAI 兼容 | Kimi 系列（thinking / 国内站与国际站） |
+| OpenRouter | `beamai_llm_provider_openrouter` | OpenAI 兼容 | 多厂商网关（模型回退、供应商路由、成本统计） |
+| SiliconFlow | `beamai_llm_provider_siliconflow` | OpenAI 兼容 | 硅基流动托管模型（enable_thinking） |
+
+> `provider` 取值：`openai | anthropic | deepseek | ollama | zhipu | dashscope | xai | moonshot | kimi | openrouter | siliconflow`（`kimi` 为 `moonshot` 的别名）。
+
+### 向量化（Embedding）提供商
+
+| 提供商 | 模块 | 默认模型 | 单次上限 |
+|--------|------|----------|----------|
+| OpenAI | `beamai_embedding_provider_openai` | text-embedding-3-small | 2048 |
+| 阿里云百炼 | `beamai_embedding_provider_dashscope` | text-embedding-v4 | 10 |
+| 智谱 AI | `beamai_embedding_provider_zhipu` | embedding-3 | 64 |
+| SiliconFlow | `beamai_embedding_provider_siliconflow` | BAAI/bge-m3 | 32 |
+| Ollama | `beamai_embedding_provider_ollama` | nomic-embed-text | 64 |
+| Mock（测试） | `beamai_embedding_provider_mock` | mock-embedding | 1000 |
 
 ## 模块概览
 
@@ -33,10 +50,22 @@
 - **beamai_llm_provider_ollama** - Ollama 实现
 - **beamai_llm_provider_zhipu** - 智谱 AI 实现
 - **beamai_llm_provider_dashscope** - 阿里云百炼实现 (DashScope 原生 API)
+- **beamai_llm_provider_xai** - xAI Grok 实现（自动剔除 xAI 不支持的采样参数）
+- **beamai_llm_provider_moonshot** - Moonshot / Kimi 实现（thinking、区域站点）
+- **beamai_llm_provider_openrouter** - OpenRouter 网关实现（模型回退、供应商路由）
+- **beamai_llm_provider_siliconflow** - 硅基流动实现（混合推理开关）
+
+### 向量化
+
+- **beamai_embedding** - 向量化统一入口（多 Provider 路由、自动分批、重试、向量工具）
+- **beamai_embedding_provider_behaviour** - 向量化提供商行为定义
+- **beamai_embedding_common** - 向量化公共函数（请求体构建、响应解析、分批合并）
 
 ### 适配器
 
-- **beamai_llm_message_adapter** - 消息格式适配（含多模态：图片/音频/PDF）
+- **beamai_llm_message_adapter** - 消息格式适配（含多模态：图片/音频/视频/PDF）
+- **beamai_llm_content** - 多模态内容部件构造（text/image/audio/video/document）
+- **beamai_llm_media** - 媒体源构造与 MIME 嗅探、data URI 编解码
 - **beamai_llm_tool_adapter** - 工具格式适配
 - **beamai_llm_response_parser** - Provider 响应解析（OpenAI/Anthropic/DashScope 等格式 → 统一 `beamai_llm_response` 结构）
 
@@ -298,27 +327,67 @@ llm_client:stream_chat(LLM, Messages, Callback).
 
 ## 高级能力
 
-### 多模态输入（图片 / 音频 / PDF）
+### 多模态输入（图片 / 音频 / 视频 / PDF）
 
-消息的 `content` 除 binary 文本外，还可以是**内容部件列表**，由 `beamai_llm_message_adapter` 自动转换为各 Provider 的格式（OpenAI `image_url` / `input_audio`，Anthropic `image` / `document`）。纯文本 binary 完全向后兼容。
+消息的 `content` 除 binary 文本外，还可以是**内容部件列表**，由 `beamai_llm_message_adapter` 自动转换为各 Provider 的格式（OpenAI `image_url` / `input_audio` / `file`，Anthropic `image` / `document`）。纯文本 binary 完全向后兼容。
+
+部件可以手写 map，也可以用 `beamai_llm_content` 构造（推荐，自动嗅探 MIME 类型）：
 
 ```erlang
+%% 本地文件：读取 + base64 + MIME 推断一步到位
+{ok, ImgPart} = beamai_llm_content:image_path(<<"/tmp/chart.png">>),
+
 Messages = [
     #{role => user, content => [
-        #{type => text, text => <<"这张图里是什么？"/utf8>>},
-        %% 图片：base64
-        #{type => image, source => #{type => base64,
-            media_type => <<"image/png">>, data => Base64Png}},
-        %% 图片：url（也支持 #{type => url, url => <<"https://...">>}）
-        #{type => image, source => #{type => url, url => <<"https://x/y.jpg">>}}
+        beamai_llm_content:text(<<"这张图里是什么？"/utf8>>),
+        ImgPart,
+        %% 远程图片，并指定精细度（OpenAI detail）
+        beamai_llm_content:image_url(<<"https://x/y.jpg">>, <<"high">>)
     ]}
 ],
-{ok, Resp} = llm_client:chat(LLM, Messages).
+{ok, Resp} = beamai_chat_completion:chat(LLM, Messages).
 ```
 
-- **图片**：OpenAI（gpt-4o 等）/ Anthropic / DeepSeek 均支持
-- **音频**（`#{type => audio, data => Data, format => <<"wav">>}`）：OpenAI `input_audio`（Anthropic 不支持，自动忽略）
-- **PDF 文档**（`#{type => document, source => ...}`）：Anthropic `document`；加 `citations => true` 可启用引用
+媒体源有三种形态，`beamai_llm_media` 负责构造与转换：
+
+```erlang
+beamai_llm_media:base64(<<"image/png">>, Base64),      %% 内联数据
+beamai_llm_media:url(<<"https://x/y.png">>),           %% 远程 URL（data URI 自动解析）
+beamai_llm_media:file_id(<<"file-abc">>).              %% 供应商 Files API 文件
+```
+
+各类部件的落地格式：
+
+- **图片**（`image`）：OpenAI `image_url`（支持 `detail`）/ Anthropic `image`；`file_id` 源转 `file` 部件
+- **音频**（`audio`）：OpenAI `input_audio`，未显式给 `format` 时由 MIME 推断（wav / mp3）；Anthropic 不支持，自动忽略
+- **视频**（`video`）：转 `video_url`，供 Qwen-VL / GLM-4V 等兼容 VL 模型使用；Anthropic 不支持，自动忽略
+- **PDF / 文档**（`document`）：OpenAI `file`（`filename` + `file_data`）/ Anthropic `document`，可带 `title`、`context`、`citations => true`
+- **缓存断点**：任意部件加 `cache_control`（或 `beamai_llm_content:cache_breakpoint/1`）在 Anthropic 侧生成 `cache_control`，其他 Provider 忽略
+
+### 文本向量化（Embedding）
+
+`beamai_embedding` 与 `beamai_chat_completion` 对等：统一创建配置、多 Provider 路由、超过厂商上限时自动分批并按序拼接、瞬态错误按 `beamai_llm_retry` 退避重试。
+
+```erlang
+Config = beamai_embedding:create(openai, #{
+    api_key => ApiKey,
+    model => <<"text-embedding-3-small">>,
+    dimensions => 512
+}),
+
+%% 单条 / 批量（返回顺序与输入一致）
+{ok, Vector}  = beamai_embedding:embed(Config, <<"你好"/utf8>>),
+{ok, Vectors} = beamai_embedding:embed_many(Config, Docs),
+
+%% 需要 usage 统计时取完整响应
+{ok, #{embeddings := Vs, usage := Usage}} = beamai_embedding:embed_full(Config, Docs),
+
+Score = beamai_embedding:cosine_similarity(V1, V2).
+```
+
+- 检索场景可传 `#{text_type => <<"query">>}` / `#{text_type => <<"document">>}`（DashScope 等支持）
+- Provider 不支持 `dimensions` 时（如 Ollama）自动剔除该参数，避免 400
+- `#{batch_size => N}` 可调小单批条数，但不会超过 Provider 上限
 
 ### Anthropic Prompt 缓存（cache_control）
 

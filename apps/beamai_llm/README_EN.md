@@ -14,6 +14,23 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 | Ollama | `beamai_llm_provider_ollama` | OpenAI Compatible | Local model deployment |
 | Zhipu AI | `beamai_llm_provider_zhipu` | OpenAI Compatible | GLM-4.7 and other Chinese models |
 | Alibaba Cloud DashScope | `beamai_llm_provider_dashscope` | DashScope Native | Qwen series (qwen-plus, qwen-max, etc.) |
+| xAI | `beamai_llm_provider_xai` | OpenAI Compatible | Grok series (reasoning_effort / reasoning content) |
+| Moonshot / Kimi | `beamai_llm_provider_moonshot` | OpenAI Compatible | Kimi series (thinking mode, CN & global sites) |
+| OpenRouter | `beamai_llm_provider_openrouter` | OpenAI Compatible | Multi-vendor gateway (model fallback, provider routing, cost) |
+| SiliconFlow | `beamai_llm_provider_siliconflow` | OpenAI Compatible | Hosted models (enable_thinking) |
+
+> `provider` values: `openai | anthropic | deepseek | ollama | zhipu | dashscope | xai | moonshot | kimi | openrouter | siliconflow` (`kimi` is an alias of `moonshot`).
+
+### Embedding Providers
+
+| Provider | Module | Default Model | Max Batch |
+|----------|--------|---------------|-----------|
+| OpenAI | `beamai_embedding_provider_openai` | text-embedding-3-small | 2048 |
+| Alibaba Cloud DashScope | `beamai_embedding_provider_dashscope` | text-embedding-v4 | 10 |
+| Zhipu AI | `beamai_embedding_provider_zhipu` | embedding-3 | 64 |
+| SiliconFlow | `beamai_embedding_provider_siliconflow` | BAAI/bge-m3 | 32 |
+| Ollama | `beamai_embedding_provider_ollama` | nomic-embed-text | 64 |
+| Mock (testing) | `beamai_embedding_provider_mock` | mock-embedding | 1000 |
 
 ## Module Overview
 
@@ -32,10 +49,22 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 - **beamai_llm_provider_ollama** - Ollama implementation
 - **beamai_llm_provider_zhipu** - Zhipu AI implementation
 - **beamai_llm_provider_dashscope** - Alibaba Cloud DashScope implementation (DashScope native API)
+- **beamai_llm_provider_xai** - xAI Grok implementation (drops sampling params xAI rejects)
+- **beamai_llm_provider_moonshot** - Moonshot / Kimi implementation (thinking mode, regional sites)
+- **beamai_llm_provider_openrouter** - OpenRouter gateway implementation (model fallback, provider routing)
+- **beamai_llm_provider_siliconflow** - SiliconFlow implementation (hybrid reasoning switch)
+
+### Embeddings
+
+- **beamai_embedding** - Unified embedding entry point (provider routing, auto batching, retries, vector utilities)
+- **beamai_embedding_provider_behaviour** - Embedding provider behavior definition
+- **beamai_embedding_common** - Shared embedding helpers (request building, response parsing, batch merging)
 
 ### Adapters
 
-- **beamai_llm_message_adapter** - Message format adaptation (incl. multimodal: image/audio/PDF)
+- **beamai_llm_message_adapter** - Message format adaptation (incl. multimodal: image/audio/video/PDF)
+- **beamai_llm_content** - Multimodal content part constructors (text/image/audio/video/document)
+- **beamai_llm_media** - Media source constructors, MIME sniffing, data URI codec
 - **beamai_llm_tool_adapter** - Tool format adaptation
 - **beamai_llm_response_parser** - Provider response parsing (OpenAI/Anthropic/DashScope formats → unified `beamai_llm_response` structure)
 
@@ -297,27 +326,64 @@ llm_client:stream_chat(LLM, Messages, Callback).
 
 ## Advanced Capabilities
 
-### Multimodal Input (Image / Audio / PDF)
+### Multimodal Input (Image / Audio / Video / PDF)
 
-A message's `content` may be a **list of content parts** in addition to a binary string. `beamai_llm_message_adapter` converts them to each provider's format (OpenAI `image_url` / `input_audio`, Anthropic `image` / `document`). Plain binary text is fully backward-compatible.
+A message's `content` may be a **list of content parts** in addition to a binary string. `beamai_llm_message_adapter` converts them to each provider's format (OpenAI `image_url` / `input_audio` / `file`, Anthropic `image` / `document`). Plain binary text is fully backward-compatible.
+
+Parts can be written as raw maps or built with `beamai_llm_content` (recommended — MIME type is sniffed for you):
 
 ```erlang
+%% Local file: read + base64 + MIME detection in one step
+{ok, ImgPart} = beamai_llm_content:image_path(<<"/tmp/chart.png">>),
+
 Messages = [
     #{role => user, content => [
-        #{type => text, text => <<"What is in this image?">>},
-        %% Image: base64
-        #{type => image, source => #{type => base64,
-            media_type => <<"image/png">>, data => Base64Png}},
-        %% Image: url (also supports #{type => url, url => <<"https://...">>})
-        #{type => image, source => #{type => url, url => <<"https://x/y.jpg">>}}
+        beamai_llm_content:text(<<"What is in this image?">>),
+        ImgPart,
+        %% Remote image with OpenAI detail level
+        beamai_llm_content:image_url(<<"https://x/y.jpg">>, <<"high">>)
     ]}
 ],
-{ok, Resp} = llm_client:chat(LLM, Messages).
+{ok, Resp} = beamai_chat_completion:chat(LLM, Messages).
 ```
 
-- **Image**: OpenAI (gpt-4o, etc.) / Anthropic / DeepSeek
-- **Audio** (`#{type => audio, data => Data, format => <<"wav">>}`): OpenAI `input_audio` (ignored for Anthropic)
-- **PDF document** (`#{type => document, source => ...}`): Anthropic `document`; add `citations => true` to enable citations
+Media sources come in three shapes, built via `beamai_llm_media`:
+
+```erlang
+beamai_llm_media:base64(<<"image/png">>, Base64),      %% inline data
+beamai_llm_media:url(<<"https://x/y.png">>),           %% remote URL (data URIs auto-parsed)
+beamai_llm_media:file_id(<<"file-abc">>).              %% provider Files API object
+```
+
+How each part maps:
+
+- **Image** (`image`): OpenAI `image_url` (supports `detail`) / Anthropic `image`; `file_id` sources become `file` parts
+- **Audio** (`audio`): OpenAI `input_audio`, format inferred from MIME (wav / mp3) when not given; ignored for Anthropic
+- **Video** (`video`): becomes `video_url` for Qwen-VL / GLM-4V style VL models; ignored for Anthropic
+- **PDF / document** (`document`): OpenAI `file` (`filename` + `file_data`) / Anthropic `document`, with optional `title`, `context`, `citations => true`
+- **Cache breakpoints**: any part carrying `cache_control` (see `beamai_llm_content:cache_breakpoint/1`) emits `cache_control` on Anthropic and is ignored elsewhere
+
+### Text Embeddings
+
+`beamai_embedding` mirrors `beamai_chat_completion`: one config constructor, provider routing, automatic batching beyond a provider's per-request limit (results stay in input order), and transient-error retries via `beamai_llm_retry`.
+
+```erlang
+Config = beamai_embedding:create(openai, #{
+    api_key => ApiKey,
+    model => <<"text-embedding-3-small">>,
+    dimensions => 512
+}),
+
+{ok, Vector}  = beamai_embedding:embed(Config, <<"hello">>),
+{ok, Vectors} = beamai_embedding:embed_many(Config, Docs),
+{ok, #{embeddings := Vs, usage := Usage}} = beamai_embedding:embed_full(Config, Docs),
+
+Score = beamai_embedding:cosine_similarity(V1, V2).
+```
+
+- Retrieval workloads can pass `#{text_type => <<"query">>}` / `#{text_type => <<"document">>}` (DashScope and others)
+- `dimensions` is dropped automatically for providers that do not support it (e.g. Ollama) to avoid 400s
+- `#{batch_size => N}` shrinks a batch but never exceeds the provider limit
 
 ### Anthropic Prompt Caching (cache_control)
 
