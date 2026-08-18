@@ -12,10 +12,12 @@
 %% 构造函数
 -export([from_provider/2, from_openai/1, from_anthropic/1]).
 -export([from_ollama/1, from_dashscope/1, from_zhipu/1, from_deepseek/1, from_deepseek_fim/1]).
+-export([from_xai/1, from_moonshot/1, from_openrouter/1, from_siliconflow/1]).
 
 %% HTTP Client 解析器（可直接传给 beamai_llm_http_client:request/5）
 -export([parser_openai/0, parser_anthropic/0, parser/1]).
 -export([parser_ollama/0, parser_dashscope/0, parser_zhipu/0, parser_deepseek/0, parser_deepseek_fim/0]).
+-export([parser_xai/0, parser_moonshot/0, parser_openrouter/0, parser_siliconflow/0]).
 
 %%====================================================================
 %% HTTP Client 解析器
@@ -40,6 +42,10 @@ parser(deepseek) -> parser_deepseek();
 parser(zhipu) -> parser_zhipu();
 parser(ollama) -> parser_ollama();
 parser(dashscope) -> parser_dashscope();
+parser(xai) -> parser_xai();
+parser(moonshot) -> parser_moonshot();
+parser(openrouter) -> parser_openrouter();
+parser(siliconflow) -> parser_siliconflow();
 parser(_) -> parser_openai().
 
 %% @doc 返回 Ollama 格式的解析器函数
@@ -67,6 +73,26 @@ parser_deepseek() ->
 parser_deepseek_fim() ->
     fun from_deepseek_fim/1.
 
+%% @doc 返回 xAI 格式的解析器函数（OpenAI兼容 + reasoning_content + 引用）
+-spec parser_xai() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+parser_xai() ->
+    fun from_xai/1.
+
+%% @doc 返回 Moonshot / Kimi 格式的解析器函数（OpenAI兼容 + reasoning_content）
+-spec parser_moonshot() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+parser_moonshot() ->
+    fun from_moonshot/1.
+
+%% @doc 返回 OpenRouter 格式的解析器函数（OpenAI兼容 + reasoning + 成本统计）
+-spec parser_openrouter() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+parser_openrouter() ->
+    fun from_openrouter/1.
+
+%% @doc 返回 SiliconFlow 格式的解析器函数（OpenAI兼容 + reasoning_content）
+-spec parser_siliconflow() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+parser_siliconflow() ->
+    fun from_siliconflow/1.
+
 %%====================================================================
 %% 构造函数
 %%====================================================================
@@ -79,6 +105,10 @@ from_provider(Raw, deepseek) -> from_deepseek(Raw); % DeepSeek 使用 OpenAI 格
 from_provider(Raw, zhipu) -> from_zhipu(Raw);      % 智谱使用 OpenAI 格式 + reasoning_content
 from_provider(Raw, ollama) -> from_ollama(Raw);    % Ollama 支持原生和 OpenAI 格式
 from_provider(Raw, dashscope) -> from_dashscope(Raw); % 百炼使用 DashScope 格式
+from_provider(Raw, xai) -> from_xai(Raw);
+from_provider(Raw, moonshot) -> from_moonshot(Raw);
+from_provider(Raw, openrouter) -> from_openrouter(Raw);
+from_provider(Raw, siliconflow) -> from_siliconflow(Raw);
 from_provider(Raw, Provider) ->
     %% 默认尝试 OpenAI 格式
     case from_openai(Raw) of
@@ -231,6 +261,89 @@ from_deepseek_fim(#{<<"error">> := Error}) ->
     {error, {api_error, Error}};
 from_deepseek_fim(Raw) ->
     {error, {invalid_response, Raw}}.
+
+%%====================================================================
+%% OpenAI 兼容 Provider（xAI / Moonshot / OpenRouter / SiliconFlow）
+%%====================================================================
+
+%% @doc 从 xAI (Grok) 格式响应创建
+%% OpenAI 兼容格式；推理模型额外返回 reasoning_content，
+%% 启用检索时顶层返回 citations（引用 URL 列表）。
+-spec from_xai(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+from_xai(Raw) ->
+    from_openai_compatible(Raw, xai, fun(_Message, R) ->
+        case maps:get(<<"citations">>, R, undefined) of
+            Citations when is_list(Citations), Citations =/= [] -> #{citations => Citations};
+            _ -> #{}
+        end
+    end).
+
+%% @doc 从 Moonshot / Kimi 格式响应创建
+%% OpenAI 兼容格式；开启思考模式时返回 reasoning_content。
+-spec from_moonshot(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+from_moonshot(Raw) ->
+    from_openai_compatible(Raw, moonshot, fun(_Message, _R) -> #{} end).
+
+%% @doc 从 SiliconFlow 格式响应创建
+%% OpenAI 兼容格式；混合推理模型返回 reasoning_content。
+-spec from_siliconflow(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+from_siliconflow(Raw) ->
+    from_openai_compatible(Raw, siliconflow, fun(_Message, _R) -> #{} end).
+
+%% @doc 从 OpenRouter 格式响应创建
+%% OpenAI 兼容格式；思维链字段名为 reasoning，
+%% 顶层 provider 指出实际承接请求的上游供应商，usage.cost 为本次费用（美元）。
+-spec from_openrouter(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+from_openrouter(Raw) ->
+    from_openai_compatible(Raw, openrouter, fun(Message, R) ->
+        Meta0 = case maps:get(<<"provider">>, R, undefined) of
+            undefined -> #{};
+            Upstream -> #{upstream_provider => Upstream}
+        end,
+        %% OpenRouter 用 reasoning 字段承载思维链
+        case maps:get(<<"reasoning">>, Message, null) of
+            null -> Meta0;
+            Reasoning -> Meta0#{reasoning_content => Reasoning}
+        end
+    end).
+
+%% @private OpenAI 兼容响应的统一构造
+%% 覆盖「OpenAI 格式 + reasoning_content」这一类 Provider，
+%% Provider 特有的元信息由 MetaFun(Message, Raw) 追加。
+-spec from_openai_compatible(map(), beamai_llm_response:provider(),
+                             fun((map(), map()) -> map())) ->
+    {ok, beamai_llm_response:response()} | {error, term()}.
+from_openai_compatible(#{<<"choices">> := [Choice | _]} = Raw, Provider, MetaFun) ->
+    Message = maps:get(<<"message">>, Choice, #{}),
+    Metadata0 = #{
+        created => maps:get(<<"created">>, Raw, undefined),
+        system_fingerprint => maps:get(<<"system_fingerprint">>, Raw, undefined),
+        reasoning_content => maps:get(<<"reasoning_content">>, Message, null)
+    },
+    {ok, beamai_llm_response:new(#{
+        id => maps:get(<<"id">>, Raw, <<>>),
+        model => maps:get(<<"model">>, Raw, <<>>),
+        provider => Provider,
+        content => maps:get(<<"content">>, Message, null),
+        content_blocks => build_content_blocks_openai(Message),
+        tool_calls => parse_tool_calls_openai(Message),
+        finish_reason => normalize_finish_reason_openai(maps:get(<<"finish_reason">>, Choice, <<>>)),
+        usage => parse_usage_compatible(maps:get(<<"usage">>, Raw, #{}), Raw),
+        raw => Raw,
+        metadata => maps:merge(Metadata0, MetaFun(Message, Raw))
+    })};
+from_openai_compatible(#{<<"error">> := Error}, _Provider, _MetaFun) ->
+    {error, {api_error, Error}};
+from_openai_compatible(Raw, _Provider, _MetaFun) ->
+    {error, {invalid_response, Raw}}.
+
+%% @private OpenAI 兼容 usage（额外提取网关计费字段 cost）
+parse_usage_compatible(Usage, Raw) ->
+    Base = parse_usage_openai(Usage, Raw),
+    case maps:get(<<"cost">>, Usage, undefined) of
+        undefined -> Base;
+        Cost -> Base#{details => maps:put(cost, Cost, maps:get(details, Base, #{}))}
+    end.
 
 %% @doc 从 Ollama 格式响应创建
 %% 支持 Ollama 原生格式和 OpenAI 兼容格式

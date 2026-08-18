@@ -3,7 +3,8 @@
 %% @doc Chat Completion Service
 %%
 %% Provides LLM chat completion with:
-%% - Multi-provider routing (openai, anthropic, zhipu, ollama, deepseek, dashscope)
+%% - Multi-provider routing (openai, anthropic, zhipu, ollama, deepseek, dashscope,
+%%   xai, moonshot/kimi, openrouter, siliconflow)
 %% - Request building (messages, tools, tool_choice, stream)
 %% - Retry logic with exponential backoff
 %% - Streaming support with token callbacks
@@ -26,7 +27,9 @@
 -export([is_retryable/1, compute_delay/3]).
 -endif.
 
--type provider() :: openai | anthropic | ollama | zhipu | dashscope | deepseek | mock | {custom, module()}.
+-type provider() :: openai | anthropic | ollama | zhipu | dashscope | deepseek |
+                    xai | moonshot | kimi | openrouter | siliconflow |
+                    mock | {custom, module()}.
 -type config() :: #{
     provider := provider(),
     module := module(),
@@ -104,6 +107,11 @@ provider_module(ollama) -> beamai_llm_provider_ollama;
 provider_module(zhipu) -> beamai_llm_provider_zhipu;
 provider_module(dashscope) -> beamai_llm_provider_dashscope;
 provider_module(deepseek) -> beamai_llm_provider_deepseek;
+provider_module(xai) -> beamai_llm_provider_xai;
+provider_module(moonshot) -> beamai_llm_provider_moonshot;
+provider_module(kimi) -> beamai_llm_provider_moonshot;  %% Kimi 为 Moonshot 的产品名
+provider_module(openrouter) -> beamai_llm_provider_openrouter;
+provider_module(siliconflow) -> beamai_llm_provider_siliconflow;
 provider_module(mock) -> beamai_llm_provider_mock;
 provider_module({custom, Module}) -> Module.
 
