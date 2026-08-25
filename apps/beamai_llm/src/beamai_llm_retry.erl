@@ -18,7 +18,7 @@
 
 -include_lib("beamai_core/include/beamai_common.hrl").
 
--export([run/2, opts/1]).
+-export([run/2, opts/1, opts/2]).
 -export([is_retryable/1, compute_delay/3]).
 
 %% 重试上限退避（避免 Retry-After 过大时长时间阻塞）
@@ -39,10 +39,24 @@
 %% @doc 从调用选项中提取重试配置（缺省用框架默认值）
 -spec opts(map()) -> retry_opts().
 opts(Opts) ->
+    opts(#{}, Opts).
+
+%% @doc 重试配置的三级取值：单次 Opts > provider Config > 框架默认
+%%
+%% 于是「这个 provider 一律重试 5 次」写在 create/2 的 Config 里一次即可，
+%% 单次调用仍可覆盖（`max_retries => 0` 即本次不重试）。
+-spec opts(map(), map()) -> retry_opts().
+opts(Config, Opts) ->
+    Get = fun(K, Default) ->
+        case maps:get(K, Opts, undefined) of
+            undefined -> maps:get(K, Config, Default);
+            V -> V
+        end
+    end,
     #{
-        max_retries => maps:get(max_retries, Opts, ?DEFAULT_MAX_RETRIES),
-        retry_delay => maps:get(retry_delay, Opts, ?DEFAULT_RETRY_DELAY),
-        on_retry => maps:get(on_retry, Opts, undefined)
+        max_retries => Get(max_retries, ?DEFAULT_MAX_RETRIES),
+        retry_delay => Get(retry_delay, ?DEFAULT_RETRY_DELAY),
+        on_retry => Get(on_retry, undefined)
     }.
 
 %% @doc 执行请求函数，失败且可重试时按退避策略重试

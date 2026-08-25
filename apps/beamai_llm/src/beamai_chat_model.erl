@@ -6,12 +6,17 @@
 %% - Multi-provider routing (openai, anthropic, zhipu, ollama, deepseek, dashscope,
 %%   xai, moonshot/kimi, openrouter, siliconflow)
 %% - Request building (messages, tools, tool_choice, stream)
+%% - Retry with backoff (see 重试 below)
 %% - Streaming support with token callbacks
 %%
-%% 注意：本模块**不做重试**——重试是 llm 链上的一层 filter
-%% （beamai_llm_filters:retry_filter/1，kernel 缺省注入），这样重试重入不会连累
-%% chat 链上「每轮只该跑一次」的 filter。直接调用本模块（不经 kernel）且需要
-%% 重试时，自行用 beamai_llm_retry:run/2 包一层。
+%% 重试：`chat/3` 内建按错误分类的退避重试（与 beamai_embedding / beamai_rerank
+%% 同一套 beamai_llm_retry）。它位于**整个 filter 栈之下**——filter 看到的是「一次
+%% 逻辑调用」，重试重入碰不到任何 filter，`around_chat` 上的记忆/记账因此每轮只跑
+%% 一次。参数三级取值：单次 Opts > provider Config > 框架默认，`max_retries => 0`
+%% 即关闭。
+%%
+%% 流式（`stream_chat/4`）**不重试**：token 已经投递给 sink，重跑会让下游看到重复
+%% 内容；需要容错请在 turn 层重跑整轮。
 
 -behaviour(beamai_chat_behaviour).
 
@@ -74,18 +79,20 @@ chat(Config, Messages) ->
 
 %% @doc Send chat completion request with options
 %%
-%% 单次请求，不重试（重试见模块头说明）。
-%%
 %% Options:
-%%   tools => [tool_spec()]     - tool definitions
+%%   tools => [tool_spec()]      - tool definitions
 %%   tool_choice => auto | none | required
+%%   max_retries => integer()    - 重试次数（默认 3；0 关闭）
+%%   retry_delay => integer()    - 基础退避 ms（默认 1000；服务端给 Retry-After 时按其建议）
+%%   on_retry => fun(RetryState) - 每次重试前的回调
 %%
-%% max_retries / retry_delay / on_retry 仍可放在 Opts 里透传——它们由 llm 链上的
-%% 重试 filter 消费，本模块忽略。
+%% 后三项也可写在 provider Config 里作为该 provider 的默认值，单次 Opts 优先。
 -spec chat(config(), [map()], map()) -> {ok, map()} | {error, term()}.
 chat(Config, Messages, Opts) ->
     Module = provider_module(maps:get(provider, Config)),
-    Module:chat(Config, build_request(Messages, Opts)).
+    Request = build_request(Messages, Opts),
+    RetryOpts = beamai_llm_retry:opts(Config, Opts),
+    beamai_llm_retry:run(fun() -> Module:chat(Config, Request) end, RetryOpts).
 
 %% @doc Send streaming chat request
 -spec stream_chat(config(), [map()], fun((term()) -> ok)) ->
@@ -139,8 +146,8 @@ build_request(Messages, Opts) ->
 %%====================================================================
 
 -ifdef(TEST).
-%% @private 重试本身已上移到 llm 链的 retry_filter，判定与退避计算在
-%% beamai_llm_retry；此处保留薄封装供既有测试用例调用。
+%% @private 重试判定与退避计算下沉在 beamai_llm_retry（与 embedding/rerank 共用），
+%% 此处保留薄封装供既有测试用例调用。
 is_retryable(Reason) ->
     beamai_llm_retry:is_retryable(Reason).
 

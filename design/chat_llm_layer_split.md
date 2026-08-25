@@ -1,6 +1,11 @@
 # chat / llm 分层：把重试从 chat 链下沉到 provider 层
 
-> **状态：✅ 已实施（2026-08-25）。** 全套 `rebar3 eunit` 685 tests / 0 failures、
+> **⚠️ 状态：已被 `design/retry_back_to_chat_model.md` 推翻（2026-08-25 同日）。**
+> 分析（重试不该和记忆/记账挤在 chat 链上）成立，但结论走过了一步：重试本来就在
+> `beamai_chat_model` 内部、位于整个 filter 栈之下，那个位置已经满足要求。`around_llm`
+> 已删除，重试已下沉回 provider。以下内容仅作当时的推导记录。
+>
+> **原状态：✅ 已实施（2026-08-25）。** 全套 `rebar3 eunit` 685 tests / 0 failures、
 > `rebar3 dialyzer` EXIT=0（零警告）。
 > 起因：对照「外层 advisor → 循环 advisor → 内层 advisor → provider 中间件」这套
 > 四层 advisor 模型（Spring AI / clj-agent 的层次）逐层核对 beamai 的 filter 体系。
@@ -52,7 +57,7 @@ around_turn          每 turn 一次
 
 1. **新增 `around_llm` hook**（`beamai_filter`）。语义：包裹一次真实 LLM 请求。
    Request 与 chat 同形；流式路径额外带 `stream => true`。
-2. **`beamai_kernel:run_chat/6` 与 `run_chat_stream/7`**：chat 链的 terminal 不再是
+2. **`beamai_chat_client:run_chat/6` 与 `run_chat_stream/7`**：chat 链的 terminal 不再是
    `chat_terminal/1`，而是 `llm_chain/3` 合成出来的内层链（其 terminal 才是 provider 调用）。
    `beamai_filter_chain:compose/3` 改为自行按 Phase 过滤，可直接传整份 filters 列表；
    `run/4` 仍在最外层统一捕获 throw（内层链不重复捕获）。
@@ -61,8 +66,8 @@ around_turn          每 turn 一次
    契约与 `{ok,_}|{error,_}` 契约就地互转。
 4. **`beamai_chat_model:chat/3` 去掉重试**，退回单次请求——否则 filter 层与模块层
    会双重重试（3×3=9 次）。
-5. **缺省注入**：kernel 按 settings 的 `llm_retry` 把 retry_filter 追加在 llm 链**最内层**，
-   缺省即 `#{}`（框架默认参数）。经 kernel / agent 的调用行为与拆分前一致。
+5. **缺省注入**：ChatClient 按 settings 的 `llm_retry` 把 retry_filter 追加在 llm 链**最内层**，
+   缺省即 `#{}`（框架默认参数）。经 ChatClient / agent 的调用行为与拆分前一致。
    `llm_retry => false` 关闭注入，使用方可把 retry_filter 放到任意层序上。
    core 不能反向依赖 llm（会成环），故用 `code:ensure_loaded/1` 运行时探测——与
    `beamai:add_chat_model/3 → beamai_chat_model:create/2` 同一套约定。
@@ -83,16 +88,16 @@ token 已经投递给 sink，重跑会让下游看到重复内容（拆分前 `s
 
 ## 2. 破坏性变更
 
-- **`beamai_chat_model:chat/3` 不再重试**（单次请求）。经 kernel / agent 的调用不受
+- **`beamai_chat_model:chat/3` 不再重试**（单次请求）。经 ChatClient / agent 的调用不受
   影响（缺省注入补上了）；**直连该模块的调用方要自己包 `beamai_llm_retry:run/2`**。
   项目内唯一的直连调用方 `beamai_llm_helper` 已就地补上。
-- `beamai_kernel` 私有函数 `run_chat/5`→`/6`、`run_chat_stream/6`→`/7`（多带 Settings）。
+- `beamai_chat_client` 私有函数 `run_chat/5`→`/6`、`run_chat_stream/6`→`/7`（多带 Settings）。
 - `beamai_filter_chain:compose/3` 现在自行过滤 Phase（原先要求调用方先过滤）——传已过滤
   的列表仍然正确（幂等）。
 
 ## 3. 验证锚点
 
-`apps/beamai_core/test/beamai_kernel_llm_chain_tests.erl`（7 例）：
+`apps/beamai_core/test/beamai_chat_client_llm_chain_tests.erl`（7 例）：
 
 - 缺省 retry_filter 被注入（2 次失败 + 1 次成功 = 3 次真实请求）；
 - `llm_retry => false` 关闭注入；单次 chat opts（`max_retries => 0`）覆盖默认参数；

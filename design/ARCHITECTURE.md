@@ -1,4 +1,4 @@
-# BeamAI Kernel Architecture
+# BeamAI ChatClient Architecture
 
 ## Design Philosophy
 
@@ -6,14 +6,14 @@ From LangGraph's "everything is a graph node" to SK's "everything is a callable 
 
 ```
 LangGraph:  Graph -> Node -> Edge -> State
-SK:         Kernel -> Plugin -> Function -> Service
-BeamAI:     Kernel -> Tool -> Service
+SK:         ChatClient -> Plugin -> Function -> Service
+BeamAI:     ChatClient -> Tool -> Service
 ```
 
 Core shifts:
 - **Graph is not the only orchestration** - just one way to compose Tools
 - **Tool is the smallest unit** - self-describing, discoverable, LLM-callable
-- **Kernel is the runtime** - manages all capabilities (tools, services, filters)
+- **ChatClient is the runtime** - manages all capabilities (tools, services, filters)
 - **Process is advanced orchestration** - Step/Event model (Phase 2)
 
 ## Architecture Layers
@@ -22,7 +22,7 @@ Core shifts:
 +--------------------------------------------------+
 |                  beamai.erl (Facade)             |
 +--------------------------------------------------+
-|              beamai_kernel.erl (Runtime)          |
+|              beamai_chat_client.erl (Runtime)          |
 +--------+----------+----------+-------------------+
 | Tool   | Filter   | Context  | Settings          |
 +--------+----------+----------+-------------------+
@@ -51,9 +51,9 @@ The smallest unit of capability. A pure map with:
 A logical grouping of tools that implements `beamai_tool_behaviour`:
 - `tool_info/0` - optional module-level metadata (description, tags)
 - `tools/0` - returns list of tool_spec()
-- `filters/0` - optional filters to register in kernel
+- `filters/0` - optional filters to register in ChatClient
 
-### Kernel
+### ChatClient
 Immutable runtime container (Map, not process):
 - Holds tools, services, filters, settings
 - Provides invoke/chat/chat_with_tools APIs
@@ -64,7 +64,7 @@ Immutable runtime container (Map, not process):
 Execution context flowing through the call chain:
 - Variables (key-value store)
 - Message history
-- Kernel reference
+- ChatClient reference
 - Trace entries
 
 ### Filter
@@ -91,7 +91,7 @@ User Message -> LLM (with tool schemas)
                  Yes
                   |
                   v
-            Execute Tools via Kernel
+            Execute Tools via ChatClient
                   |
                   v
             Append tool results to messages
@@ -102,7 +102,7 @@ User Message -> LLM (with tool schemas)
 
 ## Tool Registration
 
-Tools can be registered to Kernel in three ways:
+Tools can be registered to ChatClient in three ways:
 
 1. **Direct Registration**: Add tool_spec() directly
    ```erlang
@@ -129,12 +129,12 @@ Tools can be registered to Kernel in three ways:
 
 Tools can be tagged for categorization and discovery:
 - Tools can have a single tag or multiple tags
-- Query tools by tag: `beamai:tools_by_tag(Kernel, Tag)`
+- Query tools by tag: `beamai:tools_by_tag(ChatClient, Tag)`
 - Common tags: `"io"`, `"file"`, `"shell"`, `"todo"`, `"human"`
 
 ## Phases
 
-- **Phase 1**: Kernel + Tool + Service (current implementation) ✅
+- **Phase 1**: ChatClient + Tool + Service (current implementation) ✅
 - **Phase 2**: Process Framework (Step/Event orchestration)
-- **Phase 3**: Agent (Kernel + Prompt + Memory)
+- **Phase 3**: Agent (ChatClient + Prompt + Memory)
 - **Phase 4**: Memory (Semantic Memory as Service)

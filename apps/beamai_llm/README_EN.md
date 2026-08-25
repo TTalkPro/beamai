@@ -477,38 +477,34 @@ end.
 
 ### Automatic Retry & Retry-After
 
-Retry does **not** live in `beamai_chat_model` — it is a filter on the llm chain
-(`beamai_llm_filters:retry_filter/1`, see [FILTER_EN.md](../../docs/FILTER_EN.md)) that the kernel
-injects innermost by default, so calls through the kernel / agent behave exactly as before. On
-429 / 5xx, if the server returns a `Retry-After` header it **backs off accordingly** (capped at
-60s); otherwise it uses `retry_delay * attempt`.
+`beamai_chat_model:chat/2,3` has **built-in** classified backoff retry (sharing `beamai_llm_retry`
+with `beamai_embedding` / `beamai_rerank`). On 429 / 5xx / network timeouts it honours a
+`Retry-After` header when present (capped at 60s), otherwise backs off by
+`retry_delay * attempt`; semantic errors (4xx params, auth) are not retried.
 
-The options still go in a single call's Opts (they win over the defaults given in kernel settings):
+Three levels of configuration — **per-call Opts > provider Config > framework default**, with
+`max_retries => 0` disabling it:
 
 ```erlang
-{ok, Resp, _} = beamai_kernel:invoke_chat(Kernel, Messages, #{
-    max_retries => 3,          %% default 3
-    retry_delay => 1000,       %% base backoff ms, default 1000
-    on_retry => fun(State) ->  %% optional retry callback
-        io:format("retry #~p, delay ~pms: ~p~n",
-                  [maps:get(attempt, State), maps:get(delay, State), maps:get(error, State)])
-    end
+%% Always retry 5 times for this provider
+LLM = beamai_chat_model:create(anthropic, #{model => M, api_key => Key, max_retries => 5}),
+
+%% Override for one call (no retry this time)
+{ok, Resp} = beamai_chat_model:chat(LLM, Messages, #{max_retries => 0}),
+
+%% Observe every real attempt
+{ok, Resp2} = beamai_chat_model:chat(LLM, Messages, #{
+    on_retry => fun(State) -> io:format("retry #~p~n", [maps:get(attempt, State)]) end
 }).
 ```
 
-Tune or disable the default: `beamai:kernel(#{llm_retry => #{max_retries => 5}}, Filters)` /
-`#{llm_retry => false}`.
+**Placement matters**: retry lives inside the provider call, i.e. *below* the whole filter stack.
+Filters see one logical call and a retry's re-entry never reaches them — so memory/accounting on
+`around_chat` runs exactly once per round. The flip side: filters cannot observe individual
+attempts; use `on_retry` for that.
 
-**Calling `beamai_chat_model:chat/3` directly (bypassing the kernel) is a single request with
-no retry** — wrap it yourself:
-
-```erlang
-beamai_llm_retry:run(fun() -> beamai_chat_model:chat(LLM, Messages) end,
-                     beamai_llm_retry:opts(#{max_retries => 3})).
-```
-
-The streaming path does not retry: tokens have already reached the sink, and a re-run would show
-duplicates downstream.
+**No retry while streaming**: tokens already reached the sink, so a re-run would show duplicates;
+re-run the whole turn from the turn layer instead.
 
 ### Unified Error Structure (beamai_llm_error)
 

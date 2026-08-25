@@ -56,7 +56,7 @@ beamai 的工具执行分为三层（与 clj-agent 对应）：
 |---|---|---|---|
 | 循环 / max-iterations | `ToolCallingAdvisor` | `react/invoke` | `beamai_agent_tool_loop:iterate/3` |
 | 一批 tool-call | `ToolCallingManager` | `react/execute-batch` | `beamai_agent_utils:execute_tools/5` |
-| 单个工具执行 | （manager 内部） | `kernel/invoke-tool` | `beamai_kernel:invoke_tool/4` |
+| 单个工具执行 | （manager 内部） | `ChatClient/invoke-tool` | `beamai_chat_client:invoke_tool/4` |
 | handler 调用 | `ToolCallback.call` | `tool/invoke` | `beamai_tool:invoke/3` |
 
 ### 1.2 现有 execute_tools 的完整职责
@@ -124,7 +124,7 @@ beamai 的等价物应落在 `tool_spec` 的 `backend` 字段 + `beamai_tool:inv
 | 现有抽象 | 所在模块 | manager 的关系 |
 |---|---|---|
 | `parallel_tools` / `serial` | `beamai_agent_utils:execute_tools` | manager 读取它做批内并行退化，**不决策**——`parallel_tools` 仍是 agent 配置项，`serial` 仍是 tool_spec 声明 |
-| `around_tool` filter 链 | `beamai_kernel:run_tool` → `beamai_filter_chain` | manager 包**整批调度**，filter 包**单个工具执行**。层次不同 |
+| `around_tool` filter 链 | `beamai_chat_client:run_tool` → `beamai_filter_chain` | manager 包**整批调度**，filter 包**单个工具执行**。层次不同 |
 | `writes` 屏障折叠 | `beamai_agent_utils:finalize/3` → `beamai_context:apply_writes/3` | 仍在 manager 实现内部，**不被 behaviour 接管** |
 | 错误三分类 | `beamai_tool_error:classify/1` | manager 内部用（`run_one_tool` 仍分类），behaviour 不感知 |
 | `invoke_with_retry` | `beamai_tool:invoke_with_retry/6` | 被 manager 内部的 `run_one_tool` 调用，不变 |
@@ -141,7 +141,7 @@ beamai 的等价物应落在 `tool_spec` 的 `backend` 字段 + `beamai_tool:inv
 | 担心 | 本设计如何避免 |
 |---|---|
 | manager 与 `parallel_tools`/`serial` 重叠 | `serial` 仍是**工具声明级**的批内并行退化开关，由 `default_tool_calling_manager` 在分派前读取；behaviour 本身**不知 serial 存在**。换 manager 实现仍要尊重 `parallel_tools`——这是契约 |
-| manager 与 `around_tool` filter 重叠 | `around_tool` 包**单个工具执行**（在 `beamai_kernel:invoke_tool`），manager 包**整批调度**。两者层次不同 |
+| manager 与 `around_tool` filter 重叠 | `around_tool` 包**单个工具执行**（在 `beamai_chat_client:invoke_tool`），manager 包**整批调度**。两者层次不同 |
 | concurrent manager 半管进程生命周期 | `spawn_monitor` 工作进程**写在 `beamai_default_tool_calling_manager` 内部**，**behaviour 不感知**。换 manager 实现 = 换一个模块，不持有池 |
 
 ---
@@ -153,7 +153,7 @@ beamai 的等价物应落在 `tool_spec` 的 `backend` 字段 + `beamai_tool:inv
 | 方案 | 形态 | 优点 | 缺点 |
 |---|---|---|---|
 | **A. behaviour** | `-behaviour(beamai_tool_calling_manager)` + callback 模块 `{Mod, Ref}` | 与 beamai 现有模式一致（`beamai_memory_provider`、`beamai_chat_memory`、`beamai_http` backend 都是 behaviour）；类型安全；dialyzer 可检 | 需新建模块 |
-| B. fun 注入 | agent_state 持有 `fun((Kernel, ToolCalls, Opts) -> Result)` | 零新模块 | 无类型契约；dialyzer 不检；与现有 `{Mod, Ref}` 模式不一致 |
+| B. fun 注入 | agent_state 持有 `fun((ChatClient, ToolCalls, Opts) -> Result)` | 零新模块 | 无类型契约；dialyzer 不检；与现有 `{Mod, Ref}` 模式不一致 |
 
 **选 A**——与 beamai 的 `beamai_memory_provider`（`{Mod, Ref}`）、`beamai_chat_memory`
 （`{Mod, Ref}`）模式完全一致，符合 Erlang/OTP 惯例。
@@ -209,19 +209,19 @@ beamai 的等价物应落在 `tool_spec` 的 `backend` 字段 + `beamai_tool:inv
 
 %% 唯一 callback：批量执行工具调用
 %%
-%% Manager 为 {Mod, Ref}；调用方经 Mod:execute_batch(Ref, Kernel, ToolCalls, Opts)
+%% Manager 为 {Mod, Ref}；调用方经 Mod:execute_batch(Ref, ChatClient, ToolCalls, Opts)
 %% 路由到实现模块。Ref 为实现模块的私有状态（默认实现不用，自定义实现可携配置）。
--callback execute_batch(Ref, Kernel, ToolCalls, Opts) -> ExecuteResult when
+-callback execute_batch(Ref, ChatClient, ToolCalls, Opts) -> ExecuteResult when
     Ref        :: term(),
-    Kernel     :: beamai_kernel:kernel(),
+    ChatClient     :: beamai_chat_client:chat_client(),
     ToolCalls  :: [map()],
     Opts       :: execute_opts(),
     ExecuteResult :: execute_result().
 
 %% 可选 callback：单工具执行（未来扩展；首版不实现）
--callback execute_single(Ref, Kernel, ToolCall, Opts) -> {ok, map(), map()} when
+-callback execute_single(Ref, ChatClient, ToolCall, Opts) -> {ok, map(), map()} when
     Ref        :: term(),
-    Kernel     :: beamai_kernel:kernel(),
+    ChatClient     :: beamai_chat_client:chat_client(),
     ToolCall   :: map(),
     Opts       :: execute_opts().
 -optional_callbacks([execute_single/4]).
@@ -249,16 +249,16 @@ beamai 的等价物应落在 `tool_spec` 的 `backend` 字段 + `beamai_tool:inv
 new() -> {?MODULE, default}.
 
 %% behaviour callback：委托给内部实现（从 beamai_agent_utils 移植）
--spec execute_batch(term(), beamai_kernel:kernel(), [map()],
+-spec execute_batch(term(), beamai_chat_client:chat_client(), [map()],
                     beamai_tool_calling_manager:execute_opts()) ->
     beamai_tool_calling_manager:execute_result().
-execute_batch(_Ref, Kernel, ToolCalls, Opts) ->
+execute_batch(_Ref, ChatClient, ToolCalls, Opts) ->
     Context = maps:get(context, Opts, beamai_context:new()),
     Parallel = maps:get(parallel, Opts, false),
     OnResult = maps:get(on_result, Opts, fun(_CR) -> ok end),
     %% 直接调用 beamai_agent_utils:execute_tools/5（逻辑不重复）
     {ToolMsgs, CallRecords, NewContext} =
-        beamai_agent_utils:execute_tools(Kernel, ToolCalls, Context, Parallel, OnResult),
+        beamai_agent_utils:execute_tools(ChatClient, ToolCalls, Context, Parallel, OnResult),
     #{messages => ToolMsgs, records => CallRecords, context => NewContext}.
 ```
 
@@ -293,19 +293,19 @@ create(Config) ->
     ...
 ```
 
-> **为什么放 agent_state 而非 kernel**：clj-agent 把 manager 放 kernel record。
-> 但 beamai 的 kernel 是 core 层的纯原语（单次 chat/tool），批量执行是 agent 层职责。
+> **为什么放 agent_state 而非 ChatClient**：clj-agent 把 manager 放 ChatClient record。
+> 但 beamai 的 ChatClient 是 core 层的纯原语（单次 chat/tool），批量执行是 agent 层职责。
 > 把 manager 放 agent_state 更符合 beamai 的分层：**core 不感知批量执行**。
 >
-> 若用户通过预构建 kernel 传入 agent（`kernel => K`），manager 仍从 Config 解析（agent 级配置）。
+> 若用户通过预构建 ChatClient 传入 agent（`chat_client => K`），manager 仍从 Config 解析（agent 级配置）。
 > 这与 `memory`、`callbacks` 等 agent 级配置一致。
 
 ### 4.6 未来扩展点（不在首版实施）
 
 ```erlang
 %% 可能的后续 callback（仅作示意，不在首版加）：
--callback execute_single(Ref, Kernel, ToolCall, Opts) -> ...   %% 单工具，无 batch 调度
--callback execute_async(Ref, Kernel, ToolCalls, Opts) -> ...   %% 返回 {ok, Ref} + 异步回调
+-callback execute_single(Ref, ChatClient, ToolCall, Opts) -> ...   %% 单工具，无 batch 调度
+-callback execute_async(Ref, ChatClient, ToolCalls, Opts) -> ...   %% 返回 {ok, Ref} + 异步回调
 ```
 
 何时加？等真实需求出现。**首版只搬 `execute_batch`**。
@@ -350,7 +350,7 @@ Tool = #{
     description => <<"MCP 文件系统读"/utf8>>,
     parameters => #{<<"path">> => #{type => string, required => true}},
     backend => mcp,
-    mcp_server => filesystem,       %% build-kernel 时注册的 mcp client 名
+    mcp_server => filesystem,       %% build-ChatClient 时注册的 mcp client 名
     remote_name => <<"read_file">>  %% MCP 端真实工具名（缺省取 deftool 名）
 }.
 ```
@@ -392,7 +392,7 @@ validate(#{name := Name, backend := Backend} = Spec) when Backend =/= local ->
 
 > **与 clj-agent 的差异**：clj-agent 在**宏展开期**检查（编译期）。beamai 在
 > `beamai_tool:validate/1` **运行时**检查（Erlang 无宏）。这意味着非法 tool_spec
-> 只有在 validate 被调用时才发现。可以增加 `beamai_kernel:add_tool/2` 调用 validate
+> 只有在 validate 被调用时才发现。可以增加 `beamai_chat_client:add_tool/2` 调用 validate
 > 来提前发现（当前 add_tool 不 validate——可作为同步改进项）。
 
 ### 5.4 分派实现（beamai_tool:invoke/3）
@@ -417,19 +417,19 @@ invoke(#{backend := Backend} = ToolSpec, Args, Context) when Backend =/= local -
             {error, Reason}
     end.
 
-%% @private 按 backend 类型从 context（→ kernel settings）解析 handler 模块
+%% @private 按 backend 类型从 context（→ ChatClient settings）解析 handler 模块
 %%
-%% backend handler 模块注册在 kernel settings.tool_backends：
+%% backend handler 模块注册在 ChatClient settings.tool_backends：
 %%   #{tool_backends => #{http => beamai_tool_backend_http, mcp => beamai_tool_backend_mcp}}
 %%
 %% 缺省注册：beamai_agent app 启动时往默认 settings 注入（若用户未覆盖）。
 %% 这与 beamai_http 的 backend 模式（app env 配置）一致。
 resolve_backend(Backend, Context) ->
-    case beamai_context:get_kernel(Context) of
+    case beamai_context:get_chat_client(Context) of
         undefined ->
-            {error, {backend_requires_kernel, Backend}};
-        Kernel ->
-            Backends = beamai_kernel:tool_backends(Kernel),
+            {error, {backend_requires_chat_client, Backend}};
+        ChatClient ->
+            Backends = beamai_chat_client:tool_backends(ChatClient),
             case maps:find(Backend, Backends) of
                 {ok, Mod} -> {ok, Mod};
                 error -> {error, {backend_not_registered, Backend}}
@@ -438,7 +438,7 @@ resolve_backend(Backend, Context) ->
 ```
 
 **关键性质**：`beamai_tool:invoke/3` 签名不变（`invoke(ToolSpec, Args, Context)`），
-返回值不变（`tool_result()`）。所有现有调用方（`beamai_kernel:tool_terminal`、
+返回值不变（`tool_result()`）。所有现有调用方（`beamai_chat_client:tool_terminal`、
 测试代码）零迁移。
 
 ### 5.5 backend handler 模块契约
@@ -454,8 +454,8 @@ resolve_backend(Backend, Context) ->
 ```
 
 > **与 clj-agent 的差异**：clj-agent 用 `defmulti invoke-backend` + `defmethod` 注册。
-> beamai 用 kernel settings 的 `tool_backends` map 做注册表。两者等价：都是
-> 「backend 类型 → handler 模块」的查找表。beamai 的方式更显式（注册在 kernel，
+> beamai 用 ChatClient settings 的 `tool_backends` map 做注册表。两者等价：都是
+> 「backend 类型 → handler 模块」的查找表。beamai 的方式更显式（注册在 ChatClient，
 > 不隐式依赖 ns require 副作用），也更可测（可注入 mock backend handler）。
 
 ### 5.6 backend 与现有字段的正交性
@@ -560,10 +560,10 @@ invoke(#{mcp_server := Server, remote_name := RemoteName}, Args, Context) ->
     end.
 
 resolve_mcp_client(Server, Context) ->
-    case beamai_context:get_kernel(Context) of
-        undefined -> {error, no_kernel};
-        Kernel ->
-            Clients = beamai_kernel:mcp_clients(Kernel),
+    case beamai_context:get_chat_client(Context) of
+        undefined -> {error, no_chat_client};
+        ChatClient ->
+            Clients = beamai_chat_client:mcp_clients(ChatClient),
             case maps:find(Server, Clients) of
                 {ok, Client} -> {ok, Client};
                 error -> {error, {mcp_server_not_registered, Server}}
@@ -573,7 +573,7 @@ resolve_mcp_client(Server, Context) ->
 
 **首版范围**：
 
-- MCP client 注册在 kernel settings：`mcp_clients => #{filesystem => {mcp_client_mod, Ref}}`
+- MCP client 注册在 ChatClient settings：`mcp_clients => #{filesystem => {mcp_client_mod, Ref}}`
 - MCP 协议实现（STDIO/HTTP）属 `beamai_extra`（README 已说明 A2A/MCP 在扩展项目）
 - **首版只定义 backend handler 契约 + 注册接口，不提供 MCP client 实现**——与
   `beamai_tool_index` behaviour 留接口、向量实现在 extra 的取舍一致
@@ -597,8 +597,8 @@ HTTP backend handler 应在 Reason 里带 `error_class` 或遵循 classify 的�
 ### 6.4 MCP client 注册
 
 ```erlang
-%% kernel settings 增加 mcp_clients
-Kernel = beamai_kernel:new(#{
+%% ChatClient settings 增加 mcp_clients
+ChatClient = beamai_chat_client:new(#{
     state_slots => #{...},
     tool_backends => #{http => beamai_tool_backend_http, mcp => beamai_tool_backend_mcp},
     mcp_clients => #{filesystem => {my_mcp_client, Ref}}
@@ -617,10 +617,10 @@ backend handler 分派时按 `tool_spec.mcp_server` 查找。**未注册的 serv
 ```erlang
 %% execute_and_continue/4（beamai_agent_tool_loop.erl:232）
 execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel, callbacks := Callbacks, messages := Messages, ...} = Opts,
+    #{chat_client := ChatClient, callbacks := Callbacks, messages := Messages, ...} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     {ToolResults, NewToolCalls, NewCtx} =
-        beamai_agent_utils:execute_tools(Kernel, TCs, ctx(Opts), Parallel,
+        beamai_agent_utils:execute_tools(ChatClient, TCs, ctx(Opts), Parallel,
                                          tool_result_cb(Callbacks)),
     ...
 ```
@@ -629,10 +629,10 @@ execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
 
 ```erlang
 execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel, callbacks := Callbacks, messages := Messages, ...} = Opts,
+    #{chat_client := ChatClient, callbacks := Callbacks, messages := Messages, ...} = Opts,
     TCM = maps:get(tool_calling_manager, Opts, beamai_default_tool_calling_manager:new()),
     #{messages := ToolResults, records := NewToolCalls, context := NewCtx} =
-        beamai_tool_calling_manager:execute(TCM, Kernel, TCs, #{
+        beamai_tool_calling_manager:execute(TCM, ChatClient, TCs, #{
             context => ctx(Opts),
             parallel => maps:get(parallel_tools, Opts, true),
             on_result => tool_result_cb(Callbacks)
@@ -645,9 +645,9 @@ execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
 ```erlang
 %% beamai_tool_calling_manager 模块增加 execute/4 分派器（behaviour 模块不只定义 callback，
 %% 也提供调用入口——与 beamai_memory_provider:history/2 等分派函数同款）
--spec execute(manager(), beamai_kernel:kernel(), [map()], execute_opts()) -> execute_result().
-execute({Mod, Ref}, Kernel, ToolCalls, Opts) ->
-    Mod:execute_batch(Ref, Kernel, ToolCalls, Opts).
+-spec execute(manager(), beamai_chat_client:chat_client(), [map()], execute_opts()) -> execute_result().
+execute({Mod, Ref}, ChatClient, ToolCalls, Opts) ->
+    Mod:execute_batch(Ref, ChatClient, ToolCalls, Opts).
 ```
 
 ### 7.3 全部四处调用点同步改造
@@ -656,17 +656,17 @@ execute({Mod, Ref}, Kernel, ToolCalls, Opts) ->
 
 | # | 模块 | 函数 | 行 | 场景 | 现有调用 |
 |---|---|---|---|---|---|
-| 1 | `beamai_agent_tool_loop` | `execute_and_continue/4` | :237 | 正常路径：执行全批 → env_pause → return_direct → 续跑 | `execute_tools(Kernel, TCs, Ctx, Parallel, OnResult)` |
-| 2 | `beamai_agent_tool_loop` | `handle_interrupt/6` | :204 | 中断路径：执行同批安全 tools（被拦截的合成 skipped） | `execute_tools(Kernel, SafeCalls, Ctx, Parallel, OnResult)` |
-| 3 | `beamai_agent` | `resume_approval_raw/4` | :463 | 审批恢复：执行被批准的单个工具（parallel=false） | `execute_tools(Kernel, [ToolCall], Ctx, false)` |
-| 4 | `beamai_agent` | `resume_env_raw/3` | :485 | 环境恢复：重跑失败调用（用 agent 的 parallel 配置） | `execute_tools(Kernel, FailedCalls, Ctx, Parallel)` |
+| 1 | `beamai_agent_tool_loop` | `execute_and_continue/4` | :237 | 正常路径：执行全批 → env_pause → return_direct → 续跑 | `execute_tools(ChatClient, TCs, Ctx, Parallel, OnResult)` |
+| 2 | `beamai_agent_tool_loop` | `handle_interrupt/6` | :204 | 中断路径：执行同批安全 tools（被拦截的合成 skipped） | `execute_tools(ChatClient, SafeCalls, Ctx, Parallel, OnResult)` |
+| 3 | `beamai_agent` | `resume_approval_raw/4` | :463 | 审批恢复：执行被批准的单个工具（parallel=false） | `execute_tools(ChatClient, [ToolCall], Ctx, false)` |
+| 4 | `beamai_agent` | `resume_env_raw/3` | :485 | 环境恢复：重跑失败调用（用 agent 的 parallel 配置） | `execute_tools(ChatClient, FailedCalls, Ctx, Parallel)` |
 
 **改造要点**：
 
 - 调用点 1、2 在 `beamai_agent_tool_loop`：从 `loop_opts` 取 `tool_calling_manager`
   （由 `beamai_agent:run_loop/3` 从 `agent_state` 透传入 `loop_opts`）
 - 调用点 3、4 在 `beamai_agent`：直接从 `agent_state` 取 `tool_calling_manager`
-- 四处都改为 `beamai_tool_calling_manager:execute(TCM, Kernel, ToolCalls, Opts)`
+- 四处都改为 `beamai_tool_calling_manager:execute(TCM, ChatClient, ToolCalls, Opts)`
 - 返回值从 `{ToolMsgs, Records, Ctx}` 三元组改为 `#{messages, records, context}` map
   （pattern match 解构，改动局部）
 
@@ -714,7 +714,7 @@ execute({Mod, Ref}, Kernel, ToolCalls, Opts) ->
 **不变**：
 
 - `beamai_agent_utils:execute_tools/5` 完全保留不动（default manager 委托给它）
-- `beamai_kernel` 完全不动
+- `beamai_chat_client` 完全不动
 - `beamai_tool` 完全不动
 
 **验收**：
@@ -734,10 +734,10 @@ execute({Mod, Ref}, Kernel, ToolCalls, Opts) ->
 
 **改动文件**：
 
-- `beamai_core/src/kernel/beamai_tool.erl`（tool_spec 类型增 `backend`/`endpoint`/`method`/
+- `beamai_core/src/core/beamai_tool.erl`（tool_spec 类型增 `backend`/`endpoint`/`method`/
   `headers`/`mcp_server`/`remote_name`；`validate/1` 增严格模式检查；
   `invoke/3` 增 backend 分派）
-- `beamai_core/src/kernel/beamai_kernel.erl`（增 `tool_backends/1` 查询 + settings 解析；
+- `beamai_core/src/core/beamai_chat_client.erl`（增 `tool_backends/1` 查询 + settings 解析；
   增 `mcp_clients/1` 查询）
 - `beamai_agent/src/beamai_tool_backend_http.erl`（**新**——HTTP transport handler）
 - `beamai_agent/test/beamai_tool_backend_tests.erl`（**新**——backend 分派测试）
@@ -754,20 +754,20 @@ execute({Mod, Ref}, Kernel, ToolCalls, Opts) ->
 **目标**：加 MCP backend handler + 注册接口，至少跑通一个真实 MCP server。
 
 **何时做**：等具体 MCP 场景出现（beamai_extra 提供 MCP client 实现时）。首版只留
-backend handler 契约 + kernel 注册接口占位。
+backend handler 契约 + ChatClient 注册接口占位。
 
 ---
 
 ## 9. 未决问题
 
-### 9.1 `beamai_kernel:invoke_tool/4` 也升格为 manager 方法吗？
+### 9.1 `beamai_chat_client:invoke_tool/4` 也升格为 manager 方法吗？
 
-`beamai_kernel:invoke_tool/4` 是**单工具执行**原语（经 around_tool filter 链）。
+`beamai_chat_client:invoke_tool/4` 是**单工具执行**原语（经 around_tool filter 链）。
 它和 `execute_batch` 是不同粒度。
 
 **首版不动 invoke_tool**。原因：
 
-- 它被多处直调（kernel 是公开 API），改成协议方法会破坏现有调用方
+- 它被多处直调（ChatClient 是公开 API），改成协议方法会破坏现有调用方
 - 它已经经 `around_tool` filter 链，形态成熟
 - backend 分派在 `beamai_tool:invoke/3`（更内层）已足够
 
@@ -782,7 +782,7 @@ backend handler 契约 + kernel 注册接口占位。
 
 首版 `beamai_default_tool_calling_manager` 是无状态 `{?MODULE, default}`。未来可能加：
 
-- `mcp_clients`（MCP 分派时查）——但 MCP client 在 kernel settings，manager 不需持有
+- `mcp_clients`（MCP 分派时查）——但 MCP client 在 ChatClient settings，manager 不需持有
 - `http_client`（HTTP transport 共享连接池）——但 beamai_http 已有连接池
 - `gather_timeout`（并发收集超时）——当前从 app env 读，可改成 manager 配置项
 
@@ -790,15 +790,15 @@ backend handler 契约 + kernel 注册接口占位。
 
 ### 9.4 命名：ToolCallingManager 还是 ToolManager？
 
-Spring 用 `ToolCallingManager`。beamai 已有 `kernel` 概念（中央编排），但 kernel 是
+Spring 用 `ToolCallingManager`。beamai 已有 `ChatClient` 概念（中央编排），但 ChatClient 是
 core 层的纯原语。`ToolCallingManager` 是 agent 层的批量执行 seam，两者不撞。
 
 **首版用 `beamai_tool_calling_manager`**——与 Spring 对齐，迁移期文档对照方便。
 
 ### 9.5 execute_batch 的 opts map vs positional args
 
-现状 5-arity：`execute_tools(Kernel, ToolCalls, Context, Parallel, OnResult)`。
-behaviour callback 用 opts map：`execute_batch(Ref, Kernel, ToolCalls, #{context, parallel, on_result})`。
+现状 5-arity：`execute_tools(ChatClient, ToolCalls, Context, Parallel, OnResult)`。
+behaviour callback 用 opts map：`execute_batch(Ref, ChatClient, ToolCalls, #{context, parallel, on_result})`。
 
 **定论**：behaviour callback 用 opts map（避免 arity 爆炸 + 未来加字段不破坏回调）。
 但 `beamai_agent_utils:execute_tools/5` 保留 positional（向后兼容，default manager 内部调用）。
@@ -812,12 +812,12 @@ behaviour callback 用 opts map：`execute_batch(Ref, Kernel, ToolCalls, #{conte
 clj-agent 的 `deftool` 宏在编译期检查非法组合（非 local backend + handler body）。
 beamai 的 `beamai_tool:new/3` 是普通函数，检查只能在运行时 `validate/1`。
 
-**缓解**：让 `beamai_kernel:add_tool/2` 在注册时调 `validate/1`，把错误前置到 build 期
+**缓解**：让 `beamai_chat_client:add_tool/2` 在注册时调 `validate/1`，把错误前置到 build 期
 （而非 invoke 期）。当前 `add_tool` 不 validate——PR2 同步改进。
 
 ### 10.2 无 multimethod——backend 分派用注册表
 
-clj-agent 用 `defmulti invoke-backend` + `defmethod` 注册分派。beamai 用 kernel
+clj-agent 用 `defmulti invoke-backend` + `defmethod` 注册分派。beamai 用 ChatClient
 settings 的 `tool_backends` map 做 lookup 表。两者等价，beamai 的方式更显式、可注入。
 
 ### 10.3 并发模型——spawn_monitor 已就绪
@@ -831,12 +831,12 @@ behaviour 不约束内部并发方式。
 ### 10.4 进程字典 vs 显式传递
 
 clj-agent §5.4 讨论 MCP client 访问的悬而未决问题（三个候选方案）。
-beamai 的 `beamai_context:get_kernel/1` 已经能从 context 拿到 kernel，kernel 的
+beamai 的 `beamai_context:get_chat_client/1` 已经能从 context 拿到 ChatClient，ChatClient 的
 settings 又能拿到 `mcp_clients`——**问题在 beamai 不存在**：
 
 - `beamai_tool:invoke/3` 已接收 Context 参数
-- Context 已绑定 kernel（`beamai_context:with_kernel/2` 在 `invoke_tool` 入口）
-- kernel settings 的 `mcp_clients` 直接可查
+- Context 已绑定 ChatClient（`beamai_context:with_chat_client/2` 在 `invoke_tool` 入口）
+- ChatClient settings 的 `mcp_clients` 直接可查
 
 无需进程字典、无需加宽签名、无需 binding 动态变量。
 
@@ -856,14 +856,14 @@ settings 又能拿到 `mcp_clients`——**问题在 beamai 不存在**：
 |---|---|---|---|
 | 1 | manager 形态：behaviour vs fun 注入 | **behaviour** | 与 beamai 现有 `{Mod, Ref}` 模式一致（memory_provider / chat_memory / http backend） |
 | 2 | manager 模块归属 | **beamai_agent** | 批量执行是 agent 层职责；core 只有单次 invoke_tool |
-| 3 | manager 引用注入点 | **agent_state**（非 kernel） | beamai 的 kernel 是 core 纯原语；manager 是 agent 级配置（同 memory/callbacks） |
+| 3 | manager 引用注入点 | **agent_state**（非 ChatClient） | beamai 的 ChatClient 是 core 纯原语；manager 是 agent 级配置（同 memory/callbacks） |
 | 4 | `backend` 配置平铺 vs 嵌套 | **平铺** | 与 tool_spec 现有 opts 风格一致（serial/sensitive/return_direct 均平铺） |
 | 5 | remote backend 是否允许 handler | **严格禁止** | 防止本地代码与远端 transport 语义混淆 |
 | 6 | execute_result 形态 | **plain map** | 与 beamai 现有约定一致 |
-| 7 | backend 分派机制 | **kernel settings tool_backends 注册表** | 无 multimethod；显式注册更显式可测可注入 |
+| 7 | backend 分派机制 | **ChatClient settings tool_backends 注册表** | 无 multimethod；显式注册更显式可测可注入 |
 | 8 | HTTP backend 模块归属 | **beamai_agent** | transport 是应用层概念；core 不应感知 HTTP 工具 |
 | 9 | MCP backend 实现 | **首版只留契约** | MCP client 实现属 beamai_extra（README 已声明） |
-| 10 | MCP client 访问方式 | **经 context → kernel → settings.mcp_clients** | beamai_context 已绑定 kernel，问题不存在（与 clj-agent 不同） |
+| 10 | MCP client 访问方式 | **经 context → ChatClient → settings.mcp_clients** | beamai_context 已绑定 ChatClient，问题不存在（与 clj-agent 不同） |
 | 11 | `beamai_agent_utils:execute_tools/5` 保留 | **是（deprecated alias）** | PR1 零变化承诺可证伪；PR2+ caller 迁移后再考虑移除 |
 
 ---
@@ -874,13 +874,13 @@ settings 又能拿到 `mcp_clients`——**问题在 beamai 不存在**：
 |---|---|---|
 | `defprotocol ToolCallingManager`（core） | `-behaviour(beamai_tool_calling_manager)`（agent） | Erlang behaviour = Clojure protocol；放 agent 因批量执行是 agent 层职责 |
 | `defrecord DefaultToolCallingManager`（client） | `beamai_default_tool_calling_manager` 模块（agent） | Erlang module = Clojure record；无字段 |
-| Kernel `:tool-manager` 字段 | agent_state `tool_calling_manager` 字段 | beamai kernel 是 core 纯原语 |
+| ChatClient `:tool-manager` 字段 | agent_state `tool_calling_manager` 字段 | beamai ChatClient 是 core 纯原语 |
 | `deftool` 宏 `:backend` 元数据 | tool_spec map `backend` 字段 | beamai 无宏；tool 是 map |
 | 宏展开期严格模式检查 | `validate/1` 运行时检查 | Erlang 无编译期宏 |
 | `defmulti invoke-backend`（core，公开） | `beamai_tool:invoke/3` 模式匹配 + tool_backends 注册表 | Erlang 无 multimethod |
 | `:http` 方法 client `defmethod` 注册 | `tool_backends => #{http => beamai_tool_backend_http}` | 显式注册 vs 隐式 ns require |
 | cheshire 在 client → HTTP transport 放 client | JSON 在 stdlib → 无模块依赖障碍 | OTP 27+ 内置 `json` 模块 |
-| mcp-clients 访问悬而未决（三候选） | context → kernel → settings.mcp_clients（已解决） | beamai_context 已绑定 kernel |
+| mcp-clients 访问悬而未决（三候选） | context → ChatClient → settings.mcp_clients（已解决） | beamai_context 已绑定 ChatClient |
 | 虚拟线程池生命周期 | spawn_monitor 已就绪 | beamai 已有成熟并发模型 |
 | inline tools 绕过 tool/invoke | **不存在** | beamai 所有工具经 invoke/3，无盲区 |
 | `^:private` defmulti | 无等价物（beamai 无私有多方法） | N/A |

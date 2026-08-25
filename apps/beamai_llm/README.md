@@ -481,36 +481,35 @@ end.
 
 ### 自动重试与 Retry-After
 
-重试**不在** `beamai_chat_model` 里，而是 llm 链上的一层 filter
-（`beamai_llm_filters:retry_filter/1`，见 [FILTER.md](../../docs/FILTER.md)）：kernel 缺省把它注入在
-llm 链最内层，故经 kernel / agent 调用时行为与从前一致。遇到 429 / 5xx 时，若服务端返回
-`Retry-After` 头则**按其建议退避**（上限 60s），否则按 `retry_delay * 重试次数` 退避。
+`beamai_chat_model:chat/2,3` **内建**按错误分类的退避重试（与 `beamai_embedding` /
+`beamai_rerank` 共用 `beamai_llm_retry`）。遇到 429 / 5xx / 网络超时时，若服务端返回
+`Retry-After` 头则**按其建议退避**（上限 60s），否则按 `retry_delay * 重试次数` 退避；
+4xx 参数错、鉴权失败等语义错误不重试。
 
-参数照旧写在单次调用的 Opts 里（优先于 kernel settings 里给的默认值）：
+参数三级取值——**单次 Opts > provider Config > 框架默认**，`max_retries => 0` 即关闭：
 
 ```erlang
-{ok, Resp, _} = beamai_kernel:invoke_chat(Kernel, Messages, #{
-    max_retries => 3,          %% 默认 3
-    retry_delay => 1000,       %% 基础退避 ms，默认 1000
-    on_retry => fun(State) ->  %% 可选，重试回调
+%% 这个 provider 一律重试 5 次
+LLM = beamai_chat_model:create(anthropic, #{model => M, api_key => Key, max_retries => 5}),
+
+%% 单次调用覆盖（本次不重试）
+{ok, Resp} = beamai_chat_model:chat(LLM, Messages, #{max_retries => 0}),
+
+%% 观测每次真实尝试
+{ok, Resp2} = beamai_chat_model:chat(LLM, Messages, #{
+    on_retry => fun(State) ->
         io:format("第 ~p 次重试，延迟 ~pms：~p~n",
                   [maps:get(attempt, State), maps:get(delay, State), maps:get(error, State)])
     end
 }).
 ```
 
-调整默认值或关掉：`beamai:kernel(#{llm_retry => #{max_retries => 5}}, Filters)` /
-`#{llm_retry => false}`。
+**位置很关键**：重试在 provider 调用内部，也就是整个 filter 栈**之下**。filter 看到的是
+「一次逻辑调用」，重试重入碰不到任何 filter——`around_chat` 上的记忆/记账因此每轮只跑
+一次。反过来，filter 也**看不到**单次尝试，要观测就用 `on_retry`。
 
-**直接调 `beamai_chat_model:chat/3`（不经 kernel）是单次请求、不重试**——这类直连
-调用要重试就自己包一层：
-
-```erlang
-beamai_llm_retry:run(fun() -> beamai_chat_model:chat(LLM, Messages) end,
-                     beamai_llm_retry:opts(#{max_retries => 3})).
-```
-
-流式路径不重试：token 已投递给 sink，重跑会让下游看到重复内容。
+**流式路径不重试**：token 已投递给 sink，重跑会让下游看到重复内容；要容错请在 turn 层
+重跑整轮。
 
 ### 统一错误结构（beamai_llm_error）
 
@@ -677,7 +676,7 @@ beamai_llm_provider_common:retry_after_ms(Headers) -> non_neg_integer() | undefi
 
 ### LLM 响应结构 (beamai_llm_response)
 
-> **注意**: `beamai_llm_response` 模块已移至 `beamai_core`，作为核心数据结构被 Kernel 层消费。
+> **注意**: `beamai_llm_response` 模块已移至 `beamai_core`，作为核心数据结构被 ChatClient 层消费。
 
 统一的 LLM 响应结构，抽象不同 Provider 的响应差异：
 

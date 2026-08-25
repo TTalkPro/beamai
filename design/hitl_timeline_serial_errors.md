@@ -36,7 +36,7 @@ beamai 的 ChatMemory 协议 = clj 的 ChatMemory；`beamai_chat_memory_ets` = �
 
 ## 1. per-tool `:serial`（批 A）
 
-- **tool_spec 加 `serial => boolean()`**（缺省 false）；`beamai_kernel:serial_tool/2` 查询。
+- **tool_spec 加 `serial => boolean()`**（缺省 false）；`beamai_chat_client:serial_tool/2` 查询。
 - `beamai_agent_utils:execute_tools/4`：并行判定改为
   `Parallel andalso length>1 andalso 批内无 serial 工具`；命中 serial → 整批退化串行
   （clj §9.2.4：副作用要顺序，整批退化是唯一无需解释的语义）。
@@ -112,7 +112,7 @@ resume 从"只接受人类输入文本"扩展为"决策 + payload"（clj §13 / 
   **第一个适配 ETS**。
 - **快照**（纯数据，`version=1`）：`#{version, conversation_id, paused_at,
   pause_reason, pending_tool, interrupt_state}`。interrupt_state 已是纯 EDN
-  （messages/saved_state/tool_calls_made/iteration…，无函数）。**不存** kernel/
+  （messages/saved_state/tool_calls_made/iteration…，无函数）。**不存** ChatClient/
   tools/callbacks/memory（代码侧 resume 重建）、不存对话历史（ChatMemory 已管）。
   存档前 term_to_binary 往返校验，不可序列化则 warn（防御）。
 - **Agent 集成（opt-in 全自动）**：config `pause_store`；中断时自动 save；任何终态

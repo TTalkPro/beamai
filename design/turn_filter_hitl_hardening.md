@@ -11,7 +11,7 @@
 > TurnResult 为工具循环结果 tuple（不转 map），filter 直接模式匹配、`{error,_}`(2-tuple)/
 > `{interrupt,_,_}`/`{ok,_,_,_}` 均落 filter_chain 的 `Resp->Resp` 分支（turn filter 不走
 > FCtx 合并，用闭包持状态）；② resume 一次性分派用 `atomics` CAS；③ `sensitive_tool/2`
-> 未加——approval_filter 直接读 tool spec 的 is_sensitive，无需 kernel 查询。
+> 未加——approval_filter 直接读 tool spec 的 is_sensitive，无需 ChatClient 查询。
 
 ---
 
@@ -89,7 +89,7 @@ assistant(tool_calls) **补合成"已取消"tool 结果**（每个未决 tool_ca
 ## 5. `sensitive` 工具标注（批 E）
 
 - tool_spec 加 `sensitive => boolean()`（缺省 false）；`beamai_tool:is_sensitive/1`、
-  `beamai_kernel:sensitive_tool/2`。
+  `beamai_chat_client:sensitive_tool/2`。
 - `approval_filter(ApproveFun)`：仅对 `sensitive` 工具调 ApproveFun，返回 false → 拒绝短路
   （结果「已拒绝执行（未获批准）」，无 writes）。非交互式；交互式审批仍走 gate。
 

@@ -20,7 +20,6 @@
         beamai_llm_http_client,
         beamai_llm_helper,
         beamai_llm_retry,
-        beamai_llm_filters,
         %% Behaviour
         beamai_llm_provider_behaviour,
         beamai_embedding_provider_behaviour,

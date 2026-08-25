@@ -56,7 +56,7 @@ step 链：[用户 step filter ...] ++ step_terminal（一轮迭代的真正执�
    返回 `{result, TurnResult}`（直接短路，如重跑后仍失败要再暂停）或 `{loop, OptsOverride}`
    （用续接消息跑循环）。CAS 留在循环 filter 内部。
 5. **循环可替换**：agent 配置 `loop_filter => fun((LoopOpts) -> beamai_filter:filter())`；
-   `beamai_agent:run_turn_chain/3` 取它构造链上那一环，agent 与 kernel 代码零改动。
+   `beamai_agent:run_turn_chain/3` 取它构造链上那一环，agent 与 ChatClient 代码零改动。
 
 ### step 契约
 

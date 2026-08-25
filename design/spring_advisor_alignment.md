@@ -10,7 +10,7 @@ beamai 的对应物、缺口与取舍。**结论先行：Spring 2.0 的头号变
 
 | Spring | 不引入的理由 |
 |---|---|
-| `getOrder()` 数字排序 | beamai 已在「filter 一次性构建」里删掉 order，**注册顺序即层序**。数字 order 是 Spring 的 DI 装配后果（advisor 从容器里来，位置无从谈起，只好用数字排）；beamai 的 filter 在 `beamai_kernel:new/2` 一次性列出，列表位置就是层序，更直白也更难写错。重新引入是倒退。 |
+| `getOrder()` 数字排序 | beamai 已在「filter 一次性构建」里删掉 order，**注册顺序即层序**。数字 order 是 Spring 的 DI 装配后果（advisor 从容器里来，位置无从谈起，只好用数字排）；beamai 的 filter 在 `beamai_chat_client:new/2` 一次性列出，列表位置就是层序，更直白也更难写错。重新引入是倒退。 |
 | `ToolAdvisor` / `MemoryAdvisor` 标记接口 + 自动注册 | 解决的是「容器里飘着一堆 advisor，得认出谁是工具循环」——beamai 没有容器。 |
 | `BaseAdvisor` 的 `before()`/`after()` 模板 | beamai 的 around 闭包（前置 → `Next` → 后置）本就一个机制覆盖两段，无需模板方法。Spring 那套模板还带个坑：流式 `after()` 按 finish-reason 逐块触发，`MessageChatMemoryAdvisor` 得覆写 `adviseStream` 绕开。 |
 | `ChatClientRequest.context()` 可变 map | beamai 的 filter 私有状态由链投影/合并（`FCtx` 参数进、返回值出），不给 filter 递一个共享可变 map。Spring 那边文档称其不可变、实际是 `HashMap` 且 `ToolSearchToolCallingAdvisor` 直接原地 `put`——正是这种口径不一致要避免的。 |
@@ -25,7 +25,7 @@ beamai 从来没有这个问题：
 
 | Spring 2.0 | beamai |
 |---|---|
-| 工具循环搬进 advisor 链 | 循环本就在 Agent 层（`beamai_agent_tool_loop`），kernel 只提供单次 chat / 单次 tool |
+| 工具循环搬进 advisor 链 | 循环本就在 Agent 层（`beamai_agent_tool_loop`），ChatClient 只提供单次 chat / 单次 tool |
 | `chain.copy(this).nextCall()` 递归 | `Next(Req)` 重入（`validation_turn_filter` 早就这么用） |
 | advisor 落在循环内/外靠 order 与 `+300` 比大小 | **靠选哪个 hook**：`around_turn` 包整个循环、`around_chat` 循环内每次 LLM 调用、`around_tool` 每次工具执行 |
 
@@ -40,7 +40,7 @@ beamai 的三链比数字 order 更严：位置是**类型**表达的，不是�
 ### 1.1 `return_direct`（已实施）
 
 工具结果**直接作为最终答案**，不回灌模型。`beamai_tool` 加 `return_direct => boolean()`
-标注，`beamai_kernel:return_direct_tool/2` 按名查，循环在屏障后判定。
+标注，`beamai_chat_client:return_direct_tool/2` 按名查，循环在屏障后判定。
 
 两处**有意分歧**：
 
@@ -106,7 +106,7 @@ mock 不看输入。
 
 核心是把「注册」与「广播」拆开：
 
-- **注册**（kernel 的 tools）：决定**能不能执行**——全量注册。
+- **注册**（ChatClient 的 tools）：决定**能不能执行**——全量注册。
 - **广播**（chat opts 的 tools）：决定**模型看不看得见**——`around_chat` filter 每轮现算，
   首轮只给 `tool_search` 一个。
 
@@ -116,7 +116,7 @@ mock 不看输入。
 与 Spring 的结构差异：
 
 - **不需要 fingerprint 重建索引**。Spring 按请求解析工具、故须用 SHA-256 指纹判断工具集
-  是否变了。beamai 的工具集在建 kernel 前就已知，索引一次性建好闭包进组件即可。
+  是否变了。beamai 的工具集在建 ChatClient 前就已知，索引一次性建好闭包进组件即可。
   （`beamai_tool_index:fingerprint/1` 仍提供，留给未来动态工具集。）
 - **未索引的工具原样透传**。filter 只裁剪自己索引过的那些；广播列表里其余的（典型如
   agent 运行时追加的中断工具）一概不碰——否则会被静默吃掉。这是 beamai 特有的：Spring
@@ -142,7 +142,7 @@ mock 不看输入。
 
 beamai 有两套记忆编排，各司其职：
 
-- `beamai_memory_filter`（kernel 级，`around_chat`）—— 给直接用 kernel 的调用方。
+- `beamai_memory_filter`（ChatClient 级，`around_chat`）—— 给直接用 ChatClient 的调用方。
 - `beamai_memory_provider`（Agent 级）—— Agent 在 tool loop 里显式编排。
 
 Spring 2.0 的记忆变化基本不适用：`PromptChatMemoryAdvisor` 删除（beamai 从无对应物）；
@@ -196,7 +196,7 @@ LLM 调用都过一遍：不止拦用户输入，工具结果回灌时带出的�
 
 | 项 | 落点 |
 |---|---|
-| `return_direct` | `beamai_tool`（标注）、`beamai_kernel:return_direct_tool/2`、`beamai_agent_tool_loop`（AND + 失败退回 + 合成落库） |
+| `return_direct` | `beamai_tool`（标注）、`beamai_chat_client:return_direct_tool/2`、`beamai_agent_tool_loop`（AND + 失败退回 + 合成落库） |
 | JSON Schema 子集校验器 | `beamai_json_schema`（新） |
 | Schema 校验 turn filter | `beamai_filters:schema_validation_turn_filter/2,3` |
 | 工具检索 | `beamai_tool_search`（新）、`beamai_tool_index` behaviour（新）+ `_keyword` / `_regex` 两后端（新） |

@@ -10,13 +10,13 @@
 ## 0. 结论速览
 
 1. **现状盘点**：`beamai_context` 一个 map 混装五类身份不同的东西
-   （kernel 引用、filter 私有状态、conversation_id、用户变量、死字段
+   （ChatClient 引用、filter 私有状态、conversation_id、用户变量、死字段
    trace/metadata），靠 `normalize_key` + `__` 保留 key 在同一命名空间里
    强行区分。
 2. **可写通道零真实写者**：工具可返回 `{ok, Value, NewCtx}` 改写 context，
    但全链（并行/串行/tool loop/chat loop）都丢弃返回的 Ctx。与 clj-agent
    盘点结论一致——破坏性变更实际无痛。
-3. **拆分为两半**：**env（只读运行环境）**= kernel + conversation_id +
+3. **拆分为两半**：**env（只读运行环境）**= ChatClient + conversation_id +
    调用方注入变量，框架自持、不可序列化也无需序列化；**state（用户状态槽）**
    = 显式声明的槽 + reducer，纯数据、可序列化，是工具间共享状态的唯一通道。
 4. **向并行工具靠拢**：工具写出即数据（`{ok, Value, Writes}`），并行批次
@@ -43,7 +43,7 @@
 | 内容 | key 形式 | 性质 | 实际消费者 |
 |---|---|---|---|
 | `'__context__' => true` | atom | 类型标记 | 框架自检 |
-| `kernel` | atom | 框架运行时引用，invoke_chat/invoke_tool 入口自动绑定 | filter/工具经 `get_kernel` 组合调用（子 agent、agentic tool） |
+| `ChatClient` | atom | 框架运行时引用，invoke_chat/invoke_tool 入口自动绑定 | filter/工具经 `get_chat_client` 组合调用（子 agent、agentic tool） |
 | `'__filter_states__'` | atom | filter 私有状态槽（按 filter 名隔离） | 仅 `beamai_filter_chain` 投影/合并 |
 | `trace`、`metadata` | atom | 调试跟踪/元数据 | **src 零调用者**（只有 context.erl 自身访问器），死字段 |
 | `<<"__conversation_id__">>` | 保留 binary | 身份/环境数据（只读性质） | memory_filter 定位会话；delegate `owner/1` 归属判定 |
@@ -54,7 +54,7 @@
 
 ### 1.2 消费者盘点：可写通道零真实写者（2026-07-11 已完成）
 
-- `beamai_tool` handler 可返回 `{ok, Value, NewCtx}`（kernel
+- `beamai_tool` handler 可返回 `{ok, Value, NewCtx}`（ChatClient
   `tool_terminal` 认这个形状），但：
   - agent 并行/串行路径 `run_one_tool` 丢弃 `invoke_tool` 返回的 `_Ctx`
     （docstring 明言"工具对 context 的修改不回写"）；
@@ -101,7 +101,7 @@
     '__context__' := true,
     %% ── env：只读运行环境（框架自持，不序列化）─────────────
     env := #{
-        kernel := beamai_kernel:kernel() | undefined,
+        chat_client := beamai_chat_client:chat_client() | undefined,
         conversation_id := binary() | undefined,
         vars := #{binary() => term()}      %% 调用方注入，只读
     },
@@ -112,7 +112,7 @@
 }.
 ```
 
-- **env**：`with_kernel`/`get_kernel`、`with_conversation_id`/`conversation_id`
+- **env**：`with_chat_client`/`get_chat_client`、`with_conversation_id`/`conversation_id`
   迁入 env 分区；`new/1` 注入的变量收进 `env.vars`（`get/2,3` 读它，语义
   改为**只读环境**——`set/set_many/delete/update` 从公开 API 移除或仅限
   构造期使用）。
@@ -124,11 +124,11 @@
 - **删除**：`trace`、`metadata`（死字段）、`normalize_key` 公开导出、
   `<<"__conversation_id__">>` 保留 key 把戏。
 
-### 3.2 状态槽声明（reducer 落 kernel）
+### 3.2 状态槽声明（reducer 落 ChatClient）
 
 ```erlang
-%% kernel 构造期声明（示意 API，实施时定稿）
-Kernel = beamai_kernel:new(#{
+%% ChatClient 构造期声明（示意 API，实施时定稿）
+ChatClient = beamai_chat_client:new(#{
     state_slots => #{
         <<"notes">>  => #{init => [], reduce => fun(Acc, V) -> [V | Acc] end},
         <<"budget">> => #{init => 0,  reduce => fun erlang:'+'/2}
@@ -139,7 +139,7 @@ Kernel = beamai_kernel:new(#{
 - 未声明槽默认 **last-writer**（按 tool_call index 序，确定性）；同批多工具
   写同一未声明槽 → conflict，`logger:warning` 告警；
 - 绝大多数工具不写 state → 零声明；
-- agent 层 `beamai_agent:new` 配置透传 `state_slots` 给内部 kernel。
+- agent 层 `beamai_agent:new` 配置透传 `state_slots` 给内部 ChatClient。
 
 ### 3.3 折叠纯函数
 
@@ -195,7 +195,7 @@ tool_calls [tc1 tc2 tc3 ...]（LLM 一轮返回）
   盘点显示第三元现无任何消费者（全链丢弃），实际破坏面为零；
 - `fun/1`（不收 context）的工具**同样可以**返回 writes——读环境与写状态
   正交，写状态不再被迫声明收 context；
-- kernel `tool_terminal` 归一化：`{ok, V}` → `#{result => V, writes => #{}}`；
+- ChatClient `tool_terminal` 归一化：`{ok, V}` → `#{result => V, writes => #{}}`；
   `{ok, V, W}` → `#{result => V, writes => W}`。
 
 ### 4.3 filter 链契约收紧
@@ -227,8 +227,8 @@ tool_calls [tc1 tc2 tc3 ...]（LLM 一轮返回）
 |---|---|---|---|
 | `beamai_context:t()` 结构 | 五类平铺一个 map | env/state/filter_states 三分区 | 直接 maps 操作 context 的代码需改（src 内无，仅测试） |
 | 工具 handler 三元组返回 | `{ok, V, NewCtx}` | `{ok, V, Writes}` | 零真实写者；直调用户需改 |
-| `beamai_kernel:invoke_tool` 返回 | `{ok, V, Ctx}` | `{ok, V, Writes}` | 现有调用点全部丢弃第三元，无感 |
-| `beamai_kernel:invoke_chat(_stream)` 返回 | `{ok, Resp, Ctx}` | 不变（Ctx 含更新后 filter_states） | 无 |
+| `beamai_chat_client:invoke_tool` 返回 | `{ok, V, Ctx}` | `{ok, V, Writes}` | 现有调用点全部丢弃第三元，无感 |
+| `beamai_chat_client:invoke_chat(_stream)` 返回 | `{ok, Resp, Ctx}` | 不变（Ctx 含更新后 filter_states） | 无 |
 | tool 链 Response | `#{result, context}` | `#{result, writes, context}` | 自写 around_tool filter 若构造 Response 需补 `writes`（可由链兜底默认） |
 | `beamai_context:set/set_many/delete/update` | 公开 API | 移除（或仅构造期） | src 内零调用者 |
 | `trace/metadata` API | 存在 | 删除 | 零调用者 |
@@ -238,15 +238,15 @@ tool_calls [tc1 tc2 tc3 ...]（LLM 一轮返回）
 
 ## 6. 逐模块修改计划
 
-1. `beamai_core/src/kernel/beamai_context.erl`：三分区重构；
+1. `beamai_core/src/core/beamai_context.erl`：三分区重构；
    `+apply_writes/3`（默认 last-writer + conflict 收集）、
    `+state_get`、`+get_state/with_state`；env 访问器迁移；删 trace/metadata。
-2. `beamai_core/src/kernel/beamai_tool.erl`：`invoke` 返回归一
+2. `beamai_core/src/core/beamai_tool.erl`：`invoke` 返回归一
    `{ok,V}|{ok,V,Writes}`；docstring 改只读 env 语义。
-3. `beamai_core/src/kernel/beamai_kernel.erl`：`tool_terminal` 归一 writes；
+3. `beamai_core/src/core/beamai_chat_client.erl`：`tool_terminal` 归一 writes；
    `run_tool` Response 新形状；`invoke_tool` 返回 `{ok,V,Writes}`；
    `new/1` 收 `state_slots` 入 settings。
-4. `beamai_core/src/kernel/beamai_filter_chain.erl`：Response 缺 `writes`
+4. `beamai_core/src/core/beamai_filter_chain.erl`：Response 缺 `writes`
    时兜底 `#{}`（宽容自写 filter）。
 5. `beamai_agent/src/beamai_agent_utils.erl`：`run_one_tool` 透出 writes；
    `execute_concurrent/execute_sequential` 屏障折叠、返回三元组；
@@ -273,7 +273,7 @@ tool_calls [tc1 tc2 tc3 ...]（LLM 一轮返回）
 
 ## 8. 待决问题
 
-- [ ] `state_slots` 声明的最终形状：kernel opt（本文倾向）还是独立注册表；
+- [ ] `state_slots` 声明的最终形状：ChatClient opt（本文倾向）还是独立注册表；
 - [ ] conflict 的策略：warn（本文倾向）还是可配置 error；
 - [ ] `env.vars` 是否保留 `set` 构造期写入，还是只允许 `new/1` 一次性注入；
 - [ ] per-tool `:serial` 标注（副作用工具整批退化串行）：本设计不含，
@@ -288,7 +288,7 @@ tool_calls [tc1 tc2 tc3 ...]（LLM 一轮返回）
   设计定稿 + S1/S2/HITL 实施记录）
 - Spring AI Reference, [Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html)（ToolContext 只读语义）
 - LangChain Docs, [LangGraph runtime (Pregel)](https://docs.langchain.com/oss/python/langgraph/pregel)（channels + 槽级 reducer）
-- 本仓库：`design/kernel_memory_filter_redesign.md`（context 不再记录消息/历史的前次收紧）
+- 本仓库：`design/chat_client_memory_filter_redesign.md`（context 不再记录消息/历史的前次收紧）
 
 ---
 
