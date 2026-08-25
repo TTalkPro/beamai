@@ -9,9 +9,15 @@
 %%% 职责：
 %%% - 管理工具注册
 %%% - 持有 LLM 服务配置
-%%% - 执行洋葱式 Filter 链（chat / tool 各自前后一对 hook）
-%%% - invoke_chat：单次 Chat Completion（经 around_chat 链）
+%%% - 执行洋葱式 Filter 链
+%%% - invoke_chat：单次 Chat Completion（经 around_chat 链 → around_llm 链）
 %%% - invoke_tool：单次工具执行（经 around_tool 链）
+%%%
+%%% chat 侧是**两层嵌套**的洋葱：外层 around_chat 每轮迭代恰好进出一次（记忆 /
+%%% 记账 / 审计），它的 terminal 是内层 around_llm 链——每次**真实** LLM 请求
+%%% 进出一次（重试 / fallback / 限流）。重试因此只在 llm 层重入，不会连累 chat
+%%% 层的 filter 重跑。重试 filter 由 settings 的 `llm_retry` 控制，缺省注入在
+%%% llm 链最内层（见 default_llm_filters/1）。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -53,6 +59,12 @@
 
 -type kernel_settings() :: #{
     default_timeout => pos_integer(),
+    %% llm 链最内层的缺省重试 filter：
+    %% - 缺省（不设）等同 #{}：按框架默认重试（max_retries/retry_delay 仍可被
+    %%   单次 chat opts 覆盖），与拆分前的行为一致
+    %% - map()：作为该 filter 的默认重试参数（单次 chat opts 优先级更高）
+    %% - false：不注入，重试完全交给使用方自己注册的 around_llm filter
+    llm_retry => map() | false,
     atom() => term()
 }.
 
@@ -209,15 +221,15 @@ invoke_chat(Kernel, Messages, Opts) ->
             %% 最内层）：在全部 filter 之后、LLM 之前前置系统消息，不入存储。
             SystemPrompts = maps:get(system_prompts, Opts, []),
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
-            run_chat(LlmConfig, Filters, Messages, Opts, Context);
+            run_chat(LlmConfig, Filters, kernel_settings(Kernel), Messages, Opts, Context);
         error ->
             {error, no_llm_service}
     end.
 
 %% @doc 流式 Chat Completion（经完整 around_chat 链）
 %%
-%% 与 invoke_chat/3 走**同一条** filter 洋葱链（Memory / system_prompt 等行为
-%% 完全一致），区别仅在最内层 terminal 调用 provider 的 stream_chat：流式 token
+%% 与 invoke_chat/3 走**同样的** chat + llm 两层洋葱（Memory / system_prompt 等
+%% 行为完全一致），区别仅在最内层 terminal 调用 provider 的 stream_chat：流式 token
 %% 经 TokenCallback 实时回传，链最终仍返回汇聚后的统一响应（供 Memory filter
 %% 落库、供工具循环判定 tool_calls）。
 %%
@@ -239,7 +251,8 @@ invoke_chat_stream(Kernel, Messages, Opts, TokenCallback) ->
                         maps:get(context, Opts, beamai_context:new()), Kernel),
             SystemPrompts = maps:get(system_prompts, Opts, []),
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
-            run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback);
+            run_chat_stream(LlmConfig, Filters, kernel_settings(Kernel),
+                            Messages, Opts, Context, TokenCallback);
         error ->
             {error, no_llm_service}
     end.
@@ -347,19 +360,50 @@ system_prompt_filter(SystemPrompts) ->
         end
     })].
 
-%% @private 运行 chat filter 洋葱链（用 around_chat hook）
+%% @private 运行 chat 洋葱（around_chat 链 → around_llm 链 → LLM 调用）
 %%
-%% Request `#{messages, context, opts}` → Response `#{response, context}`，
-%% 最内层 terminal 为真正的 LLM 调用。
-run_chat(LlmConfig, Filters, Messages, Opts, Context) ->
+%% Request `#{messages, context, opts}` → Response `#{response, context}`。
+%% chat 链的 terminal 不是 LLM 调用本身，而是**内层 llm 链**：这样 around_chat
+%% 每轮只进出一次，而 around_llm 上的重试/fallback 想重入几次就重入几次。
+run_chat(LlmConfig, Filters, Settings, Messages, Opts, Context) ->
     Req = #{messages => Messages, context => Context, opts => Opts},
-    Terminal = chat_terminal(LlmConfig),
+    Terminal = llm_chain(Filters, Settings, chat_terminal(LlmConfig)),
     case beamai_filter_chain:run(Filters, around_chat, Terminal, Req) of
         {ok, #{response := Response, context := Ctx}} -> {ok, Response, Ctx};
         {error, _} = Err -> Err
     end.
 
-%% @private chat 链最内层：真正调用 LLM（出错时 throw，由链统一捕获）
+%% @private 合成内层 llm 链（用 around_llm hook），作为 chat 链的 terminal
+%%
+%% 缺省重试 filter 追加在**最内层**（列表尾）：使用方自己注册的 around_llm
+%% filter（限流、记账、mock）一律在重试之外，看到的是「逻辑一次调用」；要观测
+%% 每次真实尝试，把 settings 的 llm_retry 设为 false 再自行注册重试 filter。
+llm_chain(Filters, Settings, Terminal) ->
+    beamai_filter_chain:compose(Filters ++ default_llm_filters(Settings),
+                                around_llm, Terminal).
+
+%% @private llm 链的缺省最内层 filter（重试）
+%%
+%% 重试实现在 beamai_llm（beamai_llm_filters:retry_filter/1）——core 不反向声明
+%% 对 beamai_llm 的依赖（会成环），故此处按 add_llm/3 同样的约定做运行时探测：
+%% 用自定义 module 且未加载 beamai_llm 时退化为不注入。
+default_llm_filters(Settings) ->
+    case maps:get(llm_retry, Settings, #{}) of
+        false ->
+            [];
+        RetryOpts when is_map(RetryOpts) ->
+            case code:ensure_loaded(beamai_llm_filters) of
+                {module, beamai_llm_filters} ->
+                    [beamai_llm_filters:retry_filter(RetryOpts)];
+                {error, _} ->
+                    []
+            end
+    end.
+
+%% @private 取 kernel settings
+kernel_settings(#{settings := Settings}) -> Settings.
+
+%% @private llm 链最内层：真正调用 LLM（出错时 throw，由最外层 run/4 统一捕获）
 chat_terminal(LlmConfig) ->
     Module = maps:get(module, LlmConfig, beamai_chat_completion),
     fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
@@ -369,29 +413,33 @@ chat_terminal(LlmConfig) ->
         end
     end.
 
-%% @private 运行流式 chat filter 洋葱链（与 run_chat 同链，仅 terminal 不同）
+%% @private 运行流式 chat 洋葱（与 run_chat 同两层链，仅最内层 terminal 不同）
 %%
-%% filters 上声明的 token_transform（第四钩子）在 terminal 内按注册顺序组装成
-%% token 变换链，作用于送往 TokenCallback 的出站流；最终归一化响应不经过它。
-run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback) ->
-    Req = #{messages => Messages, context => Context, opts => Opts},
+%% filters 上声明的 token_transform 在 terminal 内按注册顺序组装成 token 变换链，
+%% 作用于送往 TokenCallback 的出站流；最终归一化响应不经过它。
+%%
+%% Req 带 `stream => true`：token 已投递出去的流重试会重复投递，llm 链上的
+%% filter 据此判定是否介入（内置重试 filter 见此标记即透传）。
+run_chat_stream(LlmConfig, Filters, Settings, Messages, Opts, Context, TokenCallback) ->
+    Req = #{messages => Messages, context => Context, opts => Opts, stream => true},
     TokenXfs = lists:filtermap(fun(F) ->
         case beamai_filter:hook(F, token_transform) of
             undefined -> false;
             Xf -> {true, Xf}
         end
     end, Filters),
-    Terminal = stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback),
+    Terminal = llm_chain(Filters, Settings,
+                         stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback)),
     case beamai_filter_chain:run(Filters, around_chat, Terminal, Req) of
         {ok, #{response := Response, context := Ctx}} -> {ok, Response, Ctx};
         {error, _} = Err -> Err
     end.
 
-%% @private 流式 chat 链最内层：调用 provider stream_chat，token 经回调实时回传，
+%% @private 流式路径的 llm 链最内层：调用 provider stream_chat，token 经回调实时回传，
 %% 返回汇聚后的统一响应（出错时 throw，由链统一捕获）。
 %%
-%% token_transform 链在 terminal **每次执行**时现场实例化（chat filter 重入 Next 时
-%% 每次流各自新状态）；Flush 只在 stream_chat 正常返回后调一次——错误路径
+%% token_transform 链在 terminal **每次执行**时现场实例化（chat/llm filter 重入
+%% Next 时每次流各自新状态）；Flush 只在 stream_chat 正常返回后调一次——错误路径
 %% 不 flush（缓冲丢弃，半截答案不外泄）。
 stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback) ->
     Module = maps:get(module, LlmConfig, beamai_chat_completion),

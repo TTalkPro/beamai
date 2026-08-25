@@ -36,8 +36,9 @@
 
 %% @doc 运行某条链的 filter 洋葱
 %%
-%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，tool 链传
-%% around_tool。只参与该链（含对应 around）的 filter 进入洋葱，其余跳过。
+%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，llm 链传
+%% around_llm，tool 链传 around_tool。只参与该链（含对应 around）的 filter
+%% 进入洋葱，其余跳过。
 %% 注册顺序即层序：列表靠前 = 外层（无排序）。
 %% Terminal 产出最内层响应，出错时 throw。
 %%
@@ -45,8 +46,7 @@
 -spec run([beamai_filter:filter()], phase(), terminal(), request()) ->
     {ok, response()} | {error, term()}.
 run(Filters, Phase, Terminal, Request) ->
-    Relevant = relevant(Filters, Phase),
-    Run = compose(Relevant, Phase, Terminal),
+    Run = compose(Filters, Phase, Terminal),
     try
         {ok, Run(Request)}
     catch
@@ -54,12 +54,24 @@ run(Filters, Phase, Terminal, Request) ->
     end.
 
 %% @doc 把 filter 列表与 terminal 合成为单个洋葱函数
+%%
+%% 自行按 Phase 过滤（不含对应 around 的 filter 跳过），故可直接传整份 filters
+%% 列表。合成结果**不捕获** throw：嵌套使用时（chat 链的 terminal 就是 llm 链）
+%% 由最外层的 run/4 统一捕获。
 -spec compose([beamai_filter:filter()], phase(), terminal()) ->
     fun((request()) -> response()).
-compose([], _Phase, Terminal) ->
+compose(Filters, Phase, Terminal) ->
+    compose_relevant(relevant(Filters, Phase), Phase, Terminal).
+
+%%====================================================================
+%% 内部
+%%====================================================================
+
+%% @private 逐层折叠（列表已按 Phase 过滤）
+compose_relevant([], _Phase, Terminal) ->
     Terminal;
-compose([Filter | Rest], Phase, Terminal) ->
-    Next = compose(Rest, Phase, Terminal),
+compose_relevant([Filter | Rest], Phase, Terminal) ->
+    Next = compose_relevant(Rest, Phase, Terminal),
     Around = beamai_filter:hook(Filter, Phase),
     Name = maps:get(name, Filter),
     Init = beamai_filter:init(Filter),
@@ -72,10 +84,6 @@ compose([Filter | Rest], Phase, Terminal) ->
                 Resp
         end
     end.
-
-%%====================================================================
-%% 内部
-%%====================================================================
 
 %% @private 仅保留对该链有对应 around hook 的 filter
 relevant(Filters, Phase) ->

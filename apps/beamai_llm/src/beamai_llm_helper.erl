@@ -101,18 +101,26 @@ call_llm(Messages, LLMConfig, MaxTokens) ->
 call_llm_internal(Messages, LLMConfig, MaxTokens) ->
     case maps:find(api_key, LLMConfig) of
         {ok, ApiKey} when is_binary(ApiKey), byte_size(ApiKey) > 0 ->
-            Config = build_config(LLMConfig, MaxTokens),
-            parse_response(beamai_chat_completion:chat(Config, Messages));
+            parse_response(chat_with_retry(LLMConfig, Messages, MaxTokens));
         error ->
             %% 检查是否配置了 Ollama（无需 API Key）
             case maps:get(provider, LLMConfig, undefined) of
                 ollama ->
-                    Config = build_config(LLMConfig, MaxTokens),
-                    parse_response(beamai_chat_completion:chat(Config, Messages));
+                    parse_response(chat_with_retry(LLMConfig, Messages, MaxTokens));
                 _ ->
                     {error, missing_api_key}
             end
     end.
+
+%% @private 直连 provider 的一次带重试调用
+%%
+%% 本模块不经 kernel，拿不到 llm 链上的重试 filter（重试已从
+%% beamai_chat_completion 上移到那层），故在此显式包一层 beamai_llm_retry。
+chat_with_retry(LLMConfig, Messages, MaxTokens) ->
+    Config = build_config(LLMConfig, MaxTokens),
+    RetryOpts = beamai_llm_retry:opts(LLMConfig),
+    beamai_llm_retry:run(
+      fun() -> beamai_chat_completion:chat(Config, Messages) end, RetryOpts).
 
 %% @doc 构建 LLM 配置
 %% 将简化配置转换为完整的 beamai_chat_completion 配置

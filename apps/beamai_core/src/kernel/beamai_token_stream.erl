@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc Token 流变换链组装器（filter 第四钩子 token_transform）
+%%% @doc Token 流变换链组装器（filter 的 token_transform 钩子）
 %%%
 %%% 把 filters 上收集的 token_transform 列表（注册顺序）折成一条变换链，包裹
 %%% 最终 on-token sink：

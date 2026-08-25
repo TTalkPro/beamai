@@ -6,8 +6,12 @@
 %% - Multi-provider routing (openai, anthropic, zhipu, ollama, deepseek, dashscope,
 %%   xai, moonshot/kimi, openrouter, siliconflow)
 %% - Request building (messages, tools, tool_choice, stream)
-%% - Retry logic with exponential backoff
 %% - Streaming support with token callbacks
+%%
+%% 注意：本模块**不做重试**——重试是 llm 链上的一层 filter
+%% （beamai_llm_filters:retry_filter/1，kernel 缺省注入），这样重试重入不会连累
+%% chat 链上「每轮只该跑一次」的 filter。直接调用本模块（不经 kernel）且需要
+%% 重试时，自行用 beamai_llm_retry:run/2 包一层。
 
 -behaviour(beamai_chat_behaviour).
 
@@ -70,17 +74,18 @@ chat(Config, Messages) ->
 
 %% @doc Send chat completion request with options
 %%
+%% 单次请求，不重试（重试见模块头说明）。
+%%
 %% Options:
 %%   tools => [tool_spec()]     - tool definitions
 %%   tool_choice => auto | none | required
-%%   max_retries => integer()   - retry count (default 3)
-%%   retry_delay => integer()   - base retry delay ms (default 1000)
-%%   on_retry => fun(RetryState) - retry callback
+%%
+%% max_retries / retry_delay / on_retry 仍可放在 Opts 里透传——它们由 llm 链上的
+%% 重试 filter 消费，本模块忽略。
 -spec chat(config(), [map()], map()) -> {ok, map()} | {error, term()}.
 chat(Config, Messages, Opts) ->
-    Request = build_request(Messages, Opts),
-    RetryOpts = get_retry_opts(Opts),
-    do_chat(Config, Request, RetryOpts).
+    Module = provider_module(maps:get(provider, Config)),
+    Module:chat(Config, build_request(Messages, Opts)).
 
 %% @doc Send streaming chat request
 -spec stream_chat(config(), [map()], fun((term()) -> ok)) ->
@@ -133,17 +138,9 @@ build_request(Messages, Opts) ->
 %% Internal - Retry Logic
 %%====================================================================
 
-%% @private 重试配置（与 embedding 共用 beamai_llm_retry）
-get_retry_opts(Opts) ->
-    beamai_llm_retry:opts(Opts).
-
-do_chat(Config, Request, RetryOpts) ->
-    Module = provider_module(maps:get(provider, Config)),
-    beamai_llm_retry:run(fun() -> Module:chat(Config, Request) end, RetryOpts).
-
 -ifdef(TEST).
-%% @private 重试判定与退避计算已下沉到 beamai_llm_retry，
-%% 此处保留薄封装供既有测试用例调用。
+%% @private 重试本身已上移到 llm 链的 retry_filter，判定与退避计算在
+%% beamai_llm_retry；此处保留薄封装供既有测试用例调用。
 is_retryable(Reason) ->
     beamai_llm_retry:is_retryable(Reason).
 

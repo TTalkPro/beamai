@@ -477,10 +477,16 @@ end.
 
 ### Automatic Retry & Retry-After
 
-`beamai_chat_completion:chat/3` has built-in exponential-backoff retry. On 429 / 5xx, if the server returns a `Retry-After` header it **backs off accordingly** (capped at 60s); otherwise it uses `retry_delay * attempt`.
+Retry does **not** live in `beamai_chat_completion` — it is a filter on the llm chain
+(`beamai_llm_filters:retry_filter/1`, see [FILTER_EN.md](../../docs/FILTER_EN.md)) that the kernel
+injects innermost by default, so calls through the kernel / agent behave exactly as before. On
+429 / 5xx, if the server returns a `Retry-After` header it **backs off accordingly** (capped at
+60s); otherwise it uses `retry_delay * attempt`.
+
+The options still go in a single call's Opts (they win over the defaults given in kernel settings):
 
 ```erlang
-{ok, Resp} = beamai_chat_completion:chat(LLM, Messages, #{
+{ok, Resp, _} = beamai_kernel:invoke_chat(Kernel, Messages, #{
     max_retries => 3,          %% default 3
     retry_delay => 1000,       %% base backoff ms, default 1000
     on_retry => fun(State) ->  %% optional retry callback
@@ -489,6 +495,20 @@ end.
     end
 }).
 ```
+
+Tune or disable the default: `beamai:kernel(#{llm_retry => #{max_retries => 5}}, Filters)` /
+`#{llm_retry => false}`.
+
+**Calling `beamai_chat_completion:chat/3` directly (bypassing the kernel) is a single request with
+no retry** — wrap it yourself:
+
+```erlang
+beamai_llm_retry:run(fun() -> beamai_chat_completion:chat(LLM, Messages) end,
+                     beamai_llm_retry:opts(#{max_retries => 3})).
+```
+
+The streaming path does not retry: tokens have already reached the sink, and a re-run would show
+duplicates downstream.
 
 ### Unified Error Structure (beamai_llm_error)
 

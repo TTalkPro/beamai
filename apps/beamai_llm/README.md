@@ -481,10 +481,15 @@ end.
 
 ### 自动重试与 Retry-After
 
-`beamai_chat_completion:chat/3` 内置指数退避重试；遇到 429 / 5xx 时，若服务端返回 `Retry-After` 头则**按其建议退避**（上限 60s），否则按 `retry_delay * 重试次数` 退避。
+重试**不在** `beamai_chat_completion` 里，而是 llm 链上的一层 filter
+（`beamai_llm_filters:retry_filter/1`，见 [FILTER.md](../../docs/FILTER.md)）：kernel 缺省把它注入在
+llm 链最内层，故经 kernel / agent 调用时行为与从前一致。遇到 429 / 5xx 时，若服务端返回
+`Retry-After` 头则**按其建议退避**（上限 60s），否则按 `retry_delay * 重试次数` 退避。
+
+参数照旧写在单次调用的 Opts 里（优先于 kernel settings 里给的默认值）：
 
 ```erlang
-{ok, Resp} = beamai_chat_completion:chat(LLM, Messages, #{
+{ok, Resp, _} = beamai_kernel:invoke_chat(Kernel, Messages, #{
     max_retries => 3,          %% 默认 3
     retry_delay => 1000,       %% 基础退避 ms，默认 1000
     on_retry => fun(State) ->  %% 可选，重试回调
@@ -493,6 +498,19 @@ end.
     end
 }).
 ```
+
+调整默认值或关掉：`beamai:kernel(#{llm_retry => #{max_retries => 5}}, Filters)` /
+`#{llm_retry => false}`。
+
+**直接调 `beamai_chat_completion:chat/3`（不经 kernel）是单次请求、不重试**——这类直连
+调用要重试就自己包一层：
+
+```erlang
+beamai_llm_retry:run(fun() -> beamai_chat_completion:chat(LLM, Messages) end,
+                     beamai_llm_retry:opts(#{max_retries => 3})).
+```
+
+流式路径不重试：token 已投递给 sink，重跑会让下游看到重复内容。
 
 ### 统一错误结构（beamai_llm_error）
 

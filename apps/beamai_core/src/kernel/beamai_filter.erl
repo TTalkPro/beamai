@@ -2,11 +2,19 @@
 %%% @doc 洋葱式 Filter（around 模型）
 %%%
 %%% 一个 filter 是一层洋葱，用单个 `around` 闭包同时承担「前置 → 调内层 →
-%%% 后置」三段逻辑，最多绑定 3 个可选 hook（一个机制三个粒度）：
-%%% - `around_chat`：包裹一次 LLM 调用（chat 链，循环内每轮一次）
-%%% - `around_tool`：包裹一次工具执行（tool 链，每个 tool call 一次、并行任务内）
+%%% 后置」三段逻辑，最多绑定 4 个可选 around hook（一个机制四个粒度）：
 %%% - `around_turn`：包裹整个工具循环（turn 链，每 turn 一次）——RAG 注入 /
 %%%   最终答案 guardrail / turn 级预算 / evaluator 递归重入
+%%% - `around_chat`：包裹一轮的 **LLM 调用**（chat 链，每轮迭代恰好一次）——
+%%%   记忆 / 记账 / 审计这类「每轮只该发生一次」的逻辑放这层
+%%% - `around_llm`：包裹**一次真实 LLM 请求**（llm 链，嵌在 chat 链之内）——
+%%%   重试 / fallback 换模型 / 限流 / mock 这类「一轮内可能发生多次」的放这层
+%%% - `around_tool`：包裹一次工具执行（tool 链，每个 tool call 一次、并行任务内）
+%%%
+%%% chat 与 llm 两层的差别只在「一轮里 LLM 被调用多次」时显形（重试、fallback、
+%%% N-best 投票）：那时 around_chat 进出一次、around_llm 进出 N 次。把重试放
+%%% around_chat 会让它内层的记忆/记账 filter 跟着重跑 N 次（beamai_memory_filter
+%%% 里那段「同一 delta 被存两次」的隐患即此），这正是拆出 around_llm 的理由。
 %%%
 %%% around 形态（middleware 模式，取代旧的 before/after 双闭包）：
 %%%   `fun(Request, FCtx, Next) -> Response | {Response, NewFCtx}`
@@ -21,6 +29,9 @@
 %%%
 %%% Request / Response：
 %%% - chat：Request `#{messages, context, opts}` → Response `#{response, context}`
+%%% - llm：与 chat 同形；流式路径的 Request 额外带 `stream => true`（供 filter
+%%%   判定是否介入——token 已投递出去的流重试会重复投递，内置重试 filter 见此
+%%%   标记即透传）
 %%% - tool：Request `#{tool, args, context}`     → Response `#{result, context}`
 %%% - turn：Request `#{messages, context, resume, load_history}` → Response = 工具循环
 %%%   结果 tuple（`{ok, Response, ToolCallsMade, Iterations, Messages}` |
@@ -36,15 +47,16 @@
 %%%   缺省 true（让 loop 前接跨轮历史）；只传新增消息而指望 loop 载入历史的写法，
 %%%   在 `memory => false` 时会丢掉原始问题——那正是 load_history 存在的理由。
 %%%
-%%% 某条链只会用到该链对应的 around（chat 链用 around_chat，tool 链用
-%%% around_tool，turn 链用 around_turn），不含相关 hook 的 filter 在该链中被跳过。
+%%% 某条链只会用到该链对应的 around（chat 链用 around_chat，llm 链用
+%%% around_llm，tool 链用 around_tool，turn 链用 around_turn），不含相关 hook 的
+%%% filter 在该链中被跳过。
 %%%
 %%% **注册顺序即层序**：filters 列表靠前 = 外层（前置先执行、后置后执行）。
 %%% 无 order 字段、无运行时排序——层次完全由构建 kernel 时给出的列表位置决定
 %%% （对齐 clj-agent advisor.clj 的扁平 vector 模型）。
 %%%
-%%% 第四钩子 `token_transform`（token 流变换，对照 clj-agent :token-xf）：
-%%% 不走三链洋葱，由流式 terminal（beamai_kernel invoke_chat_stream）按注册顺序
+%%% 第四个 hook `token_transform`（token 流变换，对照 clj-agent :token-xf）：
+%%% 不走四链 around 洋葱，由流式 terminal（beamai_kernel invoke_chat_stream）按注册顺序
 %%% 组装成 token 变换链，作用于送往 on-token sink 的**出站流**。Erlang 无
 %%% transducer，契约为等价的 step/flush map（见 token_transform/0）：
 %%% - `step(TokenData, State) -> {Emit :: [TokenData], NewState}`——1→N（吞掉/
@@ -68,14 +80,15 @@
 -export_type([filter/0, hooks/0, hook_type/0, request/0, response/0, fctx/0, next/0]).
 -export_type([token_data/0, token_step/0, token_flush/0, token_transform/0]).
 
--type hook_type() :: around_chat | around_tool | around_turn | token_transform.
+-type hook_type() :: around_chat | around_llm | around_tool | around_turn |
+                     token_transform.
 -type request() :: map().
 -type response() :: map() | tuple().  %% chat/tool 为 map；turn 为工具循环结果 tuple
 -type fctx() :: map().
 -type next() :: fun((request()) -> response()).
 -type around_fun() :: fun((request(), fctx(), next()) -> response() | {response(), fctx()}).
 
-%% token 流变换（第四钩子，流式专用；等价于 clj transducer 的 step/completion）
+%% token 流变换（流式专用钩子；等价于 clj transducer 的 step/completion）
 -type token_data() :: #{token := binary(), meta := map()}.
 -type token_step() :: fun((token_data(), State :: term()) ->
     {[token_data()], NewState :: term()}).
@@ -88,6 +101,7 @@
 
 -type hooks() :: #{
     around_chat => around_fun(),
+    around_llm => around_fun(),
     around_tool => around_fun(),
     around_turn => around_fun(),
     token_transform => token_transform()
@@ -107,7 +121,8 @@
 %% @doc 创建 filter（私有状态初值 #{}）
 %%
 %% @param Name 名称（调试标识，也是私有上下文的隔离键）
-%% @param Hooks hook map，可含 around_chat/around_tool/around_turn/token_transform 任意子集
+%% @param Hooks hook map，可含 around_chat/around_llm/around_tool/around_turn/
+%%              token_transform 任意子集
 -spec new(binary(), hooks()) -> filter().
 new(Name, Hooks) ->
     new(Name, Hooks, #{}).

@@ -134,9 +134,10 @@ add_llm(Kernel, LlmConfig) ->
 
 %% @doc 创建 filter（直接给 hook map；经 kernel/2 一次性注册）
 %%
-%% 一个 filter 含 around_chat/around_tool/around_turn 任意子集，每个 around
-%% 用单个闭包 `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用：
-%% 前置改写请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next 即短路。
+%% 一个 filter 含 around_chat/around_llm/around_tool/around_turn 任意子集，
+%% 每个 around 用单个闭包 `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}`
+%% 包裹一次调用：前置改写请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next
+%% 即短路。
 %%
 %% @param Name filter 名称
 %% @param Hooks hook map（如 #{around_chat => F}）
@@ -169,7 +170,8 @@ chat(Kernel, Messages) ->
 
 %% @doc 发送 Chat Completion 请求（自定义选项）
 %%
-%% 执行 around_chat 过滤器洋葱链（单次调用，不含工具循环）。
+%% 执行 around_chat → around_llm 两层洋葱（单次调用，不含工具循环）：
+%% around_chat 每轮一次，around_llm 每次真实 LLM 请求一次（重试在这层重入）。
 %% ReAct 工具循环请使用 beamai_agent。
 -spec chat(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
