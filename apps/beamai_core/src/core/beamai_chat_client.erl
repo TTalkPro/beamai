@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc ChatClient 核心：基础设施（工具管理、LLM 服务、Filter）
+%%% @doc ChatClient：一次 LLM 调用的入口（对标 Spring AI 的 ChatClient）
 %%%
 %%% ChatClient 是框架的基础设施层，只提供两类原子能力——单次 LLM 调用
 %%% （invoke_chat）与单次工具调用（invoke_tool），各自经过洋葱式 Filter 链。
@@ -29,28 +29,22 @@
 -export([add_tool_module/2]).
 -export([add_chat_model/2]).
 
-%% Invoke API（仅单次 chat / tool；ReAct 循环属于 Agent 层）
--export([invoke_tool/4]).
+%% Invoke API（只发起一次 LLM 调用；工具执行见 beamai_tool_executor）
 -export([invoke_chat/3]).
 -export([invoke_chat_stream/4]).
 
-%% Query API
--export([get_tool/2]).
--export([list_tools/1]).
--export([get_tools_by_tag/2]).
--export([get_tool_specs/1]).
--export([get_tool_schemas/1, get_tool_schemas/2]).
+%% 访问器（持有什么就交出什么，不代答工具问题）
+-export([tools/1]).
+-export([filters/1]).
 -export([chat_model/1]).
 -export([state_slots/1]).
--export([serial_tool/2]).
--export([return_direct_tool/2]).
 
 %% Types
 -export_type([chat_client/0, chat_client_settings/0, chat_opts/0]).
 
 -type chat_client() :: #{
     '__chat_client__' := true,
-    tools := #{binary() => beamai_tool:tool_spec()},
+    tools := beamai_tool_registry:t(),
     chat_model := beamai_chat_behaviour:config() | undefined,
     filters := [beamai_filter:filter()],
     settings := chat_client_settings()
@@ -117,8 +111,8 @@ new(Settings, Filters) when is_map(Settings), is_list(Filters) ->
 %% @param Tool 工具定义（需包含 name 字段）
 %% @returns 更新后的 ChatClient
 -spec add_tool(chat_client(), beamai_tool:tool_spec()) -> chat_client().
-add_tool(#{tools := Tools} = ChatClient, #{name := Name} = Tool) ->
-    ChatClient#{tools => Tools#{Name => Tool}}.
+add_tool(#{tools := Tools} = ChatClient, Tool) ->
+    ChatClient#{tools => beamai_tool_registry:add(Tools, Tool)}.
 
 %% @doc 批量注册工具到 ChatClient
 %%
@@ -126,8 +120,8 @@ add_tool(#{tools := Tools} = ChatClient, #{name := Name} = Tool) ->
 %% @param ToolList 工具定义列表
 %% @returns 更新后的 ChatClient
 -spec add_tools(chat_client(), [beamai_tool:tool_spec()]) -> chat_client().
-add_tools(ChatClient, ToolList) ->
-    lists:foldl(fun(Tool, K) -> add_tool(K, Tool) end, ChatClient, ToolList).
+add_tools(#{tools := Tools} = ChatClient, ToolList) ->
+    ChatClient#{tools => beamai_tool_registry:add_many(Tools, ToolList)}.
 
 %% @doc 从模块自动加载并注册工具
 %%
@@ -139,13 +133,8 @@ add_tools(ChatClient, ToolList) ->
 %% @param Module 实现了工具回调的模块
 %% @returns 更新后的 ChatClient
 -spec add_tool_module(chat_client(), module()) -> chat_client().
-add_tool_module(ChatClient, Module) ->
-    case beamai_tool:from_module(Module) of
-        {ok, Tools} ->
-            add_tools(ChatClient, Tools);
-        {error, Reason} ->
-            erlang:error({tool_module_load_failed, Module, Reason})
-    end.
+add_tool_module(#{tools := Tools} = ChatClient, Module) ->
+    ChatClient#{tools => beamai_tool_registry:from_module(Tools, Module)}.
 
 %% @doc 设置 LLM 服务配置
 %%
@@ -162,30 +151,6 @@ add_chat_model(ChatClient, ChatModel) ->
 %%====================================================================
 %% Invoke API
 %%====================================================================
-
-%% @doc 调用 ChatClient 中注册的工具
-%%
-%% 执行流程：查找工具 → tool filter 洋葱链（around_tool：前置改写参数 → 工具
-%% 执行 → 后置改写结果）。上下文会自动关联当前 ChatClient 引用。
-%%
-%% Context 为只读运行环境（自动绑定当前 ChatClient 引用）；工具写状态经返回值
-%% 的 Writes 表达（第三元），本函数原样透出，由调用方（tool 批次）折叠进 state。
-%%
-%% @param ChatClient ChatClient 实例
-%% @param ToolName 工具名称
-%% @param Args 调用参数
-%% @param Context 执行上下文（只读环境）
-%% @returns {ok, 结果, Writes} | {error, 原因}
--spec invoke_tool(chat_client(), binary(), beamai_tool:args(), beamai_context:t()) ->
-    {ok, term(), beamai_context:writes()} | {error, term()}.
-invoke_tool(#{filters := Filters} = ChatClient, ToolName, Args, Context0) ->
-    case get_tool(ChatClient, ToolName) of
-        {ok, ToolSpec} ->
-            Context = beamai_context:with_chat_client(Context0, ChatClient),
-            run_tool(Filters, ToolSpec, Args, Context);
-        error ->
-            {error, {tool_not_found, ToolName}}
-    end.
 
 %% @doc 发送 Chat Completion 请求（不含工具调用循环）
 %%
@@ -226,7 +191,7 @@ invoke_chat(ChatClient, Messages, Opts) ->
 %% 经 TokenCallback 实时回传，链最终仍返回汇聚后的统一响应（供 Memory filter
 %% 落库、供工具循环判定 tool_calls）。
 %%
-%% 要求 provider 的 stream_chat 返回汇聚后的统一 beamai_llm_response。
+%% 要求 provider 的 stream_chat 返回汇聚后的统一 beamai_chat_response。
 %%
 %% @param ChatClient ChatClient 实例
 %% @param Messages 消息列表
@@ -253,51 +218,17 @@ invoke_chat_stream(ChatClient, Messages, Opts, TokenCallback) ->
 %% Query API
 %%====================================================================
 
-%% @doc 按名称查找 ChatClient 中注册的工具
+%% @doc 取出工具注册表（交给 beamai_tool_registry / beamai_tool_executor 用）
 %%
-%% @param ChatClient ChatClient 实例
-%% @param ToolName 工具名称
-%% @returns {ok, 工具定义} | error
--spec get_tool(chat_client(), binary()) -> {ok, beamai_tool:tool_spec()} | error.
-get_tool(#{tools := Tools}, ToolName) ->
-    maps:find(ToolName, Tools).
+%% 对应 Spring 把 defaultTools 放进 ChatOptions 交给 ToolCallingManager：ChatClient
+%% 只交出自己持有的东西，「有哪些工具、schema 是什么、能不能并发」一律问
+%% beamai_tool_registry。
+-spec tools(chat_client()) -> beamai_tool_registry:t().
+tools(#{tools := Tools}) -> Tools.
 
-%% @doc 列出 ChatClient 中所有注册的工具
--spec list_tools(chat_client()) -> [beamai_tool:tool_spec()].
-list_tools(#{tools := Tools}) ->
-    maps:values(Tools).
-
-%% @doc 按标签查找工具
-%%
-%% @param ChatClient ChatClient 实例
-%% @param Tag 标签
-%% @returns 匹配的工具列表
--spec get_tools_by_tag(chat_client(), binary()) -> [beamai_tool:tool_spec()].
-get_tools_by_tag(#{tools := Tools}, Tag) ->
-    [T || T <- maps:values(Tools), beamai_tool:has_tag(T, Tag)].
-
-%% @doc 获取所有工具的统一 tool spec 列表
-%%
-%% 返回包含 name、description、parameters 的中间格式。
--spec get_tool_specs(chat_client()) -> [map()].
-get_tool_specs(ChatClient) ->
-    Tools = list_tools(ChatClient),
-    [beamai_tool:to_tool_spec(T) || T <- Tools].
-
-%% @doc 获取所有工具的 tool schema（默认 OpenAI 格式）
--spec get_tool_schemas(chat_client()) -> [map()].
-get_tool_schemas(ChatClient) ->
-    get_tool_schemas(ChatClient, openai).
-
-%% @doc 获取所有工具的 tool schema（指定提供商格式）
-%%
-%% @param ChatClient ChatClient 实例
-%% @param Provider 提供商标识（openai | anthropic）
-%% @returns tool schema 列表
--spec get_tool_schemas(chat_client(), openai | anthropic | atom()) -> [map()].
-get_tool_schemas(ChatClient, Provider) ->
-    Tools = list_tools(ChatClient),
-    [beamai_tool:to_tool_schema(T, Provider) || T <- Tools].
+%% @doc 取出 filter 链（四条链共用一份列表，注册顺序即层序）
+-spec filters(chat_client()) -> [beamai_filter:filter()].
+filters(#{filters := Filters}) -> Filters.
 
 %% @doc 获取 ChatClient 的 LLM 服务配置
 %%
@@ -312,27 +243,6 @@ chat_model(#{chat_model := Model}) -> {ok, Model}.
 -spec state_slots(chat_client()) -> beamai_context:state_slots().
 state_slots(#{settings := Settings}) -> maps:get(state_slots, Settings, #{});
 state_slots(_) -> #{}.
-
-%% @doc 按工具名查询该工具是否标记为串行（有副作用、需顺序执行）
-%%
-%% 未注册的工具名返回 false（不因未知工具强制整批退化）。
--spec serial_tool(chat_client(), binary()) -> boolean().
-serial_tool(ChatClient, ToolName) ->
-    case get_tool(ChatClient, ToolName) of
-        {ok, ToolSpec} -> beamai_tool:is_serial(ToolSpec);
-        error -> false
-    end.
-
-%% @doc 按工具名查询该工具结果是否直接作为最终答案（不回灌模型）
-%%
-%% 未注册的工具名返回 false：未知工具不该触发直返（直返会终止循环、丢弃
-%% 同批其余结果，未知名字上取保守值）。
--spec return_direct_tool(chat_client(), binary()) -> boolean().
-return_direct_tool(ChatClient, ToolName) ->
-    case get_tool(ChatClient, ToolName) of
-        {ok, ToolSpec} -> beamai_tool:is_return_direct(ToolSpec);
-        error -> false
-    end.
 
 %%====================================================================
 %% 内部函数 - 辅助
@@ -413,31 +323,5 @@ stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback) ->
                 #{response => Response, context => Ctx};
             {error, Reason} ->
                 throw(Reason)
-        end
-    end.
-
-%% @private 运行 tool filter 洋葱链（用 around_tool hook）
-%%
-%% Request `#{tool, args, context}` → Response `#{result, writes, context}`，
-%% 最内层 terminal 为真正的工具执行。`writes` 为工具写意图（纯数据），透出给
-%% 调用方折叠进 state；`context` 仅承载 filter 私有状态合并（框架用）。
-run_tool(Filters, ToolSpec, Args, Context) ->
-    Req = #{tool => ToolSpec, args => Args, context => Context},
-    Terminal = tool_terminal(),
-    case beamai_filter_chain:run(Filters, around_tool, Terminal, Req) of
-        {ok, #{result := Value} = Resp} -> {ok, Value, maps:get(writes, Resp, #{})};
-        {error, _} = Err -> Err
-    end.
-
-%% @private tool 链最内层：真正执行工具（出错时 throw，由链统一捕获）
-%%
-%% 归一工具返回：`{ok,V}` → 空 writes；`{ok,V,W}` → W 为写意图。
-%% Context 只读透传（filter 私有状态由链在外层合并）。
-tool_terminal() ->
-    fun(#{tool := ToolSpec, args := Args, context := Ctx}) ->
-        case beamai_tool:invoke(ToolSpec, Args, Ctx) of
-            {ok, Value} -> #{result => Value, writes => #{}, context => Ctx};
-            {ok, Value, Writes} -> #{result => Value, writes => Writes, context => Ctx};
-            {error, Reason} -> throw(Reason)
         end
     end.

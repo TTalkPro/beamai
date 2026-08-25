@@ -10,7 +10,9 @@ BeamAI 框架的核心模块，提供 ChatClient 架构、Filter/会话记忆、
 
 基于 Semantic Kernel 理念的核心抽象，管理 Tool 的注册与调用：
 
-- **beamai_chat_client** - ChatClient 核心，管理 Tool 注册和调用（无状态，不记录消息）
+- **beamai_chat_client** - ChatClient：持有 LLM 配置 / 默认工具声明 / 默认 filter，发起一次调用（无状态，不记录消息）
+- **beamai_tool_registry** - 工具声明侧：注册、按名解析、给模型看的定义、框架元数据
+- **beamai_tool_executor** - 工具运行侧：单次执行（经 around_tool 洋葱）
 - **beamai_tool** - 工具定义，封装可调用的工具
 - **beamai_tool_behaviour** - 工具模块行为接口
 - **beamai_context** - 上下文（三分区）：env（只读运行环境：ChatClient 引用/会话标识/注入变量）、
@@ -34,7 +36,8 @@ BeamAI 框架的核心模块，提供 ChatClient 架构、Filter/会话记忆、
 
 LLM 响应的统一抽象层：
 
-- **beamai_llm_response** - LLM 统一响应访问器，抽象不同 Provider 的响应差异
+- **beamai_chat_request** - ChatRequest：一次调用的输入（messages + 本次调用参数），对标 Spring AI 的 Prompt
+- **beamai_chat_response** - LLM 统一响应访问器，抽象不同 Provider 的响应差异
 
 ### HTTP 子系统
 
@@ -91,12 +94,12 @@ beamai_chat_client:add_chat_model(ChatClient, Service) -> chat_client().
 %% invoke_chat/3：单次 Chat Completion（经 around_chat 链；provider 重试在 terminal 之内）。Messages 为本轮新消息；
 %% 若 context 带 conversation_id 且挂了 Memory Filter，则按 id 存储并展开历史。
 beamai_chat_client:invoke_chat(ChatClient, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
-beamai_chat_client:invoke_tool(ChatClient, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
+beamai_tool_executor:invoke(ChatClient, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
 
 %% 查询工具
-beamai_chat_client:get_tool(ChatClient, Name) -> {ok, ToolSpec} | error.
-beamai_chat_client:get_tool_specs(ChatClient) -> [ToolSpec].
-beamai_chat_client:get_tools_by_tag(ChatClient, Tag) -> [ToolSpec].
+beamai_tool_registry:resolve(beamai_chat_client:tools(ChatClient), Name) -> {ok, ToolSpec} | error.
+beamai_tool_registry:specs(beamai_chat_client:tools(ChatClient)) -> [ToolSpec].
+beamai_tool_registry:by_tag(beamai_chat_client:tools(ChatClient), Tag) -> [ToolSpec].
 ```
 
 ### beamai_tool
@@ -156,7 +159,7 @@ ReadFile = #{
 ChatClient1 = beamai_chat_client:add_tool(ChatClient, ReadFile),
 
 %% 调用单个工具（第三元为工具写意图 Writes，多数工具为空 map）
-{ok, Content, _Writes} = beamai_chat_client:invoke_tool(ChatClient1, <<"read_file">>, #{
+{ok, Content, _Writes} = beamai_tool_executor:invoke(ChatClient1, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
@@ -169,7 +172,7 @@ ChatClient = beamai_chat_client:new(),
 ChatClient1 = beamai_chat_client:add_tool_module(ChatClient, beamai_tool_file),
 
 %% 列出已注册的工具
-Tools = beamai_chat_client:get_tool_specs(ChatClient1).
+Tools = beamai_tool_registry:specs(beamai_chat_client:tools(ChatClient1)).
 ```
 
 ### 会话记忆（多轮对话）

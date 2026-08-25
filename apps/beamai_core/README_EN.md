@@ -10,7 +10,9 @@ The core module of the BeamAI framework, providing the ChatClient architecture, 
 
 Core abstraction based on Semantic Kernel concepts, managing Tool registration and invocation:
 
-- **beamai_chat_client** - ChatClient core, manages Tool registration and invocation (stateless, stores no messages)
+- **beamai_chat_client** - ChatClient: holds the LLM config, default tool declarations and default filters, and makes one call (stateless, stores no messages)
+- **beamai_tool_registry** - Tool declaration side: registration, name resolution, model-facing definitions, framework metadata
+- **beamai_tool_executor** - Tool runtime side: single execution through the around_tool onion
 - **beamai_tool** - Tool definitions, wraps callable tool functions
 - **beamai_tool_behaviour** - Tool module behavior interface
 - **beamai_context** - Context: carries agent state vars, conversation id, ChatClient ref, trace (stores no messages/history)
@@ -32,7 +34,7 @@ History storage and injection, decoupled from the ChatClient and keyed by `conve
 
 Unified abstraction layer for LLM responses:
 
-- **beamai_llm_response** - Unified LLM response accessors (content, tool_calls, usage, etc.)
+- **beamai_chat_response** - Unified LLM response accessors (content, tool_calls, usage, etc.)
 
 ### HTTP Subsystem
 
@@ -87,16 +89,16 @@ beamai_chat_client:add_tool_module(ChatClient, Module) -> chat_client().
 beamai_chat_client:add_chat_model(ChatClient, Service) -> chat_client().
 
 %% Invoke API (ChatClient is single-shot only; the ReAct tool-calling loop lives in beamai_agent)
-beamai_chat_client:invoke_tool(ChatClient, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
+beamai_tool_executor:invoke(ChatClient, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
 beamai_chat_client:invoke_chat(ChatClient, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
 
 %% Query API
-beamai_chat_client:get_tool(ChatClient, Name) -> {ok, Tool} | error.
-beamai_chat_client:list_tools(ChatClient) -> [Tool].
-beamai_chat_client:get_tools_by_tag(ChatClient, Tag) -> [Tool].
-beamai_chat_client:get_tool_specs(ChatClient) -> [ToolSpec].
-beamai_chat_client:get_tool_schemas(ChatClient) -> [Schema].
-beamai_chat_client:get_tool_schemas(ChatClient, Provider) -> [Schema].
+beamai_tool_registry:resolve(beamai_chat_client:tools(ChatClient), Name) -> {ok, Tool} | error.
+beamai_tool_registry:list(beamai_chat_client:tools(ChatClient)) -> [Tool].
+beamai_tool_registry:by_tag(beamai_chat_client:tools(ChatClient), Tag) -> [Tool].
+beamai_tool_registry:specs(beamai_chat_client:tools(ChatClient)) -> [ToolSpec].
+beamai_tool_registry:schemas(beamai_chat_client:tools(ChatClient)) -> [Schema].
+beamai_tool_registry:schemas(beamai_chat_client:tools(ChatClient), Provider) -> [Schema].
 beamai_chat_client:chat_model(ChatClient) -> {ok, Service} | error.
 ```
 
@@ -144,7 +146,7 @@ ReadFile = beamai_tool:new(
 ChatClient1 = beamai_chat_client:add_tools(ChatClient, [ReadFile]),
 
 %% Invoke a single tool
-{ok, Content, _Ctx} = beamai_chat_client:invoke_tool(ChatClient1, <<"read_file">>, #{
+{ok, Content, _Ctx} = beamai_tool_executor:invoke(ChatClient1, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
@@ -157,7 +159,7 @@ ChatClient = beamai_chat_client:new(),
 ChatClient1 = beamai_chat_client:add_tool_module(ChatClient, beamai_tool_file),
 
 %% List registered tools
-Tools = beamai_chat_client:get_tool_specs(ChatClient1).
+Tools = beamai_tool_registry:specs(beamai_chat_client:tools(ChatClient1)).
 ```
 
 ### Conversation Memory (multi-turn)

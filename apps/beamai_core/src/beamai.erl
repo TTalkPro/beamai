@@ -159,7 +159,7 @@ filter(Name, Hooks, Init) ->
 -spec invoke_tool(beamai_chat_client:chat_client(), binary(), beamai_tool:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
 invoke_tool(ChatClient, ToolName, Args, Context) ->
-    beamai_chat_client:invoke_tool(ChatClient, ToolName, Args, Context).
+    beamai_tool_executor:invoke(ChatClient, ToolName, Args, Context).
 
 %% @doc 发送 Chat Completion 请求（默认选项）
 -spec chat(beamai_chat_client:chat_client(), [map()]) ->
@@ -200,17 +200,17 @@ render(Template, Vars) ->
 %% @doc 获取所有工具的 tool schema（默认 OpenAI 格式）
 -spec tools(beamai_chat_client:chat_client()) -> [map()].
 tools(ChatClient) ->
-    beamai_chat_client:get_tool_schemas(ChatClient).
+    beamai_tool_registry:schemas(beamai_chat_client:tools(ChatClient)).
 
 %% @doc 获取所有工具的 tool schema（指定提供商格式）
 -spec tools(beamai_chat_client:chat_client(), openai | anthropic | atom()) -> [map()].
 tools(ChatClient, Provider) ->
-    beamai_chat_client:get_tool_schemas(ChatClient, Provider).
+    beamai_tool_registry:schemas(beamai_chat_client:tools(ChatClient), Provider).
 
 %% @doc 按标签查找工具
 -spec tools_by_tag(beamai_chat_client:chat_client(), binary()) -> [beamai_tool:tool_spec()].
 tools_by_tag(ChatClient, Tag) ->
-    beamai_chat_client:get_tools_by_tag(ChatClient, Tag).
+    beamai_tool_registry:by_tag(beamai_chat_client:tools(ChatClient), Tag).
 
 %%====================================================================
 %% Context
