@@ -2,11 +2,9 @@
 %%% @doc 内置 filter 集（三链示范 + 常用能力）
 %%%
 %%% 对照 clj-agent filter-chain-design.md §3。均为纯构造器，返回 beamai_filter
-%%% 的 filter map，构建 kernel 时经 beamai_kernel:new/2 的 filters 列表一次性给出。
+%%% 的 filter map，构建 ChatClient 时经 beamai_chat_client:new/2 的 filters 列表一次性给出。
 %%%
 %%%   chat 链：safeguard_filter/1,2
-%%%     （llm 链 around_llm 的内置 filter 在 beamai_llm_filters——重试判定要
-%%%      beamai_llm_error 的错误分类，core 不能反向依赖 llm）
 %%%   tool 链：timeout_filter/1、approval_filter/1
 %%%   turn 链：validation_turn_filter/2、schema_validation_turn_filter/2,3
 %%%   三链通吃：logging_filter/0

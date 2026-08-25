@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc 工具定义：处理器、参数、超时、重试、Schema 生成
 %%%
-%%% 定义 Kernel 可调用的工具单元，支持：
+%%% 定义 ChatClient 可调用的工具单元，支持：
 %%% - 多种处理器形式（fun/1, fun/2, {M,F}, {M,F,A}）
 %%% - 参数 Schema 声明与 JSON Schema 转换
 %%% - 超时和重试策略
@@ -167,7 +167,7 @@ invoke(ToolSpec, Args) ->
 
 %% @doc 调用工具（带上下文）
 %%
-%% Context 为**只读运行环境**（env：kernel/conversation_id/vars）；handler 若
+%% Context 为**只读运行环境**（env：ChatClient/conversation_id/vars）；handler 若
 %% 需写状态经返回值 `{ok, V, Writes}` 表达，不改 Context。
 %% 根据工具定义中的 timeout 和 retry 配置执行处理器。
 %% **缺省不限时**——只有声明了 timeout 才强制执行（handler 跑在受监控子进程中，

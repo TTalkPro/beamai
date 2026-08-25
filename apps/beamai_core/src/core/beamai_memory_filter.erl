@@ -1,10 +1,10 @@
 %%%-------------------------------------------------------------------
-%%% @doc Memory Filter：会话历史的存储与注入（kernel 级，洋葱式）
+%%% @doc Memory Filter：会话历史的存储与注入（ChatClient 级，洋葱式）
 %%%
-%%% 这是 **kernel 级**的会话记忆：给"直接用 beamai_kernel / beamai facade"的
-%%% 调用方提供 filter 形态的记忆——构建 kernel 时放进 filters 列表**首位**
+%%% 这是 **ChatClient 级**的会话记忆：给"直接用 beamai_chat_client / beamai facade"的
+%%% 调用方提供 filter 形态的记忆——构建 ChatClient 时放进 filters 列表**首位**
 %%% （最外层：先展开完整历史，再让内层 filter 处理），如
-%%% `beamai_kernel:new(Settings, [beamai_memory_filter:memory_filter(Store) | Rest])`。
+%%% `beamai_chat_client:new(Settings, [beamai_memory_filter:memory_filter(Store) | Rest])`。
 %%%
 %%% 注意：beamai_agent 层**不再**用本 filter——Agent 在自己的 tool loop 里通过
 %%% beamai_memory_provider 显式编排记忆（见该模块）。两者互不影响。
@@ -22,11 +22,10 @@
 %%% 历史整个替换 messages），结构上就不可能重复前置，故不需要对应的查重。
 %%%
 %%% 唯一的重入隐患是外层 filter 拿同一 delta 重跑内层（同一 delta 会被存两次）。
-%%% 框架自带的重试已下沉到 llm 链（around_llm，见 beamai_llm_filters:retry_filter/1）
-%%% ——它在本 filter **之内**重入，够不着这里，「memory 放列表首位」与「重试要能
-%%% 重入」不再相悖。剩下的隐患只来自使用方自己写的、会重入 Next 的 around_chat
-%%% filter：那种要么放本 filter 之外，要么改用 around_llm（重试/fallback 本就属
-%%% 于那层）。
+%%% 框架自带的重试**在整个 filter 栈之下**（beamai_chat_model 内部），够不着这里，
+%%% 「memory 放列表首位」与「重试要能重入」并不相悖。剩下的隐患只来自使用方自己
+%%% 写的、会重入 Next 的 chat filter：那种放在本 filter **之内**即可（本 filter
+%%% 按约定在最外层）。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------

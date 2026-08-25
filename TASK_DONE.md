@@ -1,6 +1,6 @@
-# BeamAI Kernel - Completed Tasks
+# BeamAI ChatClient - Completed Tasks
 
-## Phase 1: Kernel + Plugin + Function
+## Phase 1: ChatClient + Plugin + Function
 
 ### Step 0: Documentation (Complete)
 - [x] Created `design/ARCHITECTURE.md` - Full architecture design document
@@ -9,10 +9,10 @@
 - [x] Created `TASK_DONE.md` - This file
 
 ### Step 1: Project Structure (Complete)
-- [x] Created `apps/beamai_kernel/` with src/kernel, src/service, src/connector, test
-- [x] Created `beamai_kernel.app.src`
-- [x] Created `apps/beamai_kernel/rebar.config`
-- [x] Updated main `rebar.config` to include beamai_kernel
+- [x] Created `apps/beamai_chat_client/` with src/core, src/service, src/connector, test
+- [x] Created `beamai_chat_client.app.src`
+- [x] Created `apps/beamai_chat_client/rebar.config`
+- [x] Updated main `rebar.config` to include beamai_chat_client
 
 ### Step 2-7: Implementation (Complete)
 - [x] All core modules implemented

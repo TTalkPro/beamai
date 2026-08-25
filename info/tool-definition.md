@@ -94,8 +94,8 @@ WeatherTool = #{
     end
 }.
 
-%% 注册到 Kernel
-K1 = beamai_kernel:add_tool(K0, WeatherTool).
+%% 注册到 ChatClient
+K1 = beamai_chat_client:add_tool(K0, WeatherTool).
 ```
 
 ### 方式 2：使用 beamai_tool:new/2,3
@@ -157,45 +157,45 @@ handle_a(Args, Ctx) -> {ok, <<"result_a">>}.
 handle_b(Args, Ctx) -> {ok, <<"result_b">>}.
 ```
 
-加载到 Kernel：
+加载到 ChatClient：
 
 ```erlang
-K1 = beamai_kernel:add_tool_module(K0, my_tools).
+K1 = beamai_chat_client:add_tool_module(K0, my_tools).
 ```
 
-## Kernel API
+## ChatClient API
 
 ### 添加工具
 
 ```erlang
 %% 添加单个工具
-K1 = beamai_kernel:add_tool(K0, ToolSpec).
+K1 = beamai_chat_client:add_tool(K0, ToolSpec).
 
 %% 批量添加
-K2 = beamai_kernel:add_tools(K1, [Tool1, Tool2, Tool3]).
+K2 = beamai_chat_client:add_tools(K1, [Tool1, Tool2, Tool3]).
 
 %% 从模块加载
-K3 = beamai_kernel:add_tool_module(K2, my_tool_module).
+K3 = beamai_chat_client:add_tool_module(K2, my_tool_module).
 ```
 
 ### 查询工具
 
 ```erlang
 %% 获取所有工具的 schema（用于发送给 LLM）
-ToolSpecs = beamai_kernel:get_tool_specs(Kernel).
+ToolSpecs = beamai_chat_client:get_tool_specs(ChatClient).
 
 %% 按名称查找
-{ok, Tool} = beamai_kernel:find_tool(Kernel, <<"get_weather">>).
+{ok, Tool} = beamai_chat_client:find_tool(ChatClient, <<"get_weather">>).
 
 %% 按 tag 过滤
-WeatherTools = beamai_kernel:tools_by_tag(Kernel, <<"weather">>).
+WeatherTools = beamai_chat_client:tools_by_tag(ChatClient, <<"weather">>).
 ```
 
 ### 调用工具
 
 ```erlang
-%% 通过 Kernel 调用（会应用 filters）
-{ok, Result, NewCtx} = beamai_kernel:invoke(Kernel, <<"get_weather">>, Args, Ctx).
+%% 通过 ChatClient 调用（会应用 filters）
+{ok, Result, NewCtx} = beamai_chat_client:invoke(ChatClient, <<"get_weather">>, Args, Ctx).
 
 %% 直接调用 tool_spec
 {ok, Result} = beamai_tool:invoke(ToolSpec, Args).

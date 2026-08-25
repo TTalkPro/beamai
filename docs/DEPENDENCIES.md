@@ -75,7 +75,7 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
                                                  ▼
                               ┌───────────────────────────────────┐
                               │           beamai_core             │  ← 基础层
-                              │  类型 / Kernel / Filter / HTTP     │
+                              │ 类型 / ChatClient / Filter / HTTP │
                               │  Behaviour: chat_behaviour,       │
                               │  chat_memory, memory_provider,    │
                               │  http_behaviour, tool_behaviour   │
@@ -170,11 +170,11 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
 #### beamai_agent（Agent 系统）
 
 **依赖**:
-- beamai_core（Kernel、Filter、类型、记忆 behaviour）
+- beamai_core（ChatClient、Filter、类型、记忆 behaviour）
 - beamai_llm（LLM 调用）
 
 > **注意**: beamai_agent 是核心编排层，**不依赖** beamai_tools，也不依赖 beamai_mcp。
-> 工具以 map/`beamai_tool` 形式注册进 kernel；MCP 工具通过 beamai_mcp 的适配器层
+> 工具以 map/`beamai_tool` 形式注册进 ChatClient；MCP 工具通过 beamai_mcp 的适配器层
 > 集成到 Agent，而非反向依赖。
 
 **提供功能**:
@@ -191,7 +191,7 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
 - 分支与时间线（beamai_branch_store[_ets]、beamai_timeline）
 
 > **记忆不在此列**：Agent 的跨轮记忆由 `beamai_core` 的 `beamai_memory_provider` 承担，
-> Agent 在 tool loop 里显式调用（`memory` 是与 `kernel` 正交的创建参数）。详见
+> Agent 在 tool loop 里显式调用（`memory` 是与 `ChatClient` 正交的创建参数）。详见
 > [MEMORY.md](MEMORY.md)。
 
 #### beamai_a2a（Agent-to-Agent 协议）
@@ -247,7 +247,7 @@ Config = #{
 
 **提供功能**:
 - LLM 配置助手（example_llm_config）
-- Kernel 对话（example_kernel_chat）
+- ChatClient 对话（example_chat_client_chat）
 - 流式响应（example_streaming）
 - Filter 示例（example_filter）
 - 工具示例（example_tool_refactored）

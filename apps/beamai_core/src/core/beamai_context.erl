@@ -3,9 +3,9 @@
 %%%
 %%% 在函数调用链中传递的不可变上下文，拆为三个身份不同的分区：
 %%%
-%%%   - **env（只读运行环境，框架自持）**：kernel 引用、conversation_id、
+%%%   - **env（只读运行环境，框架自持）**：ChatClient 引用、conversation_id、
 %%%     调用方注入变量（vars）。工具与 filter **只读**；不参与序列化
-%%%     （kernel 是引用/闭包）。
+%%%     （ChatClient 是引用/闭包）。
 %%%   - **state（用户状态槽，纯数据可序列化）**：工具间共享状态的唯一通道。
 %%%     工具**不直接写**，写意图经调用返回的 Writes 表达，由 tool 批次在
 %%%     屏障处按 tool_call 原始序折叠进来（见 apply_writes/3）。可整体
@@ -14,7 +14,7 @@
 %%%     投影/合并，用户不可见（filter_state/3、set_filter_state/3）。
 %%%
 %%% 注意：context 不记录消息/历史（会话历史由 memory provider / memory_filter
-%%% 按 conversation_id 管理，详见 design/kernel_memory_filter_redesign.md），
+%%% 按 conversation_id 管理，详见 design/chat_client_memory_filter_redesign.md），
 %%% 也不承担工具间可变穿线（见 design/context_split_parallel_tools.md）。
 %%%
 %%% 变量 key 标准化：atom → binary（`get/set` 等接受 atom 或 binary，内部
@@ -31,7 +31,7 @@
 -export([get/2, get/3, variables/1]).
 -export([set/3, set_many/2]).
 -export([with_conversation_id/2, conversation_id/1]).
--export([with_kernel/2, get_kernel/1]).
+-export([with_chat_client/2, get_chat_client/1]).
 -export([with_default_tool_timeout/2, default_tool_timeout/1]).
 %% state：用户状态槽（纯数据，工具经 Writes 写、屏障折叠）
 -export([state_get/2, state_get/3, get_state/1, with_state/2, apply_writes/3]).
@@ -48,7 +48,7 @@
 -type tool_call() :: beamai_message:tool_call().
 
 -type env() :: #{
-    kernel := term() | undefined,
+    chat_client := term() | undefined,
     conversation_id := binary() | undefined,
     vars := #{binary() => term()},
     %% 本轮执行的**缺省**工具超时（由 ToolCallingManager 注入）。工具自身声明的
@@ -83,7 +83,7 @@
 new() ->
     #{
         '__context__' => true,
-        env => #{kernel => undefined, conversation_id => undefined, vars => #{}},
+        env => #{chat_client => undefined, conversation_id => undefined, vars => #{}},
         state => #{},
         ?FILTER_STATES_KEY => #{}
     }.
@@ -162,15 +162,15 @@ with_conversation_id(#{env := Env} = Ctx, ConvId) ->
 conversation_id(#{env := #{conversation_id := ConvId}}) -> ConvId;
 conversation_id(_) -> undefined.
 
-%% @doc 关联 Kernel 引用（invoke_chat/invoke_tool 入口自动绑定）
--spec with_kernel(t(), term()) -> t().
-with_kernel(#{env := Env} = Ctx, Kernel) ->
-    Ctx#{env => Env#{kernel => Kernel}}.
+%% @doc 关联 ChatClient 引用（invoke_chat/invoke_tool 入口自动绑定）
+-spec with_chat_client(t(), term()) -> t().
+with_chat_client(#{env := Env} = Ctx, ChatClient) ->
+    Ctx#{env => Env#{chat_client => ChatClient}}.
 
-%% @doc 获取 Kernel 引用（未关联返回 undefined）
--spec get_kernel(t()) -> term() | undefined.
-get_kernel(#{env := #{kernel := Kernel}}) -> Kernel;
-get_kernel(_) -> undefined.
+%% @doc 获取 ChatClient 引用（未关联返回 undefined）
+-spec get_chat_client(t()) -> term() | undefined.
+get_chat_client(#{env := #{chat_client := ChatClient}}) -> ChatClient;
+get_chat_client(_) -> undefined.
 
 %% @doc 注入本轮执行的缺省工具超时（由 ToolCallingManager 在批执行前绑入）
 %%

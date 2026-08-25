@@ -26,7 +26,7 @@
    - `beamai_agent:resume_approval_raw/4`（:465，审批恢复执行）
    - `beamai_agent:resume_env_raw/3`（:492，环境重跑）
 5. **`beamai_agent_utils:execute_tools/5` 完全保留不动**——concurrent/sequential manager 委托给它。
-6. **`beamai_kernel` / `beamai_tool` 完全不动**——PR1 只动 agent 层。
+6. **`beamai_chat_client` / `beamai_tool` 完全不动**——PR1 只动 agent 层。
 7. **零行为变化**——全套现有测试原样通过。
 
 ## 返回值映射
@@ -38,9 +38,9 @@ behaviour callback 返回 `#{messages, records, context}` map（避免 arity 爆
 ## 批次 A：behaviour 定义（新模块）
 
 - [x] A1 新模块 `beamai_agent/src/beamai_tool_calling_manager.erl`：
-      `-callback execute_batch(Ref, Kernel, ToolCalls, Opts) -> Result`；
+      `-callback execute_batch(Ref, ChatClient, ToolCalls, Opts) -> Result`；
       导出类型 `manager/0`、`execute_opts/0`、`execute_result/0`；
-      分派函数 `execute({Mod,Ref}, Kernel, ToolCalls, Opts) -> Result`
+      分派函数 `execute({Mod,Ref}, ChatClient, ToolCalls, Opts) -> Result`
       （与 `beamai_memory_provider:history/2` 同款）
 - [x] A2 dialyzer：新模块无 warning（-spec 完整）
 
@@ -91,8 +91,8 @@ behaviour callback 返回 `#{messages, records, context}` map（避免 arity 爆
 
 - ~~backend 分派（local/http/mcp）——PR2~~ → **已否决**（PR2「一、工具定义方案」）
 - ~~`beamai_tool:invoke/3` 改动——PR2~~ → PR2 已改（超时真正执行）
-- ~~`beamai_kernel` / `beamai_tool` 任何改动——PR2~~ → PR2 改了 `beamai_tool`、
-  `beamai_tool_error`、`beamai_context`；`beamai_kernel` 仍零改动
+- ~~`beamai_chat_client` / `beamai_tool` 任何改动——PR2~~ → PR2 改了 `beamai_tool`、
+  `beamai_tool_error`、`beamai_context`；`beamai_chat_client` 仍零改动
 - execute_tools 逻辑搬家（从 utils 搬进 default manager）——PR1 不搬，只委托
   （PR2 仍未搬：manager → batch_worker → 委托 `execute_tools/5`）
 
@@ -127,7 +127,7 @@ behaviour callback 返回 `#{messages, records, context}` map（避免 arity 爆
   filter 正交性；**多 impl 切换**（sequential 无重叠 vs concurrent 有重叠）；
   返回值结构（map 三键、空 ToolCalls、多工具按序）。
 - **不变**：`beamai_agent_utils:execute_tools/5` 完全保留不动；
-  `beamai_kernel` / `beamai_tool` 零改动。
+  `beamai_chat_client` / `beamai_tool` 零改动。
 - **4 个调用点全部迁移**：
   | # | 模块 | 函数 | 行 | 场景 |
   |---|---|---|---|---|
@@ -147,7 +147,7 @@ behaviour callback 返回 `#{messages, records, context}` map（避免 arity 爆
 ## 一、工具定义方案：handler 闭包，**不引入 backend 字段**
 
 **否决** `design/tool_calling_manager_design.md` §5（给 tool_spec 加
-`backend => local | http | mcp` + `beamai_tool:invoke/3` 分派 + kernel settings
+`backend => local | http | mcp` + `beamai_tool:invoke/3` 分派 + ChatClient settings
 注册 `tool_backends`）。工具自己处理 MCP / HTTP，调用方不需要知道后端。
 
 理由（按份量排序）：
@@ -160,7 +160,7 @@ behaviour callback 返回 `#{messages, records, context}` map（避免 arity 爆
 2. **§5 的「严格模式」会打死它**——该模式规定非 local backend **不允许写
    handler**，而现有 MCP provider 正是靠 handler 工作的。
 3. **§5 让 `beamai_core` 感知 transport**——`resolve_backend/2` 要从 context 掏
-   kernel、查 settings 里的 `tool_backends` 表。HTTP / MCP 按三 app 分层本就该
+   ChatClient、查 settings 里的 `tool_backends` 表。HTTP / MCP 按三 app 分层本就该
    待在 `beamai_extra`。
 4. **闭包方案下 retry / timeout / serial / filters 天然正交**——只有一条执行路径。
 
@@ -248,7 +248,7 @@ beamai_tool_calling_manager:sequential(#{tool_timeout => infinity,
   工具最了解自己要跑多久；manager 缺省让部署方一处收紧而不必逐个改工具。
 - **下发通道**：manager 与 `beamai_tool:invoke/3` 之间隔着 5 层调用，借 context
   搭车。用 **env 专用槽** `default_tool_timeout` + `with_default_tool_timeout/2` /
-  `default_tool_timeout/1`（对齐 `with_kernel` / `get_kernel`），**不用 vars**——
+  `default_tool_timeout/1`（对齐 `with_chat_client` / `get_chat_client`），**不用 vars**——
   `beamai_prompt.erl:57` 把 `variables/1` 直接喂给提示词模板渲染，执行策略塞进去
   会污染用户的模板变量表。
 - **返回前剥掉**：策略是本批的执行细节，不该随 context 跨轮飘。属**卫生**而非修
@@ -336,7 +336,7 @@ beamai_tool_calling_manager:sequential(#{tool_timeout => infinity,
 
 ## PR2 明确出界
 
-- `beamai_kernel` 零改动（仍成立）
+- `beamai_chat_client` 零改动（仍成立）
 - `execute_tools/5` 逻辑仍未搬家——batch worker 委托它
 - **「报告但不杀」的中间形态**（如卡了 N 秒发 warning、继续等）——现无此机制
 - 编排层的 backend 分派——**已否决**，不再是待办（见「一」）

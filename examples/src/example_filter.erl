@@ -2,11 +2,11 @@
 %%% @doc Filter 洋葱链示例
 %%%
 %%% 演示 beamai 的洋葱式 filter 机制：一个 filter 最多绑定 5 个 around hook
-%%% （外→内 around_turn/around_step/around_chat/around_llm/around_tool），每个 around 用单个闭包
+%%% （外→内 around_turn/around_step/around_chat/around_tool），每个 around 用单个闭包
 %%% `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用，前置/后置
 %%% 同处一处，不调 Next 即短路。
 %%%
-%%% filter 在构建 kernel 时经 `beamai:kernel(Settings, Filters)` **一次性给出**，
+%%% filter 在构建 ChatClient 时经 `beamai:chat_client(Settings, Filters)` **一次性给出**，
 %%% **注册顺序即层序**：列表靠前 = 外层（前置先执行、后置后执行）。
 %%%   - tool filter: around_tool 前置改写参数 / 后置改写结果 / 短路拒绝
 %%%   - chat filter: around_chat 注入 system 消息 + 审计响应
@@ -61,8 +61,8 @@ run_invoke() ->
         end
     }),
 
-    %% 3. 构建 Kernel：filter 一次性给出（注册顺序即层序：log_double 在外层）
-    K0 = beamai:kernel(#{}, [LogDouble, Validate]),
+    %% 3. 构建 ChatClient：filter 一次性给出（注册顺序即层序：log_double 在外层）
+    K0 = beamai:chat_client(#{}, [LogDouble, Validate]),
     K1 = beamai:add_tools(K0, [
         beamai:tool(<<"add">>,
             fun(#{a := A, b := B}) -> {ok, A + B} end,
@@ -120,7 +120,7 @@ run_chat(LLMConfig) ->
         end
     }),
 
-    K0 = beamai:kernel(#{}, [SystemAudit]),
+    K0 = beamai:chat_client(#{}, [SystemAudit]),
     K1 = beamai:add_chat_model(K0, LLMConfig),
 
     Messages = [#{role => user, content => <<"什么是 GenServer？"/utf8>>}],

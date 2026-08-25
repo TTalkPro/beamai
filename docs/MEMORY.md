@@ -2,7 +2,7 @@
 
 [English](MEMORY_EN.md) | 中文
 
-beamai_core 把「对话历史的存储与注入」从 Kernel 中彻底剥离：**Kernel 无状态，
+beamai_core 把「对话历史的存储与注入」从 ChatClient 中彻底剥离：**ChatClient 无状态，
 每次 invoke 只传入单条最新消息**，会话历史按 `conversation_id` 管理。
 
 记忆分为**两层**，各自解决不同问题：
@@ -12,25 +12,25 @@ beamai_core 把「对话历史的存储与注入」从 Kernel 中彻底剥离：
 | **存储层** | `beamai_chat_memory` | 后端（ETS/DETS/自建），只管 get/add/clear，不含策略 |
 | **策略层** | `beamai_memory_provider` | 跨轮加载/持久化 + **发送前变换**（窗口裁剪/摘要/RAG 召回） |
 
-上面这两层之上，有**两条互不影响的接入路径**——取决于你用 Kernel 还是 Agent：
+上面这两层之上，有**两条互不影响的接入路径**——取决于你用 ChatClient 还是 Agent：
 
 | 路径 | 接入方式 | 适用 |
 |---|---|---|
-| **Kernel 级** | `beamai_memory_filter:memory_filter(Store)` 放进 filters 列表首位 | 直接用 `beamai_kernel` / `beamai` facade |
+| **ChatClient 级** | `beamai_memory_filter:memory_filter(Store)` 放进 filters 列表首位 | 直接用 `beamai_chat_client` / `beamai` facade |
 | **Agent 级** | `memory => Provider` 配置，Agent 在 tool loop 里显式编排 | 用 `beamai_agent` |
 
 > **两条路径不要混用**：`beamai_agent` **不使用** memory filter——它在自己的
 > tool loop 里通过 `beamai_memory_provider` 显式调 history/prepare/append。
-> Agent 层没有 filter 概念（filter 属于 kernel 层）。
+> Agent 层没有 filter 概念（filter 属于 ChatClient 层）。
 
-设计背景见 [design/kernel_memory_filter_redesign.md](../design/kernel_memory_filter_redesign.md)。
+设计背景见 [design/chat_client_memory_filter_redesign.md](../design/chat_client_memory_filter_redesign.md)。
 
 ## 目录
 
 - [核心理念](#核心理念)
 - [组件](#组件)
 - [delta 模式 vs full 模式](#delta-模式-vs-full-模式)
-- [快速开始（Kernel 级）](#快速开始kernel-级)
+- [快速开始（ChatClient 级）](#快速开始chatclient-级)
 - [ChatMemory Behaviour（存储层）](#chatmemory-behaviour存储层)
 - [Memory Provider（策略层 / Agent 级）](#memory-provider策略层--agent-级)
 - [滑动窗口](#滑动窗口)
@@ -40,10 +40,10 @@ beamai_core 把「对话历史的存储与注入」从 Kernel 中彻底剥离：
 
 ## 核心理念
 
-- **Kernel 不记录消息**。`beamai_context` 不再持有 `messages` / `history`。
+- **ChatClient 不记录消息**。`beamai_context` 不再持有 `messages` / `history`。
 - **每次 invoke 只传单条最新消息**（首轮=用户消息，后续轮=工具结果）。
 - 会话历史的存储、注入、裁剪全部由 **store + filter/provider** 承担，按 `conversation_id` 隔离。
-- 不挂记忆时 Kernel 退化为**单次无状态调用**（工具循环内部本地累积）。
+- 不挂记忆时 ChatClient 退化为**单次无状态调用**（工具循环内部本地累积）。
 
 ## 组件
 
@@ -54,8 +54,8 @@ beamai_core 把「对话历史的存储与注入」从 Kernel 中彻底剥离：
 | `beamai_chat_memory_dets` | 存储 | DETS 持久化实现（重启后按 conversation_id 恢复历史） |
 | `beamai_memory_provider` | 策略 | Provider **behaviour** + 调度 API：history/append/prepare/clear |
 | `beamai_memory_provider_default` | 策略 | 默认 provider：包一个 store，`new/2` 可带滑动窗口 |
-| `beamai_memory_filter` | Kernel 接入 | 单个 filter：around_chat 前置存 delta + 展开历史、后置存回复 |
-| `beamai_kernel:new/2` | Kernel 接入 | 构建时把 memory filter 放进 filters 列表（首位 = 最外层） |
+| `beamai_memory_filter` | ChatClient 接入 | 单个 filter：around_chat 前置存 delta + 展开历史、后置存回复 |
+| `beamai_chat_client:new/2` | ChatClient 接入 | 构建时把 memory filter 放进 filters 列表（首位 = 最外层） |
 
 ## delta 模式 vs full 模式
 
@@ -75,24 +75,24 @@ beamai_core 把「对话历史的存储与注入」从 Kernel 中彻底剥离：
 > 仍需在单次 invoke 内让后续 LLM 调用看到先前的 tool_call 与工具结果——full 模式用
 > 循环里的本地变量累积完整对话，每轮传全量。它不持久、不跨 invoke。
 
-## 快速开始（Kernel 级）
+## 快速开始（ChatClient 级）
 
 ```erlang
 %% 1. 启动会话存储（ETS 默认实现）
 {ok, _Pid} = beamai_chat_memory_ets:start_link(my_mem),
 Store = beamai_chat_memory_ets:handle(my_mem),   %% 句柄 {beamai_chat_memory_ets, my_mem}
 
-%% 2. 构建 Kernel 并启用记忆（memory filter 放 filters 列表首位 = 最外层）
-K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K  = beamai_kernel:add_chat_model(K0, LlmConfig),
+%% 2. 构建 ChatClient 并启用记忆（memory filter 放 filters 列表首位 = 最外层）
+K0 = beamai_chat_client:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+K  = beamai_chat_client:add_chat_model(K0, LlmConfig),
 
 %% 3. 用 conversation_id 标识会话，每次只传最新消息
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
 
-{ok, R1, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"我叫张三">>}],
+{ok, R1, _} = beamai_chat_client:invoke(K, [#{role => user, content => <<"我叫张三">>}],
                                    #{context => Ctx}),
 %% 同一 conversation_id，第二轮 LLM 能看到完整历史
-{ok, R2, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"我叫什么？">>}],
+{ok, R2, _} = beamai_chat_client:invoke(K, [#{role => user, content => <<"我叫什么？">>}],
                                    #{context => Ctx}).
 
 %% 4. 读取/清理会话历史
@@ -136,7 +136,7 @@ Store = beamai_chat_memory_dets:handle(my_mem),   %% 句柄 {beamai_chat_memory_
 
 存储层只管存取，**策略**（裁剪多少、要不要摘要、要不要 RAG 召回）属于 Provider。
 `beamai_agent` 走的是这条路径：它在自己的 tool loop 里显式调用 provider，不经任何
-kernel filter。
+ChatClient filter。
 
 职责切分：
 
@@ -211,16 +211,16 @@ Provider = beamai_memory_provider_default:new(Store, 20),  %% 最近 20 条非�
 
 `new/1` 等价于窗口 `infinity`，即 `prepare` 恒等返回、上下文无界。
 
-> **Kernel 级路径当前没有窗口**：`beamai_memory_filter` 直接用 store 的全量历史替换
+> **ChatClient 级路径当前没有窗口**：`beamai_memory_filter` 直接用 store 的全量历史替换
 > messages。需要裁剪的话，要么走 Agent 路径用 provider，要么自建一个实现
 > `beamai_chat_memory` 的 store 在 `mem_get` 时自行裁剪。
 >
 > 基于 Token 的裁剪与摘要不在 core 内，由上层实现 `beamai_memory_provider` 提供。
 
-## 数据流（Kernel 级：带工具循环，delta 模式）
+## 数据流（ChatClient 级：带工具循环，delta 模式）
 
 ```
-invoke(Kernel, [User消息], #{context := Ctx(conv_id=s1)})
+invoke(ChatClient, [User消息], #{context := Ctx(conv_id=s1)})
 └─ tool_calling_loop，delta = [User消息]
    └─ run_chat_pipeline(delta)
       ├─ memory.around_chat 前置 (order -1000，外层): mem_add(s1, delta)；messages := mem_get(s1) 全量历史
@@ -247,12 +247,12 @@ beamai_agent:run(Agent, UserMsg)
    ├─ history(Provider, ConvId)              读跨轮历史
    ├─ 本轮消息在 loop 内本地累积（within-run）
    ├─ prepare(Provider, ConvId, Messages)    发送前变换（窗口/摘要/召回）
-   ├─ kernel invoke → LLM
+   ├─ ChatClient invoke → LLM
    ├─ 有 tool_calls → 执行工具，结果并入本地累积，回到循环
    └─ append(Provider, ConvId, Msgs)         持久化本轮消息（cross-run）
 ```
 
-Agent 路径不经任何 filter：kernel 与 memory 是两个**正交**的创建参数，kernel 管
+Agent 路径不经任何 filter：ChatClient 与 memory 是两个**正交**的创建参数，ChatClient 管
 LLM/工具调用，provider 管跨轮历史，二者任意组合。
 
 ## 关键源文件
@@ -260,11 +260,11 @@ LLM/工具调用，provider 管跨轮历史，二者任意组合。
 | 文件 | 说明 |
 |------|------|
 | `apps/beamai_core/src/behaviours/beamai_chat_memory.erl` | 存储层 behaviour + 调度 API |
-| `apps/beamai_core/src/kernel/beamai_chat_memory_ets.erl` | ETS 默认实现 |
-| `apps/beamai_core/src/kernel/beamai_chat_memory_dets.erl` | DETS 持久化实现 |
+| `apps/beamai_core/src/core/beamai_chat_memory_ets.erl` | ETS 默认实现 |
+| `apps/beamai_core/src/core/beamai_chat_memory_dets.erl` | DETS 持久化实现 |
 | `apps/beamai_core/src/behaviours/beamai_memory_provider.erl` | 策略层 behaviour + 调度 API |
-| `apps/beamai_core/src/kernel/beamai_memory_provider_default.erl` | 默认 provider（可选滑动窗口） |
-| `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | Memory Filter（Kernel 级接入） |
-| `apps/beamai_core/src/kernel/beamai_kernel.erl` | `new/2`（filters 一次性给出）、invoke 双模式 |
+| `apps/beamai_core/src/core/beamai_memory_provider_default.erl` | 默认 provider（可选滑动窗口） |
+| `apps/beamai_core/src/core/beamai_memory_filter.erl` | Memory Filter（ChatClient 级接入） |
+| `apps/beamai_core/src/core/beamai_chat_client.erl` | `new/2`（filters 一次性给出）、invoke 双模式 |
 | `apps/beamai_agent/src/beamai_agent_state.erl` | Agent 的 `memory` 配置解析（`setup_memory/1`） |
 | `apps/beamai_agent/src/beamai_agent_tool_loop.erl` | Agent 在 loop 里显式调 history/prepare/append |

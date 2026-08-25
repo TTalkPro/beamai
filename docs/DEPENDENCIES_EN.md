@@ -80,7 +80,7 @@ combined view; the edges are taken from each app's `.app.src`:
                                                  v
                               +-----------------------------------+
                               |           beamai_core             |  <- Base Layer
-                              |  Types / Kernel / Filter / HTTP   |
+                              | Types / ChatClient / Filter / HTTP|
                               |  Behaviours: chat_behaviour,      |
                               |  chat_memory, memory_provider,    |
                               |  http_behaviour, tool_behaviour   |
@@ -173,11 +173,11 @@ combined view; the edges are taken from each app's `.app.src`:
 #### beamai_agent (Agent System)
 
 **Dependencies**:
-- beamai_core (Kernel, Filter, types, memory behaviours)
+- beamai_core (ChatClient, Filter, types, memory behaviours)
 - beamai_llm (LLM calls)
 
 > **Note**: beamai_agent is the core orchestration layer and depends on **neither**
-> beamai_tools **nor** beamai_mcp. Tools are registered into the kernel as maps /
+> beamai_tools **nor** beamai_mcp. Tools are registered into the ChatClient as maps /
 > `beamai_tool`; MCP tools are integrated through beamai_mcp's adapter layer, not a
 > reverse dependency.
 
@@ -196,7 +196,7 @@ combined view; the edges are taken from each app's `.app.src`:
 
 > **Memory is not listed here**: the Agent's cross-run memory is provided by
 > `beamai_core`'s `beamai_memory_provider`, which the Agent calls explicitly in its tool
-> loop (`memory` is a construction parameter orthogonal to `kernel`). See
+> loop (`memory` is a construction parameter orthogonal to `ChatClient`). See
 > [MEMORY_EN.md](MEMORY_EN.md).
 
 #### beamai_a2a (Agent-to-Agent Protocol)
@@ -252,7 +252,7 @@ Config = #{
 
 **Provides**:
 - LLM config helper (example_llm_config)
-- Kernel chat (example_kernel_chat)
+- ChatClient chat (example_chat_client_chat)
 - Streaming responses (example_streaming)
 - Filter example (example_filter)
 - Tool example (example_tool_refactored)

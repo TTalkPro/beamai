@@ -51,15 +51,15 @@ new(Opts) when is_map(Opts) ->
 %% <code>&#123;ToolMsgs, CallRecords, NewContext&#125;</code> 包成 result map。
 %% parallel opts 透传，由 execute_tools 在 worker **内部**判定并发退化——
 %% 隔离与调度正交：并发与否不影响调用者恒定受保护。
--spec execute_tool_calls(term(), beamai_kernel:kernel(), [map()],
+-spec execute_tool_calls(term(), beamai_chat_client:chat_client(), [map()],
                          beamai_tool_calling_manager:execute_opts()) ->
     beamai_tool_calling_manager:execute_result().
-execute_tool_calls(Ref, Kernel, ToolCalls, Opts) ->
+execute_tool_calls(Ref, ChatClient, ToolCalls, Opts) ->
     Context = maps:get(context, Opts, beamai_context:new()),
     Parallel = maps:get(parallel, Opts, false),
     OnResult = maps:get(on_result, Opts, fun(_CR) -> ok end),
     MgrOpts = beamai_tool_calling_manager:opts_from_ref(Ref),
     {ToolMsgs, CallRecords, NewContext} =
-        beamai_tool_batch_worker:execute_isolated(Kernel, ToolCalls, Context,
+        beamai_tool_batch_worker:execute_isolated(ChatClient, ToolCalls, Context,
                                                   Parallel, OnResult, MgrOpts),
     #{messages => ToolMsgs, records => CallRecords, context => NewContext}.

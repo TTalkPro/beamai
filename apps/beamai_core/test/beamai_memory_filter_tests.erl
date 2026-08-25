@@ -191,14 +191,14 @@ cross_invoke_accumulation() ->
     Name = unique_name(integ_mem),
     {ok, Pid} = beamai_chat_memory_ets:start_link(Name),
     Store = beamai_chat_memory_ets:handle(Name),
-    K = build_mock_kernel(Store),
+    K = build_mock_chat_client(Store),
     Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"s1">>),
     %% 第一轮：LLM 看到 1 条（user1）
-    {ok, R1, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"hi">>}],
+    {ok, R1, _} = beamai_chat_client:invoke_chat(K, [#{role => user, content => <<"hi">>}],
                                             #{context => Ctx}),
     ?assertEqual(<<"saw:1">>, maps:get(content, R1)),
     %% 第二轮：同会话，LLM 看到 3 条（user1, asst1, user2）
-    {ok, R2, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"bye">>}],
+    {ok, R2, _} = beamai_chat_client:invoke_chat(K, [#{role => user, content => <<"bye">>}],
                                             #{context => Ctx}),
     ?assertEqual(<<"saw:3">>, maps:get(content, R2)),
     %% store 累积 4 条
@@ -212,11 +212,11 @@ cross_invoke_accumulation() ->
 %% 辅助
 %%====================================================================
 
-build_mock_kernel(Store) ->
+build_mock_chat_client(Store) ->
     %% memory filter 放 filters 列表首位（最外层），构建时一次性给出
-    K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+    K0 = beamai_chat_client:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
     LlmConfig = beamai_chat_model:create({custom, ?MOCK_MODULE}, #{model => <<"mock">>}),
-    beamai_kernel:add_chat_model(K0, LlmConfig).
+    beamai_chat_client:add_chat_model(K0, LlmConfig).
 
 unique_name(Prefix) ->
     list_to_atom(lists:concat([Prefix, "_", erlang:unique_integer([positive])])).

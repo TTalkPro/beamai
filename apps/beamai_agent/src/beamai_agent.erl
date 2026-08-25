@@ -1,20 +1,20 @@
 %%%-------------------------------------------------------------------
 %%% @doc 有状态多轮对话 Agent（ReAct）
 %%%
-%%% 封装 beamai_kernel，提供：
+%%% 封装 beamai_chat_client，提供：
 %%%   - 多轮对话管理（跨轮历史由 memory provider 按 conversation_id 维护）
 %%%   - 自实现 tool loop（full-messages 模式，自管编排记忆与回调）
 %%%   - 9 个观察性回调（on_turn_start/end/error, on_llm_call, on_tool_call,
 %%%     on_tool_result, on_token, on_interrupt, on_resume）
 %%%
-%%% 核心设计决策（Agent 自管编排，不借道 kernel filter）：
+%%% 核心设计决策（Agent 自管编排，不借道 ChatClient filter）：
 %%%   - **记忆是 Agent 自己的接口**（beamai_memory_provider），由 tool loop 显式调用
-%%%     （history 载入跨轮 / append 持久化 / prepare 发送前变换），**不**注入 kernel
+%%%     （history 载入跨轮 / append 持久化 / prepare 发送前变换），**不**注入 ChatClient
 %%%     filter。within-run 消息由 loop 累积，cross-run 由 provider 持久化。
-%%%   - **回调是 Agent 自己的接口**，全部在 tool loop 里直接触发，**不**注入 kernel
+%%%   - **回调是 Agent 自己的接口**，全部在 tool loop 里直接触发，**不**注入 ChatClient
 %%%     filter（取消了曾经的 on_llm_call around_chat 注入）。
-%%%   - kernel 仍是纯原语（invoke_chat/invoke_tool + filter 给"直接用 kernel 的人"；
-%%%     预构建 kernel 的 filter 在 beamai_kernel:new/2 一次性给出，注册顺序即层序）。
+%%%   - ChatClient 仍是纯原语（invoke_chat/invoke_tool + filter 给"直接用 ChatClient 的人"；
+%%%     预构建 ChatClient 的 filter 在 beamai_chat_client:new/2 一次性给出，注册顺序即层序）。
 %%%   - Map-based 状态，无 Record 依赖，方便序列化（memory provider 为 {Mod, Ref}，
 %%%     conversation_id 为 binary，均可序列化）
 %%%
@@ -44,7 +44,7 @@
 -export([is_interrupted/1, get_interrupt_info/1]).
 
 %% 查询
--export([messages/1, last_response/1, turn_count/1, kernel/1, id/1, name/1]).
+-export([messages/1, last_response/1, turn_count/1, chat_client/1, id/1, name/1]).
 
 %% 修改
 -export([set_system_prompt/2, add_message/2, clear_messages/1, update_metadata/2]).
@@ -73,8 +73,8 @@
 
 %% @doc 创建新的 Agent 实例
 %%
-%% 从配置 map 构建完整的 agent 状态，包括 kernel 初始化、
-%% memory provider 解析、默认值填充等。kernel 与 memory 为两个
+%% 从配置 map 构建完整的 agent 状态，包括 ChatClient 初始化、
+%% memory provider 解析、默认值填充等。ChatClient 与 memory 为两个
 %% 正交的创建参数；callbacks 是 agent 唯一的观察扩展点。
 %%
 %% 详细配置选项参见 beamai_agent_state:create/1。
@@ -118,7 +118,7 @@ run(State, UserMessage) ->
 %%   4. 触发 on_turn_end 回调
 %%
 %% 选项：
-%%   chat_opts — 传递给 kernel invoke_chat 的额外选项
+%%   chat_opts — 传递给 ChatClient invoke_chat 的额外选项
 %%
 %% @param State 当前 agent 状态
 %% @param UserMessage 用户输入文本
@@ -161,7 +161,7 @@ run(State, UserMessage, Opts) ->
 %%
 %% TurnResult 为工具循环结果 tuple，turn filter 直接模式匹配（硬规则：
 %% interrupt/error 透传不重入）。filter/terminal 抛出由链统一捕获为 {error, Reason}。
-run_turn_chain(#{kernel := #{filters := Filters}} = State, TurnReq, LoopOpts) ->
+run_turn_chain(#{chat_client := #{filters := Filters}} = State, TurnReq, LoopOpts) ->
     Chain = Filters ++ [loop_filter(State, LoopOpts)],
     StepChain = beamai_filter_chain:compose(
                   Filters, around_step,
@@ -221,7 +221,7 @@ stream(State, UserMessage) ->
 %% @doc 流式执行一轮对话（带选项）
 %%
 %% 与 run/3 同样经 tool loop（full-messages 模式）完成工具循环，区别在于循环中
-%% 的每次 LLM 调用走 provider 级 streaming（kernel:invoke_chat_stream）：文本
+%% 的每次 LLM 调用走 provider 级 streaming（ChatClient:invoke_chat_stream）：文本
 %% token 经 on_token callback **实时**逐 token 推送，而非等整轮完成后再分块。
 %% 工具调用轮通常无文本内容（content=null），自然不产生 token；最终文本回合
 %% 即逐 token 流出。
@@ -241,7 +241,7 @@ stream(State, UserMessage) ->
 stream(State, UserMessage, Opts) ->
     #{callbacks := Callbacks} = State,
     Meta = beamai_agent_callbacks:build_metadata(State),
-    %% 桥接：kernel 逐 token 回调 → agent on_token 回调
+    %% 桥接：ChatClient 逐 token 回调 → agent on_token 回调
     TokenHandler = fun(Token) -> emit_tokens(Token, Meta, Callbacks) end,
     run(State, UserMessage, Opts#{stream_token_handler => TokenHandler}).
 
@@ -285,15 +285,15 @@ last_response(State) ->
 -spec turn_count(beamai_agent_state:agent_state()) -> non_neg_integer().
 turn_count(#{turn_count := N}) -> N.
 
-%% @doc 获取 agent 内部的 kernel 实例
+%% @doc 获取 agent 内部的 ChatClient 实例
 %%
-%% 可用于直接操作 kernel（如添加新 plugin、查看 tool schemas 等）。
-%% 注意：修改后的 kernel 不会自动同步回 agent 状态。
+%% 可用于直接操作 ChatClient（如添加新 plugin、查看 tool schemas 等）。
+%% 注意：修改后的 ChatClient 不会自动同步回 agent 状态。
 %%
 %% @param State agent 状态
-%% @returns kernel 实例
--spec kernel(beamai_agent_state:agent_state()) -> beamai_kernel:kernel().
-kernel(#{kernel := K}) -> K.
+%% @returns ChatClient 实例
+-spec chat_client(beamai_agent_state:agent_state()) -> beamai_chat_client:chat_client().
+chat_client(#{chat_client := K}) -> K.
 
 %% @doc 获取 agent 唯一标识
 %%
@@ -464,12 +464,12 @@ resume_approval_raw(Agent1, Decision, Payload, IntState) ->
             [Msg];
         {execute, ToolCall} ->
             %% approved：真正执行被中断工具（可能已替换参数），用其结果
-            Kernel = maps:get(kernel, Agent1),
+            ChatClient = maps:get(chat_client, Agent1),
             Ctx = resume_context(Agent1, InitState),
             TCM = maps:get(tool_calling_manager, Agent1,
                            beamai_tool_calling_manager:default()),
             #{messages := Msgs} =
-                beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, [ToolCall], #{
+                beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, [ToolCall], #{
                     context => Ctx,
                     parallel => false
                 }),
@@ -480,7 +480,7 @@ resume_approval_raw(Agent1, Decision, Payload, IntState) ->
 %% @private 环境暂停延续：retry 重跑失败调用并按 id 替换结果（仍失败则再暂停——返回
 %% 原始 {interrupt, env_retry, _}），否则 proceed 原错误结果放行；跑续接循环。
 resume_env_raw(Agent1, Decision, IntState) ->
-    #{max_tool_iterations := MaxIter, kernel := Kernel} = Agent1,
+    #{max_tool_iterations := MaxIter, chat_client := ChatClient} = Agent1,
     #{iteration := Iter, tool_calls_made := PrevCalls,
       batch_messages := BatchMsgs, failed_calls := FailedCalls} = IntState,
     InitState = maps:get(saved_state, IntState, #{}),
@@ -493,7 +493,7 @@ resume_env_raw(Agent1, Decision, IntState) ->
             TCM = maps:get(tool_calling_manager, Agent1,
                            beamai_tool_calling_manager:default()),
             #{messages := RetryMsgs, records := RetryRecords} =
-                beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, FailedCalls, #{
+                beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, FailedCalls, #{
                     context => Ctx,
                     parallel => Parallel
                 }),
@@ -645,10 +645,10 @@ get_interrupt_info(_) ->
 %% 取自 continuation 给的 override。历史载入与新消息持久化全部由 tool_loop
 %% 编排（agent 不再直接碰 memory）。
 loop_opts(State, Opts) ->
-    #{callbacks := Callbacks, kernel := Kernel} = State,
+    #{callbacks := Callbacks, chat_client := ChatClient} = State,
     MaxIter = maps:get(max_iterations, Opts, maps:get(max_tool_iterations, State)),
     #{
-        kernel => Kernel,
+        chat_client => ChatClient,
         chat_opts => build_chat_opts(State, Opts),
         callbacks => Callbacks,
         max_iterations => MaxIter,
@@ -698,13 +698,13 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
 %% @private 构建 chat 选项
 %%
 %% 在共享工具模块基础上，附加：
-%%   - 带 conversation_id 的 context（供工具执行 / 用户自加的 kernel filter 定位会话）
-%%   - system_prompts（system_prompt 包装为 system 消息，经 kernel invoke_chat 注入、不入存储）
+%%   - 带 conversation_id 的 context（供工具执行 / 用户自加的 ChatClient filter 定位会话）
+%%   - system_prompts（system_prompt 包装为 system 消息，经 ChatClient invoke_chat 注入、不入存储）
 %%   - 中断 tool specs（如有）
 %%
 %% 注：记忆与 on_llm_call 等回调由 tool_loop 显式编排，不再经 chat_opts 引线。
-build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
-    BaseOpts0 = beamai_agent_utils:build_chat_opts(Kernel, Opts),
+build_chat_opts(#{chat_client := ChatClient} = Agent, Opts) ->
+    BaseOpts0 = beamai_agent_utils:build_chat_opts(ChatClient, Opts),
     %% 这里的 context 只是兜底：真正生效的是 step 请求里逐轮穿线的那个
     %% （turn filter 改写的 context 因此对循环全程可见），由 step_terminal 覆写。
     Ctx = beamai_context:with_conversation_id(

@@ -137,39 +137,39 @@ A 前置 → B 前置 → Terminal → B 后置 → A 后置
 - terminal 出错用 `throw`；`run/4` 用 try/catch 捕获，统一返回 `{ok, Response} | {error, Reason}`。
 - `relevant/2`：仅保留对该链有对应 around 的 filter。
 
-## 注册到 Kernel
+## 注册到 ChatClient
 
-filter 追加到 Kernel 的 `filters` 列表，运行时按 order 排序：
+filter 追加到 ChatClient 的 `filters` 列表，运行时按 order 排序：
 
 ```erlang
-add_filter(#{filters := Filters} = Kernel, Filter) ->
-    Kernel#{filters => Filters ++ [Filter]}.
+add_filter(#{filters := Filters} = ChatClient, Filter) ->
+    ChatClient#{filters => Filters ++ [Filter]}.
 ```
 
 beamai facade 便捷 API：
 
 ```erlang
 %% 注册已构建 filter
-beamai:add_filter(Kernel, Filter) -> Kernel.
+beamai:add_filter(ChatClient, Filter) -> ChatClient.
 
 %% 快捷创建并注册（直接给 hook map，order 固定 0）
-beamai:add_filter(Kernel, Name, Hooks) ->
+beamai:add_filter(ChatClient, Name, Hooks) ->
     Filter = beamai_filter:new(Name, Hooks),
-    beamai_kernel:add_filter(Kernel, Filter).
+    beamai_chat_client:add_filter(ChatClient, Filter).
 ```
 
 ## 工具模块自动注册
 
-工具模块实现可选回调 `filters/0`，加载时由 Kernel 自动注册：
+工具模块实现可选回调 `filters/0`，加载时由 ChatClient 自动注册：
 
 ```erlang
-maybe_add_filters(Kernel, Module) ->
+maybe_add_filters(ChatClient, Module) ->
     case erlang:function_exported(Module, filters, 0) of
         true ->
             Filters = Module:filters(),
-            lists:foldl(fun(F, K) -> add_filter(K, F) end, Kernel, Filters);
+            lists:foldl(fun(F, K) -> add_filter(K, F) end, ChatClient, Filters);
         false ->
-            Kernel
+            ChatClient
     end.
 ```
 
@@ -258,9 +258,9 @@ memory_filter(Store, Order) ->
 
 | 文件 | 职责 |
 |------|------|
-| `apps/beamai_core/src/kernel/beamai_filter.erl` | filter 构造器、排序、取 hook/init |
-| `apps/beamai_core/src/kernel/beamai_filter_chain.erl` | 洋葱链 compose 与 run（throw 捕获、按链筛选 relevant、私有上下文投影/合并） |
-| `apps/beamai_core/src/kernel/beamai_context.erl` | 共享上下文 + filter 私有上下文槽（filter_state/3、set_filter_state/3） |
-| `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | 会话记忆 filter（规范示例） |
-| `apps/beamai_core/src/kernel/beamai_kernel.erl` | 注册 filter、filters/0 自动加载 |
+| `apps/beamai_core/src/core/beamai_filter.erl` | filter 构造器、排序、取 hook/init |
+| `apps/beamai_core/src/core/beamai_filter_chain.erl` | 洋葱链 compose 与 run（throw 捕获、按链筛选 relevant、私有上下文投影/合并） |
+| `apps/beamai_core/src/core/beamai_context.erl` | 共享上下文 + filter 私有上下文槽（filter_state/3、set_filter_state/3） |
+| `apps/beamai_core/src/core/beamai_memory_filter.erl` | 会话记忆 filter（规范示例） |
+| `apps/beamai_core/src/core/beamai_chat_client.erl` | 注册 filter、filters/0 自动加载 |
 | `apps/beamai_core/src/beamai.erl` | facade 便捷 API（add_filter/2,3） |

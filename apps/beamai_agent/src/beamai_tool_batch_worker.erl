@@ -52,22 +52,22 @@
 %% 语义一致：进度回调属于用户进程，不该跑进 worker。
 %%
 %% @returns {ToolResultMsgs, CallRecords, NewContext}
--spec execute_isolated(beamai_kernel:kernel(), [map()], beamai_context:t(),
+-spec execute_isolated(beamai_chat_client:chat_client(), [map()], beamai_context:t(),
                        boolean(), fun((map()) -> ok)) ->
     {[map()], [map()], beamai_context:t()}.
-execute_isolated(Kernel, ToolCalls, Context, Parallel, OnResult) ->
-    execute_isolated(Kernel, ToolCalls, Context, Parallel, OnResult, #{}).
+execute_isolated(ChatClient, ToolCalls, Context, Parallel, OnResult) ->
+    execute_isolated(ChatClient, ToolCalls, Context, Parallel, OnResult, #{}).
 
 %% @doc 同 {@link execute_isolated/5}，并应用 manager 级执行策略
 %% （见 {@link beamai_tool_calling_manager:manager_opts()}）。
--spec execute_isolated(beamai_kernel:kernel(), [map()], beamai_context:t(),
+-spec execute_isolated(beamai_chat_client:chat_client(), [map()], beamai_context:t(),
                        boolean(), fun((map()) -> ok),
                        beamai_tool_calling_manager:manager_opts()) ->
     {[map()], [map()], beamai_context:t()}.
-execute_isolated(_Kernel, [], Context, _Parallel, _OnResult, _MgrOpts) ->
+execute_isolated(_ChatClient, [], Context, _Parallel, _OnResult, _MgrOpts) ->
     %% 空批次不值得起进程
     {[], [], Context};
-execute_isolated(Kernel, ToolCalls, Context0, Parallel, OnResult, MgrOpts) ->
+execute_isolated(ChatClient, ToolCalls, Context0, Parallel, OnResult, MgrOpts) ->
     %% manager 的缺省工具超时经 context 下发给 beamai_tool:invoke/3（工具自身
     %% 声明的 timeout 仍优先）。恒定注入——传 undefined 即清除，使每批的策略只
     %% 由其 manager 决定，不粘上一批的残值（context 跨轮穿线）。
@@ -78,7 +78,7 @@ execute_isolated(Kernel, ToolCalls, Context0, Parallel, OnResult, MgrOpts) ->
     %% proxy：worker 内每工具完成即把 CallRecord 转回父进程，由父进程触发真回调
     Proxy = fun(CR) -> Parent ! {tcm_on_result, Tag, CR}, ok end,
     {Pid, MRef} = spawn_monitor(fun() ->
-        Result = beamai_agent_utils:execute_tools(Kernel, ToolCalls, Context,
+        Result = beamai_agent_utils:execute_tools(ChatClient, ToolCalls, Context,
                                                   Parallel, Proxy),
         Parent ! {tcm_batch_result, Tag, Result}
     end),

@@ -1,23 +1,23 @@
 %%%-------------------------------------------------------------------
-%%% @doc Agent 状态构建与 Kernel 集成
+%%% @doc Agent 状态构建与 ChatClient 集成
 %%%
 %%% 负责 agent 生命周期中的状态初始化工作：
 %%%   - 从用户 Config 构建完整的 agent_state map
-%%%   - 构建或接收 kernel（LLM 服务 + 工具插件）
-%%%   - 解析 memory provider（与 kernel 正交，互不感知）
+%%%   - 构建或接收 ChatClient（LLM 服务 + 工具插件）
+%%%   - 解析 memory provider（与 ChatClient 正交，互不感知）
 %%%
 %%% 设计决策：
 %%%   - 使用 Map 而非 Record，灵活可序列化
-%%%   - kernel 与 memory 是两个正交的创建参数：kernel 管 LLM/工具调用，
-%%%     memory 管跨轮会话历史，二者任意组合（预构建 kernel + 自定义 provider 等）
+%%%   - ChatClient 与 memory 是两个正交的创建参数：ChatClient 管 LLM/工具调用，
+%%%     memory 管跨轮会话历史，二者任意组合（预构建 ChatClient + 自定义 provider 等）
 %%%   - agent 本身没有 filter 概念：回调（callbacks）是 agent 唯一的观察扩展点，
-%%%     由 tool loop 直接触发；filter 属于 kernel 层（想用就自建 kernel 传入）
+%%%     由 tool loop 直接触发；filter 属于 ChatClient 层（想用就自建 ChatClient 传入）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_agent_state).
 
--export([create/1, build_kernel/1]).
+-export([create/1, build_chat_client/1]).
 -export([memory/1, conversation_id/1]).
 
 -export_type([agent_state/0]).
@@ -30,7 +30,7 @@
     '__agent__' := true,            %% 标识这是一个 agent 状态 map
     id := binary(),                 %% agent 唯一标识（自动生成或用户指定）
     name := binary(),               %% agent 显示名称
-    kernel := beamai_kernel:kernel(), %% kernel 实例（LLM 服务 + 工具）
+    chat_client := beamai_chat_client:chat_client(), %% chat_client 实例（LLM 服务 + 工具）
     memory := beamai_memory_provider:provider() | undefined, %% 记忆 provider（策略+存储）
     conversation_id := binary(),    %% 本 agent 的会话标识，用于在记忆内定位历史
     system_prompt := binary() | undefined, %% 系统提示词
@@ -79,13 +79,13 @@
 %% @doc 从 Config 创建完整的 agent_state
 %%
 %% 这是 agent 初始化的核心入口，执行以下步骤：
-%%   1. 从 Config 构建 kernel（或使用预构建的 kernel）
+%%   1. 从 Config 构建 ChatClient（或使用预构建的 ChatClient）
 %%   2. 从 Config 解析 memory provider（callbacks 与 memory 均由 tool loop 显式编排，
-%%      不向 kernel 注入 filter）
+%%      不向 ChatClient 注入 filter）
 %%   3. 组装完整的 agent_state map
 %%
 %% Config 支持的选项：
-%%   kernel — 预构建的 kernel 实例（与 llm/plugins 互斥）
+%%   ChatClient — 预构建的 ChatClient 实例（与 llm/plugins 互斥）
 %%   llm — LLM 配置，支持 {Provider, Opts} 元组或 config() map
 %%   plugins — 要加载的 plugin 模块列表 [module()]
 %%   system_prompt — 系统提示词（binary）
@@ -97,7 +97,7 @@
 %%     三层超时的缺省一致）。
 %%   parallel_tools — 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
 %%   callbacks — 观察性回调 map（参见 beamai_agent_callbacks:callbacks()）
-%%   memory — 会话记忆（解析为 beamai_memory_provider，与 kernel 正交）：
+%%   memory — 会话记忆（解析为 beamai_memory_provider，与 ChatClient 正交）：
 %%            缺省用默认 provider+共享 store；{window,N} 套滑动窗口；
 %%            {store,Handle} 指定存储后端；{Mod,Ref} 自定义 provider（摘要/RAG…）；
 %%            false|none 关闭记忆。详见 setup_memory/1
@@ -105,7 +105,7 @@
 %%   id — agent ID（默认自动生成）
 %%   name — agent 名称（默认 <<"agent">>）
 %%   metadata — 用户自定义元数据 map
-%%   kernel_settings — 创建新 kernel 时的设置项
+%%   chat_client_settings — 创建新 ChatClient 时的设置项
 %%   loop_filter — 循环驱动 filter 的构造器 fun((LoopOpts) -> filter())，替换缺省
 %%                 ReAct 循环（契约见 beamai_agent_tool_loop 的 step_request/0）
 %%
@@ -116,9 +116,9 @@
 create(Config) ->
     try
         Callbacks = maps:get(callbacks, Config, #{}),
-        Kernel = build_kernel(Config),
+        ChatClient = build_chat_client(Config),
         %% 解析记忆 provider：跨轮历史由 Agent 在 tool loop 里显式委托给 provider，
-        %% 不再注入 kernel filter（callbacks 同理，全在 loop 触发）。
+        %% 不再注入 ChatClient filter（callbacks 同理，全在 loop 触发）。
         Memory = setup_memory(Config),
         TCM = setup_tool_calling_manager(Config),
         Id = maps:get(id, Config, beamai_id:gen_id(<<"agent">>)),
@@ -126,7 +126,7 @@ create(Config) ->
             '__agent__' => true,
             id => Id,
             name => maps:get(name, Config, <<"agent">>),
-            kernel => Kernel,
+            chat_client => ChatClient,
             memory => Memory,
             conversation_id => maps:get(conversation_id, Config, beamai_id:gen_id(<<"conv">>)),
             system_prompt => maps:get(system_prompt, Config, undefined),
@@ -189,29 +189,29 @@ setup_tool_calling_manager(Config) ->
             Manager
     end.
 
-%% @doc 从 Config 构建 Kernel 实例
+%% @doc 从 Config 构建 ChatClient 实例
 %%
 %% 支持两种模式：
-%%   1. 直接使用预构建的 kernel（Config 中包含 kernel 键）
+%%   1. 直接使用预构建的 ChatClient（Config 中包含 ChatClient 键）
 %%   2. 从组件自动构建（依次添加 LLM 服务、plugins）
 %%
 %% 自动构建顺序：
 %%   new(Settings) → add_chat_model → add_plugins
 %%
 %% @param Config 配置 map
-%% @returns 构建完成的 kernel 实例
--spec build_kernel(map()) -> map().
-build_kernel(#{kernel := Kernel}) when is_map(Kernel) ->
-    Kernel;
-build_kernel(Config) ->
-    Settings0 = maps:get(kernel_settings, Config, #{}),
+%% @returns 构建完成的 ChatClient 实例
+-spec build_chat_client(map()) -> map().
+build_chat_client(#{chat_client := ChatClient}) when is_map(ChatClient) ->
+    ChatClient;
+build_chat_client(Config) ->
+    Settings0 = maps:get(chat_client_settings, Config, #{}),
     %% state_slots：工具 writes 折叠进 state 的槽级 reducer 声明（顶层 config 便捷项，
-    %% 也可直接放 kernel_settings.state_slots；预构建 kernel 则由用户自管）
+    %% 也可直接放 chat_client_settings.state_slots；预构建 ChatClient 则由用户自管）
     Settings = case maps:get(state_slots, Config, undefined) of
         undefined -> Settings0;
         Slots -> Settings0#{state_slots => Slots}
     end,
-    K0 = beamai_kernel:new(Settings),
+    K0 = beamai_chat_client:new(Settings),
     K1 = add_chat_model(K0, Config),
     add_plugins(K1, Config).
 
@@ -219,7 +219,7 @@ build_kernel(Config) ->
 %% 内部函数
 %%====================================================================
 
-%% @private 解析记忆 provider（Agent 在 tool loop 里显式使用，不挂 kernel filter）
+%% @private 解析记忆 provider（Agent 在 tool loop 里显式使用，不挂 ChatClient filter）
 %%
 %% Config 的 memory 选项（统一解析为一个 beamai_memory_provider:provider/0）：
 %%   - 缺省（default）：默认 provider 包共享默认 store（懒启动，注册名 ?DEFAULT_STORE_NAME）
@@ -285,29 +285,29 @@ start_orphan_store(Name) ->
     end,
     beamai_chat_memory_ets:handle(Name).
 
-%% @private 添加 LLM 服务到 kernel
+%% @private 添加 LLM 服务到 ChatClient
 %%
 %% 支持三种 LLM 配置格式：
-%%   - undefined: 不添加 LLM（kernel 仅用于函数调用）
+%%   - undefined: 不添加 LLM（ChatClient 仅用于函数调用）
 %%   - config() map: 已通过 beamai_chat_model:create 创建的配置
 %%   - {Provider, Opts} 元组: 自动调用 create 构建配置
-add_chat_model(Kernel, Config) ->
+add_chat_model(ChatClient, Config) ->
     case maps:get(llm, Config, undefined) of
         undefined ->
-            Kernel;
+            ChatClient;
         LlmConfig when is_map(LlmConfig) ->
-            beamai_kernel:add_chat_model(Kernel, LlmConfig);
+            beamai_chat_client:add_chat_model(ChatClient, LlmConfig);
         {Provider, Opts} ->
             LlmCfg = beamai_chat_model:create(Provider, Opts),
-            beamai_kernel:add_chat_model(Kernel, LlmCfg)
+            beamai_chat_client:add_chat_model(ChatClient, LlmCfg)
     end.
 
-%% @private 加载工具模块到 kernel
+%% @private 加载工具模块到 ChatClient
 %%
-%% 整体委托 beamai_kernel:add_tool_module/2（每个模块需实现
+%% 整体委托 beamai_chat_client:add_tool_module/2（每个模块需实现
 %% beamai_tool_behaviour 的 tools/0）。plugin 只提供工具；filter 一律由
-%% 用户在预构建 kernel 时经 beamai_kernel:new/2 的 filters 列表一次性给出。
-add_plugins(Kernel, Config) ->
+%% 用户在预构建 ChatClient 时经 beamai_chat_client:new/2 的 filters 列表一次性给出。
+add_plugins(ChatClient, Config) ->
     Plugins = maps:get(plugins, Config, []),
-    lists:foldl(fun(Module, K) -> beamai_kernel:add_tool_module(K, Module) end,
-                Kernel, Plugins).
+    lists:foldl(fun(Module, K) -> beamai_chat_client:add_tool_module(K, Module) end,
+                ChatClient, Plugins).

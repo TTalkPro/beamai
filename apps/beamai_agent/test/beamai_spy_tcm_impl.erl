@@ -25,10 +25,10 @@ wrap(Inner, Tab) ->
 dispatches(Tab) ->
     [Names || {{dispatch, _Seq}, Names} <- lists:sort(ets:tab2list(Tab))].
 
--spec execute_tool_calls(term(), beamai_kernel:kernel(), [map()],
+-spec execute_tool_calls(term(), beamai_chat_client:chat_client(), [map()],
                          beamai_tool_calling_manager:execute_opts()) ->
     beamai_tool_calling_manager:execute_result().
-execute_tool_calls(#{inner := Inner, table := Tab}, Kernel, ToolCalls, Opts) ->
+execute_tool_calls(#{inner := Inner, table := Tab}, ChatClient, ToolCalls, Opts) ->
     Names = [maps:get(name, TC, undefined) || TC <- ToolCalls],
     ets:insert(Tab, {{dispatch, erlang:unique_integer([monotonic])}, Names}),
-    beamai_tool_calling_manager:execute_tool_calls(Inner, Kernel, ToolCalls, Opts).
+    beamai_tool_calling_manager:execute_tool_calls(Inner, ChatClient, ToolCalls, Opts).

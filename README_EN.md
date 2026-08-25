@@ -8,7 +8,7 @@ English | [中文](README.md)
 
 A high-performance AI Agent framework core library based on Erlang/OTP, providing foundational capabilities for building Agents.
 
-> **Note**: This project is the core library of the BeamAI framework, providing Kernel, Filter (incl. conversation memory), LLM Client, and SimpleAgent core features.
+> **Note**: This project is the core library of the BeamAI framework, providing ChatClient, Filter (incl. conversation memory), LLM Client, and SimpleAgent core features.
 >
 > Extension features (Tools Library, RAG, A2A/MCP protocols) live in the [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project.
 >
@@ -18,7 +18,7 @@ A high-performance AI Agent framework core library based on Erlang/OTP, providin
 
 ### Core Project (This Repository)
 Foundational infrastructure for building AI Agents (three core responsibilities):
-- **beamai_core** - Kernel foundation: Context, Filter (onion-style around model), Tool construction and invocation
+- **beamai_core** - ChatClient foundation: Context, Filter (onion-style around model), Tool construction and invocation
 - **beamai_agent** - SimpleAgent: a primarily ReAct-based Agent framework (cross-turn memory via filter-memory, multi-turn conversations, callbacks, interrupt/resume)
 - **beamai_llm** - Unified LLM client (supports OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama)
 
@@ -31,12 +31,12 @@ Advanced features built on top of the core library:
 
 ## Features
 
-- **Kernel/Tool Architecture**: Semantic tool registration and invocation system
-  - Kernel core based on Semantic Kernel concepts (stateless, does not record messages)
+- **ChatClient/Tool Architecture**: Semantic tool registration and invocation system
+  - ChatClient core based on Semantic Kernel concepts (stateless, does not record messages)
   - Unified Tool definition and management
   - Onion-style Filter interception and security validation
 
-- **Conversation Memory (Memory Filter)**: history decoupled from the Kernel
+- **Conversation Memory (Memory Filter)**: history decoupled from the ChatClient
   - Each invoke passes only the latest message; history managed by the Memory Filter keyed by `conversation_id`
   - Pluggable storage backends (ETS / DETS persistence / custom behaviour); the sliding window is provided by the Agent-side memory provider
   - See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
@@ -73,11 +73,11 @@ LLM = beamai_chat_model:create(zhipu, #{
 ]),
 ```
 
-### 3. Kernel + Tool (Tool Registration)
+### 3. ChatClient + Tool (Tool Registration)
 
 ```erlang
-%% Create Kernel
-Kernel = beamai_kernel:new(),
+%% Create ChatClient
+ChatClient = beamai_chat_client:new(),
 
 %% Define Tool
 SearchTool = #{
@@ -92,10 +92,10 @@ SearchTool = #{
 },
 
 %% Register tool
-Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
+ChatClient1 = beamai_chat_client:add_tool(ChatClient, SearchTool),
 
 %% Invoke a single tool
-{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel1, <<"search">>, #{
+{ok, Result, _NewCtx} = beamai_chat_client:invoke_tool(ChatClient1, <<"search">>, #{
     <<"query">> => <<"Erlang"/utf8>>
 }, beamai_context:new()).
 ```
@@ -103,12 +103,12 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 ### 4. Filter (Onion-style Interception)
 
 ```erlang
-%% A filter has 5 optional around hooks (outer→inner: around_turn/around_step/
-%% around_chat/around_llm/around_tool). The tool loop is itself a link on the turn
-%% chain — its next is one iteration (around_step); retry lives in around_llm.
+%% A filter has 4 optional around hooks (outer→inner: around_turn/around_step/
+%% around_chat/around_tool). The tool loop is itself a link on the turn chain —
+%% its next is one iteration (around_step); provider retry sits below the stack.
 %% Each around wraps a single invocation with one closure fun(Req, FCtx, Next) -> Resp;
 %% pre/post logic lives in one place, and not calling Next short-circuits.
-%% Filters are given once when the kernel is built; registration order is layer
+%% Filters are given once when the ChatClient is built; registration order is layer
 %% order (earlier in the list = more outer).
 
 %% One around_tool: arg validation (short-circuit) + double the result
@@ -129,7 +129,7 @@ ValidateTransform = beamai:filter(<<"validate_transform">>, #{
     end
 }),
 
-K0 = beamai:kernel(#{}, [ValidateTransform]),
+K0 = beamai:chat_client(#{}, [ValidateTransform]),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
     #{description => <<"Add two numbers">>,
@@ -172,7 +172,7 @@ Parser = beamai_output_parser:json(#{
 ```
 apps/
 ├── beamai_core/        # Core framework
-│   ├── Kernel         # beamai_kernel, beamai_tool, beamai_context,
+│   ├── ChatClient     # beamai_chat_client, beamai_tool, beamai_context,
 │   │                  # beamai_filter, beamai_prompt, beamai_result
 │   ├── Memory Filter  # beamai_memory_filter (history keyed by conversation_id)
 │   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_pool
@@ -214,16 +214,16 @@ See [DEPENDENCIES_EN.md](docs/DEPENDENCIES_EN.md) for details.
 
 ## Core Concepts
 
-### 1. Kernel Architecture
+### 1. ChatClient Architecture
 
-Kernel is BeamAI's core abstraction, managing Tool registration and invocation:
+ChatClient is BeamAI's core abstraction, managing Tool registration and invocation:
 
 ```erlang
-%% Create Kernel instance
-Kernel = beamai_kernel:new(),
+%% Create ChatClient instance
+ChatClient = beamai_chat_client:new(),
 
 %% Load tool from a Tool module
-Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
+ChatClient1 = beamai_chat_client:add_tool_module(ChatClient, beamai_tool_file),
 
 %% Or add a single tool
 Tool = #{
@@ -236,17 +236,17 @@ Tool = #{
         file:read_file(Path)
     end
 },
-Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
+ChatClient2 = beamai_chat_client:add_tool(ChatClient1, Tool),
 
 %% Invoke the registered tool
-{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel2, <<"read_file">>, #{
+{ok, Result, _NewCtx} = beamai_chat_client:invoke_tool(ChatClient2, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
 
 ### 2. Conversation Memory (Memory Filter)
 
-The Kernel itself is stateless and does not record messages; multi-turn conversation history is managed by the **Memory Filter** (`beamai_memory_filter`) keyed by `conversation_id`. Each invoke carries only the latest message; the filter injects history and persists deltas.
+The ChatClient itself is stateless and does not record messages; multi-turn conversation history is managed by the **Memory Filter** (`beamai_memory_filter`) keyed by `conversation_id`. Each invoke carries only the latest message; the filter injects history and persists deltas.
 
 - Pluggable storage backends (ETS / DETS persistence / custom behaviour); the sliding window is provided by the Agent-side memory provider
 - SimpleAgent's cross-turn memory is built on this
@@ -322,7 +322,7 @@ built-in implementation and needs no configuration.
 
 | Module | Description | Documentation |
 |--------|-------------|---------------|
-| **beamai_core** | Core framework: Kernel, Context, Filter, Tool, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
+| **beamai_core** | Core framework: ChatClient, Context, Filter, Tool, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
 | **beamai_agent** | SimpleAgent: ReAct Agent framework (multi-turn, callbacks, interrupt/resume) | [README](apps/beamai_agent/README.md) (zh) |
 | **beamai_llm** | LLM client: 6 providers with unified sync/streaming; multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure | [README](apps/beamai_llm/README_EN.md) |
 

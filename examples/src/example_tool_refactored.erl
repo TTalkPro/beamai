@@ -38,10 +38,10 @@ run(Opts) ->
     io:format("   Tool Refactored Architecture Test~n"),
     io:format("========================================~n~n"),
 
-    %% 1. 创建 Kernel
-    io:format("[1] Creating Kernel...~n"),
-    K0 = beamai:kernel(),
-    io:format("    Kernel created~n~n"),
+    %% 1. 创建 ChatClient
+    io:format("[1] Creating ChatClient...~n"),
+    K0 = beamai:chat_client(),
+    io:format("    ChatClient created~n~n"),
 
     %% 2. 添加工具（使用新的 API）
     io:format("[2] Adding tools...~n"),
@@ -97,10 +97,10 @@ run(Opts) ->
     K2 = beamai:add_chat_model(K1, LLMConfig),
     io:format("    LLM configured~n~n"),
 
-    %% 6. 用 beamai_agent 进行对话（ReAct 工具循环属于 Agent 层，kernel 只提供单次能力）
+    %% 6. 用 beamai_agent 进行对话（ReAct 工具循环属于 Agent 层，ChatClient 只提供单次能力）
     io:format("[6] Testing ReAct agent (tool loop)...~n"),
     {ok, Agent} = beamai_agent:new(#{
-        kernel => K2,
+        chat_client => K2,
         system_prompt => <<"You are a helpful assistant. Use the provided tools to answer questions. Always respond in Chinese.">>
     }),
 

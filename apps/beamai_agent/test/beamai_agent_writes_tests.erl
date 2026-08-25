@@ -19,20 +19,20 @@ tc(Id, Name) ->
     #{id => Id, type => <<"function">>,
       function => #{name => Name, arguments => <<"{}">>}}.
 
-%% 构造带 state_slots 的 kernel（工具为 {Name, Handler} 列表）
-kernel(Tools, Slots) ->
-    K0 = beamai_kernel:new(#{state_slots => Slots}),
+%% 构造带 state_slots 的 ChatClient（工具为 {Name, Handler} 列表）
+chat_client(Tools, Slots) ->
+    K0 = beamai_chat_client:new(#{state_slots => Slots}),
     lists:foldl(fun({Name, Handler}, K) ->
-        beamai_kernel:add_tool(K,
+        beamai_chat_client:add_tool(K,
             #{name => Name, parameters => #{}, handler => Handler})
     end, K0, Tools).
 
-%% 构造 kernel，指定部分工具为 serial（Tools 为 {Name, Handler, Serial}）
-kernel_serial(Tools) ->
+%% 构造 ChatClient，指定部分工具为 serial（Tools 为 {Name, Handler, Serial}）
+chat_client_serial(Tools) ->
     lists:foldl(fun({Name, Handler, Serial}, K) ->
-        beamai_kernel:add_tool(K,
+        beamai_chat_client:add_tool(K,
             #{name => Name, parameters => #{}, handler => Handler, serial => Serial})
-    end, beamai_kernel:new(), Tools).
+    end, beamai_chat_client:new(), Tools).
 
 %% 从 CallRecords 里取某工具的 result
 result_of(Records, Name) ->
@@ -65,7 +65,7 @@ drain_events(N, Acc) ->
 
 serial_tool_degrades_batch_test() ->
     %% wb 标 serial → 即使 Parallel=true 且两工具，整批退化串行（无重叠）
-    K = kernel_serial([
+    K = chat_client_serial([
         {<<"wa">>, ev_tool(<<"wa">>), false},
         {<<"wb">>, ev_tool(<<"wb">>), true}
     ]),
@@ -80,7 +80,7 @@ serial_tool_degrades_batch_test() ->
 
 all_parallel_no_serial_overlaps_test() ->
     %% 均非 serial → 并发执行，两 start 先于任一 done（重叠）
-    K = kernel_serial([
+    K = chat_client_serial([
         {<<"wa">>, ev_tool(<<"wa">>), false},
         {<<"wb">>, ev_tool(<<"wb">>), false}
     ]),
@@ -94,11 +94,11 @@ all_parallel_no_serial_overlaps_test() ->
 
 serial_tool_writes_still_fold_test() ->
     %% serial 退化串行后，writes 仍按屏障折叠（状态语义不变）
-    K = beamai_kernel:add_tool(
-        beamai_kernel:new(#{state_slots => #{<<"notes">> => conj()}}),
+    K = beamai_chat_client:add_tool(
+        beamai_chat_client:new(#{state_slots => #{<<"notes">> => conj()}}),
         #{name => <<"sw">>, parameters => #{}, serial => true,
           handler => fun(_, _) -> {ok, <<"a">>, #{<<"notes">> => a}} end}),
-    K2 = beamai_kernel:add_tool(K,
+    K2 = beamai_chat_client:add_tool(K,
         #{name => <<"sw2">>, parameters => #{},
           handler => fun(_, _) -> {ok, <<"b">>, #{<<"notes">> => b}} end}),
     {_, _, Ctx} = beamai_agent_utils:execute_tools(
@@ -110,7 +110,7 @@ serial_tool_writes_still_fold_test() ->
 %%====================================================================
 
 parallel_fold_conj_test() ->
-    K = kernel([
+    K = chat_client([
         {<<"wa">>, fun(_, _) -> {ok, <<"a">>, #{<<"notes">> => a}} end},
         {<<"wb">>, fun(_, _) -> {ok, <<"b">>, #{<<"notes">> => b}} end}
     ], #{<<"notes">> => conj()}),
@@ -126,8 +126,8 @@ serial_matches_parallel_semantics_test() ->
         {<<"wb">>, fun(_, _) -> {ok, <<"b">>, #{<<"notes">> => b}} end}
     ],
     TCs = [tc(<<"1">>, <<"wa">>), tc(<<"2">>, <<"wb">>)],
-    {_, _, CtxP} = beamai_agent_utils:execute_tools(kernel(Tools, #{<<"notes">> => conj()}), TCs, beamai_context:new(), true),
-    {_, _, CtxS} = beamai_agent_utils:execute_tools(kernel(Tools, #{<<"notes">> => conj()}), TCs, beamai_context:new(), false),
+    {_, _, CtxP} = beamai_agent_utils:execute_tools(chat_client(Tools, #{<<"notes">> => conj()}), TCs, beamai_context:new(), true),
+    {_, _, CtxS} = beamai_agent_utils:execute_tools(chat_client(Tools, #{<<"notes">> => conj()}), TCs, beamai_context:new(), false),
     ?assertEqual(beamai_context:state_get(CtxP, <<"notes">>),
                  beamai_context:state_get(CtxS, <<"notes">>)).
 
@@ -136,7 +136,7 @@ serial_matches_parallel_semantics_test() ->
 %%====================================================================
 
 snapshot_isolation_test() ->
-    K = kernel([
+    K = chat_client([
         {<<"wa">>, fun(_, _) -> {ok, <<"a">>, #{<<"notes">> => <<"A">>}} end},
         {<<"rb">>, fun(_, Ctx) ->
             Saw = beamai_context:state_get(Ctx, <<"notes">>, none),
@@ -155,7 +155,7 @@ snapshot_isolation_test() ->
 last_writer_by_index_not_completion_test() ->
     %% index1 慢（最后完成）、index2 快（最先完成）；未声明槽按 index 序
     %% 折叠 ⇒ index2 胜（若按完成序则 index1 胜）
-    K = kernel([
+    K = chat_client([
         {<<"slow1">>, fun(_, _) -> timer:sleep(80), {ok, <<>>, #{<<"k">> => one}} end},
         {<<"fast2">>, fun(_, _) -> {ok, <<>>, #{<<"k">> => two}} end}
     ], #{}),
@@ -168,7 +168,7 @@ last_writer_by_index_not_completion_test() ->
 %%====================================================================
 
 error_writes_zeroed_test() ->
-    K = kernel([
+    K = chat_client([
         {<<"ok">>, fun(_, _) -> {ok, <<>>, #{<<"notes">> => good}} end},
         {<<"boom">>, fun(_, _) -> error(boom) end}
     ], #{<<"notes">> => conj()}),
@@ -182,7 +182,7 @@ error_writes_zeroed_test() ->
 %%====================================================================
 
 arity1_tool_writes_test() ->
-    K = kernel([
+    K = chat_client([
         {<<"f1">>, fun(_Args) -> {ok, <<"v">>, #{<<"notes">> => z}} end}
     ], #{<<"notes">> => conj()}),
     {_, _, Ctx} = beamai_agent_utils:execute_tools(
@@ -195,7 +195,7 @@ arity1_tool_writes_test() ->
 
 writes_in_stored_msg_stripped_from_wire_test() ->
     %% 写状态的工具 → 结果消息带 writes 元数据（进存储）
-    K = kernel([
+    K = chat_client([
         {<<"w">>, fun(_, _) -> {ok, <<"r">>, #{<<"note">> => <<"kept">>}} end}
     ], #{}),
     {Msgs, _, _} = beamai_agent_utils:execute_tools(
@@ -210,7 +210,7 @@ writes_in_stored_msg_stripped_from_wire_test() ->
 
 failed_tool_has_no_writes_in_msg_test() ->
     %% 失败工具无 writes → 结果消息不含 writes 键（历史自然缺席）
-    K = kernel([
+    K = chat_client([
         {<<"boom">>, fun(_, _) -> {error, bad} end}
     ], #{}),
     {Msgs, _, _} = beamai_agent_utils:execute_tools(
@@ -225,7 +225,7 @@ failed_tool_has_no_writes_in_msg_test() ->
 on_tool_result_fires_per_tool_test() ->
     %% 每个工具完成即触发 on_tool_result（本例 3 工具 → 3 次回调）
     Parent = self(),
-    K = kernel([
+    K = chat_client([
         {<<"t1">>, fun(_, _) -> {ok, <<"r1">>} end},
         {<<"t2">>, fun(_, _) -> {ok, <<"r2">>} end},
         {<<"t3">>, fun(_, _) -> {ok, <<"r3">>} end}
@@ -266,8 +266,8 @@ cross_turn_state_visible_test() ->
             _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
         end
     end),
-    K = beamai_kernel:add_chat_model(
-        kernel([
+    K = beamai_chat_client:add_chat_model(
+        chat_client([
             {<<"writer">>, fun(_, _) -> {ok, <<"w">>, #{<<"note">> => <<"hello">>}} end},
             {<<"reader">>, fun(_, Ctx) ->
                 {ok, <<"SAW:", (beamai_context:state_get(Ctx, <<"note">>, <<"none">>))/binary>>}
@@ -275,7 +275,7 @@ cross_turn_state_visible_test() ->
         ], #{}),
         beamai_chat_model:create(mock, #{})),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K}),
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
         Records = maps:get(tool_calls_made, Result, []),
         %% reader 在下一轮读到上一轮 writer 折叠进 state 的 note
@@ -307,8 +307,8 @@ interrupt_resume_restores_state_test() ->
                 {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
         end
     end),
-    K = beamai_kernel:add_chat_model(
-        kernel([
+    K = beamai_chat_client:add_chat_model(
+        chat_client([
             {<<"writer">>, fun(_, _) -> {ok, <<"w">>, #{<<"note">> => <<"kept">>}} end},
             {<<"reader">>, fun(_, Ctx) ->
                 {ok, <<"SAW:", (beamai_context:state_get(Ctx, <<"note">>, <<"none">>))/binary>>}
@@ -317,7 +317,7 @@ interrupt_resume_restores_state_test() ->
         beamai_chat_model:create(mock, #{})),
     try
         {ok, Agent} = beamai_agent:new(#{
-            kernel => K,
+            chat_client => K,
             interrupt_tools => [#{name => <<"ask_human">>, description => <<"ask">>,
                                   parameters => #{type => object, properties => #{}}}]
         }),

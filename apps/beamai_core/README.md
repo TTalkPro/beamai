@@ -2,31 +2,31 @@
 
 [English](README_EN.md) | 中文
 
-BeamAI 框架的核心模块，提供 Kernel 架构、Filter/会话记忆、HTTP 客户端和行为定义。
+BeamAI 框架的核心模块，提供 ChatClient 架构、Filter/会话记忆、HTTP 客户端和行为定义。
 
 ## 模块概览
 
-### Kernel 子系统
+### ChatClient 子系统
 
 基于 Semantic Kernel 理念的核心抽象，管理 Tool 的注册与调用：
 
-- **beamai_kernel** - Kernel 核心，管理 Tool 注册和调用（无状态，不记录消息）
+- **beamai_chat_client** - ChatClient 核心，管理 Tool 注册和调用（无状态，不记录消息）
 - **beamai_tool** - 工具定义，封装可调用的工具
 - **beamai_tool_behaviour** - 工具模块行为接口
-- **beamai_context** - 上下文（三分区）：env（只读运行环境：kernel 引用/会话标识/注入变量）、
+- **beamai_context** - 上下文（三分区）：env（只读运行环境：ChatClient 引用/会话标识/注入变量）、
   state（用户状态槽，工具经 writes 折叠、跨轮穿线，可序列化）、filter 私有状态（框架自管）。
   不记录消息/历史
-- **beamai_filter** / **beamai_filter_chain** - 洋葱式 filter（一个 filter 含 around_turn/around_step/around_chat/around_llm/around_tool 五个可选 around hook，带按名字隔离的私有上下文），包裹工具循环、每轮迭代、每轮 LLM 调用、每次真实 LLM 请求与工具执行（详见 [docs/FILTER.md](../../docs/FILTER.md)）
+- **beamai_filter** / **beamai_filter_chain** - 洋葱式 filter（一个 filter 含 around_turn/around_step/around_chat/around_tool 四个可选 around hook，带按名字隔离的私有上下文），包裹工具循环、每轮迭代、每轮 LLM 调用与工具执行（详见 [docs/FILTER.md](../../docs/FILTER.md)）
 - **beamai_prompt** - 提示词模板管理
 - **beamai_result** - 工具调用结果类型
 
 ### 会话记忆子系统
 
-会话历史的存储与注入，从 Kernel 中剥离，按 `conversation_id` 管理（详见 [docs/MEMORY.md](../../docs/MEMORY.md)）：
+会话历史的存储与注入，从 ChatClient 中剥离，按 `conversation_id` 管理（详见 [docs/MEMORY.md](../../docs/MEMORY.md)）：
 
 - **beamai_chat_memory** - ChatMemory 存储行为接口 + 调度 API（句柄 `{Module, Ref}`）
 - **beamai_chat_memory_ets** - 默认 ETS 会话存储实现
-- **beamai_memory_filter** - Memory Filter（kernel 级：around_chat 前置存 delta+展开历史、后置存回复）
+- **beamai_memory_filter** - Memory Filter（ChatClient 级：around_chat 前置存 delta+展开历史、后置存回复）
 - **beamai_memory_provider** - Agent 记忆策略行为（history/append/prepare/clear）
 - **beamai_memory_provider_default** - 默认策略实现（包存储后端；`new/2` 带可选滑动窗口）
 
@@ -69,34 +69,34 @@ LLM 响应的统一抽象层：
 
 ## API 文档
 
-### beamai_kernel
+### beamai_chat_client
 
 ```erlang
-%% 创建 Kernel 实例（filter 一次性给出，注册顺序即层序：列表靠前 = 外层）
-beamai_kernel:new() -> kernel().
-beamai_kernel:new(Settings) -> kernel().
-beamai_kernel:new(Settings, Filters) -> kernel().        %% 洋葱式 filter，详见 docs/FILTER.md
+%% 创建 ChatClient 实例（filter 一次性给出，注册顺序即层序：列表靠前 = 外层）
+beamai_chat_client:new() -> chat_client().
+beamai_chat_client:new(Settings) -> chat_client().
+beamai_chat_client:new(Settings, Filters) -> chat_client().        %% 洋葱式 filter，详见 docs/FILTER.md
 %% 会话记忆 = memory filter 放 Filters 列表首位，详见 docs/MEMORY.md：
-%% beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)])
+%% beamai_chat_client:new(#{}, [beamai_memory_filter:memory_filter(Store)])
 
 %% 添加 Tool
-beamai_kernel:add_tool(Kernel, ToolSpec) -> kernel().
-beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
-beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
+beamai_chat_client:add_tool(ChatClient, ToolSpec) -> chat_client().
+beamai_chat_client:add_tools(ChatClient, [ToolSpec]) -> chat_client().
+beamai_chat_client:add_tool_module(ChatClient, Module) -> chat_client().
 
 %% 添加服务
-beamai_kernel:add_chat_model(Kernel, Service) -> kernel().
+beamai_chat_client:add_chat_model(ChatClient, Service) -> chat_client().
 
-%% 调用（kernel 只提供单次能力；ReAct 工具调用循环属于 Agent 层，见 beamai_agent）
-%% invoke_chat/3：单次 Chat Completion（经 around_chat → around_llm 两层链）。Messages 为本轮新消息；
+%% 调用（ChatClient 只提供单次能力；ReAct 工具调用循环属于 Agent 层，见 beamai_agent）
+%% invoke_chat/3：单次 Chat Completion（经 around_chat 链；provider 重试在 terminal 之内）。Messages 为本轮新消息；
 %% 若 context 带 conversation_id 且挂了 Memory Filter，则按 id 存储并展开历史。
-beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
-beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
+beamai_chat_client:invoke_chat(ChatClient, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
+beamai_chat_client:invoke_tool(ChatClient, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
 
 %% 查询工具
-beamai_kernel:get_tool(Kernel, Name) -> {ok, ToolSpec} | error.
-beamai_kernel:get_tool_specs(Kernel) -> [ToolSpec].
-beamai_kernel:get_tools_by_tag(Kernel, Tag) -> [ToolSpec].
+beamai_chat_client:get_tool(ChatClient, Name) -> {ok, ToolSpec} | error.
+beamai_chat_client:get_tool_specs(ChatClient) -> [ToolSpec].
+beamai_chat_client:get_tools_by_tag(ChatClient, Tag) -> [ToolSpec].
 ```
 
 ### beamai_tool
@@ -127,11 +127,11 @@ beamai_tool:to_tool_schema(ToolSpec, openai | anthropic) -> map().
 
 ## 使用示例
 
-### Kernel + Tool
+### ChatClient + Tool
 
 ```erlang
-%% 创建 Kernel
-Kernel = beamai_kernel:new(),
+%% 创建 ChatClient
+ChatClient = beamai_chat_client:new(),
 
 %% 定义工具
 ReadFile = #{
@@ -152,11 +152,11 @@ ReadFile = #{
     end
 },
 
-%% 注册到 Kernel
-Kernel1 = beamai_kernel:add_tool(Kernel, ReadFile),
+%% 注册到 ChatClient
+ChatClient1 = beamai_chat_client:add_tool(ChatClient, ReadFile),
 
 %% 调用单个工具（第三元为工具写意图 Writes，多数工具为空 map）
-{ok, Content, _Writes} = beamai_kernel:invoke_tool(Kernel1, <<"read_file">>, #{
+{ok, Content, _Writes} = beamai_chat_client:invoke_tool(ChatClient1, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
@@ -165,29 +165,29 @@ Kernel1 = beamai_kernel:add_tool(Kernel, ReadFile),
 
 ```erlang
 %% 加载实现 beamai_tool_behaviour 的工具模块
-Kernel = beamai_kernel:new(),
-Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
+ChatClient = beamai_chat_client:new(),
+ChatClient1 = beamai_chat_client:add_tool_module(ChatClient, beamai_tool_file),
 
 %% 列出已注册的工具
-Tools = beamai_kernel:get_tool_specs(Kernel1).
+Tools = beamai_chat_client:get_tool_specs(ChatClient1).
 ```
 
 ### 会话记忆（多轮对话）
 
-Kernel 无状态，每次 invoke 只传单条最新消息；历史由 Memory Filter 按
+ChatClient 无状态，每次 invoke 只传单条最新消息；历史由 Memory Filter 按
 `conversation_id` 管理。详见 [docs/MEMORY.md](../../docs/MEMORY.md)。
 
 ```erlang
-%% 启动会话存储；构建 kernel 时把 memory filter 放 filters 列表首位（最外层）
+%% 启动会话存储；构建 ChatClient 时把 memory filter 放 filters 列表首位（最外层）
 {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
 Store = beamai_chat_memory_ets:handle(my_mem),
-K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K = beamai_kernel:add_chat_model(K0, LlmConfig),
+K0 = beamai_chat_client:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+K = beamai_chat_client:add_chat_model(K0, LlmConfig),
 
 %% 用 conversation_id 标识会话，每次只传最新消息
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
-{ok, R1, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"我叫张三">>}], #{context => Ctx}),
-{ok, R2, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"我叫什么？">>}], #{context => Ctx}).
+{ok, R1, _} = beamai_chat_client:invoke_chat(K, [#{role => user, content => <<"我叫张三">>}], #{context => Ctx}),
+{ok, R2, _} = beamai_chat_client:invoke_chat(K, [#{role => user, content => <<"我叫什么？">>}], #{context => Ctx}).
 %% 第二轮 LLM 能看到完整历史；未挂 memory 则为单次无状态调用
 %% 需要"自动执行工具并多轮循环"请用 beamai_agent（ReAct）
 ```

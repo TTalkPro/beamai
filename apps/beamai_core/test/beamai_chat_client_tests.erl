@@ -1,13 +1,13 @@
--module(beamai_kernel_tests).
+-module(beamai_chat_client_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 %%====================================================================
 %% Setup
 %%====================================================================
 
-make_math_kernel() ->
-    K0 = beamai_kernel:new(),
-    beamai_kernel:add_tools(K0, [
+make_math_chat_client() ->
+    K0 = beamai_chat_client:new(),
+    beamai_chat_client:add_tools(K0, [
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
             description => <<"Add two numbers">>,
             tag => <<"math">>,
@@ -26,9 +26,9 @@ make_math_kernel() ->
         })
     ]).
 
-make_multi_tag_kernel() ->
-    K0 = make_math_kernel(),
-    beamai_kernel:add_tools(K0, [
+make_multi_tag_chat_client() ->
+    K0 = make_math_chat_client(),
+    beamai_chat_client:add_tools(K0, [
         beamai_tool:new(<<"upper">>, fun(#{text := T}) -> {ok, string:uppercase(T)} end, #{
             description => <<"Convert to uppercase">>,
             tag => <<"string">>,
@@ -46,14 +46,14 @@ make_multi_tag_kernel() ->
 %%====================================================================
 
 new_default_test() ->
-    K = beamai_kernel:new(),
-    ?assertEqual(true, maps:get('__kernel__', K)),
+    K = beamai_chat_client:new(),
+    ?assertEqual(true, maps:get('__chat_client__', K)),
     ?assertEqual(#{}, maps:get(tools, K)),
     ?assertEqual(undefined, maps:get(chat_model, K)),
     ?assertEqual([], maps:get(filters, K)).
 
 new_with_settings_test() ->
-    K = beamai_kernel:new(#{max_tool_iterations => 5}),
+    K = beamai_chat_client:new(#{max_tool_iterations => 5}),
     ?assertEqual(#{max_tool_iterations => 5}, maps:get(settings, K)).
 
 %%====================================================================
@@ -61,13 +61,13 @@ new_with_settings_test() ->
 %%====================================================================
 
 add_tool_test() ->
-    K0 = beamai_kernel:new(),
+    K0 = beamai_chat_client:new(),
     Tool = beamai_tool:new(<<"add">>, fun(_) -> {ok, 0} end),
-    K1 = beamai_kernel:add_tool(K0, Tool),
+    K1 = beamai_chat_client:add_tool(K0, Tool),
     ?assert(maps:is_key(<<"add">>, maps:get(tools, K1))).
 
 add_tools_test() ->
-    K = make_math_kernel(),
+    K = make_math_chat_client(),
     ?assert(maps:is_key(<<"add">>, maps:get(tools, K))),
     ?assert(maps:is_key(<<"multiply">>, maps:get(tools, K))).
 
@@ -76,58 +76,58 @@ add_tools_test() ->
 %%====================================================================
 
 invoke_add_test() ->
-    K = make_math_kernel(),
-    ?assertMatch({ok, 15, _}, beamai_kernel:invoke_tool(K, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
+    K = make_math_chat_client(),
+    ?assertMatch({ok, 15, _}, beamai_chat_client:invoke_tool(K, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_multiply_test() ->
-    K = make_math_kernel(),
-    ?assertMatch({ok, 42, _}, beamai_kernel:invoke_tool(K, <<"multiply">>, #{a => 6, b => 7}, beamai_context:new())).
+    K = make_math_chat_client(),
+    ?assertMatch({ok, 42, _}, beamai_chat_client:invoke_tool(K, <<"multiply">>, #{a => 6, b => 7}, beamai_context:new())).
 
 invoke_not_found_test() ->
-    K = make_math_kernel(),
+    K = make_math_chat_client(),
     ?assertEqual({error, {tool_not_found, <<"nonexistent">>}},
-                 beamai_kernel:invoke_tool(K, <<"nonexistent">>, #{}, beamai_context:new())).
+                 beamai_chat_client:invoke_tool(K, <<"nonexistent">>, #{}, beamai_context:new())).
 
 invoke_with_context_test() ->
-    K = beamai_kernel:add_tool(beamai_kernel:new(),
+    K = beamai_chat_client:add_tool(beamai_chat_client:new(),
         beamai_tool:new(<<"get_var">>,
             fun(#{key := Key}, Ctx) ->
                 {ok, beamai_context:get(Ctx, Key)}
             end)),
     Ctx = beamai_context:set(beamai_context:new(), <<"name">>, <<"Alice">>),
     ?assertMatch({ok, <<"Alice">>, _},
-                 beamai_kernel:invoke_tool(K, <<"get_var">>, #{key => <<"name">>}, Ctx)).
+                 beamai_chat_client:invoke_tool(K, <<"get_var">>, #{key => <<"name">>}, Ctx)).
 
 invoke_multi_tag_test() ->
-    K = make_multi_tag_kernel(),
-    ?assertMatch({ok, 15, _}, beamai_kernel:invoke_tool(K, <<"add">>, #{a => 7, b => 8}, beamai_context:new())),
-    ?assertMatch({ok, <<"HELLO">>, _}, beamai_kernel:invoke_tool(K, <<"upper">>, #{text => <<"hello">>}, beamai_context:new())).
+    K = make_multi_tag_chat_client(),
+    ?assertMatch({ok, 15, _}, beamai_chat_client:invoke_tool(K, <<"add">>, #{a => 7, b => 8}, beamai_context:new())),
+    ?assertMatch({ok, <<"HELLO">>, _}, beamai_chat_client:invoke_tool(K, <<"upper">>, #{text => <<"hello">>}, beamai_context:new())).
 
 %%====================================================================
 %% get_tool/2 Tests
 %%====================================================================
 
 get_tool_add_test() ->
-    K = make_math_kernel(),
-    {ok, T} = beamai_kernel:get_tool(K, <<"add">>),
+    K = make_math_chat_client(),
+    {ok, T} = beamai_chat_client:get_tool(K, <<"add">>),
     ?assertEqual(<<"add">>, maps:get(name, T)).
 
 get_tool_multiply_test() ->
-    K = make_math_kernel(),
-    {ok, T} = beamai_kernel:get_tool(K, <<"multiply">>),
+    K = make_math_chat_client(),
+    {ok, T} = beamai_chat_client:get_tool(K, <<"multiply">>),
     ?assertEqual(<<"multiply">>, maps:get(name, T)).
 
 get_tool_not_found_test() ->
-    K = make_math_kernel(),
-    ?assertEqual(error, beamai_kernel:get_tool(K, <<"nonexistent">>)).
+    K = make_math_chat_client(),
+    ?assertEqual(error, beamai_chat_client:get_tool(K, <<"nonexistent">>)).
 
 %%====================================================================
 %% list_tools/1 Tests
 %%====================================================================
 
 list_tools_test() ->
-    K = make_multi_tag_kernel(),
-    Tools = beamai_kernel:list_tools(K),
+    K = make_multi_tag_chat_client(),
+    Tools = beamai_chat_client:list_tools(K),
     ?assertEqual(4, length(Tools)).
 
 %%====================================================================
@@ -135,23 +135,23 @@ list_tools_test() ->
 %%====================================================================
 
 get_tool_schemas_openai_test() ->
-    K = make_math_kernel(),
-    Schemas = beamai_kernel:get_tool_schemas(K, openai),
+    K = make_math_chat_client(),
+    Schemas = beamai_chat_client:get_tool_schemas(K, openai),
     ?assertEqual(2, length(Schemas)),
     [S1 | _] = Schemas,
     ?assertEqual(<<"function">>, maps:get(<<"type">>, S1)).
 
 get_tool_schemas_anthropic_test() ->
-    K = make_math_kernel(),
-    Schemas = beamai_kernel:get_tool_schemas(K, anthropic),
+    K = make_math_chat_client(),
+    Schemas = beamai_chat_client:get_tool_schemas(K, anthropic),
     ?assertEqual(2, length(Schemas)),
     [S1 | _] = Schemas,
     ?assert(maps:is_key(<<"name">>, S1)),
     ?assert(maps:is_key(<<"input_schema">>, S1)).
 
 get_tool_specs_test() ->
-    K = make_math_kernel(),
-    Specs = beamai_kernel:get_tool_specs(K),
+    K = make_math_chat_client(),
+    Specs = beamai_chat_client:get_tool_specs(K),
     ?assertEqual(2, length(Specs)),
     [S1 | _] = Specs,
     %% Unified format: atom keys
@@ -163,35 +163,35 @@ get_tool_specs_test() ->
 %% Service Tests
 %%====================================================================
 
-add_service_test() ->
-    K0 = beamai_kernel:new(),
+add_chat_model_test() ->
+    K0 = beamai_chat_client:new(),
     LlmConfig = beamai_chat_model:create(mock, #{model => <<"test">>}),
-    K1 = beamai_kernel:add_chat_model(K0, LlmConfig),
-    {ok, Svc} = beamai_kernel:chat_model(K1),
+    K1 = beamai_chat_client:add_chat_model(K0, LlmConfig),
+    {ok, Svc} = beamai_chat_client:chat_model(K1),
     ?assertEqual(mock, maps:get(provider, Svc)).
 
-get_service_not_found_test() ->
-    K = beamai_kernel:new(),
-    ?assertEqual(error, beamai_kernel:chat_model(K)).
+chat_model_not_found_test() ->
+    K = beamai_chat_client:new(),
+    ?assertEqual(error, beamai_chat_client:chat_model(K)).
 
-no_llm_service_chat_test() ->
-    K = make_math_kernel(),
+no_chat_model_chat_test() ->
+    K = make_math_chat_client(),
     ?assertEqual({error, no_chat_model},
-                 beamai_kernel:invoke_chat(K, [#{role => user, content => <<"hi">>}], #{})).
+                 beamai_chat_client:invoke_chat(K, [#{role => user, content => <<"hi">>}], #{})).
 
-%% invoke_chat 与 invoke_tool 一致地把 kernel 绑进 context，around_chat filter 可取到
-context_binds_kernel_in_chat_test() ->
+%% invoke_chat 与 invoke_tool 一致地把 ChatClient 绑进 context，around_chat filter 可取到
+context_binds_chat_client_in_chat_test() ->
     Self = self(),
-    Filter = beamai_filter:new(<<"capture_kernel">>, #{
+    Filter = beamai_filter:new(<<"capture_chat_client">>, #{
         around_chat => fun(#{context := Ctx} = Req, _F, Next) ->
-            Self ! {kernel_bound, beamai_context:get_kernel(Ctx) =/= undefined},
+            Self ! {chat_client_bound, beamai_context:get_chat_client(Ctx) =/= undefined},
             Next(Req)
         end
     }),
-    K0 = beamai_kernel:new(#{}, [Filter]),
-    K2 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{model => <<"m">>})),
-    {ok, _Resp, _Ctx} = beamai_kernel:invoke_chat(K2, [#{role => user, content => <<"hi">>}], #{}),
-    receive {kernel_bound, Bound} -> ?assert(Bound)
+    K0 = beamai_chat_client:new(#{}, [Filter]),
+    K2 = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{model => <<"m">>})),
+    {ok, _Resp, _Ctx} = beamai_chat_client:invoke_chat(K2, [#{role => user, content => <<"hi">>}], #{}),
+    receive {chat_client_bound, Bound} -> ?assert(Bound)
     after 1000 -> ?assert(false)
     end.
 
@@ -208,11 +208,11 @@ invoke_with_pre_tool_filter_test() ->
             Next(Req#{args => NewArgs})
         end
     }),
-    K0 = beamai_kernel:new(#{}, [Filter]),
-    K2 = beamai_kernel:add_tool(K0,
+    K0 = beamai_chat_client:new(#{}, [Filter]),
+    K2 = beamai_chat_client:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
+    ?assertMatch({ok, 30, _}, beamai_chat_client:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_with_post_tool_filter_test() ->
     %% around_tool 后置：把结果翻倍
@@ -222,11 +222,11 @@ invoke_with_post_tool_filter_test() ->
             Resp#{result => R * 2}
         end
     }),
-    K0 = beamai_kernel:new(#{}, [Filter]),
-    K2 = beamai_kernel:add_tool(K0,
+    K0 = beamai_chat_client:new(#{}, [Filter]),
+    K2 = beamai_chat_client:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    ?assertMatch({ok, 30, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
+    ?assertMatch({ok, 30, _}, beamai_chat_client:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 invoke_with_halt_tool_filter_test() ->
     %% around_tool 短路：不调 Next，直接返回缓存结果
@@ -235,22 +235,22 @@ invoke_with_halt_tool_filter_test() ->
             #{result => cached_result, context => Ctx}
         end
     }),
-    K0 = beamai_kernel:new(#{}, [Filter]),
-    K2 = beamai_kernel:add_tool(K0,
+    K0 = beamai_chat_client:new(#{}, [Filter]),
+    K2 = beamai_chat_client:add_tool(K0,
         beamai_tool:new(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end)
     ),
-    ?assertMatch({ok, cached_result, _}, beamai_kernel:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
+    ?assertMatch({ok, cached_result, _}, beamai_chat_client:invoke_tool(K2, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 %%====================================================================
 %% Facade API Tests
 %%====================================================================
 
-facade_kernel_test() ->
-    K = beamai:kernel(),
-    ?assertEqual(true, maps:get('__kernel__', K)).
+facade_chat_client_test() ->
+    K = beamai:chat_client(),
+    ?assertEqual(true, maps:get('__chat_client__', K)).
 
 facade_add_tool_test() ->
-    K0 = beamai:kernel(),
+    K0 = beamai:chat_client(),
     K1 = beamai:add_tool(K0,
         beamai:tool(<<"add">>, fun(#{a := A, b := B}) -> {ok, A + B} end, #{
             description => <<"Add">>,
@@ -263,18 +263,18 @@ facade_add_tool_test() ->
     ?assertMatch({ok, 15, _}, beamai:invoke_tool(K1, <<"add">>, #{a => 7, b => 8}, beamai_context:new())).
 
 facade_add_llm_test() ->
-    K0 = beamai:kernel(),
+    K0 = beamai:chat_client(),
     K1 = beamai:add_chat_model(K0, mock, #{model => <<"test-model">>}),
-    {ok, Config} = beamai_kernel:chat_model(K1),
+    {ok, Config} = beamai_chat_client:chat_model(K1),
     ?assertEqual(mock, maps:get(provider, Config)).
 
 facade_tools_test() ->
-    K = make_math_kernel(),
+    K = make_math_chat_client(),
     Tools = beamai:tools(K),
     ?assertEqual(2, length(Tools)).
 
 facade_tools_by_tag_test() ->
-    K = make_multi_tag_kernel(),
+    K = make_multi_tag_chat_client(),
     MathTools = beamai:tools_by_tag(K, <<"math">>),
     StringTools = beamai:tools_by_tag(K, <<"string">>),
     ?assertEqual(2, length(MathTools)),
@@ -288,5 +288,5 @@ facade_render_test() ->
     {ok, Result} = beamai:render(<<"Hello, {{name}}!">>, #{<<"name">> => <<"World">>}),
     ?assertEqual(<<"Hello, World!">>, Result).
 
-%% 注：ReAct 工具调用循环已从 kernel 移出（属 Agent 层职责），
+%% 注：ReAct 工具调用循环已从 ChatClient 移出（属 Agent 层职责），
 %% 相应的循环测试见 apps/beamai_agent/test/beamai_agent_tests.erl。

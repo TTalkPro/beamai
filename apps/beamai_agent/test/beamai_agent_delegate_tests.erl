@@ -60,11 +60,11 @@ delegate_e2e_test() ->
         seed => fun(_Args, _Ctx) -> <<"SEED-slice">> end   %% 程序化注入的“父记忆片段”
     }),
 
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
-    K2 = beamai_kernel:add_tools(K1, [Delegate]),
+    K0 = beamai_chat_client:new(),
+    K1 = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+    K2 = beamai_chat_client:add_tools(K1, [Delegate]),
     try
-        {ok, Parent} = beamai_agent:new(#{kernel => K2, conversation_id => <<"deleg-parent">>}),
+        {ok, Parent} = beamai_agent:new(#{chat_client => K2, conversation_id => <<"deleg-parent">>}),
         {ok, Res, Parent1} = beamai_agent:run(Parent, <<"please research">>),
 
         %% 父最终回复 = 用了子结论；且 context 与 seed 都成功传入子 agent
@@ -168,11 +168,11 @@ fanout_tool_test() ->
         name => <<"fanout">>,
         subagent => fun(_Args, _Ctx) -> #{llm => {mock, #{}}} end
     }),
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
-    K2 = beamai_kernel:add_tools(K1, [Fanout]),
+    K0 = beamai_chat_client:new(),
+    K1 = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+    K2 = beamai_chat_client:add_tools(K1, [Fanout]),
     try
-        {ok, Parent} = beamai_agent:new(#{kernel => K2,
+        {ok, Parent} = beamai_agent:new(#{chat_client => K2,
                                           conversation_id => beamai_id:gen_id(<<"p">>)}),
         {ok, _Res, Parent1} = beamai_agent:run(Parent, <<"do both">>),
         %% 汇总结果(含两个子任务的回答)作为 tool 结果回流父记忆
@@ -223,11 +223,11 @@ delegate_crash_isolation_test() ->
 
 %% @private 跑父 agent；断言父存活、委派工具结果里带预期错误标记
 run_parent_and_assert_error(Delegate, ErrMarker) ->
-    K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
-    K2 = beamai_kernel:add_tools(K1, [Delegate]),
+    K0 = beamai_chat_client:new(),
+    K1 = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+    K2 = beamai_chat_client:add_tools(K1, [Delegate]),
     try
-        {ok, Parent} = beamai_agent:new(#{kernel => K2,
+        {ok, Parent} = beamai_agent:new(#{chat_client => K2,
                                           conversation_id => beamai_id:gen_id(<<"p">>)}),
         %% 关键：父 run 正常返回（进程没被子 agent 拖死/炸死）
         {ok, _Res, Parent1} = beamai_agent:run(Parent, <<"please research">>),

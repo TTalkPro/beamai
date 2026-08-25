@@ -4,7 +4,7 @@
 %%% 一个完整示例：组装带「自定义 chat filter + tool filter + 真实工具 +
 %%% 窗口记忆 + 回调」的 Agent，跑一轮 ReAct（工具调用 → 最终回复），
 %%% 验证各部件协同：
-%%%   - 预构建 kernel：new(Settings, Filters) 一次性给 filter + add_chat_model(LLM) + 工具
+%%%   - 预构建 ChatClient：new(Settings, Filters) 一次性给 filter + add_chat_model(LLM) + 工具
 %%%   - memory => {window, N}
 %%%   - 回调 on_tool_result
 %%%   - filter / 工具 / 回调均按预期触发，历史经 filter-memory 落库
@@ -61,10 +61,10 @@ end_to_end_example_test() ->
                 Next(Req)
             end}),
 
-        %% --- 3. 预构建 kernel：filter 一次性给出 + LLM 服务 + 工具 ---
-        K0 = beamai_kernel:new(#{}, [ChatFilter, ToolFilter]),
-        K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
-        Kernel = beamai_kernel:add_tools(K1, [
+        %% --- 3. 预构建 ChatClient：filter 一次性给出 + LLM 服务 + 工具 ---
+        K0 = beamai_chat_client:new(#{}, [ChatFilter, ToolFilter]),
+        K1 = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+        ChatClient = beamai_chat_client:add_tools(K1, [
             #{name => <<"get_weather">>,
               description => <<"查询城市天气"/utf8>>,
               parameters => #{city => #{type => string,
@@ -77,7 +77,7 @@ end_to_end_example_test() ->
 
         %% --- 4. 创建 Agent：窗口记忆 + 回调 ---
         {ok, Agent} = beamai_agent:new(#{
-            kernel => Kernel,
+            chat_client => ChatClient,
             memory => {window, 50},
             conversation_id => <<"demo-conv">>,
             callbacks => #{

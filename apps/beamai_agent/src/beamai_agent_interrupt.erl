@@ -195,7 +195,7 @@ validate_resume_input(_, _) ->
 %% @doc 获取 interrupt_tools 的 tool specs（用于发送给 LLM）
 %%
 %% 将 interrupt_tools 配置转换为标准的 OpenAI tool spec 格式，
-%% 以便和 kernel 中的普通 tool specs 合并后发送给 LLM。
+%% 以便和 ChatClient 中的普通 tool specs 合并后发送给 LLM。
 %%
 %% @param AgentState agent 状态
 %% @returns tool specs 列表

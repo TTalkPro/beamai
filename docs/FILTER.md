@@ -7,9 +7,8 @@ beamai_core 的 Filter 系统提供了真正的**洋葱式（onion）**拦截机
 ## 目录
 
 - [概述](#概述)
-- [5 个 around hook 点](#5-个-around-hook-点)
+- [4 个 around hook 点](#4-个-around-hook-点)
 - [循环也是链上一环](#循环也是链上一环)
-- [chat 与 llm：为什么拆两层](#chat-与-llm为什么拆两层)
 - [token_transform（token 流变换）](#token_transformtoken-流变换)
 - [内置 filter](#内置-filter)
 - [filter 私有上下文](#filter-私有上下文)
@@ -23,7 +22,7 @@ beamai_core 的 Filter 系统提供了真正的**洋葱式（onion）**拦截机
 
 ## 概述
 
-Filter 是 Kernel 工具执行和 Chat 调用的洋葱式拦截器，可以：
+Filter 是 ChatClient 工具执行和 Chat 调用的洋葱式拦截器，可以：
 
 - **改写请求**: 前置修改参数、消息列表、调用选项
 - **改写响应**: 后置修改工具结果或 LLM 响应
@@ -32,7 +31,7 @@ Filter 是 Kernel 工具执行和 Chat 调用的洋葱式拦截器，可以：
 - **私有状态**: 每个 filter 有一份按名字隔离的私有上下文，贯穿一次 invoke（含工具循环各轮）
 - **日志/审计**: 记录调用日志、统计响应长度等
 
-每个 filter 就是**一层洋葱**——它最多绑定 5 个可选 around hook：turn 链的 `around_turn`（包整个工具循环，Agent 层使用）、step 链的 `around_step`（包一轮 ReAct 迭代）、chat 链的 `around_chat`（包一轮的 LLM 调用）、llm 链的 `around_llm`（包一次真实 LLM 请求）、tool 链的 `around_tool`（包一次工具执行），外加流式专用的 `token_transform`（token 流变换，不走洋葱，见专节）。一个 around 闭包形如：
+每个 filter 就是**一层洋葱**——它最多绑定 4 个可选 around hook：turn 链的 `around_turn`（包整个工具循环，Agent 层使用）、step 链的 `around_step`（包一轮 ReAct 迭代）、chat 链的 `around_chat`（包一轮的 LLM 调用）、tool 链的 `around_tool`（包一次工具执行），外加流式专用的 `token_transform`（token 流变换，不走洋葱，见专节）。一个 around 闭包形如：
 
 ```erlang
 fun(Request, FCtx, Next) -> Response | {Response, NewFCtx} end
@@ -49,24 +48,26 @@ filter 链由 `beamai_filter_chain` 合成为嵌套调用，最内层是 **termi
 
 | 模块 | 位置 | 说明 |
 |------|------|------|
-| `beamai_filter` | `apps/beamai_core/src/kernel/` | Filter 构造器与工具函数 |
-| `beamai_filter_chain` | `apps/beamai_core/src/kernel/` | 洋葱链合成与运行 |
-| `beamai_kernel` | `apps/beamai_core/src/kernel/` | Kernel 集成（注册 filter） |
+| `beamai_filter` | `apps/beamai_core/src/core/` | Filter 构造器与工具函数 |
+| `beamai_filter_chain` | `apps/beamai_core/src/core/` | 洋葱链合成与运行 |
+| `beamai_chat_client` | `apps/beamai_core/src/core/` | ChatClient 集成（注册 filter） |
 | `beamai` | `apps/beamai_core/src/` | 顶层 Facade（便捷 API） |
 
 ---
 
-## 5 个 around hook 点
+## 4 个 around hook 点
 
-一个 filter 可定义以下 5 个 hook 的任意子集：
+一个 filter 可定义以下 4 个 hook 的任意子集：
 
 | hook | 粒度 | 形态 |
 |------|------|------|
 | `around_turn` | 每 turn 一次（整个工具循环，Agent 层） | 同下（Response 为工具循环结果 tuple） |
 | `around_step` | 每轮 ReAct 迭代一次（含该轮工具执行） | 同下（Response 为 step 响应 map） |
 | `around_chat` | 每轮迭代**恰好一次**（该轮的 LLM 调用） | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
-| `around_llm` | 每次**真实** LLM 请求一次（重试在这层重入） | 同上 |
 | `around_tool` | 每个 tool call 一次（并行任务内） | 同上 |
+
+钩子按**进出频率**划分：turn 每 turn 一次、step / chat 每轮一次（step 还包住该轮工具执行）、
+tool 每个调用一次。重试之所以不是一层钩子，见下面的层次图说明。
 
 层次（外 → 内）：
 
@@ -74,9 +75,8 @@ filter 链由 `beamai_filter_chain` 合成为嵌套调用，最内层是 **termi
 around_turn            每 turn 一次           RAG 注入 / 最终答案校验 / turn 级预算
   tool_loop filter     循环驱动本身就是链上一环（可整体替换）
     around_step        每轮迭代一次           每轮预算 / 轨迹记录 / 迭代级改写
-      around_chat      该轮的 LLM 调用一次    记忆 / 记账 / 审计
-        around_llm     每次真实请求一次        重试 / fallback / 限流 / mock
-          provider     真正的 chat 调用
+      around_chat      该轮的 LLM 调用一次    记忆 / 记账 / 审计 / 提示词注入
+        provider       真正的 chat 调用       ← 重试在它**内部**，链看不见
       around_tool      每个 tool call 一次     超时 / 审批 / 参数改写
 ```
 
@@ -84,8 +84,7 @@ around_turn            每 turn 一次           RAG 注入 / 最终答案校验
 
 - **turn 链**用 `around_turn`，包裹整个工具循环；链的最内层是**循环 filter**，它的 terminal 是 step 链。
 - **step 链**用 `around_step`，包裹一轮迭代——注意它**同时包住该轮的工具执行**，这是 `around_chat` 做不到的。
-- **chat 链**用 `around_chat`，包裹该轮的 LLM 调用；它的 terminal 不是 LLM 调用本身，而是内层的 llm 链。
-- **llm 链**用 `around_llm`，包裹一次真正发出去的请求。
+- **chat 链**用 `around_chat`，包裹该轮的 LLM 调用；它的 terminal 就是 provider 调用。
 - **tool 链**用 `around_tool`，包裹一次工具执行。
 
 某 filter 若对某条链不含对应 around，则在该链中被**跳过**。同一个 filter 可同时声明多个 hook，各链中的相对层序一致。
@@ -95,8 +94,7 @@ around_turn            每 turn 一次           RAG 注入 / 最终答案校验
 | 链 | Request | Response |
 |----|---------|----------|
 | step | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}`（见下节） |
-| chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_llm_response） |
-| llm | 与 chat 同形；流式路径额外带 `stream => true` | 同 chat |
+| chat | `#{messages, context, opts}`；流式额外带 `stream => true` | `#{response, context}`（response 为 beamai_llm_response） |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 | turn | `#{messages, context, resume, load_history}` | 工具循环结果 tuple（`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`；interrupt/error 必须透传、不得重入） |
 
@@ -119,7 +117,7 @@ Request 的 `messages` 语义是**本轮新增消息**（不是完整历史）�
 
 ### 注册顺序即层序
 
-filter 在构建 Kernel 时经 `beamai_kernel:new(Settings, Filters)` **一次性给出**，
+filter 在构建 ChatClient 时经 `beamai_chat_client:new(Settings, Filters)` **一次性给出**，
 **列表位置决定洋葱层次**：靠前 = 外层（前置先执行、后置后执行）。没有 order
 字段、没有运行时排序——想调整层次，调整列表顺序即可（对齐 clj-agent 的
 扁平 vector 模型）。
@@ -132,9 +130,8 @@ filter 是一个标记 map：
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),                  %% 名称（调试标识，也是私有上下文的隔离键）
-    hooks := #{                        %% 6 个 hook 的任意子集
+    hooks := #{                        %% 5 个 hook 的任意子集
         around_chat => around_fun(),
-        around_llm => around_fun(),
         around_step => around_fun(),
         around_tool => around_fun(),
         around_turn => around_fun(),
@@ -208,12 +205,12 @@ TraceStep = beamai:filter(<<"trace_step">>, #{
 
 ### 换掉循环策略
 
-循环既然是链上一环，换掉它就不用动 agent 与 kernel 的代码——给 agent 配一个
+循环既然是链上一环，换掉它就不用动 agent 与 ChatClient 的代码——给 agent 配一个
 `loop_filter`（构造器，拿到本轮的 LoopOpts，返回一个 `around_turn` filter）：
 
 ```erlang
 {ok, Agent} = beamai_agent:new(#{
-    kernel => K,
+    chat_client => K,
     loop_filter => fun(_LoopOpts) ->
         beamai:filter(<<"my_loop">>, #{
             around_turn => fun(Req, _FCtx, Next) ->
@@ -239,43 +236,28 @@ TraceStep = beamai:filter(<<"trace_step">>, #{
 
 ---
 
-## chat 与 llm：为什么拆两层
+## 重试在哪一层
 
-一次迭代通常恰好一次 LLM 调用，此时两层同频、看不出差别。**一旦一轮里 LLM 被调用多次
-（重试、fallback 换模型、N-best 投票），差别就现形了**：
-
-| | around_chat | around_llm |
-|---|---|---|
-| 一轮里进出几次 | 恰好 1 次 | N 次（有几次真实请求就几次） |
-| 该放什么 | 记忆、记账、审计、提示词注入 | 重试、fallback、限流、mock、按尝试计费 |
-
-如果重试放在 chat 层，它内层的记忆/记账 filter 会跟着重跑 N 次——同一条 delta 被存两次、
-一次对话被记三次账。拆出 llm 层就是为了让重试的重入够不着这些 filter。
-
-框架自带的重试因此是一个 **around_llm filter**（`beamai_llm_filters:retry_filter/1`），
-由 kernel 缺省注入在 llm 链**最内层**，用 settings 的 `llm_retry` 控制：
+**不在链上**。provider 的重试在 `beamai_chat_model:chat/3` 内部——位于整个 filter 栈
+**之下**，重试重入碰不到任何 filter。于是 `around_chat` 上的记忆/记账每轮只跑一次，
+无需任何层序纪律来保证。
 
 ```erlang
-%% 缺省：按框架默认参数重试（单次 chat opts 里的 max_retries/retry_delay 优先级更高）
-K = beamai:kernel(#{}, Filters),
-
-%% 调默认重试参数
-K = beamai:kernel(#{llm_retry => #{max_retries => 5, retry_delay => 200}}, Filters),
-
-%% 关掉缺省注入，自己在任意层序上放重试（放得越靠后 = 越内层）
-K = beamai:kernel(#{llm_retry => false},
-                  [RateLimitFilter, beamai_llm_filters:retry_filter(#{}), MetricsFilter]).
+%% 参数三级取值：单次 Opts > provider Config > 框架默认（max_retries => 0 关闭）
+LLM = beamai_chat_model:create(anthropic, #{model => M, api_key => K, max_retries => 5}),
+beamai_chat_client:invoke_chat(ChatClient, Messages, #{max_retries => 0}).   %% 本次不重试
 ```
 
-缺省注入在最内层意味着：使用方自己注册的 around_llm filter 一律在重试**之外**，看到的是
-「逻辑一次调用」。要观测每一次真实尝试，就按上面第三种写法把自己的 filter 放到重试之内。
+代价与出口：
 
-**流式路径不重试**：`invoke_chat_stream` 的 Request 带 `stream => true`，内置重试 filter
-见此标记直接透传——token 已经投递给 sink 了，重跑会让下游看到重复内容。llm 链本身在流式
-路径照常生效（限流、记账、mock 都还在），只是重试不介入。
+- filter **看不到**每次真实尝试（它看到的是「一次逻辑调用」）→ 要观测用 chat opts 的
+  `on_retry` 回调；
+- 流式路径**不重试**（token 已投递给 sink，重跑会让下游看到重复内容）；要容错就在
+  `around_turn` 层重跑整轮。
 
-> 直接调 `beamai_chat_model:chat/3`（不经 kernel）**不带重试**——重试已经上移到 llm 链。
-> 这类直连调用要重试，自己用 `beamai_llm_retry:run/2` 包一层。
+> 早先版本曾把重试做成 llm 链上的一层 filter（`around_llm`），后来撤销了：重试搬到栈底
+> 之后，那条链与 chat 链的进出次数永远 1:1、契约也完全相同，差别退化成「排序」——
+> 而排序在本系统里本来就由列表位置决定。详见 `design/retry_back_to_chat_model.md`。
 
 ---
 
@@ -320,24 +302,23 @@ turn 结果、后续工具循环用的都是原始完整答案。分工：
 
 ```erlang
 %% 流式脱敏：sink 看到脱敏后的 token，最终响应仍是原文
-K = beamai:kernel(#{}, [
+K = beamai:chat_client(#{}, [
     beamai_filters:token_redact_filter(<<"sk-\\w+">>, <<"[KEY]">>)
 ]),
-{ok, Resp, _} = beamai_kernel:invoke_chat_stream(K, Messages, #{}, OnToken).
+{ok, Resp, _} = beamai_chat_client:invoke_chat_stream(K, Messages, #{}, OnToken).
 ```
 
 ---
 
 ## 内置 filter
 
-`beamai_filters` 里的现成 filter，均为纯构造器，建 kernel 时放进 `new/2` 的 filters 列表。
+`beamai_filters` 里的现成 filter，均为纯构造器，建 ChatClient 时放进 `new/2` 的 filters 列表。
 （大体对标 Spring AI 的 Advisor 体系，逐项取舍见 `design/spring_advisor_alignment.md`。）
 
 | filter | 链 | 说明 |
 |---|---|---|
 | `beamai_agent_tool_loop:loop_filter(LoopOpts)` | turn | **缺省 ReAct 循环**，由 agent 自动追加在 turn 链最内层；agent 配 `loop_filter` 可整体替换 |
 | `logging_filter()` | turn/chat/tool | 三链各记一对 debug 日志。放列表首位记全景；放在某 filter 之后则只看得到那层之内的改写 |
-| `beamai_llm_filters:retry_filter()` / `(Defaults)` | llm | 可重试错误（429/5xx/网络超时）按退避重入 `Next`。**kernel 缺省注入**在 llm 链最内层，用 settings 的 `llm_retry` 调参或关闭；流式路径透传不重试 |
 | `safeguard_filter(Words)` / `(Words, Opts)` | chat | 敏感词命中即短路，不调 LLM，返回 `finish_reason=content_filtered` 的答复。Opts：`failure_response`、`case_sensitive`（缺省 `false`） |
 | `timeout_filter(Ms)` | tool | 单个工具执行墙钟超时 → `{error, timeout}`（归类 transient） |
 | `approval_filter(ApproveFun)` | tool | 仅拦 `sensitive => true` 的工具；拒绝结果作正常工具结果回模型。非交互式——交互式审批用 callbacks 的 `on_tool_call` |
@@ -349,7 +330,7 @@ K = beamai:kernel(#{}, [
 ### safeguard_filter：能力边界
 
 ```erlang
-K = beamai:kernel(#{}, [beamai_filters:safeguard_filter([<<"敏感词"/utf8>>])]).
+K = beamai:chat_client(#{}, [beamai_filters:safeguard_filter([<<"敏感词"/utf8>>])]).
 ```
 
 放 chat 链意味着**循环内每次 LLM 调用都过一遍**：不止拦用户输入，工具结果回灌时带出的
@@ -365,7 +346,7 @@ Schema = #{type => object,
            properties => #{<<"name">> => #{type => string},
                            <<"age">> => #{type => integer, minimum => 0}},
            required => [<<"name">>, <<"age">>]},
-K = beamai:kernel(#{}, [beamai_filters:schema_validation_turn_filter(Schema, 2)]).
+K = beamai:chat_client(#{}, [beamai_filters:schema_validation_turn_filter(Schema, 2)]).
 ```
 
 「取文本 → 解 JSON → 过 Schema」不合格则把 Schema 错误当反馈重入循环，重试 `MaxRetries`
@@ -389,8 +370,8 @@ Opts：`max_errors`（单次最多收集几条错误，缺省全收；字段多�
 ```erlang
 Tools = [...],                                    %% 全量工具
 {SearchTool, Filter} = beamai_tool_search:new(Tools, #{}),
-K0 = beamai_kernel:new(#{}, [Filter]),
-K = beamai_kernel:add_tools(K0, [SearchTool | Tools]).   %% 全量注册
+K0 = beamai_chat_client:new(#{}, [Filter]),
+K = beamai_chat_client:add_tools(K0, [SearchTool | Tools]).   %% 全量注册
 ```
 
 Opts：`index_module`（缺省 `beamai_tool_index_keyword`，另有 `beamai_tool_index_regex`）、
@@ -402,7 +383,7 @@ Opts：`index_module`（缺省 `beamai_tool_index_keyword`，另有 `beamai_tool
 - **未索引的工具原样透传**——广播列表里 filter 没索引过的（如 agent 运行时追加的中断工具）
   一概不碰，不会被静默吃掉。
 - **检索工具永远广播**，否则一轮不中就再没机会检索。
-- **模型仍可调用未广播的工具**（kernel 执行不看广播列表），故它凭上文记忆直接调也不会失败。
+- **模型仍可调用未广播的工具**（ChatClient 执行不看广播列表），故它凭上文记忆直接调也不会失败。
 - 索引后端是 behaviour（`beamai_tool_index`），向量后端留给 beamai_extra 接。
 - 不自动注入 system 提示（避免双 system 消息）；需要加强引导时自行把
   `beamai_tool_search:default_system_suffix/0` 拼进 `system_prompt`。
@@ -448,16 +429,10 @@ compose([A, B], Phase, Terminal)
 filter 的 around 若不调用 `Next` 即为短路（跳过所有内层），由该 filter 直接构造并返回 `Response`。外层 filter 的后置仍照常执行。
 
 其余各链同理，把上面的 `around_chat` 换成该链的 hook 名（Phase = `around_step` /
-`around_llm` / `around_tool` / `around_turn`）。
+`around_tool` / `around_turn`）。
 
-chat 链有一处特别：它的 terminal 就是**内层 llm 链**（`llm 链的 terminal 才是真正的 LLM 调用`），
-所以 `[A, B]` 若两个 hook 都声明，实际展开是：
-
-```
-A_chat 前置 → B_chat 前置 → A_llm 前置 → B_llm 前置 → LLM → B_llm 后置 → A_llm 后置 → B_chat 后置 → A_chat 后置
-```
-
-——同一个 filter 在两条链上的相对层序保持一致（A 始终在 B 外面）。
+turn 链有一处特别：它的 terminal 是**内层 step 链**（循环 filter 每调一次 Next 就跑一轮迭代），
+所以同一个 filter 在两条链上的相对层序保持一致（A 始终在 B 外面）。
 
 ---
 
@@ -469,8 +444,8 @@ A_chat 前置 → B_chat 前置 → A_llm 前置 → B_llm 前置 → LLM → B_
 
 ```erlang
 %% 创建 filter（私有状态初值 #{}）。
-%% Hooks 为 hook map，可含 around_chat/around_llm/around_step/around_tool/
-%% around_turn/token_transform 任意子集。
+%% Hooks 为 hook map，可含 around_chat/around_step/around_tool/around_turn/
+%% token_transform 任意子集。
 -spec new(Name :: binary(), Hooks :: hooks()) -> filter().
 
 %% 创建 filter（指定私有状态初值 Init）
@@ -480,11 +455,10 @@ A_chat 前置 → B_chat 前置 → A_llm 前置 → B_llm 前置 → LLM → B_
 其中 hook 形态：
 
 ```erlang
--type hook_type() :: around_chat | around_llm | around_step | around_tool |
-                     around_turn | token_transform.
+-type hook_type() :: around_chat | around_step | around_tool | around_turn |
+                     token_transform.
 -type hooks() :: #{
     around_chat => around_fun(),
-    around_llm => around_fun(),
     around_step => around_fun(),
     around_tool => around_fun(),
     around_turn => around_fun(),
@@ -509,9 +483,9 @@ around 不调用 `Next` 则短路（跳过内层），直接返回 `Response`。
 
 ```erlang
 %% 运行某条链的 filter 洋葱。
-%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，llm 链传
-%% around_llm，step 链传 around_step，tool 链传 around_tool。只参与该链
-%% （含对应 around）的 filter 进入洋葱，其余跳过。
+%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，step 链传
+%% around_step，tool 链传 around_tool。只参与该链（含对应 around）的 filter
+%% 进入洋葱，其余跳过。
 %% Terminal 产出最内层响应，出错时 throw；run/4 用 try/catch 捕获，
 %% 统一返回 {ok, Response} | {error, Reason}。
 -spec run(Filters :: [filter()],
@@ -538,18 +512,18 @@ around 不调用 `Next` 则短路（跳过内层），直接返回 `Response`。
 
 > 这两个访问器供洋葱链投影/合并使用；filter 代码通常通过 around 的 `FCtx` 参数读、通过返回 `{Resp, NewFCtx}` 写，无需直接调用它们。
 
-### beamai_kernel 集成
+### beamai_chat_client 集成
 
 ```erlang
-%% 构建 Kernel 时一次性给出全量 filter（注册顺序即层序：列表靠前 = 外层）
-beamai_kernel:new(Settings, Filters) -> Kernel.
+%% 构建 ChatClient 时一次性给出全量 filter（注册顺序即层序：列表靠前 = 外层）
+beamai_chat_client:new(Settings, Filters) -> ChatClient.
 ```
 
 filter 在构建后**不可增量追加**——层次完全由这份列表的顺序决定。
 需要会话记忆时把 `beamai_memory_filter:memory_filter(Store)` 放列表**首位**
 （最外层：先展开完整历史，再让内层 filter 处理）。
 
-工具模块（`beamai_kernel:add_tool_module/2`）只提供工具，不携带 filter。
+工具模块（`beamai_chat_client:add_tool_module/2`）只提供工具，不携带 filter。
 
 > **system_prompts 注入层次**：`invoke_chat` 的 `Opts` 里给出的 `system_prompts`
 > 在调用时作为**最内层**临时 filter 追加——在所有用户 filter 之后、LLM 之前
@@ -559,10 +533,10 @@ filter 在构建后**不可增量追加**——层次完全由这份列表的顺
 ### beamai 便捷 API
 
 ```erlang
-%% 创建 Kernel（一次性给出全量 filter）
-beamai:kernel(Settings, Filters) -> Kernel.
+%% 创建 ChatClient（一次性给出全量 filter）
+beamai:chat_client(Settings, Filters) -> ChatClient.
 
-%% 快捷创建 filter（直接给 hook map；放入 kernel/2 的 Filters 列表）
+%% 快捷创建 filter（直接给 hook map；放入 chat_client/2 的 Filters 列表）
 beamai:filter(Name, Hooks) -> Filter.
 beamai:filter(Name, Hooks, Init) -> Filter.
 ```
@@ -571,7 +545,7 @@ beamai:filter(Name, Hooks, Init) -> Filter.
 
 ## 使用方法
 
-### 1. 构建 Kernel 时一次性给出 filter
+### 1. 构建 ChatClient 时一次性给出 filter
 
 ```erlang
 Logger = beamai:filter(<<"logger">>, #{
@@ -581,7 +555,7 @@ Logger = beamai:filter(<<"logger">>, #{
         Next(Req)
     end
 }),
-K0 = beamai:kernel(#{}, [Logger]).
+K0 = beamai:chat_client(#{}, [Logger]).
 ```
 
 ### 2. Filter 层次（注册顺序即层序）
@@ -594,7 +568,7 @@ Logger      = beamai:filter(<<"logger">>, #{around_tool => LogFn}),
 Transformer = beamai:filter(<<"transformer">>, #{around_tool => TransformFn}),
 
 %% 列表顺序即洋葱层序（validator 最外层，transformer 最内层）
-K = beamai:kernel(#{}, [Validator, Logger, Transformer]).
+K = beamai:chat_client(#{}, [Validator, Logger, Transformer]).
 
 %% 前置执行顺序：validator → logger → transformer → Terminal
 %% 后置执行顺序：transformer → logger → validator（自动逆序）
@@ -616,8 +590,8 @@ LogDouble = beamai:filter(<<"log_and_double">>, #{
     end
 }),
 
-%% 创建 Kernel（filter 一次性给出）并注册工具
-K0 = beamai:kernel(#{}, [LogDouble]),
+%% 创建 ChatClient（filter 一次性给出）并注册工具
+K0 = beamai:chat_client(#{}, [LogDouble]),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
     #{description => <<"Add two numbers">>,
@@ -627,7 +601,7 @@ K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
       }})).
 
 %% 调用（3 + 5 = 8，后置翻倍后 = 16）
-%% （工具执行经 Kernel 的 tool filter 洋葱链）
+%% （工具执行经 ChatClient 的 tool filter 洋葱链）
 ```
 
 ### 示例 2：chat filter —— 注入 system 消息 + 审计（一个 around_chat 同时管前后）
@@ -658,7 +632,7 @@ SystemAudit = beamai:filter(<<"system_and_audit">>, #{
     end
 }),
 
-K0 = beamai:kernel(#{}, [SystemAudit]),
+K0 = beamai:chat_client(#{}, [SystemAudit]),
 K1 = beamai:add_chat_model(K0, LLMConfig).
 
 %% 发送请求时，chat filter 链自动注入 system 消息并审计响应。
@@ -676,7 +650,7 @@ Guard = beamai:filter(<<"guard">>, #{
         end
     end
 }),
-K = beamai:kernel(#{}, [Guard]).
+K = beamai:chat_client(#{}, [Guard]).
 ```
 
 > 短路即「不调用 `Next`」，由该 filter 直接构造并返回 `Response`。包裹它的外层 filter 后置仍会执行——便于在外层做统一收尾。
@@ -693,7 +667,7 @@ Counter = beamai:filter(<<"counter">>, #{
         {Resp, FCtx#{calls => N + 1}}   %% 返回 {Resp, NewFCtx} 写回私有状态
     end
 }),
-K = beamai:kernel(#{}, [Counter]).
+K = beamai:chat_client(#{}, [Counter]).
 %% 工具循环每轮 LLM 调用都让 calls 累加，且与其它 filter 的私有状态互不干扰。
 ```
 
@@ -708,15 +682,14 @@ K = beamai:kernel(#{}, [Counter]).
 - around 闭包 `fun(Request, FCtx, Next) -> Response` 对应中间件的「拿到请求 → 调 `next` → 处理响应」。
 - 前置/后置同处一个闭包，用局部变量桥接，无需在 before/after 间借共享上下文传值。
 - 短路 = 不调 `Next`；重试 = 多次调 `Next`；无需专门的 halt 协议。
-- 一个 filter 同时打包多条链的 around（`around_turn` / `around_step` / `around_chat` / `around_llm` / `around_tool`），各链独立选用。
+- 一个 filter 同时打包多条链的 around（`around_turn` / `around_step` / `around_chat` / `around_tool`），各链独立选用。
 - 工具循环本身也是链上一环（turn 链最内层的 filter），它的 `next` 就是一轮迭代——对应 Spring AI 的 `ToolCallingAdvisor`。
-- chat 与 llm 是**两层嵌套**的中间件栈：外层每轮一次，内层每次真实请求一次——对应 Spring AI 里 advisor 与 provider 层的分工。
 
 ---
 
 ## 与 Middleware 框架的关系
 
-[beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中提供了更高级的 Middleware 系统（位于 beamai_tools），支持有状态管理、预设配置、调用限制、人工审批、重试和降级等功能。Middleware 内部转换为 filter 注册到 Kernel，两者最终在同一条洋葱链中执行。
+[beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目中提供了更高级的 Middleware 系统（位于 beamai_tools），支持有状态管理、预设配置、调用限制、人工审批、重试和降级等功能。Middleware 内部转换为 filter 注册到 ChatClient，两者最终在同一条洋葱链中执行。
 
 | 特性 | Filter（本文档） | Middleware（beamai_extra） |
 |------|-------------------|---------------------------|
@@ -729,6 +702,6 @@ K = beamai:kernel(#{}, [Counter]).
 
 ## 更多资源
 
-- [beamai_core README](../apps/beamai_core/README.md) - Kernel 架构文档
+- [beamai_core README](../apps/beamai_core/README.md) - ChatClient 架构文档
 - [MEMORY.md](MEMORY.md) - 会话记忆（Memory filter）
 - [API 参考](API_REFERENCE.md) - API 参考文档

@@ -145,7 +145,7 @@ embed_full(Config, [], _Opts) ->
 embed_full(Config, Texts, Opts) when is_list(Texts) ->
     Module = provider_module(maps:get(provider, Config, openai)),
     Request = build_request(Module, Config, Opts),
-    RetryOpts = beamai_llm_retry:opts(Opts),
+    RetryOpts = beamai_llm_retry:opts(Config, Opts),
     Batches = chunk(Texts, batch_size(Module, Opts)),
     embed_batches(Module, Config, Request, RetryOpts, Batches, []).
 

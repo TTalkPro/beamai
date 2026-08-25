@@ -38,17 +38,17 @@ extract_content(Response) ->
         _ -> <<>>
     end.
 
-%% @doc 从 Kernel 构建 chat 选项
+%% @doc 从 ChatClient 构建 chat 选项
 %%
-%% 获取 kernel 中所有已注册函数的 tool specs，注入到 chat 选项中。
-%% 如果 kernel 中没有注册任何函数，不添加 tools 字段。
+%% 获取 ChatClient 中所有已注册函数的 tool specs，注入到 chat 选项中。
+%% 如果 ChatClient 中没有注册任何函数，不添加 tools 字段。
 %%
-%% @param Kernel kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param Opts 用户额外选项（可包含 chat_opts 子键）
 %% @returns 完整的 chat 选项 map
--spec build_chat_opts(beamai_kernel:kernel(), map()) -> map().
-build_chat_opts(Kernel, Opts) ->
-    ToolSpecs = beamai_kernel:get_tool_specs(Kernel),
+-spec build_chat_opts(beamai_chat_client:chat_client(), map()) -> map().
+build_chat_opts(ChatClient, Opts) ->
+    ToolSpecs = beamai_chat_client:get_tool_specs(ChatClient),
     BaseChatOpts = maps:get(chat_opts, Opts, #{}),
     case ToolSpecs of
         [] -> BaseChatOpts;
@@ -61,19 +61,19 @@ build_chat_opts(Kernel, Opts) ->
 %% @doc 执行 tool calls 并收集结果（串行，新建 context）
 %%
 %% @returns {ToolResultMsgs, CallRecords, NewContext}
--spec execute_tools(beamai_kernel:kernel(), [map()]) -> {[map()], [map()], beamai_context:t()}.
-execute_tools(Kernel, ToolCalls) ->
-    execute_tools(Kernel, ToolCalls, beamai_context:new()).
+-spec execute_tools(beamai_chat_client:chat_client(), [map()]) -> {[map()], [map()], beamai_context:t()}.
+execute_tools(ChatClient, ToolCalls) ->
+    execute_tools(ChatClient, ToolCalls, beamai_context:new()).
 
 %% @doc 执行 tool calls 并收集结果（串行，指定执行上下文）
 %%
 %% 用传入的 Context（只读运行环境，含 conversation_id 等）执行工具，使
 %% around_tool filter 能读到当轮上下文。工具写状态经返回 Writes 表达，在屏障处
 %% 按 tool_call 原始序折叠进 state（见 finalize/3）。
--spec execute_tools(beamai_kernel:kernel(), [map()], beamai_context:t()) ->
+-spec execute_tools(beamai_chat_client:chat_client(), [map()], beamai_context:t()) ->
     {[map()], [map()], beamai_context:t()}.
-execute_tools(Kernel, ToolCalls, Context) ->
-    execute_tools(Kernel, ToolCalls, Context, false).
+execute_tools(ChatClient, ToolCalls, Context) ->
+    execute_tools(ChatClient, ToolCalls, Context, false).
 
 %% @doc 执行 tool calls（统一入口：可选并发）
 %%
@@ -85,10 +85,10 @@ execute_tools(Kernel, ToolCalls, Context) ->
 %% （主循环与中断分支共用），避免逻辑漂移。
 %%
 %% @returns {ToolResultMsgs, CallRecords, NewContext}
--spec execute_tools(beamai_kernel:kernel(), [map()], beamai_context:t(), boolean()) ->
+-spec execute_tools(beamai_chat_client:chat_client(), [map()], beamai_context:t(), boolean()) ->
     {[map()], [map()], beamai_context:t()}.
-execute_tools(Kernel, ToolCalls, Context, Parallel) ->
-    execute_tools(Kernel, ToolCalls, Context, Parallel, fun(_CR) -> ok end).
+execute_tools(ChatClient, ToolCalls, Context, Parallel) ->
+    execute_tools(ChatClient, ToolCalls, Context, Parallel, fun(_CR) -> ok end).
 
 %% @doc 执行 tool calls（带实时结果回调）
 %%
@@ -98,23 +98,23 @@ execute_tools(Kernel, ToolCalls, Context, Parallel) ->
 %% 吞异常（调用方通常传 beamai_agent_callbacks:invoke 包装）。
 %%
 %% @returns {ToolResultMsgs, CallRecords, NewContext}
--spec execute_tools(beamai_kernel:kernel(), [map()], beamai_context:t(), boolean(),
+-spec execute_tools(beamai_chat_client:chat_client(), [map()], beamai_context:t(), boolean(),
                     fun((map()) -> ok)) ->
     {[map()], [map()], beamai_context:t()}.
-execute_tools(Kernel, ToolCalls, Context, Parallel, OnResult) ->
+execute_tools(ChatClient, ToolCalls, Context, Parallel, OnResult) ->
     Concurrent = Parallel
         andalso length(ToolCalls) > 1
-        andalso not batch_has_serial(Kernel, ToolCalls),
+        andalso not batch_has_serial(ChatClient, ToolCalls),
     case Concurrent of
-        true -> execute_concurrent(Kernel, ToolCalls, Context, OnResult);
-        false -> execute_sequential(Kernel, ToolCalls, Context, OnResult)
+        true -> execute_concurrent(ChatClient, ToolCalls, Context, OnResult);
+        false -> execute_sequential(ChatClient, ToolCalls, Context, OnResult)
     end.
 
 %% @private 批内是否含 serial 工具（命中则整批退化串行，保住副作用顺序）
-batch_has_serial(Kernel, ToolCalls) ->
+batch_has_serial(ChatClient, ToolCalls) ->
     lists:any(fun(TC) ->
         {_Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
-        beamai_kernel:serial_tool(Kernel, Name)
+        beamai_chat_client:serial_tool(ChatClient, Name)
     end, ToolCalls).
 
 %% @doc 执行单个 tool：经完整 filter 管道调用，编码结果，构建 tool 消息与调用记录
@@ -122,11 +122,11 @@ batch_has_serial(Kernel, ToolCalls) ->
 %% Context 为只读运行环境快照；工具写意图经 invoke_tool 返回的 Writes 透出。
 %%
 %% @returns {ToolMsg, CallRecord, Writes}
--spec run_one_tool(beamai_kernel:kernel(), map(), beamai_context:t()) ->
+-spec run_one_tool(beamai_chat_client:chat_client(), map(), beamai_context:t()) ->
     {map(), map(), beamai_context:writes()}.
-run_one_tool(Kernel, TC, Context) ->
+run_one_tool(ChatClient, TC, Context) ->
     {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
-    {Result, Writes, ErrInfo} = case beamai_kernel:invoke_tool(Kernel, Name, Args, Context) of
+    {Result, Writes, ErrInfo} = case beamai_chat_client:invoke_tool(ChatClient, Name, Args, Context) of
         {ok, Value, W} ->
             {beamai_tool:encode_result(Value), W, undefined};
         {error, Reason} ->
@@ -171,9 +171,9 @@ reason_to_binary(R) -> iolist_to_binary(io_lib:format("~p", [R])).
 
 %% @private 串行执行 tool_calls（每个工具拿同一轮初快照，屏障处折叠）
 %% 每个工具完成即触发 OnResult（实时）。
-execute_sequential(Kernel, ToolCalls, Context, OnResult) ->
-    Ordered = [fire_result(OnResult, run_one_tool(Kernel, TC, Context)) || TC <- ToolCalls],
-    finalize(Kernel, Context, Ordered).
+execute_sequential(ChatClient, ToolCalls, Context, OnResult) ->
+    Ordered = [fire_result(OnResult, run_one_tool(ChatClient, TC, Context)) || TC <- ToolCalls],
+    finalize(ChatClient, Context, Ordered).
 
 %% @private 触发实时结果回调并原样返回结果三元组
 fire_result(OnResult, {_Msg, CallRecord, _Writes} = Result) ->
@@ -189,30 +189,30 @@ fire_result(OnResult, {_Msg, CallRecord, _Writes} = Result) ->
 %% 经 OnResult 实时可见。显式配了截止才到点 kill 未交付者、为其合成 timeout
 %% error 结果（已完成的结果照常保留）。结果按原 tool_call 顺序（索引）重排，
 %% 屏障处折叠 writes。
-execute_concurrent(Kernel, ToolCalls, Context, OnResult) ->
+execute_concurrent(ChatClient, ToolCalls, Context, OnResult) ->
     Parent = self(),
     Indexed = lists:zip(lists:seq(1, length(ToolCalls)), ToolCalls),
     Workers = lists:foldl(fun({Idx, TC}, Acc) ->
         {Pid, MRef} = spawn_monitor(fun() ->
-            Parent ! {tool_result, self(), run_one_tool(Kernel, TC, Context)}
+            Parent ! {tool_result, self(), run_one_tool(ChatClient, TC, Context)}
         end),
         Acc#{Pid => #{idx => Idx, tc => TC, mref => MRef}}
     end, #{}, Indexed),
     ResultMap = collect_tools(Workers, #{}, deadline(gather_timeout()), OnResult),
     Ordered = [maps:get(Idx, ResultMap) || {Idx, _TC} <- Indexed],
-    finalize(Kernel, Context, Ordered).
+    finalize(ChatClient, Context, Ordered).
 
 %% @private 屏障收尾：拆分消息/记录、按原始 index 序折叠 writes 进 state
 %%
 %% Ordered 为按 tool_call 原始顺序排好的 [{Msg, CallRecord, Writes}]。折叠经
 %% beamai_context:apply_writes/3：声明槽过 reducer、未声明槽 last-writer；
 %% 同批多工具写同一未声明槽产生 conflict，记 warning（last-writer 已应用）。
-finalize(Kernel, Context, Ordered) ->
+finalize(ChatClient, Context, Ordered) ->
     Msgs = [M || {M, _R, _W} <- Ordered],
     Records = [R || {_M, R, _W} <- Ordered],
     IndexedWrites = lists:zip(lists:seq(1, length(Ordered)),
                               [W || {_M, _R, W} <- Ordered]),
-    Slots = beamai_kernel:state_slots(Kernel),
+    Slots = beamai_chat_client:state_slots(ChatClient),
     {NewCtx, Conflicts} = beamai_context:apply_writes(Context, IndexedWrites, Slots),
     warn_conflicts(Conflicts),
     {Msgs, Records, NewCtx}.

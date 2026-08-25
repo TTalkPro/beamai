@@ -2,7 +2,7 @@
 %%% @doc Agent 记忆 Provider Behaviour（Agent 的记忆**接口**）
 %%%
 %%% 这是 Agent 层的记忆协议——由 Agent 在自己的 tool loop 里**显式**调用（不经
-%%% 任何 kernel filter）。与底层**存储**协议（`beamai_chat_memory`）分层：
+%%% 任何 ChatClient filter）。与底层**存储**协议（`beamai_chat_memory`）分层：
 %%%
 %%%   - beamai_chat_memory   —— 存储后端（ETS / Redis…），dumb get/add/clear
 %%%   - beamai_memory_provider —— Agent 记忆策略（持久化 + 发送前变换：窗口/摘要/RAG…）

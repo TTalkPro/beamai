@@ -4,7 +4,7 @@
 %%% 工具一多，把全部 schema 每轮都塞进提示词就成了纯浪费——模型一次用得上的
 %%% 通常就那么两三个。本模块把「注册」与「广播」拆开：
 %%%
-%%%   - **注册**（kernel 的 tools）：决定**能不能执行**——全量注册，一个不少。
+%%%   - **注册**（ChatClient 的 tools）：决定**能不能执行**——全量注册，一个不少。
 %%%   - **广播**（chat opts 的 tools）：决定**模型看不看得见**——由本模块的
 %%%     around_chat filter 每轮现算，首轮只给检索工具一个。
 %%%
@@ -12,13 +12,13 @@
 %%% filter 从历史里认领这些名字，把对应工具加进广播列表，模型这才看得见并调用。
 %%% Spring 实测 28 个工具时省 34~64% token。
 %%%
-%%% 用法（工具集在建 kernel 前就已知，故索引一次性建好闭包进组件，
+%%% 用法（工具集在建 ChatClient 前就已知，故索引一次性建好闭包进组件，
 %%% 不需要 Spring 那套按 fingerprint 重建索引的机制）：
 %%% ```
 %%% Tools = [...],                       %% 全量工具
 %%% {SearchTool, Filter} = beamai_tool_search:new(Tools, #{}),
-%%% K0 = beamai_kernel:new(#{}, [Filter]),
-%%% K = beamai_kernel:add_tools(K0, [SearchTool | Tools]).   %% 全量注册
+%%% K0 = beamai_chat_client:new(#{}, [Filter]),
+%%% K = beamai_chat_client:add_tools(K0, [SearchTool | Tools]).   %% 全量注册
 %%% ```
 %%%
 %%% **未索引的工具原样透传**：filter 只裁剪自己索引过的那些，广播列表里其余的
@@ -75,7 +75,7 @@ new(Tools, Opts) when is_list(Tools), is_map(Opts) ->
 
 %% @doc 缺省的系统提示补充文本（对照 Spring 的 systemMessageSuffix）
 %%
-%% **不自动注入**：kernel 的系统提示在最内层注入，filter 再加一条 system 消息
+%% **不自动注入**：ChatClient 的系统提示在最内层注入，filter 再加一条 system 消息
 %% 就成了双 system 消息——各 provider 对此处理不一（Anthropic 的 system 是独立
 %% 字段），不值得为省一次拼接冒这个险。需要时自行拼进 agent 的 system_prompt：
 %% ```

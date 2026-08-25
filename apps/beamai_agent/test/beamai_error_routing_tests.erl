@@ -14,11 +14,11 @@ mock_llm(Fun) ->
     meck:new(beamai_chat_model, [passthrough]),
     meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) -> Fun() end).
 
-kernel_with(Tools) ->
-    K0 = beamai_kernel:add_chat_model(beamai_kernel:new(),
+chat_client_with(Tools) ->
+    K0 = beamai_chat_client:add_chat_model(beamai_chat_client:new(),
                                    beamai_chat_model:create(mock, #{})),
     lists:foldl(fun({Name, H}, K) ->
-        beamai_kernel:add_tool(K, #{name => Name, parameters => #{}, handler => H})
+        beamai_chat_client:add_tool(K, #{name => Name, parameters => #{}, handler => H})
     end, K0, Tools).
 
 %%====================================================================
@@ -46,7 +46,7 @@ env_pause_and_resume_retry_test() ->
     end,
     try
         {ok, Agent} = beamai_agent:new(#{
-            kernel => kernel_with([{<<"env_tool">>, EnvTool}]),
+            chat_client => chat_client_with([{<<"env_tool">>, EnvTool}]),
             on_env_error => pause
         }),
         %% 第一次执行环境失败 → 暂停
@@ -80,7 +80,7 @@ env_error_proceed_default_test() ->
     try
         %% 无 HITL、无显式 on_env_error → 缺省 proceed
         {ok, Agent} = beamai_agent:new(#{
-            kernel => kernel_with([{<<"env_tool">>, EnvTool}])
+            chat_client => chat_client_with([{<<"env_tool">>, EnvTool}])
         }),
         {ok, Result, A1} = beamai_agent:run(Agent, <<"go">>),
         ?assertEqual(<<"handled">>, maps:get(content, Result)),
@@ -106,7 +106,7 @@ semantic_error_goes_to_model_test() ->
     SemTool = fun(_, _) -> {error, not_found} end,   %% semantic
     try
         {ok, Agent} = beamai_agent:new(#{
-            kernel => kernel_with([{<<"sem_tool">>, SemTool}]),
+            chat_client => chat_client_with([{<<"sem_tool">>, SemTool}]),
             on_env_error => pause    %% 即便 pause 策略，语义类不触发暂停
         }),
         {ok, Result, A1} = beamai_agent:run(Agent, <<"go">>),

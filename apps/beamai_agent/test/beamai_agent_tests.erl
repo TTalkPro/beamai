@@ -9,11 +9,11 @@
 %% 测试: new/1
 %%====================================================================
 
-new_with_kernel_test() ->
-    Kernel = beamai_kernel:new(),
+new_with_chat_client_test() ->
+    ChatClient = beamai_chat_client:new(),
     LlmConfig = beamai_chat_model:create(mock, #{}),
-    K1 = beamai_kernel:add_chat_model(Kernel, LlmConfig),
-    {ok, Agent} = beamai_agent:new(#{kernel => K1}),
+    K1 = beamai_chat_client:add_chat_model(ChatClient, LlmConfig),
+    {ok, Agent} = beamai_agent:new(#{chat_client => K1}),
     ?assert(is_binary(beamai_agent:id(Agent))),
     ?assertEqual(<<"agent">>, beamai_agent:name(Agent)),
     ?assertEqual(0, beamai_agent:turn_count(Agent)),
@@ -141,17 +141,17 @@ run_with_tool_calls_test() ->
         end
     end),
     %% 注册一个测试 tool
-    Kernel0 = beamai_kernel:new(),
+    ChatClient0 = beamai_chat_client:new(),
     LlmConfig = beamai_chat_model:create(mock, #{}),
-    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
-    K2 = beamai_kernel:add_tools(K1, [
+    K1 = beamai_chat_client:add_chat_model(ChatClient0, LlmConfig),
+    K2 = beamai_chat_client:add_tools(K1, [
         #{name => <<"test_tool">>,
           description => <<"A test tool">>,
           parameters => #{},
           handler => fun(_Args, _Ctx) -> {ok, <<"tool_output">>} end}
     ]),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K2}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K2}),
         {ok, Result, Agent1} = beamai_agent:run(Agent, <<"Use the tool">>),
         ?assertEqual(<<"Tool result processed.">>, maps:get(content, Result)),
         ?assertEqual(1, length(maps:get(tool_calls_made, Result, []))),
@@ -176,9 +176,9 @@ parallel_tool_calls_test() ->
         end
     end),
     Sleep = fun(_Args, _Ctx) -> timer:sleep(150), {ok, <<"ok">>} end,
-    K = slow_tools_kernel(Sleep),
+    K = slow_tools_chat_client(Sleep),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K}),  %% parallel_tools 默认 true
+        {ok, Agent} = beamai_agent:new(#{chat_client => K}),  %% parallel_tools 默认 true
         {Micros, {ok, Result, _}} =
             timer:tc(fun() -> beamai_agent:run(Agent, <<"go">>) end),
         Made = maps:get(tool_calls_made, Result, []),
@@ -205,9 +205,9 @@ sequential_tool_calls_test() ->
         end
     end),
     Fast = fun(_Args, _Ctx) -> {ok, <<"ok">>} end,
-    K = slow_tools_kernel(Fast),
+    K = slow_tools_chat_client(Fast),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K, parallel_tools => false}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, parallel_tools => false}),
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
         Names = [maps:get(name, R) || R <- maps:get(tool_calls_made, Result, [])],
         ?assertEqual([<<"t1">>, <<"t2">>], Names)
@@ -220,12 +220,12 @@ tc(Id, Name) ->
     #{id => Id, type => <<"function">>,
       function => #{name => Name, arguments => <<"{}">>}}.
 
-%% @private 构造一个注册了多个同 handler 工具的 kernel
-slow_tools_kernel(Handler) ->
-    Kernel0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_chat_model(Kernel0, beamai_chat_model:create(mock, #{})),
+%% @private 构造一个注册了多个同 handler 工具的 ChatClient
+slow_tools_chat_client(Handler) ->
+    ChatClient0 = beamai_chat_client:new(),
+    K1 = beamai_chat_client:add_chat_model(ChatClient0, beamai_chat_model:create(mock, #{})),
     Names = [<<"slow_a">>, <<"slow_b">>, <<"slow_c">>, <<"t1">>, <<"t2">>],
-    beamai_kernel:add_tools(K1,
+    beamai_chat_client:add_tools(K1,
         [#{name => N, description => <<"t">>, parameters => #{}, handler => Handler}
          || N <- Names]).
 
@@ -246,17 +246,17 @@ max_tool_iterations_test() ->
             finish_reason => <<"tool_calls">>
         }}
     end),
-    Kernel0 = beamai_kernel:new(),
+    ChatClient0 = beamai_chat_client:new(),
     LlmConfig = beamai_chat_model:create(mock, #{}),
-    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
-    K2 = beamai_kernel:add_tools(K1, [
+    K1 = beamai_chat_client:add_chat_model(ChatClient0, LlmConfig),
+    K2 = beamai_chat_client:add_tools(K1, [
         #{name => <<"loop_tool">>,
           description => <<"loops">>,
           parameters => #{},
           handler => fun(_Args, _Ctx) -> {ok, <<"again">>} end}
     ]),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K2, max_tool_iterations => 3}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K2, max_tool_iterations => 3}),
         {error, {max_tool_iterations, _}} = beamai_agent:run(Agent, <<"Loop">>)
     after
         meck:unload(beamai_chat_model)
@@ -353,9 +353,9 @@ callback_on_llm_result_test() ->
             Self ! {llm_result, beamai_llm_response:has_tool_calls(Resp),
                     maps:get(total_tokens, beamai_llm_response:usage(Resp), 0)}
         end},
-    K = slow_tools_kernel(fun(_A, _C) -> {ok, <<"ok">>} end),
+    K = slow_tools_chat_client(fun(_A, _C) -> {ok, <<"ok">>} end),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K, callbacks => Callbacks}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
         {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
         %% 两次 LLM 调用各触发一次（含中间工具轮），usage 各自可见
         ?assertEqual({true, 11}, recv_llm_result()),   %% 第一次：含 tool_calls
@@ -396,17 +396,17 @@ callback_on_tool_call_test() ->
     Callbacks = #{
         on_tool_call => fun(Name, _Args) -> Self ! {tool_call, Name} end
     },
-    Kernel0 = beamai_kernel:new(),
+    ChatClient0 = beamai_chat_client:new(),
     LlmConfig = beamai_chat_model:create(mock, #{}),
-    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
-    K2 = beamai_kernel:add_tools(K1, [
+    K1 = beamai_chat_client:add_chat_model(ChatClient0, LlmConfig),
+    K2 = beamai_chat_client:add_tools(K1, [
         #{name => <<"my_tool">>,
           description => <<"test">>,
           parameters => #{},
           handler => fun(_Args, _Ctx) -> {ok, <<"result">>} end}
     ]),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K2, callbacks => Callbacks}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K2, callbacks => Callbacks}),
         {ok, _, _} = beamai_agent:run(Agent, <<"Use tool">>),
         receive {tool_call, <<"my_tool">>} -> ok
         after 1000 -> ?assert(false)
@@ -529,31 +529,31 @@ state_create_memory_disabled_test() ->
     ?assertEqual(undefined, beamai_agent_state:memory(State)),
     ?assertEqual([], beamai_agent:messages(State)).
 
-state_build_kernel_with_existing_test() ->
-    K = beamai_kernel:new(),
-    ?assertEqual(K, beamai_agent_state:build_kernel(#{kernel => K})).
+state_build_chat_client_with_existing_test() ->
+    K = beamai_chat_client:new(),
+    ?assertEqual(K, beamai_agent_state:build_chat_client(#{chat_client => K})).
 
-%% agent 不再向 kernel 注入 callback/memory filter：注册回调后 kernel 仍无 filter
+%% agent 不再向 ChatClient 注入 callback/memory filter：注册回调后 ChatClient 仍无 filter
 state_no_filter_injection_test() ->
     {ok, State} = beamai_agent:new(#{
         llm => {mock, #{}},
         callbacks => #{on_llm_call => fun(_M, _Meta) -> ok end,
                        on_tool_call => fun(_N, _A) -> ok end}
     }),
-    #{filters := Filters} = beamai_agent:kernel(State),
+    #{filters := Filters} = beamai_agent:chat_client(State),
     ?assertEqual([], Filters).
 
 %% plugins 只提供工具：模块即使导出 filters/0 也被忽略（特性已删除，
-%% filter 一律在构建 kernel 时经 filters 列表一次性给出）
+%% filter 一律在构建 ChatClient 时经 filters 列表一次性给出）
 state_plugin_filters_ignored_test() ->
     {ok, State} = beamai_agent:new(#{
         llm => {mock, #{}},
         plugins => [beamai_agent_test_plugin]
     }),
-    #{filters := Filters} = beamai_agent:kernel(State),
+    #{filters := Filters} = beamai_agent:chat_client(State),
     ?assertEqual([], Filters),
     %% 工具正常注册
-    ?assertMatch({ok, _}, beamai_kernel:get_tool(beamai_agent:kernel(State), <<"plugin_tool">>)).
+    ?assertMatch({ok, _}, beamai_chat_client:get_tool(beamai_agent:chat_client(State), <<"plugin_tool">>)).
 
 %%====================================================================
 %% extract_content 健壮性（#4）
@@ -620,9 +620,9 @@ stream_with_tool_call_test() ->
         end),
     Self = self(),
     Callbacks = #{on_token => fun(Tok, _M) -> Self ! {token, Tok} end},
-    K = slow_tools_kernel(fun(_A, _C) -> {ok, <<"ok">>} end),
+    K = slow_tools_chat_client(fun(_A, _C) -> {ok, <<"ok">>} end),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K, callbacks => Callbacks}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
         {ok, Result, _} = beamai_agent:stream(Agent, <<"go">>),
         ?assertEqual(<<"final">>, maps:get(content, Result)),
         ?assertEqual(1, length(maps:get(tool_calls_made, Result, []))),
@@ -657,9 +657,9 @@ on_tool_result_callback_test() ->
     end),
     Self = self(),
     Callbacks = #{on_tool_result => fun(Name, Result) -> Self ! {tool_result, Name, Result} end},
-    K = slow_tools_kernel(fun(_A, _C) -> {ok, <<"the-output">>} end),
+    K = slow_tools_chat_client(fun(_A, _C) -> {ok, <<"the-output">>} end),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K, callbacks => Callbacks}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
         {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
         receive {tool_result, <<"t1">>, <<"the-output">>} -> ok
         after 1000 -> ?assert(false)

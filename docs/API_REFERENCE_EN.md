@@ -21,48 +21,48 @@ The reference describes every public module, its exports, and its key types. Sig
 
 ### Top-level DSL: beamai
 
-`beamai` is the facade module for all external calls. It wraps `beamai_kernel`, `beamai_tool`, `beamai_filter`, `beamai_context`, and the prompt renderer behind a small set of constructors and convenience calls.
+`beamai` is the facade module for all external calls. It wraps `beamai_chat_client`, `beamai_tool`, `beamai_filter`, `beamai_context`, and the prompt renderer behind a small set of constructors and convenience calls.
 
 ```erlang
--spec kernel() -> beamai_kernel:kernel().
--spec kernel(beamai_kernel:kernel_settings()) -> beamai_kernel:kernel().
--spec kernel(beamai_kernel:kernel_settings(), [beamai_filter:filter()]) ->
-    beamai_kernel:kernel().
+-spec chat_client() -> beamai_chat_client:chat_client().
+-spec ChatClient(beamai_chat_client:chat_client_settings()) -> beamai_chat_client:chat_client().
+-spec ChatClient(beamai_chat_client:chat_client_settings(), [beamai_filter:filter()]) ->
+    beamai_chat_client:chat_client().
 
 -spec tool(binary(), beamai_tool:handler()) -> beamai_tool:tool_spec().
 -spec tool(binary(), beamai_tool:handler(), map()) -> beamai_tool:tool_spec().
 
--spec add_tool(beamai_kernel:kernel(), beamai_tool:tool_spec()) ->
-    beamai_kernel:kernel().
--spec add_tools(beamai_kernel:kernel(), [beamai_tool:tool_spec()]) ->
-    beamai_kernel:kernel().
--spec add_tool_module(beamai_kernel:kernel(), module()) ->
-    beamai_kernel:kernel().
+-spec add_tool(beamai_chat_client:chat_client(), beamai_tool:tool_spec()) ->
+    beamai_chat_client:chat_client().
+-spec add_tools(beamai_chat_client:chat_client(), [beamai_tool:tool_spec()]) ->
+    beamai_chat_client:chat_client().
+-spec add_tool_module(beamai_chat_client:chat_client(), module()) ->
+    beamai_chat_client:chat_client().
 
--spec add_chat_model(beamai_kernel:kernel(), atom(), map()) ->
-    beamai_kernel:kernel().
--spec add_chat_model(beamai_kernel:kernel(), beamai_chat_model:config()) ->
-    beamai_kernel:kernel().
+-spec add_chat_model(beamai_chat_client:chat_client(), atom(), map()) ->
+    beamai_chat_client:chat_client().
+-spec add_chat_model(beamai_chat_client:chat_client(), beamai_chat_model:config()) ->
+    beamai_chat_client:chat_client().
 
 -spec filter(binary(), beamai_filter:hooks()) -> beamai_filter:filter().
 -spec filter(binary(), beamai_filter:hooks(), beamai_filter:fctx()) ->
     beamai_filter:filter().
 
--spec invoke_tool(beamai_kernel:kernel(), binary(),
+-spec invoke_tool(beamai_chat_client:chat_client(), binary(),
                   beamai_tool:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
 
--spec chat(beamai_kernel:kernel(), [map()]) ->
+-spec chat(beamai_chat_client:chat_client(), [map()]) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
--spec chat(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
+-spec chat(beamai_chat_client:chat_client(), [map()], beamai_chat_client:chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 
 -spec render(binary(), map()) -> {ok, binary()} | {error, term()}.
 
--spec tools(beamai_kernel:kernel()) -> [map()].
--spec tools(beamai_kernel:kernel(), openai | anthropic | atom()) -> [map()].
+-spec tools(beamai_chat_client:chat_client()) -> [map()].
+-spec tools(beamai_chat_client:chat_client(), openai | anthropic | atom()) -> [map()].
 
--spec tools_by_tag(beamai_kernel:kernel(), binary()) ->
+-spec tools_by_tag(beamai_chat_client:chat_client(), binary()) ->
     [beamai_tool:tool_spec()].
 
 -spec context() -> beamai_context:t().
@@ -71,7 +71,7 @@ The reference describes every public module, its exports, and its key types. Sig
 
 | Function | Purpose |
 |----------|---------|
-| `kernel/0,1,2` | Build a kernel with optional settings and filter list |
+| `chat_client/0,1,2` | Build a ChatClient with optional settings and filter list |
 | `tool/2,3` | Construct a tool spec from name + handler, with optional options |
 | `add_tool/2`, `add_tools/2` | Register one tool or a batch |
 | `add_tool_module/2` | Load tools from a module implementing `beamai_tool_behaviour` |
@@ -84,7 +84,7 @@ The reference describes every public module, its exports, and its key types. Sig
 | `tools_by_tag/2` | Filter registered tools by tag |
 | `context/0,1` | Build an empty execution context, or one seeded with env vars |
 
-**Example: Kernel + Tool + Filter in one block**
+**Example: ChatClient + Tool + Filter in one block**
 
 ```erlang
 AddTool = beamai:tool(<<"add">>,
@@ -102,7 +102,7 @@ Logger = beamai:filter(<<"logger">>, #{
     end
 }).
 
-K0 = beamai:kernel(#{}, [Logger]),
+K0 = beamai:chat_client(#{}, [Logger]),
 K1 = beamai:add_tool(K0, AddTool),
 K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.7">>,
@@ -115,59 +115,59 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 
 ---
 
-### Kernel: beamai_kernel
+### ChatClient: beamai_chat_client
 
-`beamai_kernel` is the core container: it owns the tool registry, the LLM service config, and the filter list. Filters are passed **once** at construction time. The order in the list decides the onion layering (earlier equals more outer).
+`beamai_chat_client` is the core container: it owns the tool registry, the LLM service config, and the filter list. Filters are passed **once** at construction time. The order in the list decides the onion layering (earlier equals more outer).
 
 ```erlang
--spec new() -> kernel().
--spec new(kernel_settings()) -> kernel().
--spec new(kernel_settings(), [beamai_filter:filter()]) -> kernel().
+-spec new() -> chat_client().
+-spec new(chat_client_settings()) -> chat_client().
+-spec new(chat_client_settings(), [beamai_filter:filter()]) -> chat_client().
 
--spec add_tool(kernel(), beamai_tool:tool_spec()) -> kernel().
--spec add_tools(kernel(), [beamai_tool:tool_spec()]) -> kernel().
--spec add_tool_module(kernel(), module()) -> kernel().
--spec add_chat_model(kernel(), beamai_chat_model:config()) -> kernel().
+-spec add_tool(chat_client(), beamai_tool:tool_spec()) -> chat_client().
+-spec add_tools(chat_client(), [beamai_tool:tool_spec()]) -> chat_client().
+-spec add_tool_module(chat_client(), module()) -> chat_client().
+-spec add_chat_model(chat_client(), beamai_chat_model:config()) -> chat_client().
 
--spec invoke_tool(kernel(), binary(),
+-spec invoke_tool(chat_client(), binary(),
                    beamai_tool:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:writes()} | {error, term()}.
 
--spec invoke_chat(kernel(), [map()], chat_opts()) ->
+-spec invoke_chat(chat_client(), [map()], chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 
--spec invoke_chat_stream(kernel(), [map()], chat_opts(),
+-spec invoke_chat_stream(chat_client(), [map()], chat_opts(),
                          fun((binary(), map()) -> ok)) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 
--spec get_tool(kernel(), binary()) ->
+-spec get_tool(chat_client(), binary()) ->
     {ok, beamai_tool:tool_spec()} | error.
--spec list_tools(kernel()) -> [beamai_tool:tool_spec()].
--spec get_tools_by_tag(kernel(), binary()) -> [beamai_tool:tool_spec()].
--spec get_tool_specs(kernel()) -> [map()].
--spec get_tool_schemas(kernel()) -> [map()].
--spec get_tool_schemas(kernel(), openai | anthropic | atom()) -> [map()].
+-spec list_tools(chat_client()) -> [beamai_tool:tool_spec()].
+-spec get_tools_by_tag(chat_client(), binary()) -> [beamai_tool:tool_spec()].
+-spec get_tool_specs(chat_client()) -> [map()].
+-spec get_tool_schemas(chat_client()) -> [map()].
+-spec get_tool_schemas(chat_client(), openai | anthropic | atom()) -> [map()].
 
--spec chat_model(kernel()) ->
+-spec chat_model(chat_client()) ->
     {ok, beamai_chat_model:config()} | error.
 
--spec state_slots(kernel()) -> beamai_context:state_slots().
--spec serial_tool(kernel(), binary()) -> boolean().
--spec return_direct_tool(kernel(), binary()) -> boolean().
+-spec state_slots(chat_client()) -> beamai_context:state_slots().
+-spec serial_tool(chat_client(), binary()) -> boolean().
+-spec return_direct_tool(chat_client(), binary()) -> boolean().
 ```
 
 #### Types
 
 ```erlang
--type kernel() :: #{
-    '__kernel__' := true,
+-type chat_client() :: #{
+    '__chat_client__' := true,
     tools := #{binary() => beamai_tool:tool_spec()},
     llm_config := beamai_chat_model:config() | undefined,
     filters := [beamai_filter:filter()],
-    settings := kernel_settings()
+    settings := chat_client_settings()
 }.
 
--type kernel_settings() :: #{
+-type chat_client_settings() :: #{
     default_timeout => pos_integer(),
     atom() => term()
 }.
@@ -183,7 +183,7 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 
 | Function | Purpose |
 |----------|---------|
-| `new/0,1,2` | Construct a kernel (default settings / custom settings / settings + filters) |
+| `new/0,1,2` | Construct a ChatClient (default settings / custom settings / settings + filters) |
 | `add_tool/2`, `add_tools/2` | Register one or many tools |
 | `add_tool_module/2` | Register all tools exposed by a tool module |
 | `add_chat_model/2` | Attach an LLM service config |
@@ -193,16 +193,16 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 | `get_tool/2`, `list_tools/1`, `get_tools_by_tag/2` | Look up tools |
 | `get_tool_specs/1`, `get_tool_schemas/1,2` | Export tool definitions for an LLM call |
 | `chat_model/1` | Inspect the LLM service config |
-| `state_slots/1` | Kernel-level declarations of tool-call state slots |
+| `state_slots/1` | ChatClient-level declarations of tool-call state slots |
 | `serial_tool/2`, `return_direct_tool/2` | Query tool flags set during registration |
 
 ---
 
 ### Context: beamai_context
 
-`beamai_context` is the shared execution context threaded through the kernel. It has three partitions:
+`beamai_context` is the shared execution context threaded through the ChatClient. It has three partitions:
 
-- **`env`**: the environment and user-supplied variables (kernel reference, conversation id, vars).
+- **`env`**: the environment and user-supplied variables (ChatClient reference, conversation id, vars).
 - **`state`**: the structured state partition that tools write to via `writes()`.
 - **`'__filter_states__'`**: per-filter private state, isolated by filter name.
 
@@ -219,8 +219,8 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 -spec with_conversation_id(t(), binary()) -> t().
 -spec conversation_id(t()) -> binary() | undefined.
 
--spec with_kernel(t(), term()) -> t().
--spec get_kernel(t()) -> term() | undefined.
+-spec with_chat_client(t(), term()) -> t().
+-spec get_chat_client(t()) -> term() | undefined.
 
 -spec state_get(t(), atom() | binary()) -> term() | undefined.
 -spec state_get(t(), atom() | binary(), term()) -> term().
@@ -251,7 +251,7 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 }.
 
 -type env() :: #{
-    kernel := term() | undefined,
+    chat_client := term() | undefined,
     conversation_id := binary() | undefined,
     vars := #{binary() => term()}
 }.
@@ -273,7 +273,7 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 | `get/2,3`, `variables/1` | Read env vars (with optional default) |
 | `set/3`, `set_many/2`, `update/3` | Write env vars |
 | `with_conversation_id/2`, `conversation_id/1` | Bind / read the conversation identifier |
-| `with_kernel/2`, `get_kernel/1` | Bind / read the kernel reference |
+| `with_chat_client/2`, `get_chat_client/1` | Bind / read the ChatClient reference |
 | `state_get/2,3`, `get_state/1`, `with_state/2` | Read or replace the state partition |
 | `apply_writes/3` | Fold a batch of tool writes into the state partition in `tool_call` order, using slot reduce funs |
 | `filter_state/3`, `set_filter_state/3` | Read / write a single filter's private state |
@@ -392,12 +392,11 @@ A `filter` bundles up to six hooks plus a private-context seed.
 #### Types
 
 ```erlang
--type hook_type() :: around_chat | around_llm | around_step | around_tool |
-                     around_turn | token_transform.
+-type hook_type() :: around_chat | around_step | around_tool | around_turn |
+                     token_transform.
 
 -type hooks() :: #{
     around_chat     => around_fun(),
-    around_llm      => around_fun(),
     around_step     => around_fun(),
     around_tool     => around_fun(),
     around_turn     => around_fun(),
@@ -432,11 +431,10 @@ The six hooks (the first five are listed outermost → innermost):
 | `around_turn` | Turn (whole tool loop, Agent layer) | as below; `Resp` is the tool-loop result tuple |
 | `around_step` | One ReAct iteration (including that round's tool execution) | as below; `Resp` is a step-response map (four `status` values) |
 | `around_chat` | Exactly once per loop iteration (that round's LLM call) | `fun(Req, FCtx, Next) -> Resp \| {Resp, NewFCtx}` |
-| `around_llm` | Once per real LLM request (retries re-enter here) | same |
 | `around_tool` | Once per tool call | same |
 | `token_transform` | Streaming (per-token intervention) | `#{init, step, flush}` |
 
-The tool loop itself is the turn chain's **innermost filter** (`beamai_agent_tool_loop:loop_filter/1`); its terminal is the step chain, so calling `next` once runs one iteration, and the agent's `loop_filter` option replaces the loop strategy wholesale. chat and llm are likewise **nested**: the chat chain's terminal is the llm chain, whose terminal is the actual LLM call. Retries therefore re-enter only the llm layer and never re-run the chat-layer filters that must fire once per round (memory, accounting, audit). The built-in retry is `beamai_llm_filters:retry_filter/1`, injected by the kernel at the innermost position of the llm chain and controlled by the `llm_retry` setting.
+The tool loop itself is the turn chain's **innermost filter** (`beamai_agent_tool_loop:loop_filter/1`); its terminal is the step chain, so calling `next` once runs one iteration, and the agent's `loop_filter` option replaces the loop strategy wholesale. Provider retry lives *inside* the chat chain's terminal (`beamai_chat_model:chat/3`), below the whole filter stack: filters see one logical call and a retry never re-runs the chat-layer filters that must fire once per round (memory, accounting, audit). Use the `on_retry` callback in chat opts to observe individual attempts.
 
 `token_transform` is the streaming-only hook: `step` is a 1-to-N function over one incoming `token_data()`; `flush` runs at end of normal stream and emits any buffered residue. Error paths do not flush. See [FILTER_EN.md](FILTER_EN.md#token_transform-token-stream-transform) for the full contract.
 
@@ -465,7 +463,7 @@ Composes and runs the onion chain for one phase.
 
 #### Built-in Filter Library: beamai_filters
 
-`beamai_filters` is the library of ready-made filter constructors. Put them in `new/2`'s filters list at kernel build time.
+`beamai_filters` is the library of ready-made filter constructors. Put them in `new/2`'s filters list at ChatClient build time.
 
 ```erlang
 -spec logging_filter() -> beamai_filter:filter().
@@ -491,7 +489,6 @@ Composes and runs the onion chain for one phase.
 | Constructor | Chain | Purpose |
 |-------------|-------|---------|
 | `logging_filter/0` | chat / tool / turn | One pair of debug logs per chain; put first to see all layers |
-| `beamai_llm_filters:retry_filter/0,1` | llm | Backoff retry on retryable errors; kernel-injected innermost, tuned/disabled via the `llm_retry` setting |
 | `timeout_filter/1` | tool | Wall-clock timeout (ms) for a single tool execution |
 | `approval_filter/1` | tool | Rejects sensitive tools when the predicate returns `false` (non-interactive) |
 | `safeguard_filter/1,2` | chat | Substring pre-filter on a sensitive word list; short-circuits the LLM call |
@@ -512,7 +509,7 @@ Schema = #{
     required => [<<"name">>, <<"age">>]
 },
 
-K = beamai:kernel(#{}, [
+K = beamai:chat_client(#{}, [
     beamai_filters:schema_validation_turn_filter(Schema, 2)
 ]).
 %% The turn chain re-enters the tool loop when JSON validation fails,
@@ -523,13 +520,13 @@ K = beamai:kernel(#{}, [
 
 ### Memory Filter: beamai_memory_filter
 
-The Memory Filter is a single `around_chat` filter that loads and stores per-conversation history. Place it **first** in the kernel's filter list so it runs outermost (history expansion before any other rewrite, persistence after).
+The Memory Filter is a single `around_chat` filter that loads and stores per-conversation history. Place it **first** in the ChatClient's filter list so it runs outermost (history expansion before any other rewrite, persistence after).
 
 ```erlang
 -spec memory_filter(beamai_chat_memory:handle()) -> beamai_filter:filter().
 ```
 
-It binds to a `beamai_chat_memory` backend (ETS, DETS, or a custom behaviour implementation) and manages history entirely through `conversation_id`. Without this filter the kernel is stateless and single-shot; with it, multi-turn conversation works across invokes. See [MEMORY_EN.md](MEMORY_EN.md) for the full design.
+It binds to a `beamai_chat_memory` backend (ETS, DETS, or a custom behaviour implementation) and manages history entirely through `conversation_id`. Without this filter the ChatClient is stateless and single-shot; with it, multi-turn conversation works across invokes. See [MEMORY_EN.md](MEMORY_EN.md) for the full design.
 
 ---
 
@@ -635,8 +632,8 @@ Indexes a tool list for query-time retrieval. The default backend is keyword; ve
     accumulate   => true,
     tool_name    => <<"tool_search">>
 }),
-K0 = beamai_kernel:new(#{}, [SFilter]),
-K1 = beamai_kernel:add_tools(K0, [STool | Tools]).
+K0 = beamai_chat_client:new(#{}, [SFilter]),
+K1 = beamai_chat_client:add_tools(K0, [STool | Tools]).
 ```
 
 ---
@@ -1448,7 +1445,7 @@ A `mock` provider also exists (`beamai_llm_provider_mock`) for tests. It impleme
 
 ## beamai_agent - SimpleAgent (ReAct)
 
-The `beamai_agent` app provides a stateful multi-turn Agent built on top of `beamai_kernel`. It implements a ReAct-style loop: each user turn calls the LLM, executes any returned tool calls, and feeds the results back until the model emits a final answer. State lives outside the kernel: conversation history is owned by a Memory Provider, pause snapshots by a Pause Store, branch lineage by a Branch Store. The Agent handle is an opaque `agent_state()` value returned by `new/1`.
+The `beamai_agent` app provides a stateful multi-turn Agent built on top of `beamai_chat_client`. It implements a ReAct-style loop: each user turn calls the LLM, executes any returned tool calls, and feeds the results back until the model emits a final answer. State lives outside the ChatClient: conversation history is owned by a Memory Provider, pause snapshots by a Pause Store, branch lineage by a Branch Store. The Agent handle is an opaque `agent_state()` value returned by `new/1`.
 
 ### Agent: beamai_agent
 
@@ -1497,8 +1494,8 @@ The primary public API. Every Agent interaction goes through `run/2,3`, `stream/
     binary() | undefined.
 -spec turn_count(beamai_agent_state:agent_state()) -> non_neg_integer().
 
--spec kernel(beamai_agent_state:agent_state()) ->
-    beamai_kernel:kernel().
+-spec ChatClient(beamai_agent_state:agent_state()) ->
+    beamai_chat_client:chat_client().
 -spec id(beamai_agent_state:agent_state()) -> binary().
 -spec name(beamai_agent_state:agent_state()) -> binary().
 
@@ -1590,7 +1587,7 @@ Constructs and inspects the opaque `agent_state()` handle returned by `beamai_ag
 ```erlang
 -spec create(map()) ->
     {ok, agent_state()} | {error, term()}.
--spec build_kernel(map()) -> map().
+-spec build_chat_client(map()) -> map().
 -spec memory(agent_state()) ->
     beamai_memory_provider:provider() | undefined.
 -spec conversation_id(agent_state()) -> binary().
@@ -1601,7 +1598,7 @@ Constructs and inspects the opaque `agent_state()` handle returned by `beamai_ag
     '__agent__' := true,
     id := binary(),
     name := binary(),
-    kernel := beamai_kernel:kernel(),
+    chat_client := beamai_chat_client:chat_client(),
     memory := beamai_memory_provider:provider() | undefined,
     conversation_id := binary(),
     system_prompt := binary() | undefined,
@@ -1655,7 +1652,7 @@ The internal ReAct loop. Exported for advanced customisation (custom loop runner
 
 ```erlang
 -type loop_opts() :: #{
-    kernel := beamai_kernel:kernel(),
+    chat_client := beamai_chat_client:chat_client(),
     messages := [map()],
     new_messages := [map()],
     load_history := boolean(),
@@ -1978,25 +1975,25 @@ Helpers shared across the Agent layer. These are exported for advanced use (cust
 
 ```erlang
 -spec extract_content(map()) -> binary().
--spec build_chat_opts(beamai_kernel:kernel(), map()) -> map().
+-spec build_chat_opts(beamai_chat_client:chat_client(), map()) -> map().
 
--spec execute_tools(beamai_kernel:kernel(), [map()]) ->
+-spec execute_tools(beamai_chat_client:chat_client(), [map()]) ->
     {[map()], [map()], beamai_context:t()}.
 
--spec execute_tools(beamai_kernel:kernel(), [map()],
+-spec execute_tools(beamai_chat_client:chat_client(), [map()],
                     beamai_context:t()) ->
     {[map()], [map()], beamai_context:t()}.
 
--spec execute_tools(beamai_kernel:kernel(), [map()],
+-spec execute_tools(beamai_chat_client:chat_client(), [map()],
                     beamai_context:t(), boolean()) ->
     {[map()], [map()], beamai_context:t()}.
 
--spec execute_tools(beamai_kernel:kernel(), [map()],
+-spec execute_tools(beamai_chat_client:chat_client(), [map()],
                     beamai_context:t(), boolean(),
                     fun((map()) -> ok)) ->
     {[map()], [map()], beamai_context:t()}.
 
--spec run_one_tool(beamai_kernel:kernel(), map(),
+-spec run_one_tool(beamai_chat_client:chat_client(), map(),
                    beamai_context:t()) ->
     {map(), map(), beamai_context:writes()}.
 
@@ -2092,7 +2089,7 @@ The raw per-conversation message store, dispatched by `beamai_memory_provider`. 
 
 ### beamai_tool_behaviour
 
-Modules that ship tool collections implement this. The Kernel calls `tool_info/0` and `filters/0` if defined; both are optional.
+Modules that ship tool collections implement this. The ChatClient calls `tool_info/0` and `filters/0` if defined; both are optional.
 
 ```erlang
 -callback tool_info() -> #{

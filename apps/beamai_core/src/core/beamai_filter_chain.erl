@@ -36,8 +36,8 @@
 
 %% @doc 运行某条链的 filter 洋葱
 %%
-%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，llm 链传
-%% around_llm，tool 链传 around_tool。只参与该链（含对应 around）的 filter
+%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，step 链传
+%% around_step，tool 链传 around_tool。只参与该链（含对应 around）的 filter
 %% 进入洋葱，其余跳过。
 %% 注册顺序即层序：列表靠前 = 外层（无排序）。
 %% Terminal 产出最内层响应，出错时 throw。
@@ -56,7 +56,7 @@ run(Filters, Phase, Terminal, Request) ->
 %% @doc 把 filter 列表与 terminal 合成为单个洋葱函数
 %%
 %% 自行按 Phase 过滤（不含对应 around 的 filter 跳过），故可直接传整份 filters
-%% 列表。合成结果**不捕获** throw：嵌套使用时（chat 链的 terminal 就是 llm 链）
+%% 列表。合成结果**不捕获** throw：嵌套使用时（turn 链的 terminal 就是 step 链）
 %% 由最外层的 run/4 统一捕获。
 -spec compose([beamai_filter:filter()], phase(), terminal()) ->
     fun((request()) -> response()).

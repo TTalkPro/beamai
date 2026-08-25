@@ -18,11 +18,11 @@ mock_llm(Fun) ->
     meck:new(beamai_chat_model, [passthrough]),
     meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) -> Fun() end).
 
-kernel_with(Tools) ->
-    K0 = beamai_kernel:add_chat_model(beamai_kernel:new(),
+chat_client_with(Tools) ->
+    K0 = beamai_chat_client:add_chat_model(beamai_chat_client:new(),
                                    beamai_chat_model:create(mock, #{})),
     lists:foldl(fun({Name, H}, K) ->
-        beamai_kernel:add_tool(K, #{name => Name, parameters => #{}, handler => H})
+        beamai_chat_client:add_tool(K, #{name => Name, parameters => #{}, handler => H})
     end, K0, Tools).
 
 %%====================================================================
@@ -151,7 +151,7 @@ resume_approved_with_args_test() ->
     end,
     try
         {ok, Agent} = beamai_agent:new(#{
-            kernel => kernel_with([{<<"echo_id">>, EchoId}]),
+            chat_client => chat_client_with([{<<"echo_id">>, EchoId}]),
             memory => false,
             callbacks => #{on_tool_call => Gate}}),
         {interrupt, _, A1} = beamai_agent:run(Agent, <<"go">>),

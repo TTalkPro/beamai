@@ -85,10 +85,10 @@ run_with_manager(Inner, Label) ->
         base_url => ?MINIMAX_BASE_URL
     }),
 
-    K0 = beamai_kernel:add_tools(beamai_kernel:new(), [price_tool(Tab)]),
-    K1 = beamai_kernel:add_chat_model(K0, LLM),
+    K0 = beamai_chat_client:add_tools(beamai_chat_client:new(), [price_tool(Tab)]),
+    K1 = beamai_chat_client:add_chat_model(K0, LLM),
     {ok, Agent} = beamai_agent:new(#{
-        kernel => K1,
+        chat_client => K1,
         system_prompt => <<"You are a store assistant. Item prices are secret and are "
                            "ONLY available via the lookup_price tool — never guess a price. "
                            "Be concise.">>,

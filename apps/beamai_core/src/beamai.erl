@@ -2,7 +2,7 @@
 %%% @doc Facade 入口：所有外部调用的统一入口
 %%%
 %%% 提供简洁的顶层 API，涵盖：
-%%% - 构建 Kernel（工具 + LLM 服务）
+%%% - 构建 ChatClient（工具 + LLM 服务）
 %%% - 单次工具调用（invoke_tool）与单次 Chat Completion（chat）
 %%%
 %%% 注：ReAct 工具调用循环（LLM ↔ Tool 多轮编排）属于 Agent 层，见 beamai_agent。
@@ -11,8 +11,8 @@
 %%%-------------------------------------------------------------------
 -module(beamai).
 
-%% Kernel
--export([kernel/0, kernel/1, kernel/2]).
+%% ChatClient
+-export([chat_client/0, chat_client/1, chat_client/2]).
 
 %% Tool
 -export([tool/2, tool/3]).
@@ -41,34 +41,34 @@
 -export([context/0, context/1]).
 
 %%====================================================================
-%% Kernel
+%% ChatClient
 %%====================================================================
 
-%% @doc 创建空 Kernel（默认配置，无 filter）
--spec kernel() -> beamai_kernel:kernel().
-kernel() ->
-    beamai_kernel:new().
+%% @doc 创建空 ChatClient（默认配置，无 filter）
+-spec chat_client() -> beamai_chat_client:chat_client().
+chat_client() ->
+    beamai_chat_client:new().
 
-%% @doc 创建 Kernel（自定义配置，无 filter）
+%% @doc 创建 ChatClient（自定义配置，无 filter）
 %%
 %% @param Settings 配置项（如 #{max_tool_iterations => 5}）
--spec kernel(beamai_kernel:kernel_settings()) -> beamai_kernel:kernel().
-kernel(Settings) ->
-    beamai_kernel:new(Settings).
+-spec chat_client(beamai_chat_client:chat_client_settings()) -> beamai_chat_client:chat_client().
+chat_client(Settings) ->
+    beamai_chat_client:new(Settings).
 
-%% @doc 创建 Kernel（自定义配置 + 一次性给出全量 filter）
+%% @doc 创建 ChatClient（自定义配置 + 一次性给出全量 filter）
 %%
 %% Filters **注册顺序即层序**：列表靠前 = 外层（前置先执行、后置后执行）。
 %% 构建后不可增量追加。需要会话记忆时把 memory filter 放列表首位（最外层）：
 %%
-%%   K = beamai:kernel(#{}, [
+%%   K = beamai:chat_client(#{}, [
 %%       beamai_memory_filter:memory_filter(Store),   %% 最外层：先展开历史
 %%       beamai:filter(<<"logger">>, #{around_chat => F})
 %%   ])
--spec kernel(beamai_kernel:kernel_settings(), [beamai_filter:filter()]) ->
-    beamai_kernel:kernel().
-kernel(Settings, Filters) ->
-    beamai_kernel:new(Settings, Filters).
+-spec chat_client(beamai_chat_client:chat_client_settings(), [beamai_filter:filter()]) ->
+    beamai_chat_client:chat_client().
+chat_client(Settings, Filters) ->
+    beamai_chat_client:new(Settings, Filters).
 
 %%====================================================================
 %% Tool
@@ -84,22 +84,22 @@ tool(Name, Handler) ->
 tool(Name, Handler, Opts) ->
     beamai_tool:new(Name, Handler, Opts).
 
-%% @doc 注册单个工具到 Kernel
--spec add_tool(beamai_kernel:kernel(), beamai_tool:tool_spec()) -> beamai_kernel:kernel().
-add_tool(Kernel, Tool) ->
-    beamai_kernel:add_tool(Kernel, Tool).
+%% @doc 注册单个工具到 ChatClient
+-spec add_tool(beamai_chat_client:chat_client(), beamai_tool:tool_spec()) -> beamai_chat_client:chat_client().
+add_tool(ChatClient, Tool) ->
+    beamai_chat_client:add_tool(ChatClient, Tool).
 
-%% @doc 批量注册工具到 Kernel
--spec add_tools(beamai_kernel:kernel(), [beamai_tool:tool_spec()]) -> beamai_kernel:kernel().
-add_tools(Kernel, Tools) ->
-    beamai_kernel:add_tools(Kernel, Tools).
+%% @doc 批量注册工具到 ChatClient
+-spec add_tools(beamai_chat_client:chat_client(), [beamai_tool:tool_spec()]) -> beamai_chat_client:chat_client().
+add_tools(ChatClient, Tools) ->
+    beamai_chat_client:add_tools(ChatClient, Tools).
 
 %% @doc 从模块自动加载并注册工具
 %%
 %% 模块需实现 beamai_tool_behaviour，至少实现 tools/0 回调。
--spec add_tool_module(beamai_kernel:kernel(), module()) -> beamai_kernel:kernel().
-add_tool_module(Kernel, Module) ->
-    beamai_kernel:add_tool_module(Kernel, Module).
+-spec add_tool_module(beamai_chat_client:chat_client(), module()) -> beamai_chat_client:chat_client().
+add_tool_module(ChatClient, Module) ->
+    beamai_chat_client:add_tool_module(ChatClient, Module).
 
 %%====================================================================
 %% Service (LLM)
@@ -114,34 +114,33 @@ add_tool_module(Kernel, Module) ->
 %%       model => <<"claude-sonnet-4-20250514">>,
 %%       api_key => os:getenv("ANTHROPIC_API_KEY")
 %%   })
--spec add_chat_model(beamai_kernel:kernel(), beamai_chat_behaviour:provider(), map()) -> beamai_kernel:kernel().
-add_chat_model(Kernel, Provider, Opts) ->
+-spec add_chat_model(beamai_chat_client:chat_client(), beamai_chat_behaviour:provider(), map()) -> beamai_chat_client:chat_client().
+add_chat_model(ChatClient, Provider, Opts) ->
     LlmConfig = beamai_chat_model:create(Provider, Opts),
-    beamai_kernel:add_chat_model(Kernel, LlmConfig).
+    beamai_chat_client:add_chat_model(ChatClient, LlmConfig).
 
 %% @doc 使用预构建的 LLM 配置添加服务
 %%
 %% 示例:
 %%   LLM = beamai_chat_model:create(openai, #{model => <<"gpt-4">>, api_key => Key}),
 %%   K1 = beamai:add_chat_model(K0, LLM)
--spec add_chat_model(beamai_kernel:kernel(), beamai_chat_behaviour:config()) -> beamai_kernel:kernel().
-add_chat_model(Kernel, LlmConfig) ->
-    beamai_kernel:add_chat_model(Kernel, LlmConfig).
+-spec add_chat_model(beamai_chat_client:chat_client(), beamai_chat_behaviour:config()) -> beamai_chat_client:chat_client().
+add_chat_model(ChatClient, LlmConfig) ->
+    beamai_chat_client:add_chat_model(ChatClient, LlmConfig).
 
 %%====================================================================
 %% Filter（洋葱式过滤器）
 %%====================================================================
 
-%% @doc 创建 filter（直接给 hook map；经 kernel/2 一次性注册）
+%% @doc 创建 filter（直接给 hook map；经 chat_client/2 一次性注册）
 %%
-%% 一个 filter 含 around_chat/around_llm/around_step/around_tool/around_turn 任意
-%% 子集，每个 around 用单个闭包 `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}`
-%% 包裹一次调用：前置改写请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next
+%% 一个 filter 含 around_chat/around_step/around_tool/around_turn 任意子集，每个
+%% around 用单个闭包 `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用：前置改写请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next
 %% 即短路。
 %%
 %% @param Name filter 名称
 %% @param Hooks hook map（如 #{around_chat => F}）
-%% @returns filter 定义（传入 beamai:kernel/2 的 Filters 列表）
+%% @returns filter 定义（传入 beamai:chat_client/2 的 Filters 列表）
 -spec filter(binary(), beamai_filter:hooks()) -> beamai_filter:filter().
 filter(Name, Hooks) ->
     beamai_filter:new(Name, Hooks).
@@ -156,27 +155,27 @@ filter(Name, Hooks, Init) ->
 %% Invoke
 %%====================================================================
 
-%% @doc 调用 Kernel 中注册的工具
--spec invoke_tool(beamai_kernel:kernel(), binary(), beamai_tool:args(), beamai_context:t()) ->
+%% @doc 调用 ChatClient 中注册的工具
+-spec invoke_tool(beamai_chat_client:chat_client(), binary(), beamai_tool:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:t()} | {error, term()}.
-invoke_tool(Kernel, ToolName, Args, Context) ->
-    beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context).
+invoke_tool(ChatClient, ToolName, Args, Context) ->
+    beamai_chat_client:invoke_tool(ChatClient, ToolName, Args, Context).
 
 %% @doc 发送 Chat Completion 请求（默认选项）
--spec chat(beamai_kernel:kernel(), [map()]) ->
+-spec chat(beamai_chat_client:chat_client(), [map()]) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
-chat(Kernel, Messages) ->
-    chat(Kernel, Messages, #{}).
+chat(ChatClient, Messages) ->
+    chat(ChatClient, Messages, #{}).
 
 %% @doc 发送 Chat Completion 请求（自定义选项）
 %%
-%% 执行 around_chat → around_llm 两层洋葱（单次调用，不含工具循环）：
-%% around_chat 每轮一次，around_llm 每次真实 LLM 请求一次（重试在这层重入）。
+%% 执行 around_chat 洋葱（单次调用，不含工具循环）。provider 的重试在 terminal
+%% 之内，对本链不可见——filter 看到的是「一次逻辑调用」。
 %% ReAct 工具循环请使用 beamai_agent。
--spec chat(beamai_kernel:kernel(), [map()], beamai_kernel:chat_opts()) ->
+-spec chat(beamai_chat_client:chat_client(), [map()], beamai_chat_client:chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
-chat(Kernel, Messages, Opts) ->
-    beamai_kernel:invoke_chat(Kernel, Messages, Opts).
+chat(ChatClient, Messages, Opts) ->
+    beamai_chat_client:invoke_chat(ChatClient, Messages, Opts).
 
 %%====================================================================
 %% Prompt
@@ -199,19 +198,19 @@ render(Template, Vars) ->
 %%====================================================================
 
 %% @doc 获取所有工具的 tool schema（默认 OpenAI 格式）
--spec tools(beamai_kernel:kernel()) -> [map()].
-tools(Kernel) ->
-    beamai_kernel:get_tool_schemas(Kernel).
+-spec tools(beamai_chat_client:chat_client()) -> [map()].
+tools(ChatClient) ->
+    beamai_chat_client:get_tool_schemas(ChatClient).
 
 %% @doc 获取所有工具的 tool schema（指定提供商格式）
--spec tools(beamai_kernel:kernel(), openai | anthropic | atom()) -> [map()].
-tools(Kernel, Provider) ->
-    beamai_kernel:get_tool_schemas(Kernel, Provider).
+-spec tools(beamai_chat_client:chat_client(), openai | anthropic | atom()) -> [map()].
+tools(ChatClient, Provider) ->
+    beamai_chat_client:get_tool_schemas(ChatClient, Provider).
 
 %% @doc 按标签查找工具
--spec tools_by_tag(beamai_kernel:kernel(), binary()) -> [beamai_tool:tool_spec()].
-tools_by_tag(Kernel, Tag) ->
-    beamai_kernel:get_tools_by_tag(Kernel, Tag).
+-spec tools_by_tag(beamai_chat_client:chat_client(), binary()) -> [beamai_tool:tool_spec()].
+tools_by_tag(ChatClient, Tag) ->
+    beamai_chat_client:get_tools_by_tag(ChatClient, Tag).
 
 %%====================================================================
 %% Context

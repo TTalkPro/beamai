@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc 会话消息存储 Behaviour
 %%%
-%%% 定义对话历史存储的统一接口。Kernel 不再自己记录消息，
+%%% 定义对话历史存储的统一接口。ChatClient 不再自己记录消息，
 %%% 由实现本 Behaviour 的 store 按 conversation_id 管理会话历史。
 %%%
 %%% 句柄约定 `{Module, Ref}`（如 {beamai_chat_memory_ets, Name}）：

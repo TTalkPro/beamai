@@ -7,9 +7,8 @@ beamai_core's Filter system provides a true **onion-style** interception mechani
 ## Table of Contents
 
 - [Overview](#overview)
-- [5 around hook points](#5-around-hook-points)
+- [4 around hook points](#4-around-hook-points)
 - [The loop is a chain link too](#the-loop-is-a-chain-link-too)
-- [chat vs llm: why two layers](#chat-vs-llm-why-two-layers)
 - [token_transform (token-stream transform)](#token_transform-token-stream-transform)
 - [Built-in filters](#built-in-filters)
 - [Per-filter private context](#per-filter-private-context)
@@ -23,7 +22,7 @@ beamai_core's Filter system provides a true **onion-style** interception mechani
 
 ## Overview
 
-A Filter is an onion-style interceptor around the Kernel's tool execution and chat calls. It can:
+A Filter is an onion-style interceptor around the ChatClient's tool execution and chat calls. It can:
 
 - **Rewrite the request**: modify args, message list, or call options before the call
 - **Rewrite the response**: modify the tool result or LLM response after the call
@@ -32,7 +31,7 @@ A Filter is an onion-style interceptor around the Kernel's tool execution and ch
 - **Private state**: each filter has a per-name isolated private context that lives across one invoke (including each tool-loop iteration)
 - **Logging/auditing**: record call logs, measure response length, etc.
 
-Each filter is **one onion layer** — it binds at most 5 optional around hooks: `around_turn` for the turn chain (wrapping the whole tool loop, used by the Agent layer), `around_step` for the step chain (one ReAct iteration), `around_chat` for the chat chain (that round's LLM call), `around_llm` for the llm chain (one real LLM request), and `around_tool` for the tool chain (one tool execution) — plus a streaming-only `token_transform` hook (token-stream transform, not part of the onion; see its own section). An around closure looks like:
+Each filter is **one onion layer** — it binds at most 4 optional around hooks: `around_turn` for the turn chain (wrapping the whole tool loop, used by the Agent layer), `around_step` for the step chain (one ReAct iteration), `around_chat` for the chat chain (that round's LLM call), and `around_tool` for the tool chain (one tool execution) — plus a streaming-only `token_transform` hook (token-stream transform, not part of the onion; see its own section). An around closure looks like:
 
 ```erlang
 fun(Request, FCtx, Next) -> Response | {Response, NewFCtx} end
@@ -49,23 +48,22 @@ The filter chain is composed by `beamai_filter_chain` into nested calls, with th
 
 | Module | Location | Description |
 |--------|----------|-------------|
-| `beamai_filter` | `apps/beamai_core/src/kernel/` | Filter constructors and utilities |
-| `beamai_filter_chain` | `apps/beamai_core/src/kernel/` | Onion chain composition and execution |
-| `beamai_kernel` | `apps/beamai_core/src/kernel/` | Kernel integration (filter registration) |
+| `beamai_filter` | `apps/beamai_core/src/core/` | Filter constructors and utilities |
+| `beamai_filter_chain` | `apps/beamai_core/src/core/` | Onion chain composition and execution |
+| `beamai_chat_client` | `apps/beamai_core/src/core/` | ChatClient integration (filter registration) |
 | `beamai` | `apps/beamai_core/src/` | Top-level facade (convenience API) |
 
 ---
 
-## 5 around hook points
+## 4 around hook points
 
-A filter may define any subset of the following 5 hooks:
+A filter may define any subset of the following 4 hooks:
 
 | hook | Granularity | Form |
 |------|-------------|------|
 | `around_turn` | Once per turn (the whole tool loop, Agent layer) | as below (Response is the tool-loop result tuple) |
 | `around_step` | Once per ReAct iteration (**including that round's tool execution**) | as below (Response is a step-response map) |
 | `around_chat` | **Exactly once** per loop iteration (that round's LLM call) | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
-| `around_llm` | Once per **real** LLM request (retries re-enter here) | same as above |
 | `around_tool` | Once per tool call (inside parallel tasks) | same as above |
 
 Layering (outer → inner):
@@ -75,8 +73,7 @@ around_turn            once per turn          RAG injection / final-answer valid
   tool_loop filter     the loop driver is itself a chain link (fully replaceable)
     around_step        once per iteration     per-round budget / trace / iteration rewriting
       around_chat      that round's LLM call  memory / accounting / audit
-        around_llm     once per real request  retry / fallback / rate limit / mock
-          provider     the actual chat call
+        provider       the actual chat call   ← retry lives *inside* it, invisible to the chain
       around_tool      once per tool call     timeout / approval / argument rewriting
 ```
 
@@ -84,8 +81,7 @@ around_turn            once per turn          RAG injection / final-answer valid
 
 - The **turn chain** uses `around_turn`, wrapping the whole tool loop; its innermost element is the **loop filter**, whose terminal is the step chain.
 - The **step chain** uses `around_step`, wrapping one iteration — note it also wraps that round's **tool execution**, which `around_chat` cannot.
-- The **chat chain** uses `around_chat`, wrapping that round's LLM call; its terminal is not the LLM call itself but the inner llm chain.
-- The **llm chain** uses `around_llm`, wrapping one request actually sent out.
+- The **chat chain** uses `around_chat`, wrapping that round's LLM call; its terminal is the provider call.
 - The **tool chain** uses `around_tool`, wrapping one tool execution.
 
 A filter without the corresponding around for a chain is **skipped** in that chain. One filter may declare several hooks; its relative layering is the same in every chain.
@@ -95,8 +91,7 @@ A filter without the corresponding around for a chain is **skipped** in that cha
 | Chain | Request | Response |
 |-------|---------|----------|
 | step | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}` (see below) |
-| chat | `#{messages, context, opts}` | `#{response, context}` (response is a beamai_llm_response) |
-| llm | same shape as chat; the streaming path also carries `stream => true` | same as chat |
+| chat | `#{messages, context, opts}`; streaming also carries `stream => true` | `#{response, context}` (response is a beamai_llm_response) |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 | turn | `#{messages, context, resume, load_history}` | tool-loop result tuple (`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`; interrupt/error must pass through, never re-enter) |
 
@@ -123,7 +118,7 @@ Here `context` is the **shared context** (`beamai_context`) threaded through the
 
 ### Registration order is layer order
 
-Filters are given **all at once** when the Kernel is built, via `beamai_kernel:new(Settings, Filters)`.
+Filters are given **all at once** when the ChatClient is built, via `beamai_chat_client:new(Settings, Filters)`.
 **List position decides the onion layering**: earlier = more outer (before runs earlier, after runs later).
 There is no order field and no runtime sorting — to change layering, reorder the list
 (matching clj-agent's flat-vector model).
@@ -136,9 +131,8 @@ A filter is a tagged map:
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),                  %% name (debug id, also the private-context isolation key)
-    hooks := #{                        %% any subset of the 6 hooks
+    hooks := #{                        %% any subset of the 5 hooks
         around_chat => around_fun(),
-        around_llm => around_fun(),
         around_step => around_fun(),
         around_tool => around_fun(),
         around_turn => around_fun(),
@@ -194,13 +188,13 @@ calling Next** — short-circuiting the whole iteration (serving from cache, for
 
 ### Replacing the loop strategy
 
-Since the loop is a chain link, swapping it needs no change to agent or kernel code — give the
+Since the loop is a chain link, swapping it needs no change to agent or ChatClient code — give the
 agent a `loop_filter` (a constructor that receives this run's LoopOpts and returns an
 `around_turn` filter):
 
 ```erlang
 {ok, Agent} = beamai_agent:new(#{
-    kernel => K,
+    chat_client => K,
     loop_filter => fun(_LoopOpts) ->
         beamai:filter(<<"my_loop">>, #{
             around_turn => fun(Req, _FCtx, Next) ->
@@ -226,47 +220,29 @@ policy — a custom loop owns its own.
 
 ---
 
-## chat vs llm: why two layers
+## Where retry lives
 
-One iteration is usually exactly one LLM call, so the two layers fire at the same rate and look
-redundant. **The difference shows up the moment a single round calls the LLM more than once**
-(retry, fallback to another model, N-best voting):
-
-| | around_chat | around_llm |
-|---|---|---|
-| Times entered per round | exactly 1 | N (one per real request) |
-| What belongs here | memory, accounting, audit, prompt injection | retry, fallback, rate limiting, mock, per-attempt billing |
-
-Put retry in the chat layer and every memory/accounting filter inside it re-runs N times — the same
-delta stored twice, one conversation billed three times. The llm layer exists so that a retry's
-re-entry cannot reach those filters.
-
-The built-in retry is therefore an **around_llm filter** (`beamai_llm_filters:retry_filter/1`),
-injected by the kernel at the **innermost** position of the llm chain and controlled by the
-`llm_retry` setting:
+**Not on the chain.** Provider retry lives inside `beamai_chat_model:chat/3` — *below* the entire
+filter stack, so a retry's re-entry cannot reach any filter. Memory/accounting filters on
+`around_chat` therefore run exactly once per round with no layering discipline required.
 
 ```erlang
-%% Default: retry with framework defaults (max_retries/retry_delay in a single chat's opts win)
-K = beamai:kernel(#{}, Filters),
-
-%% Tune the defaults
-K = beamai:kernel(#{llm_retry => #{max_retries => 5, retry_delay => 200}}, Filters),
-
-%% Disable the default injection and place retry at any layer you like (later = more inner)
-K = beamai:kernel(#{llm_retry => false},
-                  [RateLimitFilter, beamai_llm_filters:retry_filter(#{}), MetricsFilter]).
+%% Three levels: per-call Opts > provider Config > framework default (max_retries => 0 disables)
+LLM = beamai_chat_model:create(anthropic, #{model => M, api_key => K, max_retries => 5}),
+beamai_chat_client:invoke_chat(ChatClient, Messages, #{max_retries => 0}).   %% no retry this call
 ```
 
-Injecting it innermost means your own around_llm filters sit **outside** retry and see "one logical
-call". To observe every real attempt, use the third form and place your filter inside retry.
+Trade-offs:
 
-**No retry on the streaming path**: `invoke_chat_stream` marks its Request with `stream => true` and
-the built-in retry filter passes it straight through — tokens have already reached the sink, so a
-re-run would show duplicates downstream. The llm chain itself still runs while streaming (rate
-limiting, accounting, mock); only retry stays out.
+- Filters cannot see individual attempts (they see one logical call) → use the `on_retry`
+  callback in chat opts to observe them.
+- The streaming path does **not** retry (tokens already reached the sink); for fault tolerance
+  re-run the whole turn from `around_turn`.
 
-> Calling `beamai_chat_model:chat/3` directly (bypassing the kernel) does **not** retry — retry
-> moved up into the llm chain. Wrap such direct calls in `beamai_llm_retry:run/2` if you need it.
+> An earlier version made retry a filter on an `around_llm` chain; that was reverted. Once retry
+> sits at the bottom of the stack, that chain fires 1:1 with the chat chain and shares its exact
+> contract — the difference collapses to ordering, which list position already decides. See
+> `design/retry_back_to_chat_model.md`.
 
 ---
 
@@ -315,10 +291,10 @@ The built-in `token_redact_filter` / `hold_release_filter` are covered in [Built
 
 ```erlang
 %% Streaming redaction: the sink sees redacted tokens; the final response is untouched
-K = beamai:kernel(#{}, [
+K = beamai:chat_client(#{}, [
     beamai_filters:token_redact_filter(<<"sk-\\w+">>, <<"[KEY]">>)
 ]),
-{ok, Resp, _} = beamai_kernel:invoke_chat_stream(K, Messages, #{}, OnToken).
+{ok, Resp, _} = beamai_chat_client:invoke_chat_stream(K, Messages, #{}, OnToken).
 ```
 
 ---
@@ -326,14 +302,13 @@ K = beamai:kernel(#{}, [
 ## Built-in filters
 
 The ready-made filters in `beamai_filters` are all pure constructors — put them in `new/2`'s
-filters list when building the kernel. (They broadly track Spring AI's Advisor system; the
+filters list when building the ChatClient. (They broadly track Spring AI's Advisor system; the
 item-by-item trade-offs are in `design/spring_advisor_alignment.md`.)
 
 | filter | Chain | Description |
 |---|---|---|
 | `beamai_agent_tool_loop:loop_filter(LoopOpts)` | turn | The **default ReAct loop**, appended by the agent at the innermost position of the turn chain; replace it wholesale via the agent's `loop_filter` |
 | `logging_filter()` | turn/chat/tool | One pair of debug logs each for turn/chat/tool. Put it first in the list for the full picture; placed after another filter it only sees rewrites made inside that layer |
-| `beamai_llm_filters:retry_filter()` / `(Defaults)` | llm | Retryable errors (429/5xx/network timeouts) re-enter `Next` with backoff. **Injected by the kernel** at the innermost position of the llm chain; tune or disable via the `llm_retry` setting; passes through on the streaming path |
 | `safeguard_filter(Words)` / `(Words, Opts)` | chat | Short-circuits on a sensitive-word hit without calling the LLM, returning a reply with `finish_reason=content_filtered`. Opts: `failure_response`, `case_sensitive` (default `false`) |
 | `timeout_filter(Ms)` | tool | Wall-clock timeout for a single tool execution → `{error, timeout}` (classified transient) |
 | `approval_filter(ApproveFun)` | tool | Only intercepts tools marked `sensitive => true`; a rejection goes back to the model as a normal tool result. Non-interactive — for interactive approval use the `on_tool_call` callback |
@@ -345,7 +320,7 @@ item-by-item trade-offs are in `design/spring_advisor_alignment.md`.)
 ### safeguard_filter: capability boundary
 
 ```erlang
-K = beamai:kernel(#{}, [beamai_filters:safeguard_filter([<<"forbidden-word">>])]).
+K = beamai:chat_client(#{}, [beamai_filters:safeguard_filter([<<"forbidden-word">>])]).
 ```
 
 Sitting on the chat chain means **every LLM call inside the loop passes through it**: it catches
@@ -363,7 +338,7 @@ Schema = #{type => object,
            properties => #{<<"name">> => #{type => string},
                            <<"age">> => #{type => integer, minimum => 0}},
            required => [<<"name">>, <<"age">>]},
-K = beamai:kernel(#{}, [beamai_filters:schema_validation_turn_filter(Schema, 2)]).
+K = beamai:chat_client(#{}, [beamai_filters:schema_validation_turn_filter(Schema, 2)]).
 ```
 
 "Take the text → parse JSON → check against the Schema"; on failure the Schema errors are fed
@@ -393,8 +368,8 @@ tools.
 ```erlang
 Tools = [...],                                    %% all tools
 {SearchTool, Filter} = beamai_tool_search:new(Tools, #{}),
-K0 = beamai_kernel:new(#{}, [Filter]),
-K = beamai_kernel:add_tools(K0, [SearchTool | Tools]).   %% register everything
+K0 = beamai_chat_client:new(#{}, [Filter]),
+K = beamai_chat_client:add_tools(K0, [SearchTool | Tools]).   %% register everything
 ```
 
 Opts: `index_module` (default `beamai_tool_index_keyword`, `beamai_tool_index_regex` also
@@ -409,7 +384,7 @@ Key points:
   swallowed.
 - **The search tool is always advertised**, otherwise one missed round would leave no way to
   search again.
-- **The model can still call non-advertised tools** (kernel execution does not consult the
+- **The model can still call non-advertised tools** (ChatClient execution does not consult the
   advertised list), so a direct call from earlier context won't fail.
 - The index backend is a behaviour (`beamai_tool_index`); vector backends are left for
   beamai_extra to plug in.
@@ -458,16 +433,11 @@ where `X_around` is "run X's before, `Next` into the inner, then run X's after o
 If a filter's around does not call `Next`, that is a short-circuit (skip all inner layers); the filter constructs and returns the `Response` directly. Outer filters' after still runs.
 
 The other chains work the same way, replacing `around_chat` with that chain's hook name
-(Phase = `around_step` / `around_llm` / `around_tool` / `around_turn`).
+(Phase = `around_step` / `around_tool` / `around_turn`).
 
-The chat chain has one twist: its terminal is the **inner llm chain** (whose terminal is the real
-LLM call). So for `[A, B]` declaring both hooks the actual expansion is:
-
-```
-A_chat pre → B_chat pre → A_llm pre → B_llm pre → LLM → B_llm post → A_llm post → B_chat post → A_chat post
-```
-
-— the same filter keeps its relative layering in both chains (A always outside B).
+The turn chain has one twist: its terminal is the **inner step chain** (the loop filter runs one
+iteration per `Next` call) — the same filter keeps its relative layering in both chains (A always
+outside B).
 
 ---
 
@@ -479,8 +449,8 @@ A_chat pre → B_chat pre → A_llm pre → B_llm pre → LLM → B_llm post →
 
 ```erlang
 %% Create a filter (private state initial value #{}).
-%% Hooks is a hook map, any subset of around_chat/around_llm/around_step/
-%% around_tool/around_turn/token_transform.
+%% Hooks is a hook map, any subset of around_chat/around_step/around_tool/
+%% around_turn/token_transform.
 -spec new(Name :: binary(), Hooks :: hooks()) -> filter().
 
 %% Create a filter (with an explicit private state initial value Init)
@@ -490,11 +460,10 @@ A_chat pre → B_chat pre → A_llm pre → B_llm pre → LLM → B_llm post →
 Hook form:
 
 ```erlang
--type hook_type() :: around_chat | around_llm | around_step | around_tool |
-                     around_turn | token_transform.
+-type hook_type() :: around_chat | around_step | around_tool | around_turn |
+                     token_transform.
 -type hooks() :: #{
     around_chat => around_fun(),
-    around_llm => around_fun(),
     around_step => around_fun(),
     around_tool => around_fun(),
     around_turn => around_fun(),
@@ -519,8 +488,8 @@ Not calling `Next` short-circuits (skips the inner layers), returning the `Respo
 
 ```erlang
 %% Run one chain's filter onion.
-%% Phase says which around hook the chain uses: around_chat for chat, around_llm
-%% for llm, around_step for step, around_tool
+%% Phase says which around hook the chain uses: around_chat for chat,
+%% around_step for step, around_tool
 %% for tool. Only filters with the matching around enter the onion; others are
 %% skipped. Terminal produces the innermost response; it throws on error, which
 %% run/4 catches with try/catch, returning {ok, Response} | {error, Reason}.
@@ -546,12 +515,12 @@ Not calling `Next` short-circuits (skips the inner layers), returning the `Respo
 
 > These accessors are used by the onion chain to project/merge; filter code usually reads via the around's `FCtx` parameter and writes via returning `{Resp, NewFCtx}`, without calling them directly.
 
-### beamai_kernel integration
+### beamai_chat_client integration
 
 ```erlang
-%% Give the full filter list once when building the Kernel
+%% Give the full filter list once when building the ChatClient
 %% (registration order is layer order: earlier in the list = more outer)
-beamai_kernel:new(Settings, Filters) -> Kernel.
+beamai_chat_client:new(Settings, Filters) -> ChatClient.
 ```
 
 Filters **cannot be appended after construction** — layering is decided entirely by
@@ -559,7 +528,7 @@ this list's order. For conversation memory, put
 `beamai_memory_filter:memory_filter(Store)` **first** in the list (outermost:
 expand the full history before inner filters run).
 
-Tool modules (`beamai_kernel:add_tool_module/2`) provide tools only; they do not carry filters.
+Tool modules (`beamai_chat_client:add_tool_module/2`) provide tools only; they do not carry filters.
 
 > **system_prompts layering**: `system_prompts` given in `invoke_chat`'s `Opts` are
 > appended at call time as a temporary **innermost** filter — prepending system
@@ -570,10 +539,10 @@ Tool modules (`beamai_kernel:add_tool_module/2`) provide tools only; they do not
 ### beamai convenience API
 
 ```erlang
-%% Create a Kernel (full filter list given once)
-beamai:kernel(Settings, Filters) -> Kernel.
+%% Create a ChatClient (full filter list given once)
+beamai:chat_client(Settings, Filters) -> ChatClient.
 
-%% Quickly create a filter (pass a hook map directly; put it in kernel/2's Filters list)
+%% Quickly create a filter (pass a hook map directly; put it in chat_client/2's Filters list)
 beamai:filter(Name, Hooks) -> Filter.
 beamai:filter(Name, Hooks, Init) -> Filter.
 ```
@@ -582,7 +551,7 @@ beamai:filter(Name, Hooks, Init) -> Filter.
 
 ## Usage
 
-### 1. Give filters when building the Kernel
+### 1. Give filters when building the ChatClient
 
 ```erlang
 Logger = beamai:filter(<<"logger">>, #{
@@ -592,7 +561,7 @@ Logger = beamai:filter(<<"logger">>, #{
         Next(Req)
     end
 }),
-K0 = beamai:kernel(#{}, [Logger]).
+K0 = beamai:chat_client(#{}, [Logger]).
 ```
 
 ### 2. Filter layering (registration order is layer order)
@@ -605,7 +574,7 @@ Logger      = beamai:filter(<<"logger">>, #{around_tool => LogFn}),
 Transformer = beamai:filter(<<"transformer">>, #{around_tool => TransformFn}),
 
 %% List order is onion layering (validator outermost, transformer innermost)
-K = beamai:kernel(#{}, [Validator, Logger, Transformer]).
+K = beamai:chat_client(#{}, [Validator, Logger, Transformer]).
 
 %% Before execution order: validator → logger → transformer → Terminal
 %% After execution order: transformer → logger → validator (auto-reversed)
@@ -627,8 +596,8 @@ LogDouble = beamai:filter(<<"log_and_double">>, #{
     end
 }),
 
-%% Create the Kernel (filters given once) and register a tool
-K0 = beamai:kernel(#{}, [LogDouble]),
+%% Create the ChatClient (filters given once) and register a tool
+K0 = beamai:chat_client(#{}, [LogDouble]),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
     #{description => <<"Add two numbers">>,
@@ -638,7 +607,7 @@ K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
       }})).
 
 %% Call (3 + 5 = 8, doubled after = 16)
-%% (tool execution goes through the Kernel's tool filter onion chain)
+%% (tool execution goes through the ChatClient's tool filter onion chain)
 ```
 
 ### Example 2: chat filter — inject a system message + audit (one around_chat handles both sides)
@@ -669,7 +638,7 @@ SystemAudit = beamai:filter(<<"system_and_audit">>, #{
     end
 }),
 
-K0 = beamai:kernel(#{}, [SystemAudit]),
+K0 = beamai:chat_client(#{}, [SystemAudit]),
 K1 = beamai:add_chat_model(K0, LLMConfig).
 
 %% On each request, the chat filter chain injects a system message and audits the response.
@@ -687,7 +656,7 @@ Guard = beamai:filter(<<"guard">>, #{
         end
     end
 }),
-K = beamai:kernel(#{}, [Guard]).
+K = beamai:chat_client(#{}, [Guard]).
 ```
 
 > Short-circuit means "don't call `Next`"; the filter constructs and returns the `Response` directly. The after of any outer filter wrapping it still runs — handy for unified cleanup on the outside.
@@ -704,7 +673,7 @@ Counter = beamai:filter(<<"counter">>, #{
         {Resp, FCtx#{calls => N + 1}}   %% return {Resp, NewFCtx} to write back private state
     end
 }),
-K = beamai:kernel(#{}, [Counter]).
+K = beamai:chat_client(#{}, [Counter]).
 %% Each LLM call in the tool loop increments calls, isolated from other filters' private state.
 ```
 
@@ -719,15 +688,14 @@ This system uses the common **around middleware** form:
 - The around closure `fun(Request, FCtx, Next) -> Response` maps to middleware's "receive request → call `next` → handle response".
 - Before/after live in one closure, bridged by locals — no need to pass values through a shared context between before and after.
 - Short-circuit = don't call `Next`; retry = call `Next` multiple times; no dedicated halt protocol.
-- One filter bundles the arounds for several chains (`around_turn` / `around_step` / `around_chat` / `around_llm` / `around_tool`), each chain selected independently.
+- One filter bundles the arounds for several chains (`around_turn` / `around_step` / `around_chat` / `around_tool`), each chain selected independently.
 - The tool loop itself is a chain link (the turn chain's innermost filter) whose `next` is one iteration — the counterpart of Spring AI's `ToolCallingAdvisor`.
-- chat and llm form **two nested middleware stacks**: the outer one runs once per round, the inner one once per real request — mirroring the advisor/provider split in Spring AI.
 
 ---
 
 ## Relationship with the Middleware framework
 
-The [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project provides a more advanced Middleware system (in beamai_tools) with stateful management, preset configurations, call limits, human approval, retry, and fallback. Middleware is converted into filters registered with the Kernel, so both ultimately run in the same onion chain.
+The [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project provides a more advanced Middleware system (in beamai_tools) with stateful management, preset configurations, call limits, human approval, retry, and fallback. Middleware is converted into filters registered with the ChatClient, so both ultimately run in the same onion chain.
 
 | Feature | Filter (this doc) | Middleware (beamai_extra) |
 |---------|-------------------|---------------------------|
@@ -740,6 +708,6 @@ The [beamai_extra](https://github.com/TTalkPro/beamai_extra) extension project p
 
 ## More Resources
 
-- [beamai_core README](../apps/beamai_core/README_EN.md) - Kernel architecture docs
+- [beamai_core README](../apps/beamai_core/README_EN.md) - ChatClient architecture docs
 - [MEMORY_EN.md](MEMORY_EN.md) - Conversation memory (Memory filter)
 - [API Reference](API_REFERENCE.md) - API reference docs

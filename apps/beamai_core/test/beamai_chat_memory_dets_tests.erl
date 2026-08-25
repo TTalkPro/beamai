@@ -69,7 +69,7 @@ survives_restart_test() ->
     cleanup(Name, File).
 
 %%====================================================================
-%% 与 memory filter 协作（kernel 直用路径）
+%% 与 memory filter 协作（ChatClient 直用路径）
 %%====================================================================
 
 memory_filter_with_dets_test() ->

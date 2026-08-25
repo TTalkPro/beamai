@@ -12,10 +12,10 @@
 %%%         step_terminal/1（本模块：一次迭代的真正执行）
 %%%
 %%% 换循环策略（plan-execute / reflexion / 树搜索）＝换掉这个 filter：agent 配置
-%%% `loop_filter => fun((LoopOpts) -> beamai_filter:filter())` 即可，agent 与 kernel
+%%% `loop_filter => fun((LoopOpts) -> beamai_filter:filter())` 即可，agent 与 ChatClient
 %%% 代码一行不动（见 beamai_agent:run_turn_chain/3）。
 %%%
-%%% **记忆与回调都由本模块显式编排**，不经任何 kernel filter：
+%%% **记忆与回调都由本模块显式编排**，不经任何 ChatClient filter：
 %%%
 %%%   - 本轮**完整 messages**（within-run 累积）随 step 请求/响应逐轮穿线。
 %%%   - 每轮（step_terminal）：触发 on_llm_call → 经 memory provider 的 prepare
@@ -28,7 +28,7 @@
 %%%   - 跨轮历史(cross-run)由 memory provider 的 history/append 负责；本模块只负责
 %%%     within-run 累积与按序持久化。memory=undefined 时仅在本轮内累积、不持久化。
 %%%
-%%% chat_opts 带 system_prompts（kernel invoke_chat 内按 opts 注入）；context 不再
+%%% chat_opts 带 system_prompts（ChatClient invoke_chat 内按 opts 注入）；context 不再
 %%% 固定在 chat_opts 里，而是随 step 请求逐轮穿线（每轮由 step_terminal 覆写进
 %%% chat_opts），turn filter 改写的 context 因此对循环全程可见。
 %%%
@@ -42,7 +42,7 @@
 -type provider() :: beamai_memory_provider:provider() | undefined.
 
 -type loop_opts() :: #{
-    kernel := beamai_kernel:kernel(),
+    chat_client := beamai_chat_client:chat_client(),
     %% 以下三项是**消息来源**：经 turn 链时由循环驱动按 turn 请求 / continuation
     %% 覆盖填入，直跑 run/2 时由调用方给出
     messages => [map()],            %% 已有上下文（resume 时为中断时携带的完整 messages）
@@ -103,7 +103,7 @@
 %% 等价于「只有循环 filter、没有任何 step filter」：messages / new_messages /
 %% load_history 全取自 Opts（不从 turn 请求里拿）。
 %%
-%% @param Opts 循环选项（kernel、完整 messages、memory、回调等）
+%% @param Opts 循环选项（ChatClient、完整 messages、memory、回调等）
 %% @param PrevToolCalls 之前已执行的 tool 调用记录（resume 时携带）
 %% @returns {ok, Response, ToolCallsMade, Iterations, Messages} |
 %%          {interrupt, Type, Context} |
@@ -306,14 +306,14 @@ record_assistant(Opts, Response, Messages) ->
 
 %% @private 调用 LLM：有 stream_token_handler 则走流式，否则非流式
 %% （context 每轮由 step 请求覆写进 chat_opts）
-invoke_llm(#{kernel := Kernel, chat_opts := ChatOpts0} = Opts, ToSend, Ctx) ->
+invoke_llm(#{chat_client := ChatClient, chat_opts := ChatOpts0} = Opts, ToSend, Ctx) ->
     ChatOpts = ChatOpts0#{context => Ctx},
     case maps:get(stream_token_handler, Opts, undefined) of
         undefined ->
-            beamai_kernel:invoke_chat(Kernel, ToSend, ChatOpts);
+            beamai_chat_client:invoke_chat(ChatClient, ToSend, ChatOpts);
         Handler when is_function(Handler, 1) ->
             TokenCb = fun(Token, _Meta) -> Handler(Token) end,
-            beamai_kernel:invoke_chat_stream(Kernel, ToSend, ChatOpts, TokenCb)
+            beamai_chat_client:invoke_chat_stream(ChatClient, ToSend, ChatOpts, TokenCb)
     end.
 
 %%====================================================================
@@ -361,10 +361,10 @@ find_first_interrupt(TCs, Opts) ->
 handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls, Opts,
                  #{messages := Messages, context := Ctx, iteration := Used,
                    tool_calls_made := ToolCallsMade}) ->
-    #{kernel := Kernel, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
+    #{chat_client := ChatClient, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     #{messages := SafeResults, records := SafeCallRecords, context := NewCtx} =
-        beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, SafeCalls, #{
+        beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, SafeCalls, #{
             context => Ctx,
             parallel => Parallel,
             on_result => tool_result_cb(Callbacks)
@@ -400,10 +400,10 @@ skipped_result(TC) ->
 execute_and_continue(TCs, Opts, #{messages := Messages, context := Ctx,
                                   iteration := Used,
                                   tool_calls_made := ToolCallsMade}) ->
-    #{kernel := Kernel, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
+    #{chat_client := ChatClient, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     #{messages := ToolResults, records := NewToolCalls, context := NewCtx} =
-        beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, TCs, #{
+        beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, TCs, #{
             context => Ctx,
             parallel => Parallel,
             on_result => tool_result_cb(Callbacks)
@@ -437,10 +437,10 @@ execute_and_continue(TCs, Opts, #{messages := Messages, context := Ctx,
 %% 让模型看到错误后自行补救。Spring 不区分成败、一律直返，会把错误 JSON 当最终
 %% 答案端给用户——那与 errors-are-data（错误回模型、模型决定怎么办）相悖。
 return_direct(_Opts, [], _Records) -> false;
-return_direct(#{kernel := Kernel}, TCs, Records) ->
+return_direct(#{chat_client := ChatClient}, TCs, Records) ->
     lists:all(fun(TC) ->
         {_Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
-        beamai_kernel:return_direct_tool(Kernel, Name)
+        beamai_chat_client:return_direct_tool(ChatClient, Name)
     end, TCs)
         andalso not lists:any(fun is_failed/1, Records).
 

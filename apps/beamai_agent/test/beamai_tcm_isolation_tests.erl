@@ -66,7 +66,7 @@ tool_crash_does_not_poison_batch_test() ->
     Boom = crash_tool(),
     Good = #{name => <<"good">>, description => <<"fine">>,
              handler => fun(_) -> {ok, <<"fine">>} end},
-    K = beamai_kernel:add_tools(beamai_kernel:new(), [Boom, Good]),
+    K = beamai_chat_client:add_tools(beamai_chat_client:new(), [Boom, Good]),
     TCs = [#{id => <<"1">>, name => <<"boom">>, arguments => #{}},
            #{id => <<"2">>, name => <<"good">>, arguments => #{}}],
     #{records := Records} = beamai_tool_calling_manager:execute_tool_calls(
@@ -150,7 +150,7 @@ default_never_kills_on_its_own_concurrent_test_() ->
 spawn_hanging_batch(TCM) ->
     Tool = #{name => <<"hang">>, description => <<"blocks forever">>,
              handler => fun(_Args) -> timer:sleep(infinity) end},
-    K = beamai_kernel:add_tools(beamai_kernel:new(), [Tool]),
+    K = beamai_chat_client:add_tools(beamai_chat_client:new(), [Tool]),
     TCs = [#{id => <<"1">>, name => <<"hang">>, arguments => #{}},
            #{id => <<"2">>, name => <<"hang">>, arguments => #{}}],
     Parent = self(),
@@ -171,7 +171,7 @@ writes_survive_isolation_test() ->
         description => <<"writes state">>,
         handler => fun(_Args) -> {ok, <<"ok">>, #{<<"k">> => <<"written">>}} end
     },
-    K = beamai_kernel:add_tools(beamai_kernel:new(), [Tool]),
+    K = beamai_chat_client:add_tools(beamai_chat_client:new(), [Tool]),
     TCs = [#{id => <<"1">>, name => <<"writer">>, arguments => #{}}],
     #{context := Ctx} = beamai_tool_calling_manager:execute_tool_calls(
         beamai_tool_calling_manager:concurrent(), K, TCs, #{}),
@@ -184,7 +184,7 @@ on_result_fires_in_caller_process_test() ->
         description => <<"fine">>,
         handler => fun(_Args) -> {ok, <<"fine">>} end
     },
-    K = beamai_kernel:add_tools(beamai_kernel:new(), [Tool]),
+    K = beamai_chat_client:add_tools(beamai_chat_client:new(), [Tool]),
     TCs = [#{id => <<"1">>, name => <<"ok">>, arguments => #{}}],
     Caller = self(),
     OnResult = fun(_CR) -> Caller ! {fired_in, self()}, ok end,
@@ -227,7 +227,7 @@ manager_batch_timeout_applies_test_() ->
         TCM = beamai_tool_calling_manager:sequential(#{batch_timeout => 300}),
         Tool = #{name => <<"hang">>, description => <<"blocks">>,
                  handler => fun(_) -> timer:sleep(infinity) end},
-        K = beamai_kernel:add_tools(beamai_kernel:new(), [Tool]),
+        K = beamai_chat_client:add_tools(beamai_chat_client:new(), [Tool]),
         TCs = [#{id => <<"1">>, name => <<"hang">>, arguments => #{}}],
         {Elapsed, #{records := [Record]}} = timer:tc(fun() ->
             beamai_tool_calling_manager:execute_tool_calls(TCM, K, TCs, #{})
@@ -251,7 +251,7 @@ run_slow_tool(TCM, Declared) ->
         undefined -> Base;
         T -> Base#{timeout => T}
     end,
-    K = beamai_kernel:add_tools(beamai_kernel:new(), [Tool]),
+    K = beamai_chat_client:add_tools(beamai_chat_client:new(), [Tool]),
     TCs = [#{id => <<"1">>, name => <<"slow">>, arguments => #{}}],
     beamai_tool_calling_manager:execute_tool_calls(TCM, K, TCs, #{}).
 
@@ -276,7 +276,7 @@ run_crash_batch(Kind, N, Parallel) ->
 
 %% 跑 N 个崩溃工具，返回 {survived, Result} | {died, Reason}
 run_crash_batch(Kind, N, Parallel, Context) ->
-    K = beamai_kernel:add_tools(beamai_kernel:new(), [crash_tool()]),
+    K = beamai_chat_client:add_tools(beamai_chat_client:new(), [crash_tool()]),
     TCs = [#{id => integer_to_binary(I), name => <<"boom">>, arguments => #{}}
            || I <- lists:seq(1, N)],
     run_batch(kind_to_tcm(Kind), K, TCs, Parallel, Context).
@@ -296,7 +296,7 @@ run_crashing_filter_batch(N, Context) ->
     }),
     Tool = #{name => <<"ok">>, description => <<"fine">>,
              handler => fun(_) -> {ok, <<"fine">>} end},
-    K = beamai_kernel:add_tools(beamai_kernel:new(#{}, [Filter]), [Tool]),
+    K = beamai_chat_client:add_tools(beamai_chat_client:new(#{}, [Filter]), [Tool]),
     TCs = [#{id => integer_to_binary(I), name => <<"ok">>, arguments => #{}}
            || I <- lists:seq(1, N)],
     run_batch(beamai_tool_calling_manager:sequential(), K, TCs, false, Context).

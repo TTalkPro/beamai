@@ -21,12 +21,12 @@ tc(Id, Name) ->
     #{id => Id, type => <<"function">>,
       function => #{name => Name, arguments => <<"{}">>}}.
 
-%% 构造 kernel（工具为 {Name, Handler, ReturnDirect} 列表）
-kernel(Tools, Filters) ->
+%% 构造 ChatClient（工具为 {Name, Handler, ReturnDirect} 列表）
+chat_client(Tools, Filters) ->
     lists:foldl(fun({Name, Handler, RD}, K) ->
-        beamai_kernel:add_tool(K, #{name => Name, parameters => #{},
+        beamai_chat_client:add_tool(K, #{name => Name, parameters => #{},
                                     handler => Handler, return_direct => RD})
-    end, beamai_kernel:new(#{}, Filters), Tools).
+    end, beamai_chat_client:new(#{}, Filters), Tools).
 
 %% mock LLM：首轮发 ToolCalls，之后返回 <<"llm-answer">>
 mock_llm(ToolCalls) ->
@@ -48,10 +48,10 @@ run(Tools, ToolCalls) ->
 %% @returns {RunResult, LLM 调用次数}
 run(Tools, ToolCalls, Filters) ->
     CC = mock_llm(ToolCalls),
-    K = beamai_kernel:add_chat_model(kernel(Tools, Filters),
+    K = beamai_chat_client:add_chat_model(chat_client(Tools, Filters),
                                   beamai_chat_model:create(mock, #{})),
     try
-        {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, memory => false}),
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
         {Result, counters:get(CC, 1)}
     after
@@ -146,19 +146,19 @@ partial_failure_not_direct_test() ->
     ?assertEqual(2, Calls).
 
 %%====================================================================
-%% kernel 查询 API
+%% ChatClient 查询 API
 %%====================================================================
 
 %% 已注册工具按标注返回
 return_direct_tool_lookup_test() ->
-    K = kernel([{<<"d">>, fun(_) -> {ok, <<>>} end, true},
+    K = chat_client([{<<"d">>, fun(_) -> {ok, <<>>} end, true},
                 {<<"p">>, fun(_) -> {ok, <<>>} end, false}], []),
-    ?assert(beamai_kernel:return_direct_tool(K, <<"d">>)),
-    ?assertNot(beamai_kernel:return_direct_tool(K, <<"p">>)).
+    ?assert(beamai_chat_client:return_direct_tool(K, <<"d">>)),
+    ?assertNot(beamai_chat_client:return_direct_tool(K, <<"p">>)).
 
 %% 未注册的工具名取保守值 false（直返会终止循环、丢弃同批其余结果）
 return_direct_unknown_tool_false_test() ->
-    ?assertNot(beamai_kernel:return_direct_tool(beamai_kernel:new(), <<"ghost">>)).
+    ?assertNot(beamai_chat_client:return_direct_tool(beamai_chat_client:new(), <<"ghost">>)).
 
 %% 未声明 return_direct 字段的工具 spec 默认 false
 is_return_direct_default_test() ->

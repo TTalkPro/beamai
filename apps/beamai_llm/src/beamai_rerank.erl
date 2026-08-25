@@ -121,7 +121,7 @@ rerank_full(Config, Query, Documents, Opts) when is_list(Documents) ->
     case check_limit(Module, Documents) of
         ok ->
             Request = build_request(Config, Query, Documents, Opts),
-            RetryOpts = beamai_llm_retry:opts(Opts),
+            RetryOpts = beamai_llm_retry:opts(Config, Opts),
             case beamai_llm_retry:run(fun() -> Module:rerank(Config, Request) end, RetryOpts) of
                 {ok, Response} -> {ok, fill_documents(Response, Documents)};
                 {error, _} = Error -> Error

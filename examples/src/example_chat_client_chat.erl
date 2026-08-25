@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
-%%% @doc Kernel 对话示例
+%%% @doc ChatClient 对话示例
 %%%
-%%% 演示 beamai Kernel 的多种对话模式：
+%%% 演示 beamai ChatClient 的多种对话模式：
 %%%   - run/0: 单轮对话（使用预建配置）
 %%%   - run_inline/0: 单轮对话（使用 beamai:add_chat_model/3 内联配置）
 %%%   - multi_turn/0: 多轮对话
@@ -10,14 +10,14 @@
 %%% ```
 %%% export ZHIPU_API_KEY=your-api-key
 %%% ERL_LIBS=../_build/default/lib rebar3 shell
-%%% example_kernel_chat:run().
-%%% example_kernel_chat:run_inline().
-%%% example_kernel_chat:multi_turn().
+%%% example_chat_client_chat:run().
+%%% example_chat_client_chat:run_inline().
+%%% example_chat_client_chat:multi_turn().
 %%% ```
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(example_kernel_chat).
+-module(example_chat_client_chat).
 
 -export([run/0, run/1, run_inline/0, multi_turn/0, multi_turn/1]).
 
@@ -34,10 +34,10 @@ run() ->
 %% @doc 运行单轮对话示例（使用指定 LLM 配置）
 -spec run(beamai_chat_model:config()) -> ok.
 run(LLMConfig) ->
-    io:format("=== BeamAI Kernel Chat Example ===~n~n"),
+    io:format("=== BeamAI ChatClient Chat Example ===~n~n"),
 
-    %% 1. 构建 Kernel，添加 Chat Completion 服务
-    K0 = beamai:kernel(),
+    %% 1. 构建 ChatClient，添加 Chat Completion 服务
+    K0 = beamai:chat_client(),
     K1 = beamai:add_chat_model(K0, LLMConfig),
 
     %% 2. 创建对话历史（消息列表）
@@ -50,7 +50,7 @@ run(LLMConfig) ->
     History1 = History0 ++ [#{role => user, content => UserMsg}],
     io:format("User: ~ts~n~n", [UserMsg]),
 
-    %% 4. 调用 Kernel 获取回复
+    %% 4. 调用 ChatClient 获取回复
     case beamai:chat(K1, History1) of
         {ok, #{content := Content}, _} ->
             io:format("Assistant: ~ts~n~n", [Content]),
@@ -63,7 +63,7 @@ run(LLMConfig) ->
     end,
     ok.
 
-%% @doc 使用 beamai:add_chat_model/3 内联构建 Kernel（无需预建配置）
+%% @doc 使用 beamai:add_chat_model/3 内联构建 ChatClient（无需预建配置）
 %%
 %% 展示最简洁的方式：直接传入 provider 和选项。
 -spec run_inline() -> ok.
@@ -72,7 +72,7 @@ run_inline() ->
 
     %% 直接用 beamai:add_chat_model/3 传入 provider + 选项
     ApiKey = list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    Kernel = beamai:add_chat_model(beamai:kernel(), anthropic, #{
+    ChatClient = beamai:add_chat_model(beamai:chat_client(), anthropic, #{
         api_key => ApiKey,
         base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
         model => <<"glm-4.7">>,
@@ -85,7 +85,7 @@ run_inline() ->
     ],
     io:format("User: Erlang OTP 是什么？~n~n"),
 
-    case beamai:chat(Kernel, Messages) of
+    case beamai:chat(ChatClient, Messages) of
         {ok, #{content := Content}, _} ->
             io:format("Assistant: ~ts~n~n", [Content]);
         {error, Reason} ->
@@ -104,10 +104,10 @@ multi_turn() ->
 %% 演示如何维护对话历史进行多轮交互。
 -spec multi_turn(beamai_chat_model:config()) -> ok.
 multi_turn(LLMConfig) ->
-    io:format("=== BeamAI Kernel Multi-Turn Chat ===~n~n"),
+    io:format("=== BeamAI ChatClient Multi-Turn Chat ===~n~n"),
 
-    %% 1. 构建 Kernel
-    K0 = beamai:kernel(),
+    %% 1. 构建 ChatClient
+    K0 = beamai:chat_client(),
     K1 = beamai:add_chat_model(K0, LLMConfig),
 
     %% 2. 初始化对话历史
@@ -128,21 +128,21 @@ multi_turn(LLMConfig) ->
 %% 内部函数
 %%====================================================================
 
--spec chat_loop(beamai_kernel:kernel(), [map()], [binary()], pos_integer()) -> ok.
-chat_loop(_Kernel, _History, [], _Turn) ->
+-spec chat_loop(beamai_chat_client:chat_client(), [map()], [binary()], pos_integer()) -> ok.
+chat_loop(_ChatClient, _History, [], _Turn) ->
     io:format("~n=== Conversation ended ===~n"),
     ok;
-chat_loop(Kernel, History, [Question | Rest], Turn) ->
+chat_loop(ChatClient, History, [Question | Rest], Turn) ->
     io:format("--- Turn ~B ---~n", [Turn]),
     io:format("User: ~ts~n~n", [Question]),
 
     History1 = History ++ [#{role => user, content => Question}],
 
-    case beamai:chat(Kernel, History1) of
+    case beamai:chat(ChatClient, History1) of
         {ok, #{content := Content}, _} ->
             io:format("Assistant: ~ts~n~n", [Content]),
             History2 = History1 ++ [#{role => assistant, content => Content}],
-            chat_loop(Kernel, History2, Rest, Turn + 1);
+            chat_loop(ChatClient, History2, Rest, Turn + 1);
         {error, Reason} ->
             io:format("Error: ~p~n", [Reason])
     end.

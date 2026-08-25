@@ -1,9 +1,9 @@
-# Kernel 重新设计：消息存储下沉到 Memory Filter
+# ChatClient 重新设计：消息存储下沉到 Memory Filter
 
 > **状态：已实施，但落地形态与本文有分叉。**
 > 当前行为以 [docs/MEMORY.md](../docs/MEMORY.md) 为准；本文保留为设计决策的历史记录。
 >
-> 核心目标（Kernel 不记录 messages、invoke 只传 delta、历史由 store 承担）已如本文所述落地：
+> 核心目标（ChatClient 不记录 messages、invoke 只传 delta、历史由 store 承担）已如本文所述落地：
 > `beamai_memory_filter`、`beamai_chat_memory`（behaviour）、`beamai_chat_memory_ets` 均已存在。
 >
 > **与本文的四处分叉**（阅读下文时请对照）：
@@ -14,7 +14,7 @@
 > 2. **多出一整层本文未预见的 `beamai_memory_provider`**（策略层：history/append/prepare/clear）。
 >    记忆因此分为存储层（`beamai_chat_memory`）与策略层（`beamai_memory_provider`）。
 >    **`beamai_agent` 不使用本文设计的 memory filter**——它在自己的 tool loop 里显式编排
->    provider。filter 只服务于直接使用 kernel/facade 的调用方。
+>    provider。filter 只服务于直接使用 ChatClient/facade 的调用方。
 > 3. **本文引用的 `beamai_memory`、`beamai_conversation_buffer`、`beamai_store_ets` 均已不存在**
 >    （随存储引擎一并移除）。故 §4.3 "复用 conversation_buffer 的 apply_window/trim_to_tokens/
 >    summarize_messages" 已无所指；基于 Token 的裁剪与摘要现由上层实现 `beamai_memory_provider` 提供。
@@ -25,15 +25,15 @@
 
 ## 1. 目标
 
-- **Kernel / Context 不再记录 messages**。每次 `invoke` 永远只传入「单条最新消息」（首轮=用户消息，后续轮=工具结果 delta）。
+- **ChatClient / Context 不再记录 messages**。每次 `invoke` 永远只传入「单条最新消息」（首轮=用户消息，后续轮=工具结果 delta）。
 - 会话历史的存储、注入、裁剪全部由 **Memory Filter + ChatMemory store** 承担。
-- Kernel 回归无状态编排器；不挂 memory 时退化为单次无状态调用。
+- ChatClient 回归无状态编排器；不挂 memory 时退化为单次无状态调用。
 
 ## 2. 现状（待拆除）
 
 - `beamai_context` 持有 `messages`（工作缓冲）+ `history`（追加日志）两个字段。
-- `beamai_kernel:invoke/3` 用 `ExistingMsgs ++ Messages` 拼接累积，并 `track_message/track_new_messages` 写回 context。
-- blast radius：消息累积 API 仅被 `beamai_kernel.erl` 与 `beamai_chat_model_tests.erl` 使用。`beamai_memory:get_history` 是快照历史，无关。无任何 `conversation_id` 使用点。
+- `beamai_chat_client:invoke/3` 用 `ExistingMsgs ++ Messages` 拼接累积，并 `track_message/track_new_messages` 写回 context。
+- blast radius：消息累积 API 仅被 `beamai_chat_client.erl` 与 `beamai_chat_model_tests.erl` 使用。`beamai_memory:get_history` 是快照历史，无关。无任何 `conversation_id` 使用点。
 
 ## 3. 已定决策
 
@@ -65,7 +65,7 @@ mem_clear({M, Ref}, ConvId)      -> M:mem_clear(Ref, ConvId).
 
 - 轻量 gen_server 持有 ETS 表：`ConvId => [message()]`（追加语义；`mem_get` 返回正序全量）。
 - `start_link(Name) -> {ok, Pid}`，句柄为 `{beamai_chat_memory_ets, Name}`。
-- 必须放在 beamai_core（kernel 不可依赖 beamai_memory）。
+- 必须放在 beamai_core（ChatClient 不可依赖 beamai_memory）。
 
 ### 4.3 可选包装 `beamai_chat_memory_window`（beamai_core）
 
@@ -91,13 +91,13 @@ memory_filters(StoreHandle) ->
 ### 4.5 System prompt 注入（不进存储）
 
 - 系统提示作为独立 pre_chat filter，**priority = -500**（在 memory-pre 展开历史之后、LLM 之前），把 system 消息前置到 messages，但**不写入 store**。
-- kernel 只把会话 delta 交给 pipeline，保证 memory-pre 存的永远是纯净对话（无 system prompt）。
-- 实现：`beamai_kernel:with_system_prompt/2` 或在 invoke opts 里带 `system_prompts`，由 kernel 内部挂一个临时 pre_chat filter（priority -500）。
+- ChatClient 只把会话 delta 交给 pipeline，保证 memory-pre 存的永远是纯净对话（无 system prompt）。
+- 实现：`beamai_chat_client:with_system_prompt/2` 或在 invoke opts 里带 `system_prompts`，由 ChatClient 内部挂一个临时 pre_chat filter（priority -500）。
 
-### 4.6 `beamai_kernel` 改动
+### 4.6 `beamai_chat_client` 改动
 
-- Kernel state 增加 `memory => handle() | undefined`。
-- 新增 `with_memory(Kernel, StoreHandle) -> Kernel`：挂载 `beamai_memory_filter:memory_filters/1` 的两个 filter。
+- ChatClient state 增加 `memory => handle() | undefined`。
+- 新增 `with_memory(ChatClient, StoreHandle) -> ChatClient`：挂载 `beamai_memory_filter:memory_filters/1` 的两个 filter。
 - **重写 `invoke/3`**：
   - 删除 `ExistingMsgs ++ Messages`、`track_message/2`、`track_new_messages/2`。
   - 解析 `conversation_id`：取 context 里的；无则生成临时 `<<"conv-", UUID>>` 并标记 ephemeral。
@@ -114,7 +114,7 @@ memory_filters(StoreHandle) ->
 ## 5. 数据流（带工具循环）
 
 ```
-invoke(Kernel, [User消息], #{context := Ctx(conv_id=s1)})
+invoke(ChatClient, [User消息], #{context := Ctx(conv_id=s1)})
 └─ tool_calling_loop, delta = [User消息]
    └─ run_chat_pipeline(delta)
       ├─ [pre_chat -1000] memory : mem_add(s1, delta); messages := mem_get(s1) 全量历史
@@ -130,11 +130,11 @@ invoke(Kernel, [User消息], #{context := Ctx(conv_id=s1)})
 | 文件 | 改动 |
 |------|------|
 | `beamai_core/src/behaviours/beamai_chat_memory.erl` | 新增 behaviour + 调度 API |
-| `beamai_core/src/kernel/beamai_chat_memory_ets.erl` | 新增 ETS gen_server 默认实现 |
-| `beamai_core/src/kernel/beamai_chat_memory_window.erl` | 新增窗口/裁剪包装（复用 conversation_buffer） |
-| `beamai_core/src/kernel/beamai_memory_filter.erl` | 新增 memory pre/post_chat filters |
-| `beamai_core/src/kernel/beamai_kernel.erl` | 加 memory 字段 + with_memory；重写 invoke；删 track_* |
-| `beamai_core/src/kernel/beamai_context.erl` | 删 messages/history；加 conversation_id |
+| `beamai_core/src/core/beamai_chat_memory_ets.erl` | 新增 ETS gen_server 默认实现 |
+| `beamai_core/src/core/beamai_chat_memory_window.erl` | 新增窗口/裁剪包装（复用 conversation_buffer） |
+| `beamai_core/src/core/beamai_memory_filter.erl` | 新增 memory pre/post_chat filters |
+| `beamai_core/src/core/beamai_chat_client.erl` | 加 memory 字段 + with_memory；重写 invoke；删 track_* |
+| `beamai_core/src/core/beamai_context.erl` | 删 messages/history；加 conversation_id |
 | `beamai_core/src/beamai_core.app.src` | 注册新模块 |
 | `beamai_core/test/beamai_chat_model_tests.erl` | 删除/改写 messages/history 相关用例 |
 | 新增测试 | memory filter 累积、工具循环、ephemeral 清理、窗口裁剪 |

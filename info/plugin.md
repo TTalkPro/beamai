@@ -1,13 +1,13 @@
 # Tool 系统（原 Plugin 系统）
 
-> **注意**：Plugin 层已在重构中移除，工具现在直接注册到 Kernel。本文档描述当前的 Tool 架构。
+> **注意**：Plugin 层已在重构中移除，工具现在直接注册到 ChatClient。本文档描述当前的 Tool 架构。
 
 ## 架构变更
 
 ### 旧架构（已废弃）
 
 ```
-Kernel
+ChatClient
   └── plugins: #{Name => Plugin}
         └── Plugin
               └── functions: [function_def()]
@@ -16,7 +16,7 @@ Kernel
 ### 新架构
 
 ```
-Kernel
+ChatClient
   └── tools: #{Name => tool_spec()}
         └── tool_spec (handler, parameters, tag, ...)
 ```
@@ -86,24 +86,24 @@ tools() ->
     ].
 ```
 
-## 注册到 Kernel
+## 注册到 ChatClient
 
-工具直接注册到 Kernel 的 `tools` map 中：
+工具直接注册到 ChatClient 的 `tools` map 中：
 
 ```erlang
 %% 添加单个工具
-K1 = beamai_kernel:add_tool(K0, ToolSpec).
+K1 = beamai_chat_client:add_tool(K0, ToolSpec).
 
 %% 批量添加
-K2 = beamai_kernel:add_tools(K1, [Tool1, Tool2]).
+K2 = beamai_chat_client:add_tools(K1, [Tool1, Tool2]).
 
 %% 从模块加载
-K3 = beamai_kernel:add_tool_module(K2, my_tools).
+K3 = beamai_chat_client:add_tool_module(K2, my_tools).
 ```
 
 ## 工具调用流程
 
-调用 `beamai_kernel:invoke(Kernel, <<"get_weather">>, Args, Ctx)` 时：
+调用 `beamai_chat_client:invoke(ChatClient, <<"get_weather">>, Args, Ctx)` 时：
 
 ### 1. 查找工具
 
@@ -126,7 +126,7 @@ pre_invocation filter -> tool:invoke -> post_invocation filter -> 返回结果
 
 ```erlang
 %% 获取所有工具的 schema
-ToolSpecs = beamai_kernel:get_tool_specs(Kernel).
+ToolSpecs = beamai_chat_client:get_tool_specs(ChatClient).
 
 %% 转换为 OpenAI 格式
 OpenAISchema = beamai_tool:to_tool_schema(ToolSpec, openai).
@@ -141,7 +141,7 @@ AnthropicSchema = beamai_tool:to_tool_schema(ToolSpec, anthropic).
 
 ```erlang
 %% 按 tag 查询
-WeatherTools = beamai_kernel:tools_by_tag(Kernel, <<"weather">>).
+WeatherTools = beamai_chat_client:tools_by_tag(ChatClient, <<"weather">>).
 
 %% 检查工具是否有指定 tag
 HasTag = beamai_tool:has_tag(ToolSpec, <<"io">>).
@@ -150,10 +150,10 @@ HasTag = beamai_tool:has_tag(ToolSpec, <<"io">>).
 ## 整体流程图
 
 ```
-beamai_kernel:add_tool(Kernel, Tool)
+beamai_chat_client:add_tool(ChatClient, Tool)
     |
     v
-Kernel#{tools => #{<<"get_weather">> => ToolSpec}}
+ChatClient#{tools => #{<<"get_weather">> => ToolSpec}}
     |
     |-- invoke(K, <<"get_weather">>, Args, Ctx)
     |     -> find_tool -> pre_filter -> tool:invoke -> post_filter -> {ok, Result}
@@ -175,9 +175,9 @@ Kernel#{tools => #{<<"get_weather">> => ToolSpec}}
 
 | 文件 | 职责 |
 |------|------|
-| `apps/beamai_core/src/kernel/beamai_tool.erl` | 工具定义、调用、schema 生成 |
-| `apps/beamai_core/src/kernel/beamai_tool_behaviour.erl` | 工具模块行为定义 |
-| `apps/beamai_core/src/kernel/beamai_kernel.erl` | Kernel 核心，管理工具和调用循环 |
+| `apps/beamai_core/src/core/beamai_tool.erl` | 工具定义、调用、schema 生成 |
+| `apps/beamai_core/src/core/beamai_tool_behaviour.erl` | 工具模块行为定义 |
+| `apps/beamai_core/src/core/beamai_chat_client.erl` | ChatClient 核心，管理工具和调用循环 |
 | `apps/beamai_tools/src/beamai_tools.erl` | 工具模块加载辅助 |
 
 ## 迁移指南（从 Plugin 到 Tool）
@@ -186,16 +186,16 @@ Kernel#{tools => #{<<"get_weather">> => ToolSpec}}
 
 ```erlang
 %% 旧方式
-K = beamai:add_plugin(Kernel, Plugin).
-{ok, Result} = beamai:function(Kernel, <<"plugin.func">>, Args).
+K = beamai:add_plugin(ChatClient, Plugin).
+{ok, Result} = beamai:function(ChatClient, <<"plugin.func">>, Args).
 ```
 
 ### 新 API
 
 ```erlang
 %% 新方式
-K = beamai_kernel:add_tool(Kernel, ToolSpec).
-{ok, Result, Ctx} = beamai_kernel:invoke(Kernel, <<"tool_name">>, Args, Ctx).
+K = beamai_chat_client:add_tool(ChatClient, ToolSpec).
+{ok, Result, Ctx} = beamai_chat_client:invoke(ChatClient, <<"tool_name">>, Args, Ctx).
 ```
 
 ### 模块迁移

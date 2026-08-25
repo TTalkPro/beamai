@@ -1,5 +1,5 @@
 {application, beamai_core, [
-    {description, "BeamAI Core - Kernel 框架"},
+    {description, "BeamAI Core - ChatClient 框架"},
     {vsn, "1.0.0"},
     {registered, [beamai_core_sup,
                   http_pool_short,
@@ -12,7 +12,7 @@
     %% 不声明 beamai_llm 依赖：beamai_llm 的 applications 含 beamai_core，
     %% 反向声明会成环。core 里唯一的运行时反向调用是门面
     %% beamai:add_chat_model/3 → beamai_chat_model:create/2，由使用方保证
-    %% beamai_llm 已加载（直接用 beamai_kernel:add_chat_model/2 则无此依赖）。
+    %% beamai_llm 已加载（直接用 beamai_chat_client:add_chat_model/2 则无此依赖）。
     %% 注：这里原本有一条 {optional_applications, [beamai_llm]}，但 OTP 要求
     %% optional_applications 必须是 applications 的子集，未列入时该声明无效，
     %% 故删除而非补进 applications（补进即成环）。
@@ -23,8 +23,8 @@
         beamai_core_sup,
         %% Facade 入口
         beamai,
-        %% Kernel 核心
-        beamai_kernel,
+        %% ChatClient 核心
+        beamai_chat_client,
         beamai_message,
         beamai_tool,
         beamai_tool_behaviour,

@@ -1,11 +1,11 @@
 %%%-------------------------------------------------------------------
-%%% @doc token_transform 链 kernel 集成测试（invoke_chat_stream 组装点）
+%%% @doc token_transform 链 ChatClient 集成测试（invoke_chat_stream 组装点）
 %%%
 %%% 对照 clj token-stream-filter-design.md §6 锚点：变换生效、最终响应
 %%% 不被变换、异常不 flush、退化路径、同步路径忽略、hold-release 两分支。
 %%% @end
 %%%-------------------------------------------------------------------
--module(beamai_kernel_stream_tests).
+-module(beamai_chat_client_stream_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -23,8 +23,8 @@ mock_stream(Tokens, Result) ->
             Result
         end).
 
-kernel_with(Filters) ->
-    beamai_kernel:add_chat_model(beamai_kernel:new(#{}, Filters),
+chat_client_with(Filters) ->
+    beamai_chat_client:add_chat_model(beamai_chat_client:new(#{}, Filters),
                               beamai_chat_model:create(mock, #{})).
 
 collector() ->
@@ -40,7 +40,7 @@ flush_mailbox() ->
     receive {tok, _} -> flush_mailbox() after 0 -> ok end.
 
 run_stream(K, Sink) ->
-    beamai_kernel:invoke_chat_stream(
+    beamai_chat_client:invoke_chat_stream(
         K, [#{role => user, content => <<"hi">>}], #{}, Sink).
 
 %%====================================================================
@@ -53,7 +53,7 @@ redact_transforms_sink_test() ->
                 {ok, #{content => <<"key=abc123 ok plain">>,
                        finish_reason => <<"stop">>}}),
     try
-        K = kernel_with([beamai_filters:token_redact_filter(
+        K = chat_client_with([beamai_filters:token_redact_filter(
                              <<"key=\\w+">>, <<"[REDACTED]">>)]),
         {ok, Resp, _} = run_stream(K, collector()),
         ?assertEqual([<<"[REDACTED] ok">>, <<"plain">>], drain([])),
@@ -77,7 +77,7 @@ composition_order_test() ->
             end}})
     end,
     try
-        K = kernel_with([Prefix(<<"a">>, <<"A">>), Prefix(<<"b">>, <<"B">>)]),
+        K = chat_client_with([Prefix(<<"a">>, <<"A">>), Prefix(<<"b">>, <<"B">>)]),
         {ok, _, _} = run_stream(K, collector()),
         %% A 先见原始 token → "Ax"，再经 B → "BAx"
         ?assertEqual([<<"BAx">>], drain([]))
@@ -94,7 +94,7 @@ hold_release_pass_test() ->
     mock_stream([<<"he">>, <<"llo">>],
                 {ok, #{content => <<"hello">>, finish_reason => <<"stop">>}}),
     try
-        K = kernel_with([beamai_filters:hold_release_filter(
+        K = chat_client_with([beamai_filters:hold_release_filter(
                              fun(<<"hello">>) -> ok end)]),
         {ok, Resp, _} = run_stream(K, collector()),
         %% 全部缓冲在完流时按原序放行
@@ -113,7 +113,7 @@ hold_release_block_test() ->
     mock_stream([<<"bad">>, <<" stuff">>],
                 {ok, #{content => <<"bad stuff">>, finish_reason => <<"stop">>}}),
     try
-        K = kernel_with([beamai_filters:hold_release_filter(
+        K = chat_client_with([beamai_filters:hold_release_filter(
                              fun(_) -> {block, <<"[BLOCKED]">>} end)]),
         {ok, Resp, _} = run_stream(K, collector()),
         ?assertEqual([<<"[BLOCKED]">>], drain([])),
@@ -131,7 +131,7 @@ error_no_flush_test() ->
     flush_mailbox(),
     mock_stream([<<"partial">>], {error, boom}),
     try
-        K = kernel_with([beamai_filters:hold_release_filter(fun(_) -> ok end)]),
+        K = chat_client_with([beamai_filters:hold_release_filter(fun(_) -> ok end)]),
         ?assertEqual({error, boom}, run_stream(K, collector())),
         %% hold_release 缓冲了 "partial"，错误路径不 flush → 不外泄
         ?assertEqual([], drain([]))
@@ -151,7 +151,7 @@ no_token_transform_passthrough_test() ->
         %% 有 chat filter 但无 token_transform：token 路径不受影响
         ChatF = beamai_filter:new(<<"noop">>, #{
             around_chat => fun(Req, _F, Next) -> Next(Req) end}),
-        K = kernel_with([ChatF]),
+        K = chat_client_with([ChatF]),
         {ok, _, _} = run_stream(K, collector()),
         ?assertEqual([<<"a">>, <<"b">>], drain([]))
     after
@@ -163,7 +163,7 @@ no_token_transform_passthrough_test() ->
 %%====================================================================
 
 sync_ignores_token_transform_test() ->
-    K = kernel_with([beamai_filters:token_redact_filter(<<"x">>, <<"y">>)]),
-    {ok, Resp, _} = beamai_kernel:invoke_chat(
+    K = chat_client_with([beamai_filters:token_redact_filter(<<"x">>, <<"y">>)]),
+    {ok, Resp, _} = beamai_chat_client:invoke_chat(
         K, [#{role => user, content => <<"hi">>}], #{}),
     ?assert(is_map(Resp)).

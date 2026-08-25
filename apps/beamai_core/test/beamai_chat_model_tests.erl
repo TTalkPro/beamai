@@ -6,8 +6,8 @@
 %%====================================================================
 
 tool_schema_full_test() ->
-    K = beamai_kernel:new(),
-    K1 = beamai_kernel:add_tools(K, [
+    K = beamai_chat_client:new(),
+    K1 = beamai_chat_client:add_tools(K, [
         beamai_tool:new(<<"get_weather">>,
             fun(#{location := L}) -> {ok, #{location => L, temp => 22}} end,
             #{
@@ -18,7 +18,7 @@ tool_schema_full_test() ->
                 }
             })
     ]),
-    [Schema] = beamai_kernel:get_tool_schemas(K1, openai),
+    [Schema] = beamai_chat_client:get_tool_schemas(K1, openai),
     ?assertEqual(<<"function">>, maps:get(<<"type">>, Schema)),
     Func = maps:get(<<"function">>, Schema),
     ?assertEqual(<<"get_weather">>, maps:get(<<"name">>, Func)),
@@ -27,8 +27,8 @@ tool_schema_full_test() ->
     ?assert(maps:is_key(<<"location">>, Props)).
 
 tool_schema_anthropic_format_test() ->
-    K = beamai_kernel:new(),
-    K1 = beamai_kernel:add_tools(K, [
+    K = beamai_chat_client:new(),
+    K1 = beamai_chat_client:add_tools(K, [
         beamai_tool:new(<<"search">>,
             fun(_) -> {ok, []} end,
             #{
@@ -38,7 +38,7 @@ tool_schema_anthropic_format_test() ->
                 }
             })
     ]),
-    [Schema] = beamai_kernel:get_tool_schemas(K1, anthropic),
+    [Schema] = beamai_chat_client:get_tool_schemas(K1, anthropic),
     ?assertEqual(<<"search">>, maps:get(<<"name">>, Schema)),
     ?assertEqual(<<"Search the web">>, maps:get(<<"description">>, Schema)),
     ?assert(maps:is_key(<<"input_schema">>, Schema)).
@@ -48,10 +48,10 @@ tool_schema_anthropic_format_test() ->
 %%====================================================================
 
 llm_service_config_test() ->
-    K0 = beamai_kernel:new(),
+    K0 = beamai_chat_client:new(),
     LlmConfig = beamai_chat_model:create(mock, #{model => <<"test-model">>}),
-    K1 = beamai_kernel:add_chat_model(K0, LlmConfig),
-    {ok, Svc} = beamai_kernel:chat_model(K1),
+    K1 = beamai_chat_client:add_chat_model(K0, LlmConfig),
+    {ok, Svc} = beamai_chat_client:chat_model(K1),
     ?assertEqual(mock, maps:get(provider, Svc)),
     ?assertEqual(<<"test-model">>, maps:get(model, Svc)).
 
@@ -116,11 +116,11 @@ context_conversation_id_test() ->
     Ctx1 = beamai_context:with_conversation_id(Ctx0, <<"conv-1">>),
     ?assertEqual(<<"conv-1">>, beamai_context:conversation_id(Ctx1)).
 
-context_kernel_test() ->
+context_chat_client_test() ->
     Ctx0 = beamai_context:new(),
-    K = beamai_kernel:new(),
-    Ctx1 = beamai_context:with_kernel(Ctx0, K),
-    ?assertEqual(K, beamai_context:get_kernel(Ctx1)).
+    K = beamai_chat_client:new(),
+    Ctx1 = beamai_context:with_chat_client(Ctx0, K),
+    ?assertEqual(K, beamai_context:get_chat_client(Ctx1)).
 
 %%====================================================================
 %% Result Tests

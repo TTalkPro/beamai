@@ -5,8 +5,8 @@
 %%% 同时保留原始数据以便获取 Provider 特有信息。
 %%%
 %%% 该模块位于 beamai_core 是因为：
-%%% - 作为核心数据结构，被 LLM 层生成、被 Kernel 层消费
-%%% - beamai_kernel 的工具调用循环需要可靠访问 tool_calls 和 content
+%%% - 作为核心数据结构，被 LLM 层生成、被 ChatClient 层消费
+%%% - beamai_chat_client 的工具调用循环需要可靠访问 tool_calls 和 content
 %%% - 使用访问器函数比直接 map 模式匹配更健壮
 %%%
 %%% == 设计原则 ==

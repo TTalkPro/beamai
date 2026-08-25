@@ -42,14 +42,14 @@ tool_call() ->
     #{id => <<"call_1">>, type => <<"function">>,
       function => #{name => <<"plugin_tool">>, arguments => <<"{}">>}}.
 
-kernel(Filters) ->
-    K0 = beamai_kernel:new(#{}, Filters),
-    K1 = beamai_kernel:add_tool_module(K0, beamai_agent_test_plugin),
-    beamai_kernel:add_chat_model(K1, beamai_chat_model:create(mock, #{})).
+chat_client(Filters) ->
+    K0 = beamai_chat_client:new(#{}, Filters),
+    K1 = beamai_chat_client:add_tool_module(K0, beamai_agent_test_plugin),
+    beamai_chat_client:add_chat_model(K1, beamai_chat_model:create(mock, #{})).
 
 agent(Filters) -> agent(Filters, #{}).
 agent(Filters, Extra) ->
-    beamai_agent:new(maps:merge(#{kernel => kernel(Filters), memory => false}, Extra)).
+    beamai_agent:new(maps:merge(#{chat_client => chat_client(Filters), memory => false}, Extra)).
 
 %% 四链都留痕的探针 filter
 probe() ->

@@ -8,7 +8,7 @@
 
 基于 Erlang/OTP 的高性能 AI Agent 应用框架核心库，提供构建 Agent 的基础能力。
 
-> **项目说明**: 本项目是 BeamAI 框架的核心库，提供 Kernel、Filter（含会话记忆）、LLM 客户端和 SimpleAgent 等核心功能。
+> **项目说明**: 本项目是 BeamAI 框架的核心库，提供 ChatClient、Filter（含会话记忆）、LLM 客户端和 SimpleAgent 等核心功能。
 >
 > 扩展功能（Tools 库、RAG、A2A/MCP 协议）位于 [beamai_extra](https://github.com/TTalkPro/beamai_extra) 扩展项目。
 >
@@ -18,7 +18,7 @@
 
 ### 核心项目 (本项目)
 提供构建 AI Agent 的基础设施（三大核心职责）：
-- **beamai_core** - Kernel 基座：Context、Filter（洋葱式 around 模型）、Tool 的构建与调用
+- **beamai_core** - ChatClient 基座：Context、Filter（洋葱式 around 模型）、Tool 的构建与调用
 - **beamai_agent** - SimpleAgent：以 ReAct 为主的 Agent 框架（上下文记忆由 filter-memory 实现、多轮对话、回调、中断/恢复）
 - **beamai_llm** - 统一的 LLM 客户端（支持 OpenAI、Anthropic、DeepSeek、Zhipu、DashScope、Ollama）
 
@@ -31,12 +31,12 @@
 
 ## 特性
 
-- **Kernel/Tool 架构**: 语义化的工具注册和调用系统
-  - 基于 Semantic Kernel 理念的 Kernel 核心（无状态，不记录消息）
+- **ChatClient/Tool 架构**: 语义化的工具注册和调用系统
+  - 基于 Semantic Kernel 理念的 ChatClient 核心（无状态，不记录消息）
   - 统一的 Tool 定义和管理
   - Filter 洋葱式拦截和安全验证
 
-- **会话记忆 (Memory Filter)**: 对话历史与 Kernel 解耦
+- **会话记忆 (Memory Filter)**: 对话历史与 ChatClient 解耦
   - 每次 invoke 只传单条最新消息，历史由 Memory Filter 按 `conversation_id` 管理
   - 可插拔存储后端（ETS / DETS 持久化 / 自定义 behaviour）；滑动窗口由 Agent 侧的 memory provider 提供
   - 详见 [docs/MEMORY.md](docs/MEMORY.md)
@@ -73,11 +73,11 @@ LLM = beamai_chat_model:create(zhipu, #{
 ]),
 ```
 
-### 3. Kernel + Tool（工具注册）
+### 3. ChatClient + Tool（工具注册）
 
 ```erlang
-%% 创建 Kernel
-Kernel = beamai_kernel:new(),
+%% 创建 ChatClient
+ChatClient = beamai_chat_client:new(),
 
 %% 定义 Tool
 SearchTool = #{
@@ -92,10 +92,10 @@ SearchTool = #{
 },
 
 %% 注册工具
-Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
+ChatClient1 = beamai_chat_client:add_tool(ChatClient, SearchTool),
 
 %% 调用单个工具
-{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel1, <<"search">>, #{
+{ok, Result, _NewCtx} = beamai_chat_client:invoke_tool(ChatClient1, <<"search">>, #{
     <<"query">> => <<"Erlang"/utf8>>
 }, beamai_context:new()).
 ```
@@ -103,12 +103,12 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 ### 4. Filter（洋葱式拦截）
 
 ```erlang
-%% 一个 filter 含 5 个可选 around hook（外→内：around_turn/around_step/
-%% around_chat/around_llm/around_tool）：工具循环本身也是 turn 链上的一环，
-%% 它的 next 就是一轮迭代（around_step），重试则住在最内的 around_llm
+%% 一个 filter 含 4 个可选 around hook（外→内：around_turn/around_step/
+%% around_chat/around_tool）：工具循环本身也是 turn 链上的一环，它的 next
+%% 就是一轮迭代（around_step）；provider 重试在整个 filter 栈之下
 %% 每个 around 用单个闭包 fun(Req, FCtx, Next) -> Resp 包裹同一次调用，
 %% 前置/后置同处一处，不调 Next 即短路。
-%% filter 在构建 kernel 时一次性给出，注册顺序即层序（列表靠前 = 外层）。
+%% filter 在构建 ChatClient 时一次性给出，注册顺序即层序（列表靠前 = 外层）。
 
 %% 一个 around_tool：参数校验（短路）+ 结果翻倍
 ValidateTransform = beamai:filter(<<"validate_transform">>, #{
@@ -128,7 +128,7 @@ ValidateTransform = beamai:filter(<<"validate_transform">>, #{
     end
 }),
 
-K0 = beamai:kernel(#{}, [ValidateTransform]),
+K0 = beamai:chat_client(#{}, [ValidateTransform]),
 K1 = beamai:add_tool(K0, beamai:tool(<<"add">>,
     fun(#{a := A, b := B}) -> {ok, A + B} end,
     #{description => <<"Add two numbers">>,
@@ -171,7 +171,7 @@ Parser = beamai_output_parser:json(#{
 ```
 apps/
 ├── beamai_core/        # 核心框架
-│   ├── Kernel         # beamai_kernel, beamai_tool, beamai_context,
+│   ├── ChatClient     # beamai_chat_client, beamai_tool, beamai_context,
 │   │                  # beamai_filter, beamai_prompt, beamai_result
 │   ├── Memory Filter  # beamai_memory_filter（会话历史按 conversation_id 管理）
 │   ├── HTTP           # beamai_http, beamai_http_gun, beamai_http_pool
@@ -211,16 +211,16 @@ apps/
 
 ## 核心概念
 
-### 1. Kernel 架构
+### 1. ChatClient 架构
 
-Kernel 是 BeamAI 的核心抽象，管理 Tool 的注册与调用：
+ChatClient 是 BeamAI 的核心抽象，管理 Tool 的注册与调用：
 
 ```erlang
-%% 创建 Kernel 实例
-Kernel = beamai_kernel:new(),
+%% 创建 ChatClient 实例
+ChatClient = beamai_chat_client:new(),
 
 %% 从 Tool 模块加载工具
-Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
+ChatClient1 = beamai_chat_client:add_tool_module(ChatClient, beamai_tool_file),
 
 %% 或添加单个工具
 Tool = #{
@@ -233,17 +233,17 @@ Tool = #{
         file:read_file(Path)
     end
 },
-Kernel2 = beamai_kernel:add_tool(Kernel1, Tool),
+ChatClient2 = beamai_chat_client:add_tool(ChatClient1, Tool),
 
 %% 调用注册的工具
-{ok, Result, _NewCtx} = beamai_kernel:invoke_tool(Kernel2, <<"read_file">>, #{
+{ok, Result, _NewCtx} = beamai_chat_client:invoke_tool(ChatClient2, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
 
 ### 2. 会话记忆 (Memory Filter)
 
-Kernel 本身无状态、不记录消息；多轮对话历史由 **Memory Filter**（`beamai_memory_filter`）以 `conversation_id` 为单位管理。每次 invoke 只携带单条最新消息，filter 负责注入历史与持久化增量。
+ChatClient 本身无状态、不记录消息；多轮对话历史由 **Memory Filter**（`beamai_memory_filter`）以 `conversation_id` 为单位管理。每次 invoke 只携带单条最新消息，filter 负责注入历史与持久化增量。
 
 - 可插拔存储后端（ETS / DETS 持久化 / 自定义 behaviour）；滑动窗口由 Agent 侧的 memory provider 提供
 - SimpleAgent 的跨轮记忆即基于此实现
@@ -317,7 +317,7 @@ HTTP 全线走 Gun 后端（`beamai_http_gun`）：支持 HTTP/2、内置三个�
 
 | 模块 | 说明 | 文档 |
 |------|------|------|
-| **beamai_core** | 核心框架：Kernel、Context、Filter、Tool、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
+| **beamai_core** | 核心框架：ChatClient、Context、Filter、Tool、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
 | **beamai_agent** | SimpleAgent：ReAct Agent 框架（多轮对话、回调、中断/恢复） | [README](apps/beamai_agent/README.md) |
 | **beamai_llm** | LLM 客户端：6 家 Provider 统一同步/流式；多模态输入、Anthropic 缓存/Web Search/引用、速率限制头、Retry-After 重试、统一错误结构 | [README](apps/beamai_llm/README.md) |
 

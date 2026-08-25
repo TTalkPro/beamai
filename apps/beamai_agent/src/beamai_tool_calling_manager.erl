@@ -98,7 +98,7 @@
 %%
 %% Manager 为 <code>&#123;Mod, Ref&#125;</code>；调用方经
 %% {@link execute_tool_calls/4} 分派到
-%% <code>Mod:execute_tool_calls(Ref, Kernel, ToolCalls, Opts)</code>。
+%% <code>Mod:execute_tool_calls(Ref, ChatClient, ToolCalls, Opts)</code>。
 %% Ref 为实现模块的私有状态（默认实现不用，自定义实现可携配置）。
 %%
 %% 返回 <code>#{messages, records, context}</code>：
@@ -110,9 +110,9 @@
 %%
 %% 内部如何调度（spawn_monitor 并发 / 全串行 / 线程池）完全由实现模块决定。
 %% 协议不规定、框架不强加——选 manager 即选策略。
--callback execute_tool_calls(Ref, Kernel, ToolCalls, Opts) -> ExecuteResult when
+-callback execute_tool_calls(Ref, ChatClient, ToolCalls, Opts) -> ExecuteResult when
     Ref            :: term(),
-    Kernel         :: beamai_kernel:kernel(),
+    ChatClient         :: beamai_chat_client:chat_client(),
     ToolCalls      :: [map()],
     Opts           :: execute_opts(),
     ExecuteResult  :: execute_result().
@@ -125,10 +125,10 @@
 %%
 %% 与 {@link beamai_memory_provider:history/2} 等分派函数同款：拆开
 %% <code>&#123;Mod, Ref&#125;</code>，调 <code>Mod:execute_tool_calls(Ref, ...)</code>。
--spec execute_tool_calls(manager(), beamai_kernel:kernel(), [map()], execute_opts()) ->
+-spec execute_tool_calls(manager(), beamai_chat_client:chat_client(), [map()], execute_opts()) ->
     execute_result().
-execute_tool_calls({Module, Ref}, Kernel, ToolCalls, Opts) ->
-    Module:execute_tool_calls(Ref, Kernel, ToolCalls, Opts).
+execute_tool_calls({Module, Ref}, ChatClient, ToolCalls, Opts) ->
+    Module:execute_tool_calls(Ref, ChatClient, ToolCalls, Opts).
 
 %%====================================================================
 %% 构造

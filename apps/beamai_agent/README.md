@@ -2,12 +2,12 @@
 
 中文
 
-以 ReAct 模式为核心的有状态多轮对话 Agent。封装 `beamai_kernel`，自实现工具循环
+以 ReAct 模式为核心的有状态多轮对话 Agent。封装 `beamai_chat_client`，自实现工具循环
 （Tool Loop）。
 
-**Agent 自管编排（不借道 kernel filter）**：记忆与回调都是 Agent 自己的接口，由
+**Agent 自管编排（不借道 ChatClient filter）**：记忆与回调都是 Agent 自己的接口，由
 tool loop **显式**调用——记忆走 `beamai_memory_provider`（载入/持久/发送前变换），
-回调直接触发。Agent **不**向 kernel 注入 filter；kernel 保持纯原语。tool loop 自己
+回调直接触发。Agent **不**向 ChatClient 注入 filter；ChatClient 保持纯原语。tool loop 自己
 持有本轮完整 messages（within-run 累积），跨轮历史由 memory provider 按
 `conversation_id` 持久化。
 
@@ -32,7 +32,7 @@ tool loop **显式**调用——记忆走 `beamai_memory_provider`（载入/持�
 |------|------|
 | `beamai_agent` | 主 API（new/run/stream/resume/查询/修改） |
 | `beamai_agent_app` / `beamai_agent_sup` | OTP 应用 + supervisor（监督默认会话 store） |
-| `beamai_agent_state` | Agent 状态构建与 kernel 集成（解析 memory provider） |
+| `beamai_agent_state` | Agent 状态构建与 ChatClient 集成（解析 memory provider） |
 | `beamai_agent_tool_loop` | ReAct 工具循环执行器（full-messages，自管编排记忆与回调） |
 | `beamai_agent_callbacks` | 回调系统（10 个回调） |
 | `beamai_agent_interrupt` | 中断与恢复机制 |
@@ -56,7 +56,7 @@ beamai_agent:is_interrupted(State)     -> boolean().
 beamai_agent:get_interrupt_info(State) -> Info | undefined.
 
 %% 查询 / 修改
-beamai_agent:messages(State), last_response(State), turn_count(State), kernel(State), id(State), name(State).
+beamai_agent:messages(State), last_response(State), turn_count(State), ChatClient(State), id(State), name(State).
 beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_messages(State), update_metadata(State, Map).
 ```
 
@@ -65,7 +65,7 @@ beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_message
 ```erlang
 {ok, State} = beamai_agent:new(#{
     %% LLM：{Provider, Opts} 元组，或 beamai_chat_model:create/2 的结果，
-    %% 或直接传入已构建好的 kernel（kernel => K，此时忽略 llm/plugins）
+    %% 或直接传入已构建好的 ChatClient（chat_client => K，此时忽略 llm/plugins）
     llm => {anthropic, #{model => <<"claude-sonnet-4-5">>, api_key => Key}},
 
     system_prompt => <<"你是一个有帮助的助手。"/utf8>>,
@@ -127,8 +127,8 @@ io:format("~s~n", [maps:get(content, Result)]).
 {ok, Result, _} = beamai_agent:run(State, <<"帮我查一下天气"/utf8>>).
 ```
 
-> 若改用 `kernel => K` 传入预构建 kernel，则 `llm`/`plugins` 被忽略，需自行
-> `beamai_kernel:add_chat_model/2` 配置 LLM、`add_tool_module/2` 注册工具。
+> 若改用 `chat_client => K` 传入预构建 ChatClient，则 `llm`/`plugins` 被忽略，需自行
+> `beamai_chat_client:add_chat_model/2` 配置 LLM、`add_tool_module/2` 注册工具。
 
 ### 多轮对话
 
@@ -158,7 +158,7 @@ end.
 
 ## 会话记忆（Memory）
 
-记忆是 Agent 的一个**可插拔接口**，由 tool loop 显式调用（不经任何 kernel filter），
+记忆是 Agent 的一个**可插拔接口**，由 tool loop 显式调用（不经任何 ChatClient filter），
 分两层协议（各有默认实现、都可 DIY）：
 
 | 层 | 协议（behaviour） | 职责 | 默认实现 |
@@ -171,8 +171,8 @@ end.
 `memory` 的各种取值统一解析为一个 provider；窗口即默认 provider 的一个选项
 （`beamai_memory_provider_default:new(Store, N)`）。
 
-> 注：`beamai_memory_filter`（构建 kernel 时放进 `beamai_kernel:new/2` 的 filters
-> 列表首位）是**kernel 级**的 filter 形态记忆，给"直接用 kernel / beamai facade"
+> 注：`beamai_memory_filter`（构建 ChatClient 时放进 `beamai_chat_client:new/2` 的 filters
+> 列表首位）是**ChatClient 级**的 filter 形态记忆，给"直接用 ChatClient / beamai facade"
 > 的人；Agent 层**不用**它。
 
 ```erlang
@@ -226,11 +226,11 @@ clear(Ref, ConvId) -> ok.
 
 ## 自定义 Filter（chat / tool）
 
-Filter 是 **kernel 级**机制（不是 agent 特性——agent 的记忆/回调都不走 filter）。
-`new/1` **没有顶层 `filters` 键**。要在 agent 用到的 kernel 上加 filter，走
-**预构建 kernel，传 `kernel =>`**（filter 在 `beamai_kernel:new/2` 一次性给出，
-注册顺序即层序：列表靠前 = 外层；传 kernel 时 LLM 需自行 `add_chat_model`；
-记忆仍由 `memory` 配置独立解析为 provider，与 kernel 无关）：
+Filter 是 **ChatClient 级**机制（不是 agent 特性——agent 的记忆/回调都不走 filter）。
+`new/1` **没有顶层 `filters` 键**。要在 agent 用到的 ChatClient 上加 filter，走
+**预构建 ChatClient，传 `chat_client =>`**（filter 在 `beamai_chat_client:new/2` 一次性给出，
+注册顺序即层序：列表靠前 = 外层；传 ChatClient 时 LLM 需自行 `add_chat_model`；
+记忆仍由 `memory` 配置独立解析为 provider，与 ChatClient 无关）：
 
 ```erlang
 %% around_chat：Req = #{messages, context, opts}，Next 返回 #{response, context}
@@ -250,9 +250,9 @@ TimeTool = beamai_filter:new(<<"time_tool">>,
         Resp
     end}),
 
-K0 = beamai_kernel:new(#{}, [LogChat, TimeTool]),
-K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(openai, #{model => <<"gpt-4o">>})),
-{ok, A} = beamai_agent:new(#{kernel => K1, memory => {window, 20}}).
+K0 = beamai_chat_client:new(#{}, [LogChat, TimeTool]),
+K1 = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(openai, #{model => <<"gpt-4o">>})),
+{ok, A} = beamai_agent:new(#{chat_client => K1, memory => {window, 20}}).
 ```
 
 **Filter hook 速查**
@@ -261,8 +261,7 @@ K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(openai, #{model =
 |------|------|----------|-----------|
 | `around_turn` | 每 turn 一次 | `#{messages, context, resume, load_history}` | 工具循环结果 tuple |
 | `around_step` | 每轮迭代一次（含该轮工具执行） | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}` |
-| `around_chat` | 每轮迭代一次 | `#{messages, context, opts}` | `#{response, context}` |
-| `around_llm` | 每次真实 LLM 请求一次（重试在这层重入） | 同 chat（流式另带 `stream => true`） | 同 chat |
+| `around_chat` | 每轮迭代一次 | `#{messages, context, opts}`（流式另带 `stream => true`） | `#{response, context}` |
 | `around_tool` | 每个 tool call 一次 | `#{tool, args, context}` | `#{result, context}` |
 
 - 闭包签名 `fun(Req, FCtx, Next) -> Resp`：前置改 `Req` 再 `Next(Req2)`；后置改 `Resp`；
@@ -275,7 +274,7 @@ K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(openai, #{model =
 
 ## 子 Agent 委派（agent-as-tool）
 
-`beamai_agent_delegate:tool/1` 生成一个**委派工具**（opt-in，加进 kernel/plugins 才生效）。
+`beamai_agent_delegate:tool/1` 生成一个**委派工具**（opt-in，加进 ChatClient/plugins 才生效）。
 对标 Hermes `delegate_task` / OpenClaw `sessions_spawn`：**进程隔离 + 会话隔离**（默认），
 上下文**显式传入**（`context` 参数由父 LLM 填、`seed` 由程序注入），**只把子 agent 的结论**
 作为工具结果回流父记忆。
@@ -301,8 +300,8 @@ Delegate = beamai_agent_delegate:tool(#{
     isolation => process,   %% 默认;独立进程 + 超时（inline 退回当前进程）
     timeout => 60000        %% 默认 60s;超时则 kill 子 agent 返回 {error, sub_agent_timeout}
 }),
-K  = beamai_kernel:add_tools(beamai_kernel:add_chat_model(beamai_kernel:new(), Llm), [Delegate]),
-{ok, Parent} = beamai_agent:new(#{kernel => K, memory => ParentMem, conversation_id => ParentConv}).
+K  = beamai_chat_client:add_tools(beamai_chat_client:add_chat_model(beamai_chat_client:new(), Llm), [Delegate]),
+{ok, Parent} = beamai_agent:new(#{chat_client => K, memory => ParentMem, conversation_id => ParentConv}).
 ```
 
 - **工具参数**:`task`(必填)+ `context`(可选,父 LLM 自行填写要传给子的背景)。
@@ -377,7 +376,7 @@ Results = beamai_agent_delegate:run_many(
 
 ## 依赖
 
-- `beamai_core`（Kernel、Context、Filter、Tool）
+- `beamai_core`（ChatClient、Context、Filter、Tool）
 - `beamai_llm`（LLM 调用）
 
 ## 许可证

@@ -112,15 +112,13 @@ call_llm_internal(Messages, LLMConfig, MaxTokens) ->
             end
     end.
 
-%% @private 直连 provider 的一次带重试调用
+%% @private 直连 provider 调用
 %%
-%% 本模块不经 kernel，拿不到 llm 链上的重试 filter（重试已从
-%% beamai_chat_model 上移到那层），故在此显式包一层 beamai_llm_retry。
+%% 重试由 beamai_chat_model:chat/2 内建（参数取自 Config，即用户传进来的
+%% max_retries/retry_delay/on_retry），这里不要再包一层——会变成双重重试。
 chat_with_retry(LLMConfig, Messages, MaxTokens) ->
     Config = build_config(LLMConfig, MaxTokens),
-    RetryOpts = beamai_llm_retry:opts(LLMConfig),
-    beamai_llm_retry:run(
-      fun() -> beamai_chat_model:chat(Config, Messages) end, RetryOpts).
+    beamai_chat_model:chat(Config, Messages).
 
 %% @doc 构建 LLM 配置
 %% 将简化配置转换为完整的 beamai_chat_model 配置

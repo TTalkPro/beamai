@@ -2,8 +2,8 @@
 
 English | [中文](MEMORY.md)
 
-beamai_core fully decouples conversation-history storage and injection from the Kernel:
-**the Kernel is stateless and each invoke only takes the single latest message**. History
+beamai_core fully decouples conversation-history storage and injection from the ChatClient:
+**the ChatClient is stateless and each invoke only takes the single latest message**. History
 is keyed by `conversation_id`.
 
 Memory comes in **two layers**, solving different problems:
@@ -14,25 +14,25 @@ Memory comes in **two layers**, solving different problems:
 | **Policy** | `beamai_memory_provider` | Cross-run load/persist + **pre-send transform** (window trim / summarization / RAG recall) |
 
 On top of those layers there are **two independent entry paths**, depending on whether
-you use the Kernel or the Agent:
+you use the ChatClient or the Agent:
 
 | Path | How you wire it | For |
 |---|---|---|
-| **Kernel-level** | `beamai_memory_filter:memory_filter(Store)` first in the filters list | Using `beamai_kernel` / the `beamai` facade directly |
+| **ChatClient-level** | `beamai_memory_filter:memory_filter(Store)` first in the filters list | Using `beamai_chat_client` / the `beamai` facade directly |
 | **Agent-level** | `memory => Provider` config; the Agent orchestrates it in its tool loop | Using `beamai_agent` |
 
 > **Do not mix the two**: `beamai_agent` **does not use** the memory filter — it calls
 > `beamai_memory_provider` (history/prepare/append) explicitly in its own tool loop.
-> The Agent layer has no notion of filters (filters belong to the kernel layer).
+> The Agent layer has no notion of filters (filters belong to the ChatClient layer).
 
-Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_memory_filter_redesign.md).
+Design rationale: [design/chat_client_memory_filter_redesign.md](../design/chat_client_memory_filter_redesign.md).
 
 ## Table of Contents
 
 - [Core Idea](#core-idea)
 - [Components](#components)
 - [delta mode vs full mode](#delta-mode-vs-full-mode)
-- [Quick Start (Kernel-level)](#quick-start-kernel-level)
+- [Quick Start (ChatClient-level)](#quick-start-chatclient-level)
 - [ChatMemory Behaviour (storage layer)](#chatmemory-behaviour-storage-layer)
 - [Memory Provider (policy layer / Agent-level)](#memory-provider-policy-layer--agent-level)
 - [Sliding Window](#sliding-window)
@@ -42,10 +42,10 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 
 ## Core Idea
 
-- **The Kernel stores no messages**. `beamai_context` no longer holds `messages` / `history`.
+- **The ChatClient stores no messages**. `beamai_context` no longer holds `messages` / `history`.
 - **Each invoke passes only the latest message** (first round = user message, later rounds = tool results).
 - Storage, injection and trimming of history are handled entirely by the **store + filter/provider**, isolated by `conversation_id`.
-- Without memory, the Kernel degrades to a **stateless single-shot call** (the tool loop accumulates locally).
+- Without memory, the ChatClient degrades to a **stateless single-shot call** (the tool loop accumulates locally).
 
 ## Components
 
@@ -56,8 +56,8 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 | `beamai_chat_memory_dets` | Storage | DETS persistent implementation (history recovered per conversation_id after restart) |
 | `beamai_memory_provider` | Policy | Provider **behaviour** + dispatch API: history/append/prepare/clear |
 | `beamai_memory_provider_default` | Policy | Default provider: wraps a store; `new/2` adds a sliding window |
-| `beamai_memory_filter` | Kernel entry | A single filter: around_chat stores delta + expands history (before), stores reply (after) |
-| `beamai_kernel:new/2` | Kernel entry | Put the memory filter into the filters list at build time (first = outermost) |
+| `beamai_memory_filter` | ChatClient entry | A single filter: around_chat stores delta + expands history (before), stores reply (after) |
+| `beamai_chat_client:new/2` | ChatClient entry | Put the memory filter into the filters list at build time (first = outermost) |
 
 ## delta mode vs full mode
 
@@ -79,24 +79,24 @@ Design rationale: [design/kernel_memory_filter_redesign.md](../design/kernel_mem
 > in a local variable and sends the full list each round. It is not persisted and does not
 > cross invokes.
 
-## Quick Start (Kernel-level)
+## Quick Start (ChatClient-level)
 
 ```erlang
 %% 1. Start a conversation store (default ETS implementation)
 {ok, _Pid} = beamai_chat_memory_ets:start_link(my_mem),
 Store = beamai_chat_memory_ets:handle(my_mem),   %% handle {beamai_chat_memory_ets, my_mem}
 
-%% 2. Build the Kernel and enable memory
-K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K  = beamai_kernel:add_chat_model(K0, LlmConfig),
+%% 2. Build the ChatClient and enable memory
+K0 = beamai_chat_client:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+K  = beamai_chat_client:add_chat_model(K0, LlmConfig),
 
 %% 3. Identify the conversation with a conversation_id; pass only the latest message
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
 
-{ok, R1, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"My name is Alice">>}],
+{ok, R1, _} = beamai_chat_client:invoke(K, [#{role => user, content => <<"My name is Alice">>}],
                                    #{context => Ctx}),
 %% Same conversation_id: the second round's LLM sees the full history
-{ok, R2, _} = beamai_kernel:invoke(K, [#{role => user, content => <<"What's my name?">>}],
+{ok, R2, _} = beamai_chat_client:invoke(K, [#{role => user, content => <<"What's my name?">>}],
                                    #{context => Ctx}).
 
 %% 4. Read / clear conversation history
@@ -143,7 +143,7 @@ Store = beamai_chat_memory_dets:handle(my_mem),   %% handle {beamai_chat_memory_
 
 The storage layer only stores and retrieves. **Policy** — how much to trim, whether to
 summarize, whether to do RAG recall — belongs to the Provider. `beamai_agent` takes this
-path: it calls the provider explicitly in its own tool loop, with no kernel filter involved.
+path: it calls the provider explicitly in its own tool loop, with no ChatClient filter involved.
 
 Responsibility split:
 
@@ -224,17 +224,17 @@ The window rules of `beamai_memory_provider_default` (see its `safe_window/2`):
 `new/1` is equivalent to a window of `infinity`: `prepare` is the identity and the context
 is unbounded.
 
-> **The Kernel-level path currently has no window**: `beamai_memory_filter` replaces
+> **The ChatClient-level path currently has no window**: `beamai_memory_filter` replaces
 > messages with the store's full history. To trim, either take the Agent path with a
 > provider, or write your own `beamai_chat_memory` store that trims inside `mem_get`.
 >
 > Token-based trimming and summarization are intentionally not in core; provide them from
 > an upper layer by implementing `beamai_memory_provider`.
 
-## Data Flow (Kernel-level: with tool loop, delta mode)
+## Data Flow (ChatClient-level: with tool loop, delta mode)
 
 ```
-invoke(Kernel, [User msg], #{context := Ctx(conv_id=s1)})
+invoke(ChatClient, [User msg], #{context := Ctx(conv_id=s1)})
 └─ tool_calling_loop, delta = [User msg]
    └─ run_chat_pipeline(delta)
       ├─ memory.around_chat before (order -1000, outer): mem_add(s1, delta); messages := mem_get(s1) full history
@@ -265,13 +265,13 @@ beamai_agent:run(Agent, UserMsg)
    ├─ history(Provider, ConvId)              load cross-run history
    ├─ this turn's messages accumulate locally in the loop (within-run)
    ├─ prepare(Provider, ConvId, Messages)    pre-send transform (window/summary/recall)
-   ├─ kernel invoke → LLM
+   ├─ ChatClient invoke → LLM
    ├─ has tool_calls → run tools, merge results into local accumulation, loop
    └─ append(Provider, ConvId, Msgs)         persist this turn's messages (cross-run)
 ```
 
-The Agent path involves no filter: kernel and memory are two **orthogonal** construction
-parameters — the kernel handles LLM/tool invocation, the provider handles cross-run
+The Agent path involves no filter: ChatClient and memory are two **orthogonal** construction
+parameters — the ChatClient handles LLM/tool invocation, the provider handles cross-run
 history, and they compose freely.
 
 ## Key Source Files
@@ -279,11 +279,11 @@ history, and they compose freely.
 | File | Description |
 |------|-------------|
 | `apps/beamai_core/src/behaviours/beamai_chat_memory.erl` | storage-layer behaviour + dispatch API |
-| `apps/beamai_core/src/kernel/beamai_chat_memory_ets.erl` | ETS default implementation |
-| `apps/beamai_core/src/kernel/beamai_chat_memory_dets.erl` | DETS persistent implementation |
+| `apps/beamai_core/src/core/beamai_chat_memory_ets.erl` | ETS default implementation |
+| `apps/beamai_core/src/core/beamai_chat_memory_dets.erl` | DETS persistent implementation |
 | `apps/beamai_core/src/behaviours/beamai_memory_provider.erl` | policy-layer behaviour + dispatch API |
-| `apps/beamai_core/src/kernel/beamai_memory_provider_default.erl` | default provider (optional sliding window) |
-| `apps/beamai_core/src/kernel/beamai_memory_filter.erl` | Memory Filter (Kernel-level entry) |
-| `apps/beamai_core/src/kernel/beamai_kernel.erl` | `new/2` (filters given once), invoke dual-mode |
+| `apps/beamai_core/src/core/beamai_memory_provider_default.erl` | default provider (optional sliding window) |
+| `apps/beamai_core/src/core/beamai_memory_filter.erl` | Memory Filter (ChatClient-level entry) |
+| `apps/beamai_core/src/core/beamai_chat_client.erl` | `new/2` (filters given once), invoke dual-mode |
 | `apps/beamai_agent/src/beamai_agent_state.erl` | Agent's `memory` config resolution (`setup_memory/1`) |
 | `apps/beamai_agent/src/beamai_agent_tool_loop.erl` | Agent calls history/prepare/append explicitly in the loop |

@@ -213,10 +213,10 @@ callback_triggers_interrupt_test() ->
             finish_reason => <<"tool_calls">>
         }}
     end),
-    Kernel0 = beamai_kernel:new(),
+    ChatClient0 = beamai_chat_client:new(),
     LlmConfig = beamai_chat_model:create(mock, #{}),
-    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
-    K2 = beamai_kernel:add_tools(K1, [
+    K1 = beamai_chat_client:add_chat_model(ChatClient0, LlmConfig),
+    K2 = beamai_chat_client:add_tools(K1, [
         #{name => <<"execute_sql">>,
           description => <<"Execute SQL">>,
           parameters => #{},
@@ -240,7 +240,7 @@ callback_triggers_interrupt_test() ->
                 end
             end
         },
-        {ok, Agent} = beamai_agent:new(#{kernel => K2, callbacks => Callbacks}),
+        {ok, Agent} = beamai_agent:new(#{chat_client => K2, callbacks => Callbacks}),
         Result = beamai_agent:run(Agent, <<"Delete all users">>),
         ?assertMatch({interrupt, _, _}, Result),
         {interrupt, Info, _Agent1} = Result,

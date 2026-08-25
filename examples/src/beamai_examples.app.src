@@ -10,7 +10,7 @@
     {env, []},
     {modules, [
         example_llm_config,
-        example_kernel_chat,
+        example_chat_client_chat,
         example_streaming,
         example_filter,
         example_prompt,

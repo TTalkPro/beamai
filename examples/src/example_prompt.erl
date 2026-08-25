@@ -102,7 +102,7 @@ run_structured() ->
 run_structured(LLMConfig) ->
     io:format("~n=== BeamAI Structured Output Example ===~n~n"),
 
-    Kernel = beamai:add_chat_model(beamai:kernel(), LLMConfig),
+    ChatClient = beamai:add_chat_model(beamai:chat_client(), LLMConfig),
 
     %% 1. 获取格式指令
     FormatInstructions = beamai_output_parser:get_instructions(json),
@@ -123,7 +123,7 @@ run_structured(LLMConfig) ->
         #{role => user, content => Prompt}
     ],
 
-    case beamai:chat(Kernel, Messages) of
+    case beamai:chat(ChatClient, Messages) of
         {ok, #{content := Content}, _} ->
             io:format("Raw response:~n~ts~n~n", [Content]),
 

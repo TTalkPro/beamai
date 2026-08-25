@@ -7,7 +7,7 @@
 %%%
 %%% 句柄约定 `{Module, Ref}`（与 beamai_chat_memory 一致）。
 %%%
-%%% **只存暂停点快照**（纯数据），不存 kernel/tools/callbacks（代码侧 resume 重建）、
+%%% **只存暂停点快照**（纯数据），不存 ChatClient/tools/callbacks（代码侧 resume 重建）、
 %%% 不存对话历史（ChatMemory 已管——跨重启配持久 store）。
 %%%
 %%% @end

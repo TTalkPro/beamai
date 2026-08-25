@@ -15,7 +15,7 @@ context 的 `variables` 可携带任意 agent 状态。
 ```erlang
 -type t() :: #{
     '__context__' := true,
-    kernel := term() | undefined,
+    chat_client := term() | undefined,
     trace := [trace_entry()],
     metadata := map(),
     binary() => term()       %% agent 状态变量（标准化为 binary key 存于顶层）
@@ -24,7 +24,7 @@ context 的 `variables` 可携带任意 agent 状态。
 
 > **注意**：context **不再记录 messages / history**。会话历史的存储与注入由
 > Memory Filter（`beamai_memory_filter`）+ ChatMemory store（`beamai_chat_memory`）
-> 按 `conversation_id` 管理。context 只携带 agent 状态变量、会话标识、kernel 引用、
+> 按 `conversation_id` 管理。context 只携带 agent 状态变量、会话标识、ChatClient 引用、
 > trace 与 metadata。详见 [docs/MEMORY.md](../docs/MEMORY.md)。
 >
 > 会话标识通过 `beamai_context:with_conversation_id/2` 写入、`conversation_id/1` 读取
@@ -35,7 +35,7 @@ context 的 `variables` 可携带任意 agent 状态。
 ### invoke 路径
 
 ```
-beamai_kernel:invoke(Kernel, ToolName, Args, Context)
+beamai_chat_client:invoke(ChatClient, ToolName, Args, Context)
     |
     +-- pre_filter: FilterCtx#{context => Context}   <-- 可访问
     |
@@ -48,7 +48,7 @@ beamai_kernel:invoke(Kernel, ToolName, Args, Context)
 ### chat 路径
 
 ```
-beamai_kernel:invoke_chat(Kernel, Messages, #{context => Ctx})
+beamai_chat_client:invoke_chat(ChatClient, Messages, #{context => Ctx})
     |
     +-- pre_chat_filter: FilterCtx#{context => Ctx}  <-- 可访问
     |
@@ -60,13 +60,13 @@ beamai_kernel:invoke_chat(Kernel, Messages, #{context => Ctx})
 ### chat_with_tools 路径
 
 ```
-beamai_kernel:invoke_chat_with_tools(Kernel, Messages, #{context => Ctx})
+beamai_chat_client:invoke_chat_with_tools(ChatClient, Messages, #{context => Ctx})
     |
     +-- LLM 返回 tool_calls
     |
-    +-- execute_tool_calls(Kernel, TCs, Context)
+    +-- execute_tool_calls(ChatClient, TCs, Context)
     |       |
-    |       +-- invoke(Kernel, Name, Args, CtxAcc)
+    |       +-- invoke(ChatClient, Name, Args, CtxAcc)
     |       |       -> pre_filter 可访问 context
     |       |       -> tool handler 可访问 context
     |       |       -> 返回 {ok, Value, NewCtx} 时更新 context
@@ -88,8 +88,8 @@ AgentState = #{
 },
 Ctx = beamai_context:new(AgentState),
 
-beamai_kernel:invoke_chat(Kernel, Messages, #{context => Ctx}),
-beamai_kernel:invoke_chat_with_tools(Kernel, Messages, #{context => Ctx}).
+beamai_chat_client:invoke_chat(ChatClient, Messages, #{context => Ctx}),
+beamai_chat_client:invoke_chat_with_tools(ChatClient, Messages, #{context => Ctx}).
 ```
 
 ### Filter 中访问状态
@@ -217,10 +217,10 @@ TransferTool = #{
     end
 }.
 
-%% 2. 构建 Kernel
-K0 = beamai_kernel:new(),
-K1 = beamai_kernel:add_chat_model(K0, LLMConfig),
-K2 = beamai_kernel:add_tools(K1, [BalanceTool, TransferTool]).
+%% 2. 构建 ChatClient
+K0 = beamai_chat_client:new(),
+K1 = beamai_chat_client:add_chat_model(K0, LLMConfig),
+K2 = beamai_chat_client:add_tools(K1, [BalanceTool, TransferTool]).
 
 %% 3. 创建 Agent 并传入用户上下文
 InitCtx = beamai_context:new(#{
@@ -229,7 +229,7 @@ InitCtx = beamai_context:new(#{
 }),
 
 {ok, Agent} = beamai_agent:new(#{
-    kernel => K2,
+    chat_client => K2,
     context => InitCtx
 }).
 
@@ -242,6 +242,6 @@ InitCtx = beamai_context:new(#{
 | 文件 | 相关代码 |
 |------|----------|
 | `beamai_context.erl` | context 的 get/set/new 操作 |
-| `beamai_kernel.erl` | invoke/invoke_chat 中传递 context |
+| `beamai_chat_client.erl` | invoke/invoke_chat 中传递 context |
 | `beamai_tool.erl` | tool invoke 支持 context 参数 |
 | `beamai_agent_tool_loop.erl` | tool calling 循环中的 context 传递 |

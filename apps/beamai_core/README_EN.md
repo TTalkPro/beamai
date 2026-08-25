@@ -2,29 +2,29 @@
 
 English | [中文](README.md)
 
-The core module of the BeamAI framework, providing the Kernel architecture, Filter/conversation memory, HTTP client, and behaviour definitions.
+The core module of the BeamAI framework, providing the ChatClient architecture, Filter/conversation memory, HTTP client, and behaviour definitions.
 
 ## Module Overview
 
-### Kernel Subsystem
+### ChatClient Subsystem
 
 Core abstraction based on Semantic Kernel concepts, managing Tool registration and invocation:
 
-- **beamai_kernel** - Kernel core, manages Tool registration and invocation (stateless, stores no messages)
+- **beamai_chat_client** - ChatClient core, manages Tool registration and invocation (stateless, stores no messages)
 - **beamai_tool** - Tool definitions, wraps callable tool functions
 - **beamai_tool_behaviour** - Tool module behavior interface
-- **beamai_context** - Context: carries agent state vars, conversation id, kernel ref, trace (stores no messages/history)
-- **beamai_filter** / **beamai_filter_chain** - Onion-style filters (one filter bundles around_turn/around_step/around_chat/around_llm/around_tool hooks, with a per-filter isolated private context) wrapping the tool loop, each iteration, each round's LLM call, each real LLM request, and tool execution (see [docs/FILTER_EN.md](../../docs/FILTER_EN.md))
+- **beamai_context** - Context: carries agent state vars, conversation id, ChatClient ref, trace (stores no messages/history)
+- **beamai_filter** / **beamai_filter_chain** - Onion-style filters (one filter bundles around_turn/around_step/around_chat/around_tool hooks, with a per-filter isolated private context) wrapping the tool loop, each iteration, each round's LLM call, and tool execution (see [docs/FILTER_EN.md](../../docs/FILTER_EN.md))
 - **beamai_prompt** - Prompt template management
 - **beamai_result** - Tool call result types
 
 ### Conversation Memory Subsystem
 
-History storage and injection, decoupled from the Kernel and keyed by `conversation_id` (see [docs/MEMORY_EN.md](../../docs/MEMORY_EN.md)):
+History storage and injection, decoupled from the ChatClient and keyed by `conversation_id` (see [docs/MEMORY_EN.md](../../docs/MEMORY_EN.md)):
 
 - **beamai_chat_memory** - ChatMemory storage behaviour + dispatch API (handle `{Module, Ref}`)
 - **beamai_chat_memory_ets** - Default ETS conversation store
-- **beamai_memory_filter** - Memory Filter (kernel-level: around_chat stores delta + expands history before the call, stores reply after)
+- **beamai_memory_filter** - Memory Filter (ChatClient-level: around_chat stores delta + expands history before the call, stores reply after)
 - **beamai_memory_provider** - Agent memory policy behaviour (history/append/prepare/clear)
 - **beamai_memory_provider_default** - Default policy implementation (wraps a store; `new/2` adds an optional sliding window)
 
@@ -67,37 +67,37 @@ Framework behavior interface definitions:
 
 ## API Documentation
 
-### beamai_kernel
+### beamai_chat_client
 
 ```erlang
-%% Create Kernel instance (filters given once; registration order is layer order:
+%% Create ChatClient instance (filters given once; registration order is layer order:
 %% earlier in the list = more outer)
-beamai_kernel:new() -> kernel().
-beamai_kernel:new(Settings) -> kernel().
-beamai_kernel:new(Settings, Filters) -> kernel().       %% onion-style filter, see docs/FILTER_EN.md
+beamai_chat_client:new() -> chat_client().
+beamai_chat_client:new(Settings) -> chat_client().
+beamai_chat_client:new(Settings, Filters) -> chat_client().       %% onion-style filter, see docs/FILTER_EN.md
 %% Conversation memory = put the memory filter first in Filters, see docs/MEMORY_EN.md:
-%% beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)])
+%% beamai_chat_client:new(#{}, [beamai_memory_filter:memory_filter(Store)])
 
 %% Add Tools
-beamai_kernel:add_tool(Kernel, ToolSpec) -> kernel().
-beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
-beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
+beamai_chat_client:add_tool(ChatClient, ToolSpec) -> chat_client().
+beamai_chat_client:add_tools(ChatClient, [ToolSpec]) -> chat_client().
+beamai_chat_client:add_tool_module(ChatClient, Module) -> chat_client().
 
 %% Add services
-beamai_kernel:add_chat_model(Kernel, Service) -> kernel().
+beamai_chat_client:add_chat_model(ChatClient, Service) -> chat_client().
 
-%% Invoke API (kernel is single-shot only; the ReAct tool-calling loop lives in beamai_agent)
-beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
-beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
+%% Invoke API (ChatClient is single-shot only; the ReAct tool-calling loop lives in beamai_agent)
+beamai_chat_client:invoke_tool(ChatClient, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
+beamai_chat_client:invoke_chat(ChatClient, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
 
 %% Query API
-beamai_kernel:get_tool(Kernel, Name) -> {ok, Tool} | error.
-beamai_kernel:list_tools(Kernel) -> [Tool].
-beamai_kernel:get_tools_by_tag(Kernel, Tag) -> [Tool].
-beamai_kernel:get_tool_specs(Kernel) -> [ToolSpec].
-beamai_kernel:get_tool_schemas(Kernel) -> [Schema].
-beamai_kernel:get_tool_schemas(Kernel, Provider) -> [Schema].
-beamai_kernel:chat_model(Kernel) -> {ok, Service} | error.
+beamai_chat_client:get_tool(ChatClient, Name) -> {ok, Tool} | error.
+beamai_chat_client:list_tools(ChatClient) -> [Tool].
+beamai_chat_client:get_tools_by_tag(ChatClient, Tag) -> [Tool].
+beamai_chat_client:get_tool_specs(ChatClient) -> [ToolSpec].
+beamai_chat_client:get_tool_schemas(ChatClient) -> [Schema].
+beamai_chat_client:get_tool_schemas(ChatClient, Provider) -> [Schema].
+beamai_chat_client:chat_model(ChatClient) -> {ok, Service} | error.
 ```
 
 ### beamai_tool
@@ -113,11 +113,11 @@ beamai_tool:new(Name, Handler, Opts) -> tool_spec().
 
 ## Usage Examples
 
-### Kernel + Tool
+### ChatClient + Tool
 
 ```erlang
-%% Create Kernel
-Kernel = beamai_kernel:new(),
+%% Create ChatClient
+ChatClient = beamai_chat_client:new(),
 
 %% Define tool
 ReadFile = beamai_tool:new(
@@ -140,11 +140,11 @@ ReadFile = beamai_tool:new(
     }
 ),
 
-%% Register to Kernel
-Kernel1 = beamai_kernel:add_tools(Kernel, [ReadFile]),
+%% Register to ChatClient
+ChatClient1 = beamai_chat_client:add_tools(ChatClient, [ReadFile]),
 
 %% Invoke a single tool
-{ok, Content, _Ctx} = beamai_kernel:invoke_tool(Kernel1, <<"read_file">>, #{
+{ok, Content, _Ctx} = beamai_chat_client:invoke_tool(ChatClient1, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```
@@ -153,29 +153,29 @@ Kernel1 = beamai_kernel:add_tools(Kernel, [ReadFile]),
 
 ```erlang
 %% Load a tool module implementing beamai_tool_behaviour
-Kernel = beamai_kernel:new(),
-Kernel1 = beamai_kernel:add_tool_module(Kernel, beamai_tool_file),
+ChatClient = beamai_chat_client:new(),
+ChatClient1 = beamai_chat_client:add_tool_module(ChatClient, beamai_tool_file),
 
 %% List registered tools
-Tools = beamai_kernel:get_tool_specs(Kernel1).
+Tools = beamai_chat_client:get_tool_specs(ChatClient1).
 ```
 
 ### Conversation Memory (multi-turn)
 
-The Kernel is stateless; each invoke passes only the latest message, and history is managed
+The ChatClient is stateless; each invoke passes only the latest message, and history is managed
 by the Memory Filter keyed by `conversation_id`. See [docs/MEMORY_EN.md](../../docs/MEMORY_EN.md).
 
 ```erlang
-%% Start a conversation store; put the memory filter first (outermost) when building the kernel
+%% Start a conversation store; put the memory filter first (outermost) when building the ChatClient
 {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
 Store = beamai_chat_memory_ets:handle(my_mem),
-K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K = beamai_kernel:add_chat_model(K0, LlmConfig),
+K0 = beamai_chat_client:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
+K = beamai_chat_client:add_chat_model(K0, LlmConfig),
 
 %% Identify the conversation with a conversation_id; pass only the latest message
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),
-{ok, R1, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"My name is Alice">>}], #{context => Ctx}),
-{ok, R2, _} = beamai_kernel:invoke_chat(K, [#{role => user, content => <<"What's my name?">>}], #{context => Ctx}).
+{ok, R1, _} = beamai_chat_client:invoke_chat(K, [#{role => user, content => <<"My name is Alice">>}], #{context => Ctx}),
+{ok, R2, _} = beamai_chat_client:invoke_chat(K, [#{role => user, content => <<"What's my name?">>}], #{context => Ctx}).
 %% The second round's LLM sees the full history; without memory it is a stateless single-shot call.
 %% For automatic tool execution with a multi-round loop, use beamai_agent (ReAct).
 ```

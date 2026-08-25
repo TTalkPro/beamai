@@ -43,7 +43,7 @@ drain_events(N, Acc) ->
 %%====================================================================
 
 concurrent_manager_delegates_test() ->
-    K = beamai_kernel:add_tool(beamai_kernel:new(), echo_tool(<<"echo">>, <<"hello">>)),
+    K = beamai_chat_client:add_tool(beamai_chat_client:new(), echo_tool(<<"echo">>, <<"hello">>)),
     TCM = beamai_concurrent_tool_calling_manager:new(),
     Result = beamai_tool_calling_manager:execute_tool_calls(
         TCM, K, [tc(<<"1">>, <<"echo">>)], #{context => beamai_context:new()}),
@@ -64,7 +64,7 @@ default_is_concurrent_test() ->
                  beamai_tool_calling_manager:default()).
 
 default_opts_test() ->
-    K = beamai_kernel:add_tool(beamai_kernel:new(), echo_tool(<<"t">>, 42)),
+    K = beamai_chat_client:add_tool(beamai_chat_client:new(), echo_tool(<<"t">>, 42)),
     TCM = beamai_concurrent_tool_calling_manager:new(),
     Result = beamai_tool_calling_manager:execute_tool_calls(TCM, K, [tc(<<"1">>, <<"t">>)], #{}),
     #{messages := [_], records := [Record], context := _} = Result,
@@ -76,7 +76,7 @@ default_opts_test() ->
 
 mock_manager_dispatched_test() ->
     MockTCM = {beamai_mock_tcm_impl, mock_state},
-    K = beamai_kernel:new(),
+    K = beamai_chat_client:new(),
     Result = beamai_tool_calling_manager:execute_tool_calls(
         MockTCM, K, [tc(<<"x">>, <<"whatever">>)], #{}),
     #{messages := [Msg], records := [Record]} = Result,
@@ -118,8 +118,8 @@ filter_still_fires_test() ->
             Next(Req)
         end
     }),
-    K0 = beamai_kernel:new(#{}, [CountFilter]),
-    K = beamai_kernel:add_tool(K0, echo_tool(<<"echo">>, <<"v">>)),
+    K0 = beamai_chat_client:new(#{}, [CountFilter]),
+    K = beamai_chat_client:add_tool(K0, echo_tool(<<"echo">>, <<"v">>)),
     TCM = beamai_concurrent_tool_calling_manager:new(),
     beamai_tool_calling_manager:execute_tool_calls(
         TCM, K, [tc(<<"1">>, <<"echo">>)], #{context => beamai_context:new()}),
@@ -131,9 +131,9 @@ filter_still_fires_test() ->
 
 %% sequential manager：即使 parallel=true，工具也严格按序执行（无重叠）
 sequential_no_overlap_test() ->
-    K = beamai_kernel:add_tool(beamai_kernel:new(),
+    K = beamai_chat_client:add_tool(beamai_chat_client:new(),
         #{name => <<"ta">>, parameters => #{}, handler => ev_tool(<<"ta">>)}),
-    K2 = beamai_kernel:add_tool(K,
+    K2 = beamai_chat_client:add_tool(K,
         #{name => <<"tb">>, parameters => #{}, handler => ev_tool(<<"tb">>)}),
     TCM = beamai_sequential_tool_calling_manager:new(),
     beamai_tool_calling_manager:execute_tool_calls(
@@ -148,9 +148,9 @@ sequential_no_overlap_test() ->
 
 %% concurrent manager：parallel=true + 两个非 serial 工具 → 并发（有重叠）
 concurrent_overlap_test() ->
-    K = beamai_kernel:add_tool(beamai_kernel:new(),
+    K = beamai_chat_client:add_tool(beamai_chat_client:new(),
         #{name => <<"ta">>, parameters => #{}, handler => ev_tool(<<"ta">>)}),
-    K2 = beamai_kernel:add_tool(K,
+    K2 = beamai_chat_client:add_tool(K,
         #{name => <<"tb">>, parameters => #{}, handler => ev_tool(<<"tb">>)}),
     TCM = beamai_concurrent_tool_calling_manager:new(),
     beamai_tool_calling_manager:execute_tool_calls(
@@ -169,7 +169,7 @@ concurrent_overlap_test() ->
 %%====================================================================
 
 result_map_structure_test() ->
-    K = beamai_kernel:add_tool(beamai_kernel:new(), echo_tool(<<"t">>, ok)),
+    K = beamai_chat_client:add_tool(beamai_chat_client:new(), echo_tool(<<"t">>, ok)),
     TCM = beamai_concurrent_tool_calling_manager:new(),
     Result = beamai_tool_calling_manager:execute_tool_calls(
         TCM, K, [tc(<<"1">>, <<"t">>), tc(<<"2">>, <<"t">>)],
@@ -180,7 +180,7 @@ result_map_structure_test() ->
     ?assertMatch(#{'__context__' := true}, Ctx).
 
 empty_toolcalls_test() ->
-    K = beamai_kernel:new(),
+    K = beamai_chat_client:new(),
     TCM = beamai_concurrent_tool_calling_manager:new(),
     Result = beamai_tool_calling_manager:execute_tool_calls(
         TCM, K, [], #{context => beamai_context:new()}),

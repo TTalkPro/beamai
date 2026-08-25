@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
-%%% @doc Kernel 核心：基础设施（工具管理、LLM 服务、Filter）
+%%% @doc ChatClient 核心：基础设施（工具管理、LLM 服务、Filter）
 %%%
-%%% Kernel 是框架的基础设施层，只提供两类原子能力——单次 LLM 调用
+%%% ChatClient 是框架的基础设施层，只提供两类原子能力——单次 LLM 调用
 %%% （invoke_chat）与单次工具调用（invoke_tool），各自经过洋葱式 Filter 链。
 %%% 它**不**负责 ReAct 工具调用循环（LLM ↔ Tool 的多轮编排是 Agent 的职责，
 %%% 见 beamai_agent / beamai_agent_tool_loop）。
@@ -10,18 +10,17 @@
 %%% - 管理工具注册
 %%% - 持有 LLM 服务配置
 %%% - 执行洋葱式 Filter 链
-%%% - invoke_chat：单次 Chat Completion（经 around_chat 链 → around_llm 链）
+%%% - invoke_chat：单次 Chat Completion（经 around_chat 链）
 %%% - invoke_tool：单次工具执行（经 around_tool 链）
 %%%
-%%% chat 侧是**两层嵌套**的洋葱：外层 around_chat 每轮迭代恰好进出一次（记忆 /
-%%% 记账 / 审计），它的 terminal 是内层 around_llm 链——每次**真实** LLM 请求
-%%% 进出一次（重试 / fallback / 限流）。重试因此只在 llm 层重入，不会连累 chat
-%%% 层的 filter 重跑。重试 filter 由 settings 的 `llm_retry` 控制，缺省注入在
-%%% llm 链最内层（见 default_llm_filters/1）。
+%%% **重试不在链上**：它在 beamai_chat_model 内部，位于整个 filter 栈**之下**。
+%%% filter 看到的是「一次逻辑调用」，重试重入碰不到任何 filter——around_chat 上
+%%% 的记忆/记账因此每轮只跑一次。要观测每次真实尝试用 chat opts 的 `on_retry`
+%%% 回调；要按会话改重试参数，把 max_retries 放进 chat opts。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(beamai_kernel).
+-module(beamai_chat_client).
 
 %% Build API
 -export([new/0, new/1, new/2]).
@@ -47,24 +46,18 @@
 -export([return_direct_tool/2]).
 
 %% Types
--export_type([kernel/0, kernel_settings/0, chat_opts/0]).
+-export_type([chat_client/0, chat_client_settings/0, chat_opts/0]).
 
--type kernel() :: #{
-    '__kernel__' := true,
+-type chat_client() :: #{
+    '__chat_client__' := true,
     tools := #{binary() => beamai_tool:tool_spec()},
     chat_model := beamai_chat_behaviour:config() | undefined,
     filters := [beamai_filter:filter()],
-    settings := kernel_settings()
+    settings := chat_client_settings()
 }.
 
--type kernel_settings() :: #{
+-type chat_client_settings() :: #{
     default_timeout => pos_integer(),
-    %% llm 链最内层的缺省重试 filter：
-    %% - 缺省（不设）等同 #{}：按框架默认重试（max_retries/retry_delay 仍可被
-    %%   单次 chat opts 覆盖），与拆分前的行为一致
-    %% - map()：作为该 filter 的默认重试参数（单次 chat opts 优先级更高）
-    %% - false：不注入，重试完全交给使用方自己注册的 around_llm filter
-    llm_retry => map() | false,
     atom() => term()
 }.
 
@@ -83,20 +76,20 @@
 %% Build API
 %%====================================================================
 
-%% @doc 创建空 Kernel（默认配置，无 filter）
--spec new() -> kernel().
+%% @doc 创建空 ChatClient（默认配置，无 filter）
+-spec new() -> chat_client().
 new() ->
     new(#{}, []).
 
-%% @doc 创建 Kernel（自定义配置，无 filter）
+%% @doc 创建 ChatClient（自定义配置，无 filter）
 %%
 %% @param Settings 配置项（如 #{default_timeout => 30000}）
-%% @returns Kernel 实例
--spec new(kernel_settings()) -> kernel().
+%% @returns ChatClient 实例
+-spec new(chat_client_settings()) -> chat_client().
 new(Settings) ->
     new(Settings, []).
 
-%% @doc 创建 Kernel（自定义配置 + 一次性给出全量 filter）
+%% @doc 创建 ChatClient（自定义配置 + 一次性给出全量 filter）
 %%
 %% Filters 在构建时一次性给出，**注册顺序即层序**：列表靠前 = 外层
 %% （前置先执行、后置后执行）。构建后不可增量追加——需要记忆时把
@@ -105,36 +98,36 @@ new(Settings) ->
 %%
 %% @param Settings 配置项
 %% @param Filters filter 列表（beamai_filter:new/2,3 创建）
-%% @returns Kernel 实例
--spec new(kernel_settings(), [beamai_filter:filter()]) -> kernel().
+%% @returns ChatClient 实例
+-spec new(chat_client_settings(), [beamai_filter:filter()]) -> chat_client().
 new(Settings, Filters) when is_map(Settings), is_list(Filters) ->
     #{
-        '__kernel__' => true,
+        '__chat_client__' => true,
         tools => #{},
         chat_model => undefined,
         filters => Filters,
         settings => Settings
     }.
 
-%% @doc 注册工具到 Kernel
+%% @doc 注册工具到 ChatClient
 %%
 %% 工具以其名称为键存入 tools Map。重名工具会被覆盖。
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param Tool 工具定义（需包含 name 字段）
-%% @returns 更新后的 Kernel
--spec add_tool(kernel(), beamai_tool:tool_spec()) -> kernel().
-add_tool(#{tools := Tools} = Kernel, #{name := Name} = Tool) ->
-    Kernel#{tools => Tools#{Name => Tool}}.
+%% @returns 更新后的 ChatClient
+-spec add_tool(chat_client(), beamai_tool:tool_spec()) -> chat_client().
+add_tool(#{tools := Tools} = ChatClient, #{name := Name} = Tool) ->
+    ChatClient#{tools => Tools#{Name => Tool}}.
 
-%% @doc 批量注册工具到 Kernel
+%% @doc 批量注册工具到 ChatClient
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param ToolList 工具定义列表
-%% @returns 更新后的 Kernel
--spec add_tools(kernel(), [beamai_tool:tool_spec()]) -> kernel().
-add_tools(Kernel, ToolList) ->
-    lists:foldl(fun(Tool, K) -> add_tool(K, Tool) end, Kernel, ToolList).
+%% @returns 更新后的 ChatClient
+-spec add_tools(chat_client(), [beamai_tool:tool_spec()]) -> chat_client().
+add_tools(ChatClient, ToolList) ->
+    lists:foldl(fun(Tool, K) -> add_tool(K, Tool) end, ChatClient, ToolList).
 
 %% @doc 从模块自动加载并注册工具
 %%
@@ -142,14 +135,14 @@ add_tools(Kernel, ToolList) ->
 %% 加载失败时抛出 {tool_module_load_failed, Module, Reason} 错误。
 %% 注：模块只提供工具；filter 一律在 new/2 构建时一次性给出。
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param Module 实现了工具回调的模块
-%% @returns 更新后的 Kernel
--spec add_tool_module(kernel(), module()) -> kernel().
-add_tool_module(Kernel, Module) ->
+%% @returns 更新后的 ChatClient
+-spec add_tool_module(chat_client(), module()) -> chat_client().
+add_tool_module(ChatClient, Module) ->
     case beamai_tool:from_module(Module) of
         {ok, Tools} ->
-            add_tools(Kernel, Tools);
+            add_tools(ChatClient, Tools);
         {error, Reason} ->
             erlang:error({tool_module_load_failed, Module, Reason})
     end.
@@ -159,36 +152,36 @@ add_tool_module(Kernel, Module) ->
 %% 配置通过 beamai_chat_model:create/2 创建。
 %% 设置后可使用 invoke_chat/3。
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param LlmConfig LLM 配置 Map
-%% @returns 更新后的 Kernel
--spec add_chat_model(kernel(), beamai_chat_behaviour:config()) -> kernel().
-add_chat_model(Kernel, ChatModel) ->
-    Kernel#{chat_model => ChatModel}.
+%% @returns 更新后的 ChatClient
+-spec add_chat_model(chat_client(), beamai_chat_behaviour:config()) -> chat_client().
+add_chat_model(ChatClient, ChatModel) ->
+    ChatClient#{chat_model => ChatModel}.
 
 %%====================================================================
 %% Invoke API
 %%====================================================================
 
-%% @doc 调用 Kernel 中注册的工具
+%% @doc 调用 ChatClient 中注册的工具
 %%
 %% 执行流程：查找工具 → tool filter 洋葱链（around_tool：前置改写参数 → 工具
-%% 执行 → 后置改写结果）。上下文会自动关联当前 Kernel 引用。
+%% 执行 → 后置改写结果）。上下文会自动关联当前 ChatClient 引用。
 %%
-%% Context 为只读运行环境（自动绑定当前 Kernel 引用）；工具写状态经返回值
+%% Context 为只读运行环境（自动绑定当前 ChatClient 引用）；工具写状态经返回值
 %% 的 Writes 表达（第三元），本函数原样透出，由调用方（tool 批次）折叠进 state。
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param ToolName 工具名称
 %% @param Args 调用参数
 %% @param Context 执行上下文（只读环境）
 %% @returns {ok, 结果, Writes} | {error, 原因}
--spec invoke_tool(kernel(), binary(), beamai_tool:args(), beamai_context:t()) ->
+-spec invoke_tool(chat_client(), binary(), beamai_tool:args(), beamai_context:t()) ->
     {ok, term(), beamai_context:writes()} | {error, term()}.
-invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
-    case get_tool(Kernel, ToolName) of
+invoke_tool(#{filters := Filters} = ChatClient, ToolName, Args, Context0) ->
+    case get_tool(ChatClient, ToolName) of
         {ok, ToolSpec} ->
-            Context = beamai_context:with_kernel(Context0, Kernel),
+            Context = beamai_context:with_chat_client(Context0, ChatClient),
             run_tool(Filters, ToolSpec, Args, Context);
         error ->
             {error, {tool_not_found, ToolName}}
@@ -197,31 +190,31 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
 %% @doc 发送 Chat Completion 请求（不含工具调用循环）
 %%
 %% 执行流程：chat filter 洋葱链（around_chat：前置改写请求 → LLM 调用 → 后置改写响应）。
-%% Kernel 需先通过 add_chat_model/2 配置 LLM。
+%% ChatClient 需先通过 add_chat_model/2 配置 LLM。
 %%
 %% Opts 可含 system_prompts：作为临时**最内层** filter 注入（追加在全量 filter
 %% 之后），在所有 filter 之后、LLM 之前前置系统消息且不入存储——memory filter
 %% 展开的历史永远不含系统提示，用户 chat filter 看到的 messages 也不含系统提示。
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param Messages 消息列表（[#{role => ..., content => ...}]）
 %% @param Opts Chat 选项
 %% @returns {ok, 响应 Map, 更新后上下文} | {error, 原因}
--spec invoke_chat(kernel(), [map()], chat_opts()) ->
+-spec invoke_chat(chat_client(), [map()], chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
-invoke_chat(Kernel, Messages, Opts) ->
-    case chat_model(Kernel) of
+invoke_chat(ChatClient, Messages, Opts) ->
+    case chat_model(ChatClient) of
         {ok, LlmConfig} ->
-            #{filters := Filters0} = Kernel,
-            %% 绑 kernel 进 context（与 invoke_tool 一致）：让 around_chat filter 可经
-            %% beamai_context:get_kernel/1 拿到 kernel 做组合（如调工具/查 specs）。
-            Context = beamai_context:with_kernel(
-                        maps:get(context, Opts, beamai_context:new()), Kernel),
+            #{filters := Filters0} = ChatClient,
+            %% 绑 ChatClient 进 context（与 invoke_tool 一致）：让 around_chat filter 可经
+            %% beamai_context:get_chat_client/1 拿到 ChatClient 做组合（如调工具/查 specs）。
+            Context = beamai_context:with_chat_client(
+                        maps:get(context, Opts, beamai_context:new()), ChatClient),
             %% system_prompts 作为临时最内层 chat filter 注入（追加在列表尾 =
             %% 最内层）：在全部 filter 之后、LLM 之前前置系统消息，不入存储。
             SystemPrompts = maps:get(system_prompts, Opts, []),
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
-            run_chat(LlmConfig, Filters, kernel_settings(Kernel), Messages, Opts, Context);
+            run_chat(LlmConfig, Filters, Messages, Opts, Context);
         error ->
             {error, no_chat_model}
     end.
@@ -235,24 +228,23 @@ invoke_chat(Kernel, Messages, Opts) ->
 %%
 %% 要求 provider 的 stream_chat 返回汇聚后的统一 beamai_llm_response。
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param Messages 消息列表
 %% @param Opts Chat 选项（同 invoke_chat/3）
 %% @param TokenCallback fun((Token :: binary(), Meta :: map()) -> ok)，逐 token 回调
 %% @returns {ok, 响应 Map, 更新后上下文} | {error, 原因}
--spec invoke_chat_stream(kernel(), [map()], chat_opts(),
+-spec invoke_chat_stream(chat_client(), [map()], chat_opts(),
                          fun((binary(), map()) -> ok)) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
-invoke_chat_stream(Kernel, Messages, Opts, TokenCallback) ->
-    case chat_model(Kernel) of
+invoke_chat_stream(ChatClient, Messages, Opts, TokenCallback) ->
+    case chat_model(ChatClient) of
         {ok, LlmConfig} ->
-            #{filters := Filters0} = Kernel,
-            Context = beamai_context:with_kernel(
-                        maps:get(context, Opts, beamai_context:new()), Kernel),
+            #{filters := Filters0} = ChatClient,
+            Context = beamai_context:with_chat_client(
+                        maps:get(context, Opts, beamai_context:new()), ChatClient),
             SystemPrompts = maps:get(system_prompts, Opts, []),
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
-            run_chat_stream(LlmConfig, Filters, kernel_settings(Kernel),
-                            Messages, Opts, Context, TokenCallback);
+            run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback);
         error ->
             {error, no_chat_model}
     end.
@@ -261,72 +253,72 @@ invoke_chat_stream(Kernel, Messages, Opts, TokenCallback) ->
 %% Query API
 %%====================================================================
 
-%% @doc 按名称查找 Kernel 中注册的工具
+%% @doc 按名称查找 ChatClient 中注册的工具
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param ToolName 工具名称
 %% @returns {ok, 工具定义} | error
--spec get_tool(kernel(), binary()) -> {ok, beamai_tool:tool_spec()} | error.
+-spec get_tool(chat_client(), binary()) -> {ok, beamai_tool:tool_spec()} | error.
 get_tool(#{tools := Tools}, ToolName) ->
     maps:find(ToolName, Tools).
 
-%% @doc 列出 Kernel 中所有注册的工具
--spec list_tools(kernel()) -> [beamai_tool:tool_spec()].
+%% @doc 列出 ChatClient 中所有注册的工具
+-spec list_tools(chat_client()) -> [beamai_tool:tool_spec()].
 list_tools(#{tools := Tools}) ->
     maps:values(Tools).
 
 %% @doc 按标签查找工具
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param Tag 标签
 %% @returns 匹配的工具列表
--spec get_tools_by_tag(kernel(), binary()) -> [beamai_tool:tool_spec()].
+-spec get_tools_by_tag(chat_client(), binary()) -> [beamai_tool:tool_spec()].
 get_tools_by_tag(#{tools := Tools}, Tag) ->
     [T || T <- maps:values(Tools), beamai_tool:has_tag(T, Tag)].
 
 %% @doc 获取所有工具的统一 tool spec 列表
 %%
 %% 返回包含 name、description、parameters 的中间格式。
--spec get_tool_specs(kernel()) -> [map()].
-get_tool_specs(Kernel) ->
-    Tools = list_tools(Kernel),
+-spec get_tool_specs(chat_client()) -> [map()].
+get_tool_specs(ChatClient) ->
+    Tools = list_tools(ChatClient),
     [beamai_tool:to_tool_spec(T) || T <- Tools].
 
 %% @doc 获取所有工具的 tool schema（默认 OpenAI 格式）
--spec get_tool_schemas(kernel()) -> [map()].
-get_tool_schemas(Kernel) ->
-    get_tool_schemas(Kernel, openai).
+-spec get_tool_schemas(chat_client()) -> [map()].
+get_tool_schemas(ChatClient) ->
+    get_tool_schemas(ChatClient, openai).
 
 %% @doc 获取所有工具的 tool schema（指定提供商格式）
 %%
-%% @param Kernel Kernel 实例
+%% @param ChatClient ChatClient 实例
 %% @param Provider 提供商标识（openai | anthropic）
 %% @returns tool schema 列表
--spec get_tool_schemas(kernel(), openai | anthropic | atom()) -> [map()].
-get_tool_schemas(Kernel, Provider) ->
-    Tools = list_tools(Kernel),
+-spec get_tool_schemas(chat_client(), openai | anthropic | atom()) -> [map()].
+get_tool_schemas(ChatClient, Provider) ->
+    Tools = list_tools(ChatClient),
     [beamai_tool:to_tool_schema(T, Provider) || T <- Tools].
 
-%% @doc 获取 Kernel 的 LLM 服务配置
+%% @doc 获取 ChatClient 的 LLM 服务配置
 %%
 %% 未配置 LLM 时返回 error。
--spec chat_model(kernel()) -> {ok, beamai_chat_behaviour:config()} | error.
+-spec chat_model(chat_client()) -> {ok, beamai_chat_behaviour:config()} | error.
 chat_model(#{chat_model := undefined}) -> error;
 chat_model(#{chat_model := Model}) -> {ok, Model}.
 
-%% @doc 获取 Kernel 的状态槽声明（未配置返回 #{}）
+%% @doc 获取 ChatClient 的状态槽声明（未配置返回 #{}）
 %%
 %% 供 tool 批次折叠工具 writes 时按槽路由 reducer（见 beamai_context:apply_writes/3）。
--spec state_slots(kernel()) -> beamai_context:state_slots().
+-spec state_slots(chat_client()) -> beamai_context:state_slots().
 state_slots(#{settings := Settings}) -> maps:get(state_slots, Settings, #{});
 state_slots(_) -> #{}.
 
 %% @doc 按工具名查询该工具是否标记为串行（有副作用、需顺序执行）
 %%
 %% 未注册的工具名返回 false（不因未知工具强制整批退化）。
--spec serial_tool(kernel(), binary()) -> boolean().
-serial_tool(Kernel, ToolName) ->
-    case get_tool(Kernel, ToolName) of
+-spec serial_tool(chat_client(), binary()) -> boolean().
+serial_tool(ChatClient, ToolName) ->
+    case get_tool(ChatClient, ToolName) of
         {ok, ToolSpec} -> beamai_tool:is_serial(ToolSpec);
         error -> false
     end.
@@ -335,9 +327,9 @@ serial_tool(Kernel, ToolName) ->
 %%
 %% 未注册的工具名返回 false：未知工具不该触发直返（直返会终止循环、丢弃
 %% 同批其余结果，未知名字上取保守值）。
--spec return_direct_tool(kernel(), binary()) -> boolean().
-return_direct_tool(Kernel, ToolName) ->
-    case get_tool(Kernel, ToolName) of
+-spec return_direct_tool(chat_client(), binary()) -> boolean().
+return_direct_tool(ChatClient, ToolName) ->
+    case get_tool(ChatClient, ToolName) of
         {ok, ToolSpec} -> beamai_tool:is_return_direct(ToolSpec);
         error -> false
     end.
@@ -360,50 +352,18 @@ system_prompt_filter(SystemPrompts) ->
         end
     })].
 
-%% @private 运行 chat 洋葱（around_chat 链 → around_llm 链 → LLM 调用）
+%% @private 运行 chat 洋葱（around_chat 链 → LLM 调用）
 %%
-%% Request `#{messages, context, opts}` → Response `#{response, context}`。
-%% chat 链的 terminal 不是 LLM 调用本身，而是**内层 llm 链**：这样 around_chat
-%% 每轮只进出一次，而 around_llm 上的重试/fallback 想重入几次就重入几次。
-run_chat(LlmConfig, Filters, Settings, Messages, Opts, Context) ->
+%% Request `#{messages, context, opts}` → Response `#{response, context}`，
+%% 最内层 terminal 为真正的 LLM 调用（其内部的重试对本链不可见）。
+run_chat(LlmConfig, Filters, Messages, Opts, Context) ->
     Req = #{messages => Messages, context => Context, opts => Opts},
-    Terminal = llm_chain(Filters, Settings, chat_terminal(LlmConfig)),
-    case beamai_filter_chain:run(Filters, around_chat, Terminal, Req) of
+    case beamai_filter_chain:run(Filters, around_chat, chat_terminal(LlmConfig), Req) of
         {ok, #{response := Response, context := Ctx}} -> {ok, Response, Ctx};
         {error, _} = Err -> Err
     end.
 
-%% @private 合成内层 llm 链（用 around_llm hook），作为 chat 链的 terminal
-%%
-%% 缺省重试 filter 追加在**最内层**（列表尾）：使用方自己注册的 around_llm
-%% filter（限流、记账、mock）一律在重试之外，看到的是「逻辑一次调用」；要观测
-%% 每次真实尝试，把 settings 的 llm_retry 设为 false 再自行注册重试 filter。
-llm_chain(Filters, Settings, Terminal) ->
-    beamai_filter_chain:compose(Filters ++ default_llm_filters(Settings),
-                                around_llm, Terminal).
-
-%% @private llm 链的缺省最内层 filter（重试）
-%%
-%% 重试实现在 beamai_llm（beamai_llm_filters:retry_filter/1）——core 不反向声明
-%% 对 beamai_llm 的依赖（会成环），故此处按 add_chat_model/3 同样的约定做运行时探测：
-%% 用自定义 module 且未加载 beamai_llm 时退化为不注入。
-default_llm_filters(Settings) ->
-    case maps:get(llm_retry, Settings, #{}) of
-        false ->
-            [];
-        RetryOpts when is_map(RetryOpts) ->
-            case code:ensure_loaded(beamai_llm_filters) of
-                {module, beamai_llm_filters} ->
-                    [beamai_llm_filters:retry_filter(RetryOpts)];
-                {error, _} ->
-                    []
-            end
-    end.
-
-%% @private 取 kernel settings
-kernel_settings(#{settings := Settings}) -> Settings.
-
-%% @private llm 链最内层：真正调用 LLM（出错时 throw，由最外层 run/4 统一捕获）
+%% @private chat 链最内层：真正调用 LLM（出错时 throw，由链统一捕获）
 chat_terminal(LlmConfig) ->
     Module = maps:get(module, LlmConfig, beamai_chat_model),
     fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
@@ -413,14 +373,14 @@ chat_terminal(LlmConfig) ->
         end
     end.
 
-%% @private 运行流式 chat 洋葱（与 run_chat 同两层链，仅最内层 terminal 不同）
+%% @private 运行流式 chat 洋葱（与 run_chat 同链，仅最内层 terminal 不同）
 %%
 %% filters 上声明的 token_transform 在 terminal 内按注册顺序组装成 token 变换链，
 %% 作用于送往 TokenCallback 的出站流；最终归一化响应不经过它。
 %%
-%% Req 带 `stream => true`：token 已投递出去的流重试会重复投递，llm 链上的
-%% filter 据此判定是否介入（内置重试 filter 见此标记即透传）。
-run_chat_stream(LlmConfig, Filters, Settings, Messages, Opts, Context, TokenCallback) ->
+%% Req 带 `stream => true`：供 chat filter 判定本次是不是流式（流式路径没有重试——
+%% token 已投递出去，重跑会让下游看到重复内容）。
+run_chat_stream(LlmConfig, Filters, Messages, Opts, Context, TokenCallback) ->
     Req = #{messages => Messages, context => Context, opts => Opts, stream => true},
     TokenXfs = lists:filtermap(fun(F) ->
         case beamai_filter:hook(F, token_transform) of
@@ -428,18 +388,17 @@ run_chat_stream(LlmConfig, Filters, Settings, Messages, Opts, Context, TokenCall
             Xf -> {true, Xf}
         end
     end, Filters),
-    Terminal = llm_chain(Filters, Settings,
-                         stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback)),
+    Terminal = stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback),
     case beamai_filter_chain:run(Filters, around_chat, Terminal, Req) of
         {ok, #{response := Response, context := Ctx}} -> {ok, Response, Ctx};
         {error, _} = Err -> Err
     end.
 
-%% @private 流式路径的 llm 链最内层：调用 provider stream_chat，token 经回调实时回传，
+%% @private 流式 chat 链最内层：调用 provider stream_chat，token 经回调实时回传，
 %% 返回汇聚后的统一响应（出错时 throw，由链统一捕获）。
 %%
-%% token_transform 链在 terminal **每次执行**时现场实例化（chat/llm filter 重入
-%% Next 时每次流各自新状态）；Flush 只在 stream_chat 正常返回后调一次——错误路径
+%% token_transform 链在 terminal **每次执行**时现场实例化（chat filter 重入 Next
+%% 时每次流各自新状态）；Flush 只在 stream_chat 正常返回后调一次——错误路径
 %% 不 flush（缓冲丢弃，半截答案不外泄）。
 stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback) ->
     Module = maps:get(module, LlmConfig, beamai_chat_model),

@@ -14,7 +14,7 @@ new_has_three_partitions_test() ->
     Ctx = beamai_context:new(),
     ?assertEqual(#{}, beamai_context:variables(Ctx)),
     ?assertEqual(#{}, beamai_context:get_state(Ctx)),
-    ?assertEqual(undefined, beamai_context:get_kernel(Ctx)),
+    ?assertEqual(undefined, beamai_context:get_chat_client(Ctx)),
     ?assertEqual(undefined, beamai_context:conversation_id(Ctx)).
 
 env_vars_roundtrip_test() ->
@@ -27,11 +27,11 @@ env_vars_roundtrip_test() ->
     ?assert(beamai_context:has_key(Ctx1, <<"a">>)),
     ?assertEqual(lists:sort([<<"a">>, <<"b">>]), lists:sort(beamai_context:keys(Ctx1))).
 
-env_kernel_convid_test() ->
+env_chat_client_convid_test() ->
     Ctx0 = beamai_context:new(),
-    Ctx1 = beamai_context:with_kernel(Ctx0, my_kernel),
+    Ctx1 = beamai_context:with_chat_client(Ctx0, my_chat_client),
     Ctx2 = beamai_context:with_conversation_id(Ctx1, <<"conv-1">>),
-    ?assertEqual(my_kernel, beamai_context:get_kernel(Ctx2)),
+    ?assertEqual(my_chat_client, beamai_context:get_chat_client(Ctx2)),
     ?assertEqual(<<"conv-1">>, beamai_context:conversation_id(Ctx2)),
     %% env 变更不污染 state
     ?assertEqual(#{}, beamai_context:get_state(Ctx2)).
