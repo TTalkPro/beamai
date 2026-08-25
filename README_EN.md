@@ -95,7 +95,7 @@ SearchTool = #{
 ChatClient1 = beamai_chat_client:add_tool(ChatClient, SearchTool),
 
 %% Invoke a single tool
-{ok, Result, _NewCtx} = beamai_chat_client:invoke_tool(ChatClient1, <<"search">>, #{
+{ok, Result, _NewCtx} = beamai_tool_executor:invoke(ChatClient1, <<"search">>, #{
     <<"query">> => <<"Erlang"/utf8>>
 }, beamai_context:new()).
 ```
@@ -239,7 +239,7 @@ Tool = #{
 ChatClient2 = beamai_chat_client:add_tool(ChatClient1, Tool),
 
 %% Invoke the registered tool
-{ok, Result, _NewCtx} = beamai_chat_client:invoke_tool(ChatClient2, <<"read_file">>, #{
+{ok, Result, _NewCtx} = beamai_tool_executor:invoke(ChatClient2, <<"read_file">>, #{
     <<"path">> => <<"/tmp/test.txt">>
 }, beamai_context:new()).
 ```

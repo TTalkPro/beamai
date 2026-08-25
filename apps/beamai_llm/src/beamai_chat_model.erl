@@ -36,6 +36,10 @@
 -export([is_retryable/1, compute_delay/3]).
 -endif.
 
+%% ChatModel 层自己消费的选项：重试是 ChatModel 的职责，不属于 provider 请求参数
+-define(MODEL_LEVEL_OPTS, [max_retries, retry_delay, on_retry, callback_meta,
+                           on_llm_new_token]).
+
 -type provider() :: openai | anthropic | ollama | zhipu | dashscope | deepseek |
                     xai | moonshot | kimi | openrouter | siliconflow |
                     mock | {custom, module()}.
@@ -94,6 +98,14 @@ chat(Config, Messages, Opts) ->
     RetryOpts = beamai_llm_retry:opts(Config, Opts),
     beamai_llm_retry:run(fun() -> Module:chat(Config, Request) end, RetryOpts).
 
+%% @doc 组装 ChatRequest：消息 + **本次调用参数**
+%%
+%% Opts 里属于 ChatModel 自己的项（重试三件套）不下发给 provider——provider 只该看到
+%% 与这次请求有关的模型参数。
+-spec build_request([map()], map()) -> beamai_chat_request:t().
+build_request(Messages, Opts) ->
+    beamai_chat_request:new(Messages, maps:without(?MODEL_LEVEL_OPTS, Opts)).
+
 %% @doc Send streaming chat request
 -spec stream_chat(config(), [map()], fun((term()) -> ok)) ->
     {ok, map()} | {error, term()}.
@@ -128,20 +140,6 @@ provider_module(mock) -> beamai_llm_provider_mock;
 provider_module({custom, Module}) -> Module.
 
 %%====================================================================
-%% Internal - Request Building
-%%====================================================================
-
-build_request(Messages, Opts) ->
-    Base = #{messages => Messages},
-    Fields = [tools, tool_choice, stream],
-    lists:foldl(fun(F, Acc) ->
-        case maps:get(F, Opts, undefined) of
-            undefined -> Acc;
-            Value -> Acc#{F => Value}
-        end
-    end, Base, Fields).
-
-%%====================================================================
 %% Internal - Retry Logic
 %%====================================================================
 
@@ -170,11 +168,14 @@ wrap_stream_callback(Callback, Opts) ->
 invoke_new_token_callback(_Event, undefined, _Meta) -> ok;
 invoke_new_token_callback(Event, Callback, Meta) when is_function(Callback) ->
     case extract_token_from_event(Event) of
-        <<>> -> ok;
-        Token ->
+        Token when is_binary(Token), Token =/= <<>> ->
             try Callback(Token, Meta)
             catch _:_ -> ok
-            end
+            end;
+        _ ->
+            %% 空 token 或非文本负载一律不投递：Anthropic 的 message_start 事件带的是
+            %% `message.content = []`（内容块数组，不是文本），照发会给下游甩一个空 token
+            ok
     end;
 invoke_new_token_callback(_, _, _) -> ok.
 
@@ -184,7 +185,10 @@ extract_token_from_event(#{<<"delta">> := #{<<"text">> := Text}}) ->
     Text;
 extract_token_from_event(#{<<"response">> := Response}) when is_binary(Response) ->
     Response;
-extract_token_from_event(#{<<"message">> := #{<<"content">> := Content}}) ->
+%% Ollama：message.content 是文本。**必须 is_binary 守卫**——Anthropic 的
+%% message_start 事件同样匹配这个形状，但它的 content 是内容块数组（`[]`）。
+extract_token_from_event(#{<<"message">> := #{<<"content">> := Content}})
+  when is_binary(Content) ->
     Content;
 extract_token_from_event(_) ->
     <<>>.

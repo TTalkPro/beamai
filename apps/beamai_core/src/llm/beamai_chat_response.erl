@@ -20,15 +20,15 @@
 %%%
 %%% ```erlang
 %%% %% 通过 new/1 构造
-%%% Resp = beamai_llm_response:new(#{id => <<"123">>, content => <<"Hello">>}),
+%%% Resp = beamai_chat_response:new(#{id => <<"123">>, content => <<"Hello">>}),
 %%%
 %%% %% 统一接口访问
-%%% Content = beamai_llm_response:content(Resp),
-%%% ToolCalls = beamai_llm_response:tool_calls(Resp),
-%%% Usage = beamai_llm_response:usage(Resp),
+%%% Content = beamai_chat_response:content(Resp),
+%%% ToolCalls = beamai_chat_response:tool_calls(Resp),
+%%% Usage = beamai_chat_response:usage(Resp),
 %%%
 %%% %% 获取 Provider 特有信息
-%%% Raw = beamai_llm_response:raw(Resp),
+%%% Raw = beamai_chat_response:raw(Resp),
 %%% CacheTokens = maps:get(<<"cache_creation_input_tokens">>,
 %%%                        maps:get(<<"usage">>, Raw, #{}), 0).
 %%% ```
@@ -38,7 +38,7 @@
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
--module(beamai_llm_response).
+-module(beamai_chat_response).
 
 %% 构造函数
 -export([new/1]).

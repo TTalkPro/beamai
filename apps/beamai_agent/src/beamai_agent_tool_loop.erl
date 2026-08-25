@@ -275,9 +275,9 @@ step(Opts, #{messages := Messages, context := Ctx,
             beamai_agent_callbacks:invoke(on_llm_result, [Response, Meta], Callbacks),
             Messages1 = record_assistant(Opts, Response, Messages),
             StepReq1 = StepReq#{messages => Messages1, context => ChatCtx},
-            case beamai_llm_response:has_tool_calls(Response) of
+            case beamai_chat_response:has_tool_calls(Response) of
                 true ->
-                    handle_tool_calls(beamai_llm_response:tool_calls(Response),
+                    handle_tool_calls(beamai_chat_response:tool_calls(Response),
                                       Opts, StepReq1);
                 false ->
                     #{status => final, response => Response, messages => Messages1,
@@ -438,9 +438,10 @@ execute_and_continue(TCs, Opts, #{messages := Messages, context := Ctx,
 %% 答案端给用户——那与 errors-are-data（错误回模型、模型决定怎么办）相悖。
 return_direct(_Opts, [], _Records) -> false;
 return_direct(#{chat_client := ChatClient}, TCs, Records) ->
+    Registry = beamai_chat_client:tools(ChatClient),
     lists:all(fun(TC) ->
         {_Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
-        beamai_chat_client:return_direct_tool(ChatClient, Name)
+        beamai_tool_registry:return_direct(Registry, Name)
     end, TCs)
         andalso not lists:any(fun is_failed/1, Records).
 
@@ -462,7 +463,7 @@ finish_direct(Opts, Messages, ToolResults, Ctx, ToolCallsMade) ->
 direct_response(ToolResults) ->
     Content = iolist_to_binary(
         lists:join(<<"\n">>, [C || #{content := C} <- ToolResults])),
-    beamai_llm_response:new(#{
+    beamai_chat_response:new(#{
         content => Content,
         finish_reason => complete,
         metadata => #{return_direct => true}

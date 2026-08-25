@@ -72,12 +72,12 @@ anthropic_injects_rate_limit() ->
          {<<"anthropic-ratelimit-tokens-limit">>, <<"100000">>}]),
     Config = #{api_key => <<"k">>, model => <<"claude-sonnet-4-5">>},
     {ok, Resp} = beamai_llm_provider_anthropic:chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]}),
-    RL = maps:get(rate_limit, beamai_llm_response:metadata(Resp)),
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}])),
+    RL = maps:get(rate_limit, beamai_chat_response:metadata(Resp)),
     ?assertEqual(<<"42">>, maps:get(<<"requests-remaining">>, RL)),
     ?assertEqual(<<"100000">>, maps:get(<<"tokens-limit">>, RL)),
     %% 正文仍正常解析
-    ?assertEqual(<<"hi there">>, beamai_llm_response:content(Resp)).
+    ?assertEqual(<<"hi there">>, beamai_chat_response:content(Resp)).
 
 openai_injects_rate_limit() ->
     beamai_llm_fake_backend:set_response(
@@ -85,8 +85,8 @@ openai_injects_rate_limit() ->
         [{<<"x-ratelimit-remaining-requests">>, <<"3499">>}]),
     Config = #{api_key => <<"k">>, model => <<"gpt-4o">>},
     {ok, Resp} = beamai_llm_provider_openai:chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]}),
-    RL = maps:get(rate_limit, beamai_llm_response:metadata(Resp)),
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}])),
+    RL = maps:get(rate_limit, beamai_chat_response:metadata(Resp)),
     ?assertEqual(<<"3499">>, maps:get(<<"remaining-requests">>, RL)).
 
 no_headers_no_rate_limit_key() ->
@@ -95,8 +95,8 @@ no_headers_no_rate_limit_key() ->
         [{<<"content-type">>, <<"application/json">>}]),
     Config = #{api_key => <<"k">>, model => <<"claude-sonnet-4-5">>},
     {ok, Resp} = beamai_llm_provider_anthropic:chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]}),
-    ?assertNot(maps:is_key(rate_limit, beamai_llm_response:metadata(Resp))).
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}])),
+    ?assertNot(maps:is_key(rate_limit, beamai_chat_response:metadata(Resp))).
 
 %%====================================================================
 %% 端到端：流式路径同样注入速率限制头
@@ -114,13 +114,13 @@ anthropic_stream_injects_rate_limit() ->
         [{<<"anthropic-ratelimit-requests-remaining">>, <<"7">>}]),
     Config = #{api_key => <<"k">>, model => <<"claude-sonnet-4-5">>},
     {ok, Resp} = beamai_llm_provider_anthropic:stream_chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]},
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}]),
         fun(_Event) -> ok end),
     %% 流式累加正确
-    ?assertEqual(<<"hi">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
+    ?assertEqual(<<"hi">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
     %% 速率限制头注入 metadata
-    RL = maps:get(rate_limit, beamai_llm_response:metadata(Resp)),
+    RL = maps:get(rate_limit, beamai_chat_response:metadata(Resp)),
     ?assertEqual(<<"7">>, maps:get(<<"requests-remaining">>, RL)).
 
 anthropic_stream_chunks() ->

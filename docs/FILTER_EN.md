@@ -91,7 +91,7 @@ A filter without the corresponding around for a chain is **skipped** in that cha
 | Chain | Request | Response |
 |-------|---------|----------|
 | step | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}` (see below) |
-| chat | `#{messages, context, opts}`; streaming also carries `stream => true` | `#{response, context}` (response is a beamai_llm_response) |
+| chat | `#{messages, context, opts}`; streaming also carries `stream => true` | `#{response, context}` (response is a beamai_chat_response) |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 | turn | `#{messages, context, resume, load_history}` | tool-loop result tuple (`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`; interrupt/error must pass through, never re-enter) |
 
@@ -628,7 +628,7 @@ SystemAudit = beamai:filter(<<"system_and_audit">>, #{
                 Req#{messages => [SystemMsg | Msgs]}
         end,
         #{response := Response} = Resp = Next(Req1),
-        case beamai_llm_response:content(Response) of
+        case beamai_chat_response:content(Response) of
             Content when is_binary(Content) ->
                 logger:info("Response length: ~B bytes", [byte_size(Content)]);
             _ ->

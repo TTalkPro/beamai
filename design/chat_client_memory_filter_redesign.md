@@ -86,7 +86,7 @@ memory_filters(StoreHandle) ->
   - 有 conv_id：`mem_add(Store, Cid, Delta)`，然后 `messages := mem_get(Store, Cid)`（完整历史替换）。
   - 无 conv_id：原样透传。
 - **post_chat，priority = +1000**：有 conv_id 时 `mem_add(Store, Cid, [response_to_message(Resp)])`。
-  - `response_to_message/1`：`beamai_llm_response` → assistant 消息（有 tool_calls 用 `beamai_message:tool_calls/1`，否则 `beamai_message:assistant/1`）。
+  - `response_to_message/1`：`beamai_chat_response` → assistant 消息（有 tool_calls 用 `beamai_message:tool_calls/1`，否则 `beamai_message:assistant/1`）。
 
 ### 4.5 System prompt 注入（不进存储）
 

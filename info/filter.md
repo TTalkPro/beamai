@@ -39,7 +39,7 @@ filter 是一个标记 map，最多绑定 2 个可选 around hook：
 
 | 链 | Request | Response |
 |----|---------|----------|
-| chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_llm_response） |
+| chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_chat_response） |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 
 `context` 是贯穿全链的**共享上下文**（`beamai_context`），与 filter **私有上下文**（FCtx）分离。

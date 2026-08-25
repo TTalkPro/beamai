@@ -54,7 +54,7 @@
 -type run_result() :: #{
     content := binary(),                  %% LLM 最终回复文本
     tool_calls_made => [map()],           %% 本轮执行的所有 tool 调用记录
-    finish_reason => beamai_llm_response:finish_reason(), %% LLM 停止原因（如 complete）
+    finish_reason => beamai_chat_response:finish_reason(), %% LLM 停止原因（如 complete）
     usage => map(),                       %% token 使用统计
     iterations => non_neg_integer()       %% tool loop 迭代次数
 }.
@@ -687,8 +687,8 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
     Result = #{
         content => Content,
         tool_calls_made => ToolCallsMade,
-        finish_reason => beamai_llm_response:finish_reason(Response),
-        usage => beamai_llm_response:usage(Response),
+        finish_reason => beamai_chat_response:finish_reason(Response),
+        usage => beamai_chat_response:usage(Response),
         iterations => Iterations
     },
     EndMeta = Meta#{turn_count => maps:get(turn_count, NewState)},

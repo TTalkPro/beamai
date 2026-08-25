@@ -82,7 +82,7 @@ memory_filter_with_dets_test() ->
     New = #{role => user, content => <<"new">>},
     ok = beamai_chat_memory:mem_add(Store, <<"c">>, [Old]),
     Terminal = fun(#{messages := Msgs, context := C}) ->
-        #{response => beamai_llm_response:new(#{content => <<"reply">>}),
+        #{response => beamai_chat_response:new(#{content => <<"reply">>}),
           context => C, seen => Msgs}
     end,
     {ok, Resp} = beamai_filter_chain:run([Filter], around_chat, Terminal,

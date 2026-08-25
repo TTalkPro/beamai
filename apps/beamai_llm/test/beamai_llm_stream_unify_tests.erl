@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc zhipu / ollama / dashscope 流式统一响应测试（A）
 %%%
-%%% 验证这三个 provider 的流式 stream_chat 也返回统一 beamai_llm_response
+%%% 验证这三个 provider 的流式 stream_chat 也返回统一 beamai_chat_response
 %%% （与同步路径一致：正确的 provider / content / finish_reason），
 %%% 经测试桩 beamai_llm_fake_backend 喂 SSE 分块完成端到端。
 %%% @end
@@ -29,25 +29,25 @@ zhipu_openai_stream_unified() ->
     beamai_llm_fake_backend:set_stream(openai_text_chunks(), []),
     Config = #{api_key => <<"k">>, model => <<"glm-4.7">>},
     {ok, Resp} = beamai_llm_provider_zhipu:stream_chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]},
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}]),
         fun(_E) -> ok end),
-    ?assertEqual(zhipu, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"你好世界"/utf8>>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)).
+    ?assertEqual(zhipu, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"你好世界"/utf8>>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)).
 
 zhipu_openai_stream_tool_calls() ->
     beamai_llm_fake_backend:set_stream(openai_tool_chunks(), []),
     Config = #{api_key => <<"k">>, model => <<"glm-4.7">>},
     {ok, Resp} = beamai_llm_provider_zhipu:stream_chat(
-        Config, #{messages => [#{role => user, content => <<"天气"/utf8>>}]},
+        Config, beamai_chat_request:new([#{role => user, content => <<"天气"/utf8>>}]),
         fun(_E) -> ok end),
-    ?assertEqual(zhipu, beamai_llm_response:provider(Resp)),
+    ?assertEqual(zhipu, beamai_chat_response:provider(Resp)),
     %% 分片工具调用被正确累加（统一格式才有此能力，旧裸 map 没有）
-    [TC] = beamai_llm_response:tool_calls(Resp),
+    [TC] = beamai_chat_response:tool_calls(Resp),
     ?assertEqual(<<"get_weather">>, maps:get(name, TC)),
     %% 统一解析器把分片拼接后的 arguments JSON 解码为 map
     ?assertEqual(#{<<"city">> => <<"BJ">>}, maps:get(arguments, TC)),
-    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)).
+    ?assertEqual(tool_use, beamai_chat_response:finish_reason(Resp)).
 
 %%====================================================================
 %% ollama（OpenAI 兼容端点）
@@ -57,11 +57,11 @@ ollama_stream_unified() ->
     beamai_llm_fake_backend:set_stream(openai_text_chunks(), []),
     Config = #{model => <<"llama3.2">>},
     {ok, Resp} = beamai_llm_provider_ollama:stream_chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]},
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}]),
         fun(_E) -> ok end),
-    ?assertEqual(ollama, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"你好世界"/utf8>>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)).
+    ?assertEqual(ollama, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"你好世界"/utf8>>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)).
 
 %%====================================================================
 %% dashscope（DashScope 原生格式）
@@ -71,13 +71,13 @@ dashscope_stream_unified() ->
     beamai_llm_fake_backend:set_stream(dashscope_chunks(), []),
     Config = #{api_key => <<"k">>, model => <<"qwen-plus">>},
     {ok, Resp} = beamai_llm_provider_dashscope:stream_chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]},
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}]),
         fun(_E) -> ok end),
-    ?assertEqual(dashscope, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"你好世界"/utf8>>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(3, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(4, beamai_llm_response:output_tokens(Resp)).
+    ?assertEqual(dashscope, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"你好世界"/utf8>>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(3, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(4, beamai_chat_response:output_tokens(Resp)).
 
 %%====================================================================
 %% SSE 分块 fixtures

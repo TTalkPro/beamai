@@ -5,7 +5,7 @@
 %%% 供 chat（beamai_chat_model）与 embedding（beamai_embedding）共用。
 %%%
 %%% 重试判定统一委托 beamai_llm_error（单一事实源）：
-%%%   - 瞬态错误（429 / 5xx / 网络超时）重试
+%%%   - 瞬态错误（429 / 5xx / 超时 / 连接失败）重试
 %%%   - 语义错误（4xx 参数、鉴权）不重试
 %%%
 %%% 退避策略：

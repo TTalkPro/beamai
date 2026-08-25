@@ -111,3 +111,29 @@ count_chat(In, Out) ->
         {chat_out} -> count_chat(In, Out + 1)
     after 50 -> {In, Out}
     end.
+
+%%====================================================================
+%% 流式 token 投递（回归：Anthropic message_start 曾被当成空 token 发出）
+%%====================================================================
+
+%% message_start 的 message.content 是内容块数组（[]），不是文本，不该投递；
+%% Ollama 形状的 message.content（binary）仍要投递
+stream_skips_non_text_events_test() ->
+    Self = self(),
+    Ctr = counters:new(1, []),
+    Events = [#{<<"type">> => <<"message_start">>,
+                <<"message">> => #{<<"content">> => [], <<"role">> => <<"assistant">>}},
+              #{<<"delta">> => #{<<"text">> => <<"he">>}},
+              #{<<"delta">> => #{<<"text">> => <<>>}},          %% 空文本增量
+              #{<<"message">> => #{<<"content">> => <<"llo">>}}, %% ollama 形状
+              #{<<"type">> => <<"message_stop">>}],
+    C = beamai_chat_model:create({custom, beamai_flaky_provider},
+                                 #{attempts => Ctr, events => Events}),
+    {ok, _} = beamai_chat_model:stream_chat(C, ?MSGS, fun(_) -> ok end,
+                #{on_llm_new_token => fun(Tok, _M) -> Self ! {tok, Tok}, ok end}),
+    ?assertEqual([<<"he">>, <<"llo">>], drain_tokens([])).
+
+drain_tokens(Acc) ->
+    receive {tok, T} -> drain_tokens([T | Acc])
+    after 50 -> lists:reverse(Acc)
+    end.

@@ -33,7 +33,7 @@ provider_routing_test() ->
 
 xai_body_basics_test() ->
     Config = beamai_chat_model:create(xai, #{api_key => <<"k">>, max_tokens => 100}),
-    Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_xai:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assertEqual(<<"grok-4.5">>, maps:get(<<"model">>, Body)),
     ?assertEqual(100, maps:get(<<"max_tokens">>, Body)),
     ?assertEqual(1, length(maps:get(<<"messages">>, Body))).
@@ -47,7 +47,7 @@ xai_drops_unsupported_params_test() ->
         stop => [<<"x">>],
         top_k => 10
     }),
-    Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_xai:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assertNot(maps:is_key(<<"frequency_penalty">>, Body)),
     ?assertNot(maps:is_key(<<"presence_penalty">>, Body)),
     ?assertNot(maps:is_key(<<"stop">>, Body)),
@@ -56,14 +56,14 @@ xai_drops_unsupported_params_test() ->
 xai_reasoning_effort_test() ->
     Config = beamai_chat_model:create(xai, #{api_key => <<"k">>,
                                                  reasoning_effort => <<"high">>}),
-    Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_xai:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assertEqual(<<"high">>, maps:get(<<"reasoning_effort">>, Body)).
 
 xai_reasoning_effort_dropped_for_grok_420_test() ->
     Config = beamai_chat_model:create(xai, #{api_key => <<"k">>,
                                                  model => <<"grok-4.20-reasoning">>,
                                                  reasoning_effort => <<"none">>}),
-    Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_xai:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assertNot(maps:is_key(<<"reasoning_effort">>, Body)).
 
 xai_supports_reasoning_effort_test() ->
@@ -75,7 +75,7 @@ xai_supports_reasoning_effort_test() ->
 
 xai_stream_options_test() ->
     Config = beamai_chat_model:create(xai, #{api_key => <<"k">>}),
-    Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES, stream => true}),
+    Body = beamai_llm_provider_xai:build_request_body(Config, beamai_chat_request:new(?MESSAGES, #{stream => true})),
     ?assert(maps:get(<<"stream">>, Body)),
     ?assertEqual(#{<<"include_usage">> => true}, maps:get(<<"stream_options">>, Body)).
 
@@ -92,11 +92,11 @@ xai_response_with_citations_test() ->
                          <<"total_tokens">> => 7}
     },
     {ok, Resp} = beamai_llm_response_parser:from_xai(Raw),
-    ?assertEqual(xai, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"答案"/utf8>>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(7, beamai_llm_response:total_tokens(Resp)),
-    Meta = beamai_llm_response:metadata(Resp),
+    ?assertEqual(xai, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"答案"/utf8>>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(7, beamai_chat_response:total_tokens(Resp)),
+    Meta = beamai_chat_response:metadata(Resp),
     ?assertEqual([<<"https://x/a">>], maps:get(citations, Meta)),
     ?assertEqual(<<"思考"/utf8>>, maps:get(reasoning_content, Meta)).
 
@@ -107,14 +107,14 @@ xai_response_with_citations_test() ->
 moonshot_url_region_test() ->
     CN = beamai_chat_model:create(moonshot, #{api_key => <<"k">>}),
     ?assertEqual(<<"https://api.moonshot.cn/v1/chat/completions">>,
-                 beamai_llm_provider_moonshot:build_url(CN)),
+                 beamai_llm_http_provider:url(beamai_llm_provider_moonshot, CN, beamai_chat_request:new([]))),
     Global = beamai_chat_model:create(moonshot, #{api_key => <<"k">>, region => global}),
     ?assertEqual(<<"https://api.moonshot.ai/v1/chat/completions">>,
-                 beamai_llm_provider_moonshot:build_url(Global)),
+                 beamai_llm_http_provider:url(beamai_llm_provider_moonshot, Global, beamai_chat_request:new([]))),
     Custom = beamai_chat_model:create(kimi, #{api_key => <<"k">>,
                                                   base_url => <<"https://proxy.local">>}),
     ?assertEqual(<<"https://proxy.local/v1/chat/completions">>,
-                 beamai_llm_provider_moonshot:build_url(Custom)).
+                 beamai_llm_http_provider:url(beamai_llm_provider_moonshot, Custom, beamai_chat_request:new([]))).
 
 moonshot_thinking_test() ->
     Config = beamai_chat_model:create(moonshot, #{
@@ -123,7 +123,7 @@ moonshot_thinking_test() ->
         reasoning_history => <<"interleaved">>,
         reasoning_effort => <<"max">>
     }),
-    Body = beamai_llm_provider_moonshot:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_moonshot:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assertEqual(#{<<"type">> => <<"enabled">>, <<"budget_tokens">> => 2048},
                  maps:get(<<"thinking">>, Body)),
     ?assertEqual(<<"interleaved">>, maps:get(<<"reasoning_history">>, Body)),
@@ -142,7 +142,7 @@ moonshot_strips_dollar_schema_test() ->
     },
     Config = beamai_chat_model:create(moonshot, #{api_key => <<"k">>,
                                                       response_format => Format}),
-    Body = beamai_llm_provider_moonshot:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_moonshot:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     Schema = maps:get(<<"schema">>, maps:get(<<"json_schema">>,
                                              maps:get(<<"response_format">>, Body))),
     ?assertNot(maps:is_key(<<"$schema">>, Schema)),
@@ -159,9 +159,9 @@ moonshot_response_test() ->
         <<"usage">> => #{<<"prompt_tokens">> => 1, <<"completion_tokens">> => 2}
     },
     {ok, Resp} = beamai_llm_response_parser:from_moonshot(Raw),
-    ?assertEqual(moonshot, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"think">>, maps:get(reasoning_content, beamai_llm_response:metadata(Resp))),
-    ?assertEqual(3, beamai_llm_response:total_tokens(Resp)).
+    ?assertEqual(moonshot, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"think">>, maps:get(reasoning_content, beamai_chat_response:metadata(Resp))),
+    ?assertEqual(3, beamai_chat_response:total_tokens(Resp)).
 
 %%====================================================================
 %% OpenRouter
@@ -193,7 +193,7 @@ openrouter_routing_body_test() ->
         reasoning => #{<<"effort">> => <<"high">>},
         include_usage => true
     }),
-    Body = beamai_llm_provider_openrouter:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_openrouter:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assertEqual([<<"openai/gpt-4o">>], maps:get(<<"models">>, Body)),
     ?assertEqual(<<"fallback">>, maps:get(<<"route">>, Body)),
     ?assertEqual(#{<<"sort">> => <<"throughput">>}, maps:get(<<"provider">>, Body)),
@@ -203,7 +203,7 @@ openrouter_routing_body_test() ->
 
 openrouter_usage_off_by_default_test() ->
     Config = beamai_chat_model:create(openrouter, #{api_key => <<"k">>}),
-    Body = beamai_llm_provider_openrouter:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_openrouter:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assertNot(maps:is_key(<<"usage">>, Body)).
 
 openrouter_response_test() ->
@@ -218,11 +218,11 @@ openrouter_response_test() ->
                          <<"total_tokens">> => 15, <<"cost">> => 0.00042}
     },
     {ok, Resp} = beamai_llm_response_parser:from_openrouter(Raw),
-    ?assertEqual(openrouter, beamai_llm_response:provider(Resp)),
-    Meta = beamai_llm_response:metadata(Resp),
+    ?assertEqual(openrouter, beamai_chat_response:provider(Resp)),
+    Meta = beamai_chat_response:metadata(Resp),
     ?assertEqual(<<"Anthropic">>, maps:get(upstream_provider, Meta)),
     ?assertEqual(<<"r">>, maps:get(reasoning_content, Meta)),
-    Usage = beamai_llm_response:usage(Resp),
+    Usage = beamai_chat_response:usage(Resp),
     ?assertEqual(0.00042, maps:get(cost, maps:get(details, Usage))).
 
 %%====================================================================
@@ -232,10 +232,10 @@ openrouter_response_test() ->
 siliconflow_url_region_test() ->
     CN = beamai_chat_model:create(siliconflow, #{api_key => <<"k">>}),
     ?assertEqual(<<"https://api.siliconflow.cn/v1/chat/completions">>,
-                 beamai_llm_provider_siliconflow:build_url(CN)),
+                 beamai_llm_http_provider:url(beamai_llm_provider_siliconflow, CN, beamai_chat_request:new([]))),
     Global = beamai_chat_model:create(siliconflow, #{api_key => <<"k">>, region => global}),
     ?assertEqual(<<"https://api.siliconflow.com/v1/chat/completions">>,
-                 beamai_llm_provider_siliconflow:build_url(Global)).
+                 beamai_llm_http_provider:url(beamai_llm_provider_siliconflow, Global, beamai_chat_request:new([]))).
 
 siliconflow_thinking_params_test() ->
     Config = beamai_chat_model:create(siliconflow, #{
@@ -246,7 +246,7 @@ siliconflow_thinking_params_test() ->
         top_k => 20,
         min_p => 0.05
     }),
-    Body = beamai_llm_provider_siliconflow:build_request_body(Config, #{messages => ?MESSAGES}),
+    Body = beamai_llm_provider_siliconflow:build_request_body(Config, beamai_chat_request:new(?MESSAGES)),
     ?assert(maps:get(<<"enable_thinking">>, Body)),
     ?assertEqual(4096, maps:get(<<"thinking_budget">>, Body)),
     ?assertEqual(20, maps:get(<<"top_k">>, Body)),
@@ -263,8 +263,8 @@ siliconflow_response_test() ->
                          <<"total_tokens">> => 4}
     },
     {ok, Resp} = beamai_llm_response_parser:from_siliconflow(Raw),
-    ?assertEqual(siliconflow, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"b">>, maps:get(reasoning_content, beamai_llm_response:metadata(Resp))).
+    ?assertEqual(siliconflow, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"b">>, maps:get(reasoning_content, beamai_chat_response:metadata(Resp))).
 
 %%====================================================================
 %% 工具调用（OpenAI 兼容通道）
@@ -286,11 +286,11 @@ compatible_tool_calls_test() ->
         }]
     },
     {ok, Resp} = beamai_llm_response_parser:from_xai(Raw),
-    ?assert(beamai_llm_response:has_tool_calls(Resp)),
-    [Call] = beamai_llm_response:tool_calls(Resp),
+    ?assert(beamai_chat_response:has_tool_calls(Resp)),
+    [Call] = beamai_chat_response:tool_calls(Resp),
     ?assertEqual(<<"get_weather">>, maps:get(name, Call)),
     ?assertEqual(#{<<"city">> => <<"SH">>}, maps:get(arguments, Call)),
-    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)).
+    ?assertEqual(tool_use, beamai_chat_response:finish_reason(Resp)).
 
 error_response_test() ->
     Raw = #{<<"error">> => #{<<"message">> => <<"bad key">>}},

@@ -33,7 +33,7 @@
 %% 二进制，绝不 function_clause 崩溃。
 -spec extract_content(map()) -> binary().
 extract_content(Response) ->
-    case beamai_llm_response:content(Response) of
+    case beamai_chat_response:content(Response) of
         Content when is_binary(Content) -> Content;
         _ -> <<>>
     end.
@@ -48,7 +48,7 @@ extract_content(Response) ->
 %% @returns 完整的 chat 选项 map
 -spec build_chat_opts(beamai_chat_client:chat_client(), map()) -> map().
 build_chat_opts(ChatClient, Opts) ->
-    ToolSpecs = beamai_chat_client:get_tool_specs(ChatClient),
+    ToolSpecs = beamai_tool_registry:specs(beamai_chat_client:tools(ChatClient)),
     BaseChatOpts = maps:get(chat_opts, Opts, #{}),
     case ToolSpecs of
         [] -> BaseChatOpts;
@@ -112,9 +112,10 @@ execute_tools(ChatClient, ToolCalls, Context, Parallel, OnResult) ->
 
 %% @private 批内是否含 serial 工具（命中则整批退化串行，保住副作用顺序）
 batch_has_serial(ChatClient, ToolCalls) ->
+    Registry = beamai_chat_client:tools(ChatClient),
     lists:any(fun(TC) ->
         {_Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
-        beamai_chat_client:serial_tool(ChatClient, Name)
+        beamai_tool_registry:serial(Registry, Name)
     end, ToolCalls).
 
 %% @doc 执行单个 tool：经完整 filter 管道调用，编码结果，构建 tool 消息与调用记录
@@ -126,7 +127,7 @@ batch_has_serial(ChatClient, ToolCalls) ->
     {map(), map(), beamai_context:writes()}.
 run_one_tool(ChatClient, TC, Context) ->
     {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
-    {Result, Writes, ErrInfo} = case beamai_chat_client:invoke_tool(ChatClient, Name, Args, Context) of
+    {Result, Writes, ErrInfo} = case beamai_tool_executor:invoke(ChatClient, Name, Args, Context) of
         {ok, Value, W} ->
             {beamai_tool:encode_result(Value), W, undefined};
         {error, Reason} ->

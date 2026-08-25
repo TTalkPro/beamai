@@ -83,15 +83,15 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 - **beamai_llm_content** - Multimodal content part constructors (text/image/audio/video/document)
 - **beamai_llm_media** - Media source constructors, MIME sniffing, data URI codec
 - **beamai_llm_tool_adapter** - Tool format adaptation
-- **beamai_llm_response_parser** - Provider response parsing (OpenAI/Anthropic/DashScope formats → unified `beamai_llm_response` structure)
+- **beamai_llm_response_parser** - Provider response parsing (OpenAI/Anthropic/DashScope formats → unified `beamai_chat_response` structure)
 
 ### Error Handling
 
 - **beamai_llm_error** - Unified error structure. Normalizes the assorted Provider/HTTP errors (`{http_error, ...}` / `{api_error, ...}` / `{request_failed, ...}`, etc.) into a structured map with type / status / retryability / suggested backoff.
 
-> **Note:** The core response data structure `beamai_llm_response` is in `beamai_core`, providing unified type definitions and accessors.
+> **Note:** The core response data structure `beamai_chat_response` is in `beamai_core`, providing unified type definitions and accessors.
 
-> **Streaming consistency:** All providers (incl. zhipu/dashscope/ollama) return the unified `beamai_llm_response` structure for both sync and streaming calls, with streamed tool-call accumulation, usage stats, and reasoning/thinking content.
+> **Streaming consistency:** All providers (incl. zhipu/dashscope/ollama) return the unified `beamai_chat_response` structure for both sync and streaming calls, with streamed tool-call accumulation, usage stats, and reasoning/thinking content.
 
 ## API Documentation
 
@@ -179,7 +179,7 @@ Messages = [
 - Full support for tool calling (Function Calling), with automatic accumulation of streamed tool-call fragments
 - Streaming output support
 - OpenAI compatible API, response format consistent with OpenAI
-- Chain-of-thought from deepseek-reasoner is exposed via `beamai_llm_response:reasoning_content/1` (both sync and streaming)
+- Chain-of-thought from deepseek-reasoner is exposed via `beamai_chat_response:reasoning_content/1` (both sync and streaming)
 - Supports `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` config options
 - deepseek-reasoner automatically strips unsupported params (temperature/top_p/penalty/logprobs) to avoid 400 errors
 - Context disk-cache stats exposed in `usage.details` (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`)
@@ -200,7 +200,7 @@ Messages = [
     prompt => <<"def fib(n):">>,
     suffix => <<"    return fib(n-1) + fib(n-2)">>
 }),
-Completion = beamai_llm_response:content(Resp2),
+Completion = beamai_chat_response:content(Resp2),
 
 %% Streaming FIM
 {ok, Resp3} = beamai_llm_provider_deepseek:stream_fim(Config, #{prompt => P}, Callback).
@@ -339,7 +339,7 @@ end,
 llm_client:stream_chat(LLM, Messages, Callback).
 ```
 
-> The callback receives each provider's **raw SSE events** (for live token display); the value returned by `stream_chat` is the unified `beamai_llm_response`, consistent with sync calls.
+> The callback receives each provider's **raw SSE events** (for live token display); the value returned by `stream_chat` is the unified `beamai_chat_response`, consistent with sync calls.
 
 ## Advanced Capabilities
 
@@ -453,7 +453,7 @@ LLM = llm_client:create(anthropic, #{
 }),
 {ok, Resp} = llm_client:chat(LLM, Messages),
 %% Search results (title/url/page_age, etc.) land in metadata
-Results = maps:get(web_search_results, beamai_llm_response:metadata(Resp), []).
+Results = maps:get(web_search_results, beamai_chat_response:metadata(Resp), []).
 ```
 
 ### Anthropic Citations
@@ -461,7 +461,7 @@ Results = maps:get(web_search_results, beamai_llm_response:metadata(Resp), []).
 With `citations => true` on a document part, citations in the response are collected into `metadata.citations`.
 
 ```erlang
-Citations = maps:get(citations, beamai_llm_response:metadata(Resp), []).
+Citations = maps:get(citations, beamai_chat_response:metadata(Resp), []).
 ```
 
 ### Rate-limit Response Headers
@@ -469,7 +469,7 @@ Citations = maps:get(citations, beamai_llm_response:metadata(Resp), []).
 Both sync and streaming calls parse rate-limit info from response headers (`anthropic-ratelimit-*` / `x-ratelimit-*` / `retry-after`) into `metadata.rate_limit`.
 
 ```erlang
-case maps:get(rate_limit, beamai_llm_response:metadata(Resp), undefined) of
+case maps:get(rate_limit, beamai_chat_response:metadata(Resp), undefined) of
     undefined -> ok;
     RL -> io:format("remaining requests: ~p~n", [maps:get(<<"requests-remaining">>, RL, undefined)])
 end.

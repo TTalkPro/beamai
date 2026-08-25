@@ -111,7 +111,7 @@ run_chat(LLMConfig) ->
                     Req#{messages => [SystemMsg | Msgs]}
             end,
             #{response := Response} = Resp = Next(Req1),
-            Content = beamai_llm_response:content(Response),
+            Content = beamai_chat_response:content(Response),
             case is_binary(Content) of
                 true -> io:format("  [后置] response length: ~B bytes~n", [byte_size(Content)]);
                 false -> ok

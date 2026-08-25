@@ -34,7 +34,7 @@ beamai 的三链比数字 order 更严：位置是**类型**表达的，不是�
 
 **真正的缺口只有 `return_direct`**（下述），外加 `ToolExecutionEligibilityChecker`
 那种可插拔的「响应算不算工具调用」判定——后者不做：beamai 的
-`beamai_llm_response:has_tool_calls/1` 是统一响应上的确定判断，Spring 需要可插拔是因
+`beamai_chat_response:has_tool_calls/1` 是统一响应上的确定判断，Spring 需要可插拔是因
 为各 provider 响应形态没收敛到一个类型，那是它的历史包袱。
 
 ### 1.1 `return_direct`（已实施）

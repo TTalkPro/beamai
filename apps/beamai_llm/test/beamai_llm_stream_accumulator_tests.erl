@@ -40,11 +40,11 @@ openai_stream_content_test() ->
     ],
     Acc = accumulate_openai(Events),
     {ok, Resp} = beamai_llm_provider_common:finalize_openai_stream(Acc, openai),
-    ?assertEqual(<<"Hello World">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(<<"chatcmpl-1">>, beamai_llm_response:id(Resp)),
-    ?assertEqual(<<"gpt-4">>, beamai_llm_response:model(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(false, beamai_llm_response:has_tool_calls(Resp)).
+    ?assertEqual(<<"Hello World">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(<<"chatcmpl-1">>, beamai_chat_response:id(Resp)),
+    ?assertEqual(<<"gpt-4">>, beamai_chat_response:model(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(false, beamai_chat_response:has_tool_calls(Resp)).
 
 %%====================================================================
 %% OpenAI 流式：分片工具调用累加
@@ -71,8 +71,8 @@ openai_stream_tool_calls_test() ->
     ],
     Acc = accumulate_openai(Events),
     {ok, Resp} = beamai_llm_provider_common:finalize_openai_stream(Acc, openai),
-    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)),
-    [TC1, TC2] = beamai_llm_response:tool_calls(Resp),
+    ?assertEqual(tool_use, beamai_chat_response:finish_reason(Resp)),
+    [TC1, TC2] = beamai_chat_response:tool_calls(Resp),
     ?assertEqual(<<"call_1">>, maps:get(id, TC1)),
     ?assertEqual(<<"get_weather">>, maps:get(name, TC1)),
     ?assertEqual(#{<<"city">> => <<"Beijing">>}, maps:get(arguments, TC1)),
@@ -95,9 +95,9 @@ openai_stream_usage_test() ->
     ],
     Acc = accumulate_openai(Events),
     {ok, Resp} = beamai_llm_provider_common:finalize_openai_stream(Acc, openai),
-    ?assertEqual(10, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(5, beamai_llm_response:output_tokens(Resp)),
-    ?assertEqual(15, beamai_llm_response:total_tokens(Resp)).
+    ?assertEqual(10, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(5, beamai_chat_response:output_tokens(Resp)),
+    ?assertEqual(15, beamai_chat_response:total_tokens(Resp)).
 
 %%====================================================================
 %% DeepSeek 流式：reasoning_content 累加
@@ -115,9 +115,9 @@ deepseek_stream_reasoning_test() ->
     ],
     Acc = accumulate_openai(Events),
     {ok, Resp} = beamai_llm_provider_common:finalize_openai_stream(Acc, deepseek),
-    ?assertEqual(deepseek, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"Answer: 42">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(<<"Let me think...">>, beamai_llm_response:reasoning_content(Resp)).
+    ?assertEqual(deepseek, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"Answer: 42">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(<<"Let me think...">>, beamai_chat_response:reasoning_content(Resp)).
 
 %%====================================================================
 %% Anthropic 流式：文本 + 工具调用 + usage
@@ -150,19 +150,19 @@ anthropic_stream_full_test() ->
     ],
     Acc = accumulate_anthropic(Events),
     {ok, Resp} = beamai_llm_provider_common:finalize_anthropic_stream(Acc),
-    ?assertEqual(<<"msg_1">>, beamai_llm_response:id(Resp)),
-    ?assertEqual(<<"claude-sonnet-4-5">>, beamai_llm_response:model(Resp)),
-    ?assertEqual(anthropic, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"I'll check the weather.">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)),
-    [TC] = beamai_llm_response:tool_calls(Resp),
+    ?assertEqual(<<"msg_1">>, beamai_chat_response:id(Resp)),
+    ?assertEqual(<<"claude-sonnet-4-5">>, beamai_chat_response:model(Resp)),
+    ?assertEqual(anthropic, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"I'll check the weather.">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(tool_use, beamai_chat_response:finish_reason(Resp)),
+    [TC] = beamai_chat_response:tool_calls(Resp),
     ?assertEqual(<<"toolu_1">>, maps:get(id, TC)),
     ?assertEqual(<<"get_weather">>, maps:get(name, TC)),
     ?assertEqual(#{<<"city">> => <<"Beijing">>}, maps:get(arguments, TC)),
     %% usage：input_tokens 来自 message_start，output_tokens 来自 message_delta
-    ?assertEqual(20, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(30, beamai_llm_response:output_tokens(Resp)),
-    ?assertEqual(50, beamai_llm_response:total_tokens(Resp)).
+    ?assertEqual(20, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(30, beamai_chat_response:output_tokens(Resp)),
+    ?assertEqual(50, beamai_chat_response:total_tokens(Resp)).
 
 %%====================================================================
 %% Anthropic 流式：thinking 块累加
@@ -190,11 +190,11 @@ anthropic_stream_thinking_test() ->
     ],
     Acc = accumulate_anthropic(Events),
     {ok, Resp} = beamai_llm_provider_common:finalize_anthropic_stream(Acc),
-    ?assertEqual(<<"Done.">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(<<"Step 1...">>, beamai_llm_response:thinking(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
+    ?assertEqual(<<"Done.">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(<<"Step 1...">>, beamai_chat_response:thinking(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
     %% thinking 块保留 signature（多轮对话回传需要）
-    Blocks = beamai_llm_response:content_blocks(Resp),
+    Blocks = beamai_chat_response:content_blocks(Resp),
     ?assertMatch([#{type := thinking, signature := <<"sig_abc">>} | _], Blocks).
 
 %%====================================================================

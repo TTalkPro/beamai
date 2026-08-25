@@ -21,7 +21,7 @@ find_interrupt_tool_test() ->
     ?assertEqual([TC1], Others).
 
 %% 统一响应的扁平 tool_call 格式（#{id, name, arguments}，真实 provider 经
-%% beamai_llm_response 解析后的形状）也必须能匹配中断工具
+%% beamai_chat_response 解析后的形状）也必须能匹配中断工具
 %% （回归：曾只认 OpenAI 嵌套 function.name，扁平格式静默不匹配并刷告警）
 find_interrupt_tool_flat_format_test() ->
     Agent = #{interrupt_tools => [#{name => <<"ask_human">>}]},

@@ -48,8 +48,8 @@ logging_filter() ->
             logger:debug("beamai chat call: ~p messages", [length(Msgs)]),
             #{response := Response} = Resp = Next(Req),
             logger:debug("beamai chat done: finish_reason=~p tool_calls=~p",
-                         [beamai_llm_response:finish_reason(Response),
-                          length(beamai_llm_response:tool_calls(Response))]),
+                         [beamai_chat_response:finish_reason(Response),
+                          length(beamai_chat_response:tool_calls(Response))]),
             Resp
         end,
         around_tool => fun(#{tool := ToolSpec, args := Args} = Req, _FCtx, Next) ->
@@ -142,7 +142,7 @@ block_text(_) -> <<>>.
 
 %% @private 合成拦截答复（不经 LLM）
 refusal_response(Text) ->
-    beamai_llm_response:new(#{
+    beamai_chat_response:new(#{
         content => Text,
         finish_reason => content_filtered,
         metadata => #{safeguard => blocked}
@@ -257,7 +257,7 @@ schema_validator(Schema, Opts) ->
     Fence = maps:get(code_fence, Opts, true),
     ValOpts = maps:with([max_errors], Opts),
     fun(Response) ->
-        case beamai_llm_response:content(Response) of
+        case beamai_chat_response:content(Response) of
             Content when is_binary(Content), Content =/= <<>> ->
                 validate_json(Schema, ValOpts, strip_fence(Fence, Content));
             _ ->

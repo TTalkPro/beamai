@@ -182,7 +182,7 @@ K3 = beamai_chat_client:add_tool_module(K2, my_tool_module).
 
 ```erlang
 %% 获取所有工具的 schema（用于发送给 LLM）
-ToolSpecs = beamai_chat_client:get_tool_specs(ChatClient).
+ToolSpecs = beamai_tool_registry:specs(beamai_chat_client:tools(ChatClient)).
 
 %% 按名称查找
 {ok, Tool} = beamai_chat_client:find_tool(ChatClient, <<"get_weather">>).

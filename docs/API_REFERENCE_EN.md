@@ -129,10 +129,6 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 -spec add_tool_module(chat_client(), module()) -> chat_client().
 -spec add_chat_model(chat_client(), beamai_chat_model:config()) -> chat_client().
 
--spec invoke_tool(chat_client(), binary(),
-                   beamai_tool:args(), beamai_context:t()) ->
-    {ok, term(), beamai_context:writes()} | {error, term()}.
-
 -spec invoke_chat(chat_client(), [map()], chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 
@@ -140,20 +136,14 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
                          fun((binary(), map()) -> ok)) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 
--spec get_tool(chat_client(), binary()) ->
-    {ok, beamai_tool:tool_spec()} | error.
--spec list_tools(chat_client()) -> [beamai_tool:tool_spec()].
--spec get_tools_by_tag(chat_client(), binary()) -> [beamai_tool:tool_spec()].
--spec get_tool_specs(chat_client()) -> [map()].
--spec get_tool_schemas(chat_client()) -> [map()].
--spec get_tool_schemas(chat_client(), openai | anthropic | atom()) -> [map()].
+%% Hand out what it holds; "which tools are there" is a question for beamai_tool_registry
+-spec tools(chat_client()) -> beamai_tool_registry:t().
+-spec filters(chat_client()) -> [beamai_filter:filter()].
 
 -spec chat_model(chat_client()) ->
     {ok, beamai_chat_model:config()} | error.
 
 -spec state_slots(chat_client()) -> beamai_context:state_slots().
--spec serial_tool(chat_client(), binary()) -> boolean().
--spec return_direct_tool(chat_client(), binary()) -> boolean().
 ```
 
 #### Types
@@ -161,7 +151,7 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 ```erlang
 -type chat_client() :: #{
     '__chat_client__' := true,
-    tools := #{binary() => beamai_tool:tool_spec()},
+    tools := beamai_tool_registry:t(),
     llm_config := beamai_chat_model:config() | undefined,
     filters := [beamai_filter:filter()],
     settings := chat_client_settings()
@@ -187,14 +177,17 @@ K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
 | `add_tool/2`, `add_tools/2` | Register one or many tools |
 | `add_tool_module/2` | Register all tools exposed by a tool module |
 | `add_chat_model/2` | Attach an LLM service config |
-| `invoke_tool/4` | Run one tool through the tool filter chain |
 | `invoke_chat/3` | Run one LLM call through the chat filter chain (no tool loop) |
 | `invoke_chat_stream/4` | Streaming variant; same chat + llm chains plus the `token_transform` pipeline |
-| `get_tool/2`, `list_tools/1`, `get_tools_by_tag/2` | Look up tools |
-| `get_tool_specs/1`, `get_tool_schemas/1,2` | Export tool definitions for an LLM call |
+| `tools/1`, `filters/1` | Hand out the tool registry / filter list it holds |
 | `chat_model/1` | Inspect the LLM service config |
 | `state_slots/1` | ChatClient-level declarations of tool-call state slots |
-| `serial_tool/2`, `return_direct_tool/2` | Query tool flags set during registration |
+
+Tool lookup, definitions, metadata and execution are **not** ChatClient's job — see
+`beamai_tool_registry` (declaration side: resolve / specs / schemas / serial / return_direct) and
+`beamai_tool_executor` (runtime side: `invoke/4` = resolve + around_tool onion), mirroring Spring
+AI's split between `ChatClient`, `ToolCallbackResolver`/`ToolDefinition`/`ToolMetadata` and
+`ToolCallingManager`.
 
 ---
 
@@ -744,7 +737,7 @@ Classifies a tool's error reason into one of three buckets. Useful for deciding 
 
 ---
 
-### LLM Response: beamai_llm_response
+### LLM Response: beamai_chat_response
 
 The unified response shape across all providers. Construct from a raw map with `new/1`, then read fields via the accessor functions.
 
@@ -835,7 +828,7 @@ Constructors and accessors for the unified message shape (`role`, `content`, `to
 -spec tool_calls([tool_call()]) -> message().
 -spec tool_result(binary(), binary(), term()) -> message().
 -spec with_content_blocks(message(),
-                          [beamai_llm_response:content_block()]) -> message().
+                          [beamai_chat_response:content_block()]) -> message().
 -spec from_response(term()) -> message() | undefined.
 
 -spec role(message()) -> atom().
@@ -844,7 +837,7 @@ Constructors and accessors for the unified message shape (`role`, `content`, `to
 -spec tool_call_id(message()) -> binary() | undefined.
 -spec name(message()) -> binary() | undefined.
 -spec content_blocks(message()) ->
-    [beamai_llm_response:content_block()].
+    [beamai_chat_response:content_block()].
 
 -spec is_message(term()) -> boolean().
 -spec is_role(message(), atom()) -> boolean().
@@ -858,7 +851,7 @@ Constructors and accessors for the unified message shape (`role`, `content`, `to
     role := user | assistant | system | tool,
     content := binary() | null,
     tool_calls => [tool_call()],
-    content_blocks => [beamai_llm_response:content_block()],
+    content_blocks => [beamai_chat_response:content_block()],
     tool_call_id => binary(),
     name => binary()
 }.
@@ -1075,7 +1068,7 @@ LLM = beamai_chat_model:create(zhipu, #{
     #{role => user, content => <<"Hello">>}
 ]),
 
-io:format("~ts~n", [beamai_llm_response:content(Resp)]).
+io:format("~ts~n", [beamai_chat_response:content(Resp)]).
 ```
 
 ---
@@ -1270,50 +1263,50 @@ The adapters convert between the unified internal shapes and each provider's wir
 
 #### beamai_llm_response_parser
 
-Returns parser functions for each provider, plus `from_*` constructors that build a unified `beamai_llm_response:response()` from a raw provider payload.
+Returns parser functions for each provider, plus `from_*` constructors that build a unified `beamai_chat_response:response()` from a raw provider payload.
 
 ```erlang
 -spec parser_openai() ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
+        {ok, beamai_chat_response:response()} | {error, term()}).
 -spec parser_anthropic() ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
--spec parser(beamai_llm_response:provider()) ->
+        {ok, beamai_chat_response:response()} | {error, term()}).
+-spec parser(beamai_chat_response:provider()) ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
+        {ok, beamai_chat_response:response()} | {error, term()}).
 -spec parser_ollama() ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
+        {ok, beamai_chat_response:response()} | {error, term()}).
 -spec parser_dashscope() ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
+        {ok, beamai_chat_response:response()} | {error, term()}).
 -spec parser_zhipu() ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
+        {ok, beamai_chat_response:response()} | {error, term()}).
 -spec parser_deepseek() ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
+        {ok, beamai_chat_response:response()} | {error, term()}).
 -spec parser_deepseek_fim() ->
     fun((map()) ->
-        {ok, beamai_llm_response:response()} | {error, term()}).
+        {ok, beamai_chat_response:response()} | {error, term()}).
 
--spec from_provider(map(), beamai_llm_response:provider()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_provider(map(), beamai_chat_response:provider()) ->
+    {ok, beamai_chat_response:response()} | {error, term()}.
 -spec from_openai(map()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 -spec from_anthropic(map()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 -spec from_zhipu(map()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 -spec from_deepseek(map()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 -spec from_deepseek_fim(map()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 -spec from_ollama(map()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 -spec from_dashscope(map()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 ```
 
 #### beamai_llm_message_adapter
@@ -1515,7 +1508,7 @@ The primary public API. Every Agent interaction goes through `run/2,3`, `stream/
 -type run_result() :: #{
     content := binary(),
     tool_calls_made => [map()],
-    finish_reason := beamai_llm_response:finish_reason(),
+    finish_reason := beamai_chat_response:finish_reason(),
     usage := map(),
     iterations := non_neg_integer()
 }.

@@ -58,6 +58,24 @@ connection_closed_retryable_test() ->
     ?assertEqual(network, beamai_llm_error:type(E)),
     ?assert(beamai_llm_error:retryable(E)).
 
+%% 连接建立失败：瞬态，重试（滚动重启 / 网络抖动）
+connection_failed_retryable_test() ->
+    E = beamai_llm_error:from_reason({request_failed, {connection_failed, timeout}}),
+    ?assertEqual(network, beamai_llm_error:type(E)),
+    ?assert(beamai_llm_error:retryable(E)).
+
+%% 真实观测到的嵌套形态（池 checkout 与 gun 各包了一层）
+nested_connection_failed_retryable_test() ->
+    E = beamai_llm_error:from_reason(
+          {request_failed, {connection_failed, {connection_failed, timeout}}}),
+    ?assert(beamai_llm_error:retryable(E)).
+
+%% gun:open 失败（参数/主机格式问题）不是瞬态
+open_failed_not_retryable_test() ->
+    E = beamai_llm_error:from_reason({request_failed, {open_failed, badarg}}),
+    ?assertEqual(network, beamai_llm_error:type(E)),
+    ?assertNot(beamai_llm_error:retryable(E)).
+
 network_other_not_retryable_test() ->
     E = beamai_llm_error:from_reason({request_failed, nxdomain}),
     ?assertEqual(network, beamai_llm_error:type(E)),

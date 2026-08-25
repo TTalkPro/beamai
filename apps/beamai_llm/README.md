@@ -43,6 +43,41 @@
 | Voyage AI | `beamai_rerank_provider_voyage` | rerank-2.5 | 1000 |
 | Mock（测试） | `beamai_rerank_provider_mock` | mock-rerank | 10000 |
 
+## 分层：provider 声明底层信息，chat_model 干重活
+
+```
+beamai_chat_model          重活：重试（可配）、请求归一为 ChatRequest、流式 token 投递
+  beamai_llm_http_provider  怎么发：超时取值、连接池路由、rate-limit 头、同步/流式拼装
+    beamai_llm_provider_*   底层信息：base_url / endpoint / headers / body / parser / 累加器 / finalizer
+```
+
+新增一个 HTTP provider 只要实现 7 个**声明式回调**，再把 `chat/2`、`stream_chat/3` 一行委托：
+
+```erlang
+-behaviour(beamai_llm_provider_behaviour).
+
+base_url(_Config)            -> <<"https://api.example.com">>.
+endpoint(_Config, _Request)  -> <<"/v1/chat/completions">>.
+headers(Config, _Request)    -> beamai_llm_provider_common:build_bearer_auth_headers(Config).
+body(Config, Request)        -> build_request_body(Config, Request).   %% provider 特定
+parser(_Config)              -> beamai_llm_response_parser:parser_openai().
+stream_accumulator(_Config)  -> fun beamai_llm_provider_common:accumulate_openai_event/2.
+stream_finalizer(_Config)    -> fun(Acc) -> beamai_llm_provider_common:finalize_openai_stream(Acc, example) end.
+
+chat(Config, Request) ->
+    beamai_llm_http_provider:chat(?MODULE, Config, Request).
+stream_chat(Config, Request, Callback) ->
+    beamai_llm_http_provider:stream_chat(?MODULE, Config, Request, Callback).
+```
+
+回调都带 `Config`（或 `Request`）是有原因的：moonshot / siliconflow 按 `region` 选站点、
+zhipu 按 `api_mode` 在两套兼容协议间整套切换、dashscope 流式要额外的 SSE 头、deepseek 的
+prefix 补全要换 beta 端点。
+
+非 HTTP 的 provider（mock、测试桩）不实现这 7 个回调，自己写 `chat/2` 即可。
+provider 的**非 chat 扩展 API**（deepseek FIM、zhipu 异步）也保留各自的传输代码——
+它们不是 chat，请求形状自成一套。
+
 ## 模块概览
 
 ### 客户端
@@ -53,7 +88,8 @@
 
 ### 提供商
 
-- **beamai_llm_provider_behaviour** - 提供商行为定义
+- **beamai_llm_provider_behaviour** - 提供商行为定义（7 个声明式回调，见下）
+- **beamai_llm_http_provider** - HTTP provider 的统一调用实现（超时/连接池/rate-limit/两条路径拼装）
 - **beamai_llm_provider_common** - 提供商公共函数（URL 构建、认证头、事件累加等）
 - **beamai_llm_provider_openai** - OpenAI 实现
 - **beamai_llm_provider_anthropic** - Anthropic 实现
@@ -84,15 +120,15 @@
 - **beamai_llm_content** - 多模态内容部件构造（text/image/audio/video/document）
 - **beamai_llm_media** - 媒体源构造与 MIME 嗅探、data URI 编解码
 - **beamai_llm_tool_adapter** - 工具格式适配
-- **beamai_llm_response_parser** - Provider 响应解析（OpenAI/Anthropic/DashScope 等格式 → 统一 `beamai_llm_response` 结构）
+- **beamai_llm_response_parser** - Provider 响应解析（OpenAI/Anthropic/DashScope 等格式 → 统一 `beamai_chat_response` 结构）
 
 ### 错误处理
 
 - **beamai_llm_error** - 统一错误结构。把各 Provider/HTTP 层杂乱的错误（`{http_error, ...}` / `{api_error, ...}` / `{request_failed, ...}` 等）归一化为带类型/状态码/是否可重试/建议退避的结构化 map
 
-> **注意**: 核心响应数据结构 `beamai_llm_response` 位于 `beamai_core`，提供统一的类型定义和访问器。
+> **注意**: 核心响应数据结构 `beamai_chat_response` 位于 `beamai_core`，提供统一的类型定义和访问器。
 
-> **流式一致性**: 所有 Provider（含 zhipu/dashscope/ollama）的同步与流式调用均返回统一的 `beamai_llm_response` 结构，含分片工具调用累加、usage 统计、reasoning/thinking 内容。
+> **流式一致性**: 所有 Provider（含 zhipu/dashscope/ollama）的同步与流式调用均返回统一的 `beamai_chat_response` 结构，含分片工具调用累加、usage 统计、reasoning/thinking 内容。
 
 ## API 文档
 
@@ -180,7 +216,7 @@ Messages = [
 - 完整支持工具调用（Function Calling），流式分片工具调用自动累加
 - 支持流式输出
 - OpenAI 兼容 API，响应格式与 OpenAI 一致
-- deepseek-reasoner 的思维链内容通过 `beamai_llm_response:reasoning_content/1` 访问（同步与流式均支持）
+- deepseek-reasoner 的思维链内容通过 `beamai_chat_response:reasoning_content/1` 访问（同步与流式均支持）
 - 支持 `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` 配置参数
 - deepseek-reasoner 自动剔除不支持的参数（temperature/top_p/penalty/logprobs），避免 400 错误
 - 上下文硬盘缓存统计：`usage.details` 中的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
@@ -201,7 +237,7 @@ Messages = [
     prompt => <<"def fib(n):">>,
     suffix => <<"    return fib(n-1) + fib(n-2)">>
 }),
-Completion = beamai_llm_response:content(Resp2),
+Completion = beamai_chat_response:content(Resp2),
 
 %% 流式 FIM
 {ok, Resp3} = beamai_llm_provider_deepseek:stream_fim(Config, #{prompt => P}, Callback).
@@ -340,7 +376,7 @@ end,
 llm_client:stream_chat(LLM, Messages, Callback).
 ```
 
-> 回调收到的是各 Provider 的**原始 SSE 事件**（用于实时 token 展示）；而 `stream_chat` 的最终返回值是与同步一致的统一 `beamai_llm_response`。
+> 回调收到的是各 Provider 的**原始 SSE 事件**（用于实时 token 展示）；而 `stream_chat` 的最终返回值是与同步一致的统一 `beamai_chat_response`。
 
 ## 高级能力
 
@@ -457,7 +493,7 @@ LLM = llm_client:create(anthropic, #{
 }),
 {ok, Resp} = llm_client:chat(LLM, Messages),
 %% 搜索结果（title/url/page_age 等）落到 metadata
-Results = maps:get(web_search_results, beamai_llm_response:metadata(Resp), []).
+Results = maps:get(web_search_results, beamai_chat_response:metadata(Resp), []).
 ```
 
 ### Anthropic 引用（Citations）
@@ -465,7 +501,7 @@ Results = maps:get(web_search_results, beamai_llm_response:metadata(Resp), []).
 document 部件设 `citations => true` 后，响应中的引用会汇总到 `metadata.citations`。
 
 ```erlang
-Citations = maps:get(citations, beamai_llm_response:metadata(Resp), []).
+Citations = maps:get(citations, beamai_chat_response:metadata(Resp), []).
 ```
 
 ### 速率限制响应头
@@ -473,7 +509,7 @@ Citations = maps:get(citations, beamai_llm_response:metadata(Resp), []).
 同步与流式调用都会把响应头中的速率限制信息（`anthropic-ratelimit-*` / `x-ratelimit-*` / `retry-after`）解析到 `metadata.rate_limit`。
 
 ```erlang
-case maps:get(rate_limit, beamai_llm_response:metadata(Resp), undefined) of
+case maps:get(rate_limit, beamai_chat_response:metadata(Resp), undefined) of
     undefined -> ok;
     RL -> io:format("剩余请求数: ~p~n", [maps:get(<<"requests-remaining">>, RL, undefined)])
 end.
@@ -674,9 +710,9 @@ beamai_llm_provider_common:rate_limit_metadata(Headers) -> #{rate_limit => map()
 beamai_llm_provider_common:retry_after_ms(Headers) -> non_neg_integer() | undefined.
 ```
 
-### LLM 响应结构 (beamai_llm_response)
+### LLM 响应结构 (beamai_chat_response)
 
-> **注意**: `beamai_llm_response` 模块已移至 `beamai_core`，作为核心数据结构被 ChatClient 层消费。
+> **注意**: `beamai_chat_response` 模块已移至 `beamai_core`，作为核心数据结构被 ChatClient 层消费。
 
 统一的 LLM 响应结构，抽象不同 Provider 的响应差异：
 
@@ -690,10 +726,10 @@ beamai_llm_response_parser:parser_ollama()      %% Ollama 格式
 beamai_llm_response_parser:parser_zhipu()       %% 智谱特定格式（含 reasoning_content）
 
 %% 统一访问接口
-Content = beamai_llm_response:content(Response),
-ToolCalls = beamai_llm_response:tool_calls(Response),
-HasTools = beamai_llm_response:has_tool_calls(Response),
-Usage = beamai_llm_response:usage(Response),
+Content = beamai_chat_response:content(Response),
+ToolCalls = beamai_chat_response:tool_calls(Response),
+HasTools = beamai_chat_response:has_tool_calls(Response),
+Usage = beamai_chat_response:usage(Response),
 
 %% 标准化响应格式
 #{
@@ -714,7 +750,7 @@ Usage = beamai_llm_response:usage(Response),
 
 | 键 | 来源 | 说明 |
 |----|------|------|
-| `reasoning_content` | deepseek-reasoner / GLM | 思维链内容（也可用 `beamai_llm_response:reasoning_content/1` 访问） |
+| `reasoning_content` | deepseek-reasoner / GLM | 思维链内容（也可用 `beamai_chat_response:reasoning_content/1` 访问） |
 | `rate_limit` | 同步/流式响应头 | `#{<<"requests-remaining">> => ..., ...}` |
 | `citations` | Anthropic | 引用列表 |
 | `web_search_results` | Anthropic Web Search | 搜索结果（title/url/page_age 等） |

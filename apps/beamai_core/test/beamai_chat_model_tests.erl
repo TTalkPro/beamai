@@ -18,7 +18,7 @@ tool_schema_full_test() ->
                 }
             })
     ]),
-    [Schema] = beamai_chat_client:get_tool_schemas(K1, openai),
+    [Schema] = beamai_tool_registry:schemas(beamai_chat_client:tools(K1), openai),
     ?assertEqual(<<"function">>, maps:get(<<"type">>, Schema)),
     Func = maps:get(<<"function">>, Schema),
     ?assertEqual(<<"get_weather">>, maps:get(<<"name">>, Func)),
@@ -38,7 +38,7 @@ tool_schema_anthropic_format_test() ->
                 }
             })
     ]),
-    [Schema] = beamai_chat_client:get_tool_schemas(K1, anthropic),
+    [Schema] = beamai_tool_registry:schemas(beamai_chat_client:tools(K1), anthropic),
     ?assertEqual(<<"search">>, maps:get(<<"name">>, Schema)),
     ?assertEqual(<<"Search the web">>, maps:get(<<"description">>, Schema)),
     ?assert(maps:is_key(<<"input_schema">>, Schema)).

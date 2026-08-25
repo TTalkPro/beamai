@@ -28,7 +28,7 @@
   - [Result 单子：beamai_result](#result-单子beamai_result)
   - [工具错误分类：beamai_tool_error](#工具错误分类beamai_tool_error)
   - [Agent 记忆 Provider：beamai_memory_provider_default](#agent-记忆-providerbeamai_memory_provider_default)
-  - [LLM 响应：beamai_llm_response](#llm-响应beamai_llm_response)
+  - [LLM 响应：beamai_chat_response](#llm-响应beamai_llm_response)
   - [消息构建：beamai_message](#消息构建beamai_message)
   - [HTTP 客户端：beamai_http](#http-客户端beamai_http)
   - [工具模块](#工具模块)
@@ -212,11 +212,6 @@ ChatClient 是基础设施层，负责工具注册、LLM 服务配置、Filter �
 %% 设置 LLM 服务配置
 -spec add_chat_model(chat_client(), beamai_chat_behaviour:config()) -> chat_client().
 
-%% 调用 ChatClient 中注册的工具
--spec invoke_tool(chat_client(), binary(), beamai_tool:args(),
-                  beamai_context:t()) ->
-    {ok, term(), beamai_context:writes()} | {error, term()}.
-
 %% 发送 Chat Completion 请求（不含工具调用循环；带循环请用 Agent）
 -spec invoke_chat(chat_client(), [map()], chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
@@ -226,35 +221,17 @@ ChatClient 是基础设施层，负责工具注册、LLM 服务配置、Filter �
                          fun((binary(), map()) -> ok)) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 
-%% 按名称查找工具
--spec get_tool(chat_client(), binary()) -> {ok, beamai_tool:tool_spec()} | error.
+%% 取出工具注册表（"有哪些工具" 一律问 beamai_tool_registry）
+-spec tools(chat_client()) -> beamai_tool_registry:t().
 
-%% 列出 ChatClient 中所有注册的工具
--spec list_tools(chat_client()) -> [beamai_tool:tool_spec()].
-
-%% 按 tag 查找工具
--spec get_tools_by_tag(chat_client(), binary()) -> [beamai_tool:tool_spec()].
-
-%% 取所有工具的统一 tool spec 列表
--spec get_tool_specs(chat_client()) -> [map()].
-
-%% 取所有工具的 tool schema（默认 OpenAI 格式）
--spec get_tool_schemas(chat_client()) -> [map()].
-
-%% 取所有工具的 tool schema（指定 provider 格式）
--spec get_tool_schemas(chat_client(), openai | anthropic | atom()) -> [map()].
+%% 取出 filter 链
+-spec filters(chat_client()) -> [beamai_filter:filter()].
 
 %% 取 LLM 服务配置
 -spec chat_model(chat_client()) -> {ok, beamai_chat_behaviour:config()} | error.
 
 %% 取 ChatClient 的状态槽声明
 -spec state_slots(chat_client()) -> beamai_context:state_slots().
-
-%% 按工具名查该工具是否标记为串行
--spec serial_tool(chat_client(), binary()) -> boolean().
-
-%% 按工具名查该工具结果是否直接作为最终答案
--spec return_direct_tool(chat_client(), binary()) -> boolean().
 ```
 
 类型：
@@ -262,7 +239,7 @@ ChatClient 是基础设施层，负责工具注册、LLM 服务配置、Filter �
 ```erlang
 -type chat_client() :: #{
     '__chat_client__' := true,
-    tools := #{binary() => beamai_tool:tool_spec()},
+    tools := beamai_tool_registry:t(),
     llm_config := beamai_chat_behaviour:config() | undefined,
     filters := [beamai_filter:filter()],
     settings := chat_client_settings()
@@ -942,7 +919,93 @@ Behaviour 回调：
 -spec new(store(), pos_integer()) -> beamai_memory_provider:provider().
 ```
 
-### LLM 响应：beamai_llm_response
+### 工具注册表：beamai_tool_registry
+
+工具的**声明侧**：注册、按名解析、给模型看的定义、框架元数据。ChatClient 只持有这张表，
+不代答工具问题——对齐 Spring AI 把 ToolCallbackResolver / ToolDefinition / ToolMetadata
+与 ChatClient 分开（[tools.html](https://docs.spring.io/spring-ai/reference/api/tools.html)）。
+
+```erlang
+-type t() :: #{binary() => beamai_tool:tool_spec()}.
+
+%% 注册
+-spec new() -> t().
+-spec add(t(), beamai_tool:tool_spec()) -> t().
+-spec add_many(t(), [beamai_tool:tool_spec()]) -> t().
+-spec from_module(t(), module()) -> t().
+
+%% 解析与查询（ToolCallbackResolver：只找，不执行）
+-spec resolve(t(), binary()) -> {ok, beamai_tool:tool_spec()} | error.
+-spec list(t()) -> [beamai_tool:tool_spec()].
+-spec by_tag(t(), binary()) -> [beamai_tool:tool_spec()].
+
+%% 给模型看的定义（ToolDefinition）
+-spec specs(t()) -> [map()].
+-spec schemas(t()) -> [map()].
+-spec schemas(t(), openai | anthropic | atom()) -> [map()].
+
+%% 框架元数据（ToolMetadata：不进模型；未注册的名字取保守值 false）
+-spec serial(t(), binary()) -> boolean().
+-spec return_direct(t(), binary()) -> boolean().
+```
+
+从 ChatClient 取表：`beamai_tool_registry:specs(beamai_chat_client:tools(CC))`。
+
+### 工具执行器：beamai_tool_executor
+
+工具的**运行侧**：按名解析 → 经 around_tool 洋葱执行 → 归一返回。对应 Spring AI 的
+`ToolCallingManager.executeToolCalls`，但只保留**单次执行原语**：批量/并发/串行调度与
+限额在 `beamai_tool_calling_manager`（agent 层），循环在 agent 的循环 filter。
+
+```erlang
+%% 入参是 ChatClient：执行同时要用到工具表与 around_tool filter 链，二者都挂在它上面
+%% （正如 Spring 的 manager 从 Prompt 携带的 ChatOptions 里取 toolCallbacks）
+-spec invoke(beamai_chat_client:chat_client(), binary(), beamai_tool:args(),
+             beamai_context:t()) ->
+    {ok, term(), beamai_context:writes()} | {error, term()}.
+```
+
+### 调用输入：beamai_chat_request
+
+一次模型调用的输入（对标 Spring AI 的 `Prompt`）：**消息** + **本次调用参数**。
+
+```erlang
+-type t() :: #{'__chat_request__' := true, messages := [map()], options := options()}.
+
+%% 构造
+-spec new([map()]) -> t().
+-spec new([map()], options()) -> t().
+
+%% 读取
+-spec messages(t()) -> [map()].
+-spec options(t()) -> options().
+-spec option(t(), atom()) -> term() | undefined.
+-spec option(t(), atom(), term()) -> term().
+-spec tools(t()) -> [map()].
+-spec is_stream(t()) -> boolean().
+
+%% 改写（纯函数，返回新请求）
+-spec with_messages(t(), [map()]) -> t().
+-spec with_options(t(), options()) -> t().
+-spec put_option(t(), atom(), term()) -> t().
+-spec merge_options(t(), options()) -> t().
+```
+
+`options` 常见键：`model` / `temperature` / `max_tokens` / `top_p` / `stop_sequences` /
+`response_format` / `tools` / `tool_choice` / `stream`（`tool_choice` 取值是 provider 特定的）。
+
+**三个"参数"别搞混**：
+
+| | 是什么 | 生命周期 |
+|---|---|---|
+| provider **Config** | 连接与凭证：api_key / base_url / timeout / 该 provider 的默认模型参数 | 一次创建长期复用（`beamai_chat_model:create/2`） |
+| ChatRequest **options** | **这一次调用**的模型参数，覆盖 Config 同名默认值 | 单次调用 |
+| filter 链上的 chat **Req** | `#{messages, context, opts}`，对应 Spring 的 `ChatClientRequest` | 单次调用，filter 在这层改写 |
+
+重试三件套（`max_retries` / `retry_delay` / `on_retry`）属于 **ChatModel 层**，不会下发进
+ChatRequest 的 options——provider 只看得到与请求本身有关的参数。
+
+### LLM 响应：beamai_chat_response
 
 LLM 统一响应结构。所有 Provider（OpenAI / Anthropic / DeepSeek / Zhipu / DashScope / Ollama）都通过适配层归一化为这套结构，Agent 与上层只面向它编程。
 
@@ -1083,7 +1146,7 @@ LLM 消息构建与基础访问器。中性消息形态，按 role 构造统一�
 -spec tool_result(binary(), binary(), term()) -> message().
 
 %% 给消息附加 provider 原生内容块
--spec with_content_blocks(message(), [beamai_llm_response:content_block()]) ->
+-spec with_content_blocks(message(), [beamai_chat_response:content_block()]) ->
     message().
 
 %% 把 LLM 响应转为中性 assistant 消息
@@ -1105,7 +1168,7 @@ LLM 消息构建与基础访问器。中性消息形态，按 role 构造统一�
 -spec name(message()) -> binary() | undefined.
 
 %% 取 provider 原生内容块
--spec content_blocks(message()) -> [beamai_llm_response:content_block()].
+-spec content_blocks(message()) -> [beamai_chat_response:content_block()].
 
 %% 判断是否为合法消息
 -spec is_message(term()) -> boolean().
@@ -1124,7 +1187,7 @@ LLM 消息构建与基础访问器。中性消息形态，按 role 构造统一�
     role := user | assistant | system | tool,
     content := binary() | null,
     tool_calls => [tool_call()],
-    content_blocks => [beamai_llm_response:content_block()],
+    content_blocks => [beamai_chat_response:content_block()],
     tool_call_id => binary(),
     name => binary()
 }.
@@ -1425,7 +1488,7 @@ LLM = beamai_chat_model:create(zhipu, #{
 {ok, Resp} = beamai_chat_model:chat(LLM, [
     #{role => user, content => <<"你好！"/utf8>>}
 ]),
-io:format("~ts~n", [beamai_llm_response:content(Resp)]).
+io:format("~ts~n", [beamai_chat_response:content(Resp)]).
 ```
 
 支持的 create 选项：
@@ -1493,7 +1556,7 @@ LLM 错误统一归一化结构。所有 Provider 抛出的错误都会经过此
 }.
 ```
 
-`retryable` 由错误类型推导（`rate_limit` / `server_error` / `timeout` / `network` 为可重试，其余为不可重试），`retry_after_ms` 优先从响应头 `Retry-After` 解析。
+`retryable` 按具体原因判定：429、5xx、请求超时、连接被对端关闭、**连接建立失败**为可重试；4xx 参数错/鉴权、响应解析失败、`open_failed` 等为不可重试。`retry_after_ms` 优先从响应头 `Retry-After` 解析。
 
 ### HTTP 客户端：beamai_llm_http_client
 
@@ -1674,32 +1737,32 @@ JSON 解析的内部实现，提供 JSON 提取、修复、边界定位等底层
 
 #### beamai_llm_response_parser
 
-把每个 Provider 的原始响应 map 归一化为 `beamai_llm_response:response()`。
+把每个 Provider 的原始响应 map 归一化为 `beamai_chat_response:response()`。
 
 ```erlang
 %% 取指定 Provider 的解析器函数
--spec parser(beamai_llm_response:provider()) ->
-    fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser(beamai_chat_response:provider()) ->
+    fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 
 %% 单独命名解析器
--spec parser_openai() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
--spec parser_anthropic() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
--spec parser_ollama() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
--spec parser_dashscope() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
--spec parser_zhipu() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
--spec parser_deepseek() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
--spec parser_deepseek_fim() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_openai() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
+-spec parser_anthropic() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
+-spec parser_ollama() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
+-spec parser_dashscope() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
+-spec parser_zhipu() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
+-spec parser_deepseek() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
+-spec parser_deepseek_fim() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 
 %% 构造函数（直接吃原始 map）
--spec from_provider(map(), beamai_llm_response:provider()) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
--spec from_openai(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
--spec from_anthropic(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
--spec from_zhipu(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
--spec from_deepseek(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
--spec from_deepseek_fim(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
--spec from_ollama(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
--spec from_dashscope(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_provider(map(), beamai_chat_response:provider()) ->
+    {ok, beamai_chat_response:response()} | {error, term()}.
+-spec from_openai(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
+-spec from_anthropic(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
+-spec from_zhipu(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
+-spec from_deepseek(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
+-spec from_deepseek_fim(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
+-spec from_ollama(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
+-spec from_dashscope(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 ```
 
 #### beamai_llm_message_adapter
@@ -1932,7 +1995,7 @@ DashScope 额外说明：根据模型类型自动选择 endpoint（文本生成�
 -type run_result() :: #{
     content := binary(),
     tool_calls_made => [map()],
-    finish_reason := beamai_llm_response:finish_reason(),
+    finish_reason := beamai_chat_response:finish_reason(),
     usage := map(),
     iterations := non_neg_integer()
 }.

@@ -126,7 +126,7 @@ pre_invocation filter -> tool:invoke -> post_invocation filter -> 返回结果
 
 ```erlang
 %% 获取所有工具的 schema
-ToolSpecs = beamai_chat_client:get_tool_specs(ChatClient).
+ToolSpecs = beamai_tool_registry:specs(beamai_chat_client:tools(ChatClient)).
 
 %% 转换为 OpenAI 格式
 OpenAISchema = beamai_tool:to_tool_schema(ToolSpec, openai).

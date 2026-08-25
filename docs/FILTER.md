@@ -94,7 +94,7 @@ around_turn            每 turn 一次           RAG 注入 / 最终答案校验
 | 链 | Request | Response |
 |----|---------|----------|
 | step | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}`（见下节） |
-| chat | `#{messages, context, opts}`；流式额外带 `stream => true` | `#{response, context}`（response 为 beamai_llm_response） |
+| chat | `#{messages, context, opts}`；流式额外带 `stream => true` | `#{response, context}`（response 为 beamai_chat_response） |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 | turn | `#{messages, context, resume, load_history}` | 工具循环结果 tuple（`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`；interrupt/error 必须透传、不得重入） |
 
@@ -193,7 +193,7 @@ TraceStep = beamai:filter(<<"trace_step">>, #{
             true ->
                 #{status => final, context => Ctx, messages => maps:get(messages, Req),
                   tool_calls_made => maps:get(tool_calls_made, Req),
-                  response => beamai_llm_response:new(
+                  response => beamai_chat_response:new(
                                 #{content => <<"轮次用尽"/utf8>>, finish_reason => stop})};
             false ->
                 logger:info("iteration ~p", [I]),
@@ -622,7 +622,7 @@ SystemAudit = beamai:filter(<<"system_and_audit">>, #{
                 Req#{messages => [SystemMsg | Msgs]}
         end,
         #{response := Response} = Resp = Next(Req1),
-        case beamai_llm_response:content(Response) of
+        case beamai_chat_response:content(Response) of
             Content when is_binary(Content) ->
                 logger:info("Response length: ~B bytes", [byte_size(Content)]);
             _ ->

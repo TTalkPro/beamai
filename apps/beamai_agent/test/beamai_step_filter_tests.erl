@@ -153,7 +153,7 @@ step_filter_can_short_circuit_test() ->
         Short = beamai_filter:new(<<"short">>, #{
             around_step => fun(#{context := Ctx}, _F, _Next) ->
                 #{status => final,
-                  response => beamai_llm_response:new(
+                  response => beamai_chat_response:new(
                                 #{content => <<"canned">>, finish_reason => stop}),
                   messages => [], context => Ctx, tool_calls_made => []}
             end
@@ -179,7 +179,7 @@ custom_loop_filter_test() ->
                                 context => maps:get(context, Req),
                                 iteration => 0, tool_calls_made => []},
                     #{messages := Msgs, tool_calls_made := Made} = Next(StepReq),
-                    Resp = beamai_llm_response:new(
+                    Resp = beamai_chat_response:new(
                              #{content => <<"stopped-after-one-step">>,
                                finish_reason => stop}),
                     {ok, Resp, Made, 1, Msgs}

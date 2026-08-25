@@ -46,7 +46,7 @@
     %% 助手回合的 provider 原生内容块（含 Anthropic extended-thinking 的
     %% thinking/redacted_thinking 块及 signature）。保留它，回放历史时适配器
     %% 才能原样拼回 thinking 块，避免破坏 prompt cache 前缀。
-    content_blocks => [beamai_llm_response:content_block()],
+    content_blocks => [beamai_chat_response:content_block()],
     tool_call_id => binary(),
     name => binary()
 }.
@@ -97,7 +97,7 @@ tool_result(Id, Name, Content) ->
 %%
 %% 主要用于把助手回合的 thinking 块随历史一并保留，使回放给 LLM 时
 %% 适配器能原样拼回（cache 友好）。Blocks 为空列表时原样返回 Msg。
--spec with_content_blocks(message(), [beamai_llm_response:content_block()]) -> message().
+-spec with_content_blocks(message(), [beamai_chat_response:content_block()]) -> message().
 with_content_blocks(Msg, []) -> Msg;
 with_content_blocks(Msg, Blocks) when is_list(Blocks) ->
     Msg#{content_blocks => Blocks}.
@@ -113,16 +113,16 @@ from_response(Response) ->
         undefined ->
             undefined;
         Base ->
-            with_content_blocks(Base, beamai_llm_response:content_blocks(Response))
+            with_content_blocks(Base, beamai_chat_response:content_blocks(Response))
     end.
 
 %% @private 根据响应构建基础 assistant 消息（tool_calls 优先，否则取 content）
 base_from_response(Response) ->
-    case beamai_llm_response:has_tool_calls(Response) of
+    case beamai_chat_response:has_tool_calls(Response) of
         true ->
-            tool_calls(beamai_llm_response:tool_calls(Response));
+            tool_calls(beamai_chat_response:tool_calls(Response));
         false ->
-            case beamai_llm_response:content(Response) of
+            case beamai_chat_response:content(Response) of
                 null -> undefined;
                 Content -> assistant(Content)
             end
@@ -146,7 +146,7 @@ get_tool_calls(#{tool_calls := TCs}) -> TCs;
 get_tool_calls(_) -> [].
 
 %% @doc 获取 provider 原生内容块（无则返回 []）
--spec content_blocks(message()) -> [beamai_llm_response:content_block()].
+-spec content_blocks(message()) -> [beamai_chat_response:content_block()].
 content_blocks(#{content_blocks := Blocks}) -> Blocks;
 content_blocks(_) -> [].
 

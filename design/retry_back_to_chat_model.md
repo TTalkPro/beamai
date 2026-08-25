@@ -62,3 +62,32 @@ N-best 投票、按尝试计费。那时它才有真实居民，而不是一个�
 - `on_retry` 回调按序拿到 attempt=1,2——**filter 看不到尝试，这里是唯一观测入口**；
 - 流式不重试（只发一次真实请求）；
 - **层次断言**：底下重试 3 次真实请求，`around_chat` filter 仍只进出 1 次。
+
+## 4. live 验证（MiniMax-M2）
+
+`MINIMAX_API_KEY` 走 Anthropic 兼容端点 `https://api.minimax.chat/anthropic`：
+
+- 既有 `beamai_tcm_live_test`（2 例）、`beamai_http_pool_live_test`（1 例）全过；
+- 真实链路计数：`turn=1 / step=2 / chat=2 / tool=1`，迭代 2 轮，工具结果确实回灌；
+- **重试的真机证据**：`timeout => 1`（ms）触发 `{request_failed, timeout}`（可重试），
+  `max_retries => 2` 下 `on_retry` 回调触发 **2 次**，而 `around_chat` filter 只进出
+  **1 次**——重试确实发生在整个 filter 栈之下；单次 opts `max_retries => 0` 时 on_retry 0 次。
+
+### live 逮到的一个 bug（已修）
+
+Anthropic 流的 `message_start` 事件形如 `#{<<"message">> => #{<<"content">> => []}}`，
+与 Ollama 的 `message.content`（binary 文本）**撞形**，被
+`beamai_chat_model:extract_token_from_event/1` 当成 token 投递——每次流式开头下游都会
+收到一个空 token（`[]`，还不是 `<<>>`，所以 agent 的 `emit_tokens(<<>>, ...)` 空值守卫
+也拦不住）。
+
+修法两处：该子句加 `when is_binary(Content)` 守卫；`invoke_new_token_callback/3` 收紧为
+**只投递非空 binary**。回归测试 `stream_skips_non_text_events_test` 用
+`beamai_flaky_provider` 回放事件序列，不走网络。
+
+### 顺带发现（未改）
+
+连接失败被归为不可重试：`{request_failed, {connection_failed, _}}` 落在
+`beamai_llm_error:classify/2` 的 catch-all（`retryable=false`），只有 `timeout` 与
+`{closed,_}` 可重试。live 跑的时候真遇到过一次连接超时直接返回错误。是否把
+connection_failed 也算瞬态，值得单独决定。

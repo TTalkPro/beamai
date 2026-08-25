@@ -32,32 +32,32 @@ from_openai_basic_test() ->
     {ok, Resp} = beamai_llm_response_parser:from_openai(Raw),
 
     %% 基本字段
-    ?assertEqual(<<"chatcmpl-123">>, beamai_llm_response:id(Resp)),
-    ?assertEqual(<<"gpt-4">>, beamai_llm_response:model(Resp)),
-    ?assertEqual(openai, beamai_llm_response:provider(Resp)),
+    ?assertEqual(<<"chatcmpl-123">>, beamai_chat_response:id(Resp)),
+    ?assertEqual(<<"gpt-4">>, beamai_chat_response:model(Resp)),
+    ?assertEqual(openai, beamai_chat_response:provider(Resp)),
 
     %% 内容
-    ?assertEqual(<<"Hello, world!">>, beamai_llm_response:content(Resp)),
-    ?assertEqual([#{type => text, text => <<"Hello, world!">>}], beamai_llm_response:content_blocks(Resp)),
+    ?assertEqual(<<"Hello, world!">>, beamai_chat_response:content(Resp)),
+    ?assertEqual([#{type => text, text => <<"Hello, world!">>}], beamai_chat_response:content_blocks(Resp)),
 
     %% 工具调用
-    ?assertEqual([], beamai_llm_response:tool_calls(Resp)),
-    ?assertEqual(false, beamai_llm_response:has_tool_calls(Resp)),
+    ?assertEqual([], beamai_chat_response:tool_calls(Resp)),
+    ?assertEqual(false, beamai_chat_response:has_tool_calls(Resp)),
 
     %% 状态
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(true, beamai_llm_response:is_complete(Resp)),
-    ?assertEqual(false, beamai_llm_response:needs_tool_call(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(true, beamai_chat_response:is_complete(Resp)),
+    ?assertEqual(false, beamai_chat_response:needs_tool_call(Resp)),
 
     %% Token 统计
-    ?assertEqual(10, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(20, beamai_llm_response:output_tokens(Resp)),
-    ?assertEqual(30, beamai_llm_response:total_tokens(Resp)),
+    ?assertEqual(10, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(20, beamai_chat_response:output_tokens(Resp)),
+    ?assertEqual(30, beamai_chat_response:total_tokens(Resp)),
 
     %% 原始数据
-    ?assertEqual(Raw, beamai_llm_response:raw(Resp)),
-    ?assertEqual(<<"gpt-4">>, beamai_llm_response:raw_get(Resp, <<"model">>)),
-    ?assertEqual(1234567890, beamai_llm_response:raw_get(Resp, [<<"created">>])).
+    ?assertEqual(Raw, beamai_chat_response:raw(Resp)),
+    ?assertEqual(<<"gpt-4">>, beamai_chat_response:raw_get(Resp, <<"model">>)),
+    ?assertEqual(1234567890, beamai_chat_response:raw_get(Resp, [<<"created">>])).
 
 from_openai_with_tool_calls_test() ->
     Raw = #{
@@ -86,12 +86,12 @@ from_openai_with_tool_calls_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_openai(Raw),
 
-    ?assertEqual(null, beamai_llm_response:content(Resp)),
-    ?assertEqual(true, beamai_llm_response:has_tool_calls(Resp)),
-    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(true, beamai_llm_response:needs_tool_call(Resp)),
+    ?assertEqual(null, beamai_chat_response:content(Resp)),
+    ?assertEqual(true, beamai_chat_response:has_tool_calls(Resp)),
+    ?assertEqual(tool_use, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(true, beamai_chat_response:needs_tool_call(Resp)),
 
-    [ToolCall] = beamai_llm_response:tool_calls(Resp),
+    [ToolCall] = beamai_chat_response:tool_calls(Resp),
     ?assertEqual(<<"call_abc123">>, maps:get(id, ToolCall)),
     ?assertEqual(<<"get_weather">>, maps:get(name, ToolCall)),
     ?assertEqual(#{<<"city">> => <<"Beijing">>}, maps:get(arguments, ToolCall)),
@@ -108,8 +108,8 @@ from_openai_length_limit_test() ->
         <<"usage">> => #{}
     },
     {ok, Resp} = beamai_llm_response_parser:from_openai(Raw),
-    ?assertEqual(length_limit, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(false, beamai_llm_response:is_complete(Resp)).
+    ?assertEqual(length_limit, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(false, beamai_chat_response:is_complete(Resp)).
 
 from_openai_error_test() ->
     Raw = #{<<"error">> => #{<<"message">> => <<"Rate limit exceeded">>}},
@@ -137,22 +137,22 @@ from_anthropic_basic_test() ->
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
 
     %% 基本字段
-    ?assertEqual(<<"msg_123">>, beamai_llm_response:id(Resp)),
-    ?assertEqual(<<"claude-3-5-sonnet-20241022">>, beamai_llm_response:model(Resp)),
-    ?assertEqual(anthropic, beamai_llm_response:provider(Resp)),
+    ?assertEqual(<<"msg_123">>, beamai_chat_response:id(Resp)),
+    ?assertEqual(<<"claude-3-5-sonnet-20241022">>, beamai_chat_response:model(Resp)),
+    ?assertEqual(anthropic, beamai_chat_response:provider(Resp)),
 
     %% 内容
-    ?assertEqual(<<"Hello, world!">>, beamai_llm_response:content(Resp)),
-    ?assertEqual([#{type => text, text => <<"Hello, world!">>}], beamai_llm_response:content_blocks(Resp)),
+    ?assertEqual(<<"Hello, world!">>, beamai_chat_response:content(Resp)),
+    ?assertEqual([#{type => text, text => <<"Hello, world!">>}], beamai_chat_response:content_blocks(Resp)),
 
     %% 状态
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(true, beamai_llm_response:is_complete(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(true, beamai_chat_response:is_complete(Resp)),
 
     %% Token 统计
-    ?assertEqual(10, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(20, beamai_llm_response:output_tokens(Resp)),
-    ?assertEqual(30, beamai_llm_response:total_tokens(Resp)).
+    ?assertEqual(10, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(20, beamai_chat_response:output_tokens(Resp)),
+    ?assertEqual(30, beamai_chat_response:total_tokens(Resp)).
 
 from_anthropic_with_tool_use_test() ->
     Raw = #{
@@ -175,18 +175,18 @@ from_anthropic_with_tool_use_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
 
-    ?assertEqual(<<"Let me check the weather.">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(true, beamai_llm_response:has_tool_calls(Resp)),
-    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(true, beamai_llm_response:needs_tool_call(Resp)),
+    ?assertEqual(<<"Let me check the weather.">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(true, beamai_chat_response:has_tool_calls(Resp)),
+    ?assertEqual(tool_use, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(true, beamai_chat_response:needs_tool_call(Resp)),
 
-    [ToolCall] = beamai_llm_response:tool_calls(Resp),
+    [ToolCall] = beamai_chat_response:tool_calls(Resp),
     ?assertEqual(<<"toolu_abc123">>, maps:get(id, ToolCall)),
     ?assertEqual(<<"get_weather">>, maps:get(name, ToolCall)),
     ?assertEqual(#{<<"city">> => <<"Shanghai">>}, maps:get(arguments, ToolCall)),
 
     %% 检查内容块保留了顺序
-    Blocks = beamai_llm_response:content_blocks(Resp),
+    Blocks = beamai_chat_response:content_blocks(Resp),
     ?assertEqual(2, length(Blocks)),
     [TextBlock, ToolBlock] = Blocks,
     ?assertEqual(text, maps:get(type, TextBlock)),
@@ -207,7 +207,7 @@ from_anthropic_with_cache_tokens_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
 
-    Usage = beamai_llm_response:usage(Resp),
+    Usage = beamai_chat_response:usage(Resp),
     ?assertEqual(100, maps:get(input_tokens, Usage)),
     ?assertEqual(50, maps:get(output_tokens, Usage)),
 
@@ -217,7 +217,7 @@ from_anthropic_with_cache_tokens_test() ->
     ?assertEqual(20, maps:get(cache_read_input_tokens, Details)),
 
     %% 通过原始数据访问
-    ?assertEqual(80, beamai_llm_response:raw_get(Resp, [<<"usage">>, <<"cache_creation_input_tokens">>])).
+    ?assertEqual(80, beamai_chat_response:raw_get(Resp, [<<"usage">>, <<"cache_creation_input_tokens">>])).
 
 from_anthropic_max_tokens_test() ->
     Raw = #{
@@ -228,8 +228,8 @@ from_anthropic_max_tokens_test() ->
         <<"usage">> => #{}
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
-    ?assertEqual(length_limit, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(false, beamai_llm_response:is_complete(Resp)).
+    ?assertEqual(length_limit, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(false, beamai_chat_response:is_complete(Resp)).
 
 from_anthropic_error_test() ->
     Raw = #{<<"error">> => #{<<"type">> => <<"rate_limit_error">>}},
@@ -252,15 +252,15 @@ from_provider_test() ->
 
     %% OpenAI 兼容的 providers
     {ok, Resp1} = beamai_llm_response_parser:from_provider(OpenAIRaw, openai),
-    ?assertEqual(openai, beamai_llm_response:provider(Resp1)),
+    ?assertEqual(openai, beamai_chat_response:provider(Resp1)),
 
     %% DeepSeek 有专用解析器（OpenAI 兼容 + reasoning_content），设置正确的 provider
     {ok, Resp2} = beamai_llm_response_parser:from_provider(OpenAIRaw, deepseek),
-    ?assertEqual(deepseek, beamai_llm_response:provider(Resp2)),
+    ?assertEqual(deepseek, beamai_chat_response:provider(Resp2)),
 
     %% Zhipu 有专用解析器，设置正确的 provider
     {ok, Resp3} = beamai_llm_response_parser:from_provider(OpenAIRaw, zhipu),
-    ?assertEqual(zhipu, beamai_llm_response:provider(Resp3)).
+    ?assertEqual(zhipu, beamai_chat_response:provider(Resp3)).
 
 %%====================================================================
 %% 边界情况测试
@@ -275,8 +275,8 @@ empty_content_test() ->
         <<"usage">> => #{}
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
-    ?assertEqual(null, beamai_llm_response:content(Resp)),
-    ?assertEqual([], beamai_llm_response:content_blocks(Resp)).
+    ?assertEqual(null, beamai_chat_response:content(Resp)),
+    ?assertEqual([], beamai_chat_response:content_blocks(Resp)).
 
 malformed_json_arguments_test() ->
     Raw = #{
@@ -298,7 +298,7 @@ malformed_json_arguments_test() ->
         <<"usage">> => #{}
     },
     {ok, Resp} = beamai_llm_response_parser:from_openai(Raw),
-    [ToolCall] = beamai_llm_response:tool_calls(Resp),
+    [ToolCall] = beamai_chat_response:tool_calls(Resp),
     %% 解析失败应返回空 map
     ?assertEqual(#{}, maps:get(arguments, ToolCall)),
     %% 但原始参数仍然保留
@@ -327,10 +327,10 @@ from_zhipu_basic_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_zhipu(Raw),
 
-    ?assertEqual(zhipu, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"glm-4.7">>, beamai_llm_response:model(Resp)),
-    ?assertEqual(<<"Hello from GLM!">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)).
+    ?assertEqual(zhipu, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"glm-4.7">>, beamai_chat_response:model(Resp)),
+    ?assertEqual(<<"Hello from GLM!">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)).
 
 from_zhipu_with_reasoning_content_test() ->
     Raw = #{
@@ -349,9 +349,9 @@ from_zhipu_with_reasoning_content_test() ->
     {ok, Resp} = beamai_llm_response_parser:from_zhipu(Raw),
 
     %% 当 content 为空但有 reasoning_content，使用 reasoning_content
-    ?assertEqual(<<"This is the thinking process...">>, beamai_llm_response:content(Resp)),
+    ?assertEqual(<<"This is the thinking process...">>, beamai_chat_response:content(Resp)),
     %% 可以通过 reasoning_content/1 访问
-    ?assertEqual(<<"This is the thinking process...">>, beamai_llm_response:reasoning_content(Resp)).
+    ?assertEqual(<<"This is the thinking process...">>, beamai_chat_response:reasoning_content(Resp)).
 
 %%====================================================================
 %% DeepSeek 格式测试
@@ -375,11 +375,11 @@ from_deepseek_basic_test() ->
         }
     },
     {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
-    ?assertEqual(deepseek, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"deepseek-chat">>, beamai_llm_response:model(Resp)),
-    ?assertEqual(<<"Hello from DeepSeek!">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(null, beamai_llm_response:reasoning_content(Resp)).
+    ?assertEqual(deepseek, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"deepseek-chat">>, beamai_chat_response:model(Resp)),
+    ?assertEqual(<<"Hello from DeepSeek!">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(null, beamai_chat_response:reasoning_content(Resp)).
 
 from_deepseek_with_reasoning_content_test() ->
     %% deepseek-reasoner：reasoning_content 与最终回答 content 并存
@@ -398,8 +398,8 @@ from_deepseek_with_reasoning_content_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
     %% content 保持最终回答不变，思维链通过 reasoning_content/1 访问
-    ?assertEqual(<<"The answer is 42.">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(<<"Let me think step by step...">>, beamai_llm_response:reasoning_content(Resp)).
+    ?assertEqual(<<"The answer is 42.">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(<<"Let me think step by step...">>, beamai_chat_response:reasoning_content(Resp)).
 
 from_deepseek_with_tool_calls_test() ->
     Raw = #{
@@ -423,8 +423,8 @@ from_deepseek_with_tool_calls_test() ->
         <<"usage">> => #{}
     },
     {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
-    ?assertEqual(tool_use, beamai_llm_response:finish_reason(Resp)),
-    [TC] = beamai_llm_response:tool_calls(Resp),
+    ?assertEqual(tool_use, beamai_chat_response:finish_reason(Resp)),
+    [TC] = beamai_chat_response:tool_calls(Resp),
     ?assertEqual(<<"call_ds_1">>, maps:get(id, TC)),
     ?assertEqual(<<"get_weather">>, maps:get(name, TC)),
     ?assertEqual(#{<<"city">> => <<"Hangzhou">>}, maps:get(arguments, TC)).
@@ -448,11 +448,11 @@ from_deepseek_fim_test() ->
                          <<"total_tokens">> => 13}
     },
     {ok, Resp} = beamai_llm_response_parser:from_deepseek_fim(Raw),
-    ?assertEqual(deepseek, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"    return n * 2">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual([], beamai_llm_response:tool_calls(Resp)),
-    ?assertEqual(13, beamai_llm_response:total_tokens(Resp)).
+    ?assertEqual(deepseek, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"    return n * 2">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual([], beamai_chat_response:tool_calls(Resp)),
+    ?assertEqual(13, beamai_chat_response:total_tokens(Resp)).
 
 from_deepseek_fim_error_test() ->
     Raw = #{<<"error">> => #{<<"message">> => <<"model not supported">>}},
@@ -477,12 +477,12 @@ from_ollama_native_format_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_ollama(Raw),
 
-    ?assertEqual(ollama, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"llama3.2">>, beamai_llm_response:model(Resp)),
-    ?assertEqual(<<"Hello from Ollama!">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(15, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(25, beamai_llm_response:output_tokens(Resp)).
+    ?assertEqual(ollama, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"llama3.2">>, beamai_chat_response:model(Resp)),
+    ?assertEqual(<<"Hello from Ollama!">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(15, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(25, beamai_chat_response:output_tokens(Resp)).
 
 from_ollama_openai_format_test() ->
     %% Ollama 也支持 OpenAI 兼容格式
@@ -501,8 +501,8 @@ from_ollama_openai_format_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_ollama(Raw),
 
-    ?assertEqual(ollama, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"OpenAI format">>, beamai_llm_response:content(Resp)).
+    ?assertEqual(ollama, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"OpenAI format">>, beamai_chat_response:content(Resp)).
 
 %%====================================================================
 %% DashScope 格式测试
@@ -528,12 +528,12 @@ from_dashscope_basic_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_dashscope(Raw),
 
-    ?assertEqual(dashscope, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"req-12345">>, beamai_llm_response:id(Resp)),
-    ?assertEqual(<<"Hello from Qwen!">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(20, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(30, beamai_llm_response:output_tokens(Resp)).
+    ?assertEqual(dashscope, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"req-12345">>, beamai_chat_response:id(Resp)),
+    ?assertEqual(<<"Hello from Qwen!">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(20, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(30, beamai_chat_response:output_tokens(Resp)).
 
 from_dashscope_legacy_format_test() ->
     %% DashScope 旧格式：text 直接在 output 下
@@ -550,5 +550,5 @@ from_dashscope_legacy_format_test() ->
     },
     {ok, Resp} = beamai_llm_response_parser:from_dashscope(Raw),
 
-    ?assertEqual(dashscope, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"Legacy format response">>, beamai_llm_response:content(Resp)).
+    ?assertEqual(dashscope, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"Legacy format response">>, beamai_chat_response:content(Resp)).

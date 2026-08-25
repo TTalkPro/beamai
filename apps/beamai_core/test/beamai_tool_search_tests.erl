@@ -43,7 +43,7 @@ search_chat_client(Opts) ->
 
 %% 走一次 invoke_chat，返回该轮广播的工具名（已排序）
 advertised(K, Messages) ->
-    ToolSpecs = beamai_chat_client:get_tool_specs(K),
+    ToolSpecs = beamai_tool_registry:specs(beamai_chat_client:tools(K)),
     {ok, _, _} = beamai_chat_client:invoke_chat(K, Messages, #{tools => ToolSpecs}),
     receive {advertised, Names} -> lists:sort(Names)
     after 200 -> erlang:error(no_llm_call)
@@ -63,7 +63,7 @@ user(Text) -> [#{role => user, content => Text}].
 search(Opts, Query) ->
     {SearchTool, _} = beamai_tool_search:new(tools(), Opts),
     K = beamai_chat_client:add_tool(beamai_chat_client:new(), SearchTool),
-    {ok, Names, _} = beamai_chat_client:invoke_tool(
+    {ok, Names, _} = beamai_tool_executor:invoke(
         K, <<"tool_search">>, #{<<"query">> => Query}, beamai_context:new()),
     Names.
 
@@ -128,7 +128,7 @@ unindexed_tools_pass_through_test() ->
     with_mock(fun() ->
         K = search_chat_client(#{}),
         Extra = #{name => <<"ask_human">>, description => <<"问人">>, parameters => #{}},
-        Specs = beamai_chat_client:get_tool_specs(K) ++ [Extra],
+        Specs = beamai_tool_registry:specs(beamai_chat_client:tools(K)) ++ [Extra],
         {ok, _, _} = beamai_chat_client:invoke_chat(K, user(<<"q">>), #{tools => Specs}),
         receive {advertised, Names} ->
             ?assertEqual([<<"ask_human">>, <<"tool_search">>], lists:sort(Names))
@@ -203,7 +203,7 @@ search_tool_missing_query_test() ->
     {SearchTool, _} = beamai_tool_search:new(tools(), #{}),
     K = beamai_chat_client:add_tool(beamai_chat_client:new(), SearchTool),
     ?assertMatch({ok, [], _},
-                 beamai_chat_client:invoke_tool(K, <<"tool_search">>, #{},
+                 beamai_tool_executor:invoke(K, <<"tool_search">>, #{},
                                            beamai_context:new())).
 
 %% 空 query 在**任何**后端上都返回空

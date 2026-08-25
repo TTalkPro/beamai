@@ -75,5 +75,5 @@ error_429_enriched() ->
                                       [{<<"retry-after">>, <<"4">>}]),
     Config = #{api_key => <<"k">>, model => <<"claude-sonnet-4-5">>},
     Result = beamai_llm_provider_anthropic:chat(
-        Config, #{messages => [#{role => user, content => <<"hi">>}]}),
+        Config, beamai_chat_request:new([#{role => user, content => <<"hi">>}])),
     ?assertMatch({error, {http_error, 429, _, #{retry_after_ms := 4000}}}, Result).

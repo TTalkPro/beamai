@@ -30,10 +30,10 @@ citations_extracted_to_metadata_test() ->
         <<"usage">> => #{<<"input_tokens">> => 10, <<"output_tokens">> => 5}
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
-    Meta = beamai_llm_response:metadata(Resp),
+    Meta = beamai_chat_response:metadata(Resp),
     ?assertEqual([Citation], maps:get(citations, Meta)),
     %% 文本仍正常拼接
-    ?assertEqual(<<"据资料，地球是圆的。"/utf8>>, beamai_llm_response:content(Resp)).
+    ?assertEqual(<<"据资料，地球是圆的。"/utf8>>, beamai_chat_response:content(Resp)).
 
 no_citations_no_metadata_key_test() ->
     Raw = #{
@@ -44,7 +44,7 @@ no_citations_no_metadata_key_test() ->
         <<"usage">> => #{<<"input_tokens">> => 3, <<"output_tokens">> => 2}
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
-    ?assertNot(maps:is_key(citations, beamai_llm_response:metadata(Resp))).
+    ?assertNot(maps:is_key(citations, beamai_chat_response:metadata(Resp))).
 
 %%====================================================================
 %% Web Search 响应侧解析
@@ -72,12 +72,12 @@ web_search_results_extracted_test() ->
                          <<"server_tool_use">> => #{<<"web_search_requests">> => 1}}
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
-    Meta = beamai_llm_response:metadata(Resp),
+    Meta = beamai_chat_response:metadata(Resp),
     ?assertEqual([Result], maps:get(web_search_results, Meta)),
     %% 文本正常提取（server_tool_use / web_search_tool_result 块不混入正文）
-    ?assertEqual(<<"Erlang 是一门语言"/utf8>>, beamai_llm_response:content(Resp)),
+    ?assertEqual(<<"Erlang 是一门语言"/utf8>>, beamai_chat_response:content(Resp)),
     %% server_tool_use 用量进入 usage.details
-    Details = maps:get(details, beamai_llm_response:usage(Resp)),
+    Details = maps:get(details, beamai_chat_response:usage(Resp)),
     ?assertEqual(#{<<"web_search_requests">> => 1}, maps:get(server_tool_use, Details)).
 
 no_web_search_no_metadata_key_test() ->
@@ -89,4 +89,4 @@ no_web_search_no_metadata_key_test() ->
         <<"usage">> => #{<<"input_tokens">> => 1, <<"output_tokens">> => 1}
     },
     {ok, Resp} = beamai_llm_response_parser:from_anthropic(Raw),
-    ?assertNot(maps:is_key(web_search_results, beamai_llm_response:metadata(Resp))).
+    ?assertNot(maps:is_key(web_search_results, beamai_chat_response:metadata(Resp))).

@@ -24,6 +24,11 @@ chat(Config, _Request) ->
         false -> {ok, #{content => <<"ok">>, finish_reason => <<"stop">>}}
     end.
 
+%% 带 events 时回放这些流式事件（用于验证 token 投递），否则按 fail_n 行为失败
+stream_chat(#{events := Events} = Config, _Request, Callback) ->
+    _ = bump(Config),
+    lists:foreach(fun(E) -> Callback(E) end, Events),
+    {ok, #{content => <<"done">>, finish_reason => <<"stop">>}};
 stream_chat(Config, _Request, _Callback) ->
     _ = bump(Config),
     {error, error_of(Config)}.

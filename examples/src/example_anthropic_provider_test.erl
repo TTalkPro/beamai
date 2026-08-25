@@ -11,7 +11,7 @@
 %%%   5. 采样参数 (temperature, top_p, top_k)
 %%%   6. 停止序列 (stop_sequences)
 %%%   7. 多轮对话
-%%%   8. beamai_llm_response 访问器
+%%%   8. beamai_chat_response 访问器
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
@@ -61,9 +61,9 @@ test_basic_chat(Config) ->
     Messages = [#{role => user, content => <<"用一句话回答：Erlang 是什么？"/utf8>>}],
     case beamai_chat_model:chat(Config, Messages) of
         {ok, Resp} ->
-            Content = beamai_llm_response:content(Resp),
+            Content = beamai_chat_response:content(Resp),
             io:format("  Content: ~ts~n", [Content]),
-            io:format("  finish_reason: ~p~n", [beamai_llm_response:finish_reason(Resp)]),
+            io:format("  finish_reason: ~p~n", [beamai_chat_response:finish_reason(Resp)]),
             io:format("  [PASS]~n~n");
         {error, Err} ->
             io:format("  [FAIL] ~p~n~n", [Err])
@@ -81,7 +81,7 @@ test_system_prompt(Config) ->
     ],
     case beamai_chat_model:chat(Config, Messages) of
         {ok, Resp} ->
-            Content = beamai_llm_response:content(Resp),
+            Content = beamai_chat_response:content(Resp),
             io:format("  Content: ~ts~n", [Content]),
             io:format("  [PASS]~n~n");
         {error, Err} ->
@@ -124,7 +124,7 @@ test_temperature(Config) ->
     Config1 = Config#{temperature => 0.1},
     case beamai_chat_model:chat(Config1, Messages) of
         {ok, Resp1} ->
-            C1 = beamai_llm_response:content(Resp1),
+            C1 = beamai_chat_response:content(Resp1),
             io:format("  temperature=0.1: ~ts~n", [C1]);
         {error, E1} ->
             io:format("  temperature=0.1 error: ~p~n", [E1])
@@ -133,7 +133,7 @@ test_temperature(Config) ->
     Config2 = Config#{temperature => 1.0},
     case beamai_chat_model:chat(Config2, Messages) of
         {ok, Resp2} ->
-            C2 = beamai_llm_response:content(Resp2),
+            C2 = beamai_chat_response:content(Resp2),
             io:format("  temperature=1.0: ~ts~n", [C2]);
         {error, E2} ->
             io:format("  temperature=1.0 error: ~p~n", [E2])
@@ -150,8 +150,8 @@ test_stop_sequences(Config) ->
     Config1 = Config#{stop_sequences => [<<"5">>]},
     case beamai_chat_model:chat(Config1, Messages) of
         {ok, Resp} ->
-            Content = beamai_llm_response:content(Resp),
-            Reason = beamai_llm_response:finish_reason(Resp),
+            Content = beamai_chat_response:content(Resp),
+            Reason = beamai_chat_response:finish_reason(Resp),
             io:format("  Content: ~ts~n", [Content]),
             io:format("  finish_reason: ~p (期望 stop_sequence)~n", [Reason]),
             io:format("  [PASS]~n~n");
@@ -181,9 +181,9 @@ test_tool_call(Config) ->
     Messages = [#{role => user, content => <<"北京今天天气怎么样？"/utf8>>}],
     case beamai_chat_model:chat(Config, Messages, #{tools => Tools}) of
         {ok, Resp} ->
-            HasTools = beamai_llm_response:has_tool_calls(Resp),
-            ToolCalls = beamai_llm_response:tool_calls(Resp),
-            Reason = beamai_llm_response:finish_reason(Resp),
+            HasTools = beamai_chat_response:has_tool_calls(Resp),
+            ToolCalls = beamai_chat_response:tool_calls(Resp),
+            Reason = beamai_chat_response:finish_reason(Resp),
             io:format("  has_tool_calls: ~p~n", [HasTools]),
             io:format("  finish_reason: ~p~n", [Reason]),
             lists:foreach(fun(TC) ->
@@ -218,8 +218,8 @@ test_tool_choice_auto(Config) ->
     Messages = [#{role => user, content => <<"你好"/utf8>>}],
     case beamai_chat_model:chat(Config, Messages, #{tools => Tools, tool_choice => auto}) of
         {ok, Resp} ->
-            HasTools = beamai_llm_response:has_tool_calls(Resp),
-            Content = beamai_llm_response:content(Resp),
+            HasTools = beamai_chat_response:has_tool_calls(Resp),
+            Content = beamai_chat_response:content(Resp),
             io:format("  has_tool_calls: ~p~n", [HasTools]),
             io:format("  Content: ~ts~n", [Content]),
             io:format("  [PASS]~n~n");
@@ -236,7 +236,7 @@ test_multi_turn(Config) ->
     Msg1 = [#{role => user, content => <<"我的名字是张三。请记住。"/utf8>>}],
     case beamai_chat_model:chat(Config, Msg1) of
         {ok, Resp1} ->
-            C1 = beamai_llm_response:content(Resp1),
+            C1 = beamai_chat_response:content(Resp1),
             io:format("  Turn 1 A: ~ts~n", [C1]),
             Msg2 = Msg1 ++ [
                 #{role => assistant, content => C1},
@@ -244,7 +244,7 @@ test_multi_turn(Config) ->
             ],
             case beamai_chat_model:chat(Config, Msg2) of
                 {ok, Resp2} ->
-                    C2 = beamai_llm_response:content(Resp2),
+                    C2 = beamai_chat_response:content(Resp2),
                     io:format("  Turn 2 A: ~ts~n", [C2]),
                     io:format("  [PASS]~n~n");
                 {error, E2} ->
@@ -263,23 +263,23 @@ test_response_accessors(Config) ->
     Messages = [#{role => user, content => <<"说 hello"/utf8>>}],
     case beamai_chat_model:chat(Config, Messages) of
         {ok, Resp} ->
-            io:format("  id: ~p~n", [beamai_llm_response:id(Resp)]),
-            io:format("  model: ~p~n", [beamai_llm_response:model(Resp)]),
-            io:format("  provider: ~p~n", [beamai_llm_response:provider(Resp)]),
-            io:format("  content: ~ts~n", [beamai_llm_response:content(Resp)]),
-            io:format("  content_blocks: ~p~n", [beamai_llm_response:content_blocks(Resp)]),
-            io:format("  thinking: ~p~n", [beamai_llm_response:thinking(Resp)]),
-            io:format("  tool_calls: ~p~n", [beamai_llm_response:tool_calls(Resp)]),
-            io:format("  has_tool_calls: ~p~n", [beamai_llm_response:has_tool_calls(Resp)]),
-            io:format("  finish_reason: ~p~n", [beamai_llm_response:finish_reason(Resp)]),
-            io:format("  is_complete: ~p~n", [beamai_llm_response:is_complete(Resp)]),
-            io:format("  needs_tool_call: ~p~n", [beamai_llm_response:needs_tool_call(Resp)]),
-            Usage = beamai_llm_response:usage(Resp),
+            io:format("  id: ~p~n", [beamai_chat_response:id(Resp)]),
+            io:format("  model: ~p~n", [beamai_chat_response:model(Resp)]),
+            io:format("  provider: ~p~n", [beamai_chat_response:provider(Resp)]),
+            io:format("  content: ~ts~n", [beamai_chat_response:content(Resp)]),
+            io:format("  content_blocks: ~p~n", [beamai_chat_response:content_blocks(Resp)]),
+            io:format("  thinking: ~p~n", [beamai_chat_response:thinking(Resp)]),
+            io:format("  tool_calls: ~p~n", [beamai_chat_response:tool_calls(Resp)]),
+            io:format("  has_tool_calls: ~p~n", [beamai_chat_response:has_tool_calls(Resp)]),
+            io:format("  finish_reason: ~p~n", [beamai_chat_response:finish_reason(Resp)]),
+            io:format("  is_complete: ~p~n", [beamai_chat_response:is_complete(Resp)]),
+            io:format("  needs_tool_call: ~p~n", [beamai_chat_response:needs_tool_call(Resp)]),
+            Usage = beamai_chat_response:usage(Resp),
             io:format("  usage: ~p~n", [Usage]),
-            io:format("  input_tokens: ~p~n", [beamai_llm_response:input_tokens(Resp)]),
-            io:format("  output_tokens: ~p~n", [beamai_llm_response:output_tokens(Resp)]),
-            io:format("  total_tokens: ~p~n", [beamai_llm_response:total_tokens(Resp)]),
-            io:format("  metadata: ~p~n", [beamai_llm_response:metadata(Resp)]),
+            io:format("  input_tokens: ~p~n", [beamai_chat_response:input_tokens(Resp)]),
+            io:format("  output_tokens: ~p~n", [beamai_chat_response:output_tokens(Resp)]),
+            io:format("  total_tokens: ~p~n", [beamai_chat_response:total_tokens(Resp)]),
+            io:format("  metadata: ~p~n", [beamai_chat_response:metadata(Resp)]),
             io:format("  [PASS]~n~n");
         {error, Err} ->
             io:format("  [FAIL] ~p~n~n", [Err])

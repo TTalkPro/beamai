@@ -106,6 +106,13 @@ classify({request_failed, timeout}, Provider) ->
     mk(timeout, undefined, <<"Request timeout">>, Provider, true, undefined, {request_failed, timeout});
 classify({request_failed, {closed, _} = R}, Provider) ->
     mk(network, undefined, <<"Connection closed">>, Provider, true, undefined, {request_failed, R});
+%% 连接建立失败（gun:await_up 超时 / 连接被拒 / 对端瞬时不可达）——瞬态，重试。
+%% 注：DNS 失败若以 {connection_failed, {down, nxdomain}} 形态出现也会落这里，
+%% 于是一个写错的 base_url 会白白重试几次再报同样的错；相比"服务端滚动重启期间
+%% 一次连接失败就整轮失败"，这个代价更可接受。裸的 nxdomain（不带 connection_failed
+%% 包装）仍归下面的 catch-all，不重试。
+classify({request_failed, {connection_failed, _} = R}, Provider) ->
+    mk(network, undefined, <<"Connection failed">>, Provider, true, undefined, {request_failed, R});
 classify({request_failed, R}, Provider) ->
     mk(network, undefined, to_message(R), Provider, false, undefined, {request_failed, R});
 %% provider / 解析层错误

@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc LLM 响应解析器模块
 %%%
-%%% 将不同 Provider 的原始 API 响应解析为统一的 beamai_llm_response 结构。
+%%% 将不同 Provider 的原始 API 响应解析为统一的 beamai_chat_response 结构。
 %%% 每个 Provider 有独立的解析逻辑，通过 parser_*/0 返回解析器函数，
 %%% 可直接传给 beamai_llm_http_client:request/5。
 %%%
@@ -25,17 +25,17 @@
 
 %% @doc 返回 OpenAI 格式的解析器函数
 %% 可直接用于 beamai_llm_http_client:request/5
--spec parser_openai() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_openai() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_openai() ->
     fun from_openai/1.
 
 %% @doc 返回 Anthropic 格式的解析器函数
--spec parser_anthropic() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_anthropic() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_anthropic() ->
     fun from_anthropic/1.
 
 %% @doc 返回指定 Provider 的解析器函数
--spec parser(beamai_llm_response:provider()) -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser(beamai_chat_response:provider()) -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser(openai) -> parser_openai();
 parser(anthropic) -> parser_anthropic();
 parser(deepseek) -> parser_deepseek();
@@ -49,47 +49,47 @@ parser(siliconflow) -> parser_siliconflow();
 parser(_) -> parser_openai().
 
 %% @doc 返回 Ollama 格式的解析器函数
--spec parser_ollama() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_ollama() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_ollama() ->
     fun from_ollama/1.
 
 %% @doc 返回 DashScope 格式的解析器函数
--spec parser_dashscope() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_dashscope() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_dashscope() ->
     fun from_dashscope/1.
 
 %% @doc 返回智谱格式的解析器函数（OpenAI兼容 + reasoning_content）
--spec parser_zhipu() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_zhipu() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_zhipu() ->
     fun from_zhipu/1.
 
 %% @doc 返回 DeepSeek 格式的解析器函数（OpenAI兼容 + reasoning_content）
--spec parser_deepseek() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_deepseek() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_deepseek() ->
     fun from_deepseek/1.
 
 %% @doc 返回 DeepSeek FIM（填空补全）格式的解析器函数
--spec parser_deepseek_fim() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_deepseek_fim() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_deepseek_fim() ->
     fun from_deepseek_fim/1.
 
 %% @doc 返回 xAI 格式的解析器函数（OpenAI兼容 + reasoning_content + 引用）
--spec parser_xai() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_xai() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_xai() ->
     fun from_xai/1.
 
 %% @doc 返回 Moonshot / Kimi 格式的解析器函数（OpenAI兼容 + reasoning_content）
--spec parser_moonshot() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_moonshot() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_moonshot() ->
     fun from_moonshot/1.
 
 %% @doc 返回 OpenRouter 格式的解析器函数（OpenAI兼容 + reasoning + 成本统计）
--spec parser_openrouter() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_openrouter() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_openrouter() ->
     fun from_openrouter/1.
 
 %% @doc 返回 SiliconFlow 格式的解析器函数（OpenAI兼容 + reasoning_content）
--spec parser_siliconflow() -> fun((map()) -> {ok, beamai_llm_response:response()} | {error, term()}).
+-spec parser_siliconflow() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_siliconflow() ->
     fun from_siliconflow/1.
 
@@ -98,7 +98,7 @@ parser_siliconflow() ->
 %%====================================================================
 
 %% @doc 从指定 Provider 的原始响应创建统一响应
--spec from_provider(map(), beamai_llm_response:provider()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_provider(map(), beamai_chat_response:provider()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_provider(Raw, openai) -> from_openai(Raw);
 from_provider(Raw, anthropic) -> from_anthropic(Raw);
 from_provider(Raw, deepseek) -> from_deepseek(Raw); % DeepSeek 使用 OpenAI 格式 + reasoning_content
@@ -117,11 +117,11 @@ from_provider(Raw, Provider) ->
     end.
 
 %% @doc 从 OpenAI 格式响应创建
--spec from_openai(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_openai(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_openai(#{<<"choices">> := [Choice | _]} = Raw) ->
     Message = maps:get(<<"message">>, Choice, #{}),
     ToolCalls = parse_tool_calls_openai(Message),
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
         provider => openai,
@@ -143,7 +143,7 @@ from_openai(Raw) ->
     {error, {invalid_response, Raw}}.
 
 %% @doc 从 Anthropic 格式响应创建
--spec from_anthropic(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_anthropic(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_anthropic(#{<<"content">> := ContentBlocks} = Raw) when is_list(ContentBlocks) ->
     {Content, ToolCalls, Blocks} = extract_anthropic_content(ContentBlocks),
     Metadata0 = #{
@@ -153,7 +153,7 @@ from_anthropic(#{<<"content">> := ContentBlocks} = Raw) when is_list(ContentBloc
     },
     Metadata1 = maybe_add_anthropic_citations(Metadata0, ContentBlocks),
     Metadata = maybe_add_anthropic_web_search(Metadata1, ContentBlocks),
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
         provider => anthropic,
@@ -172,7 +172,7 @@ from_anthropic(Raw) ->
 
 %% @doc 从智谱 AI 格式响应创建
 %% 智谱使用 OpenAI 兼容格式，但有 reasoning_content 字段
--spec from_zhipu(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_zhipu(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_zhipu(#{<<"choices">> := [Choice | _]} = Raw) ->
     Message = maps:get(<<"message">>, Choice, #{}),
     ToolCalls = parse_tool_calls_openai(Message),
@@ -183,7 +183,7 @@ from_zhipu(#{<<"choices">> := [Choice | _]} = Raw) ->
         <<>> -> case ReasoningContent of null -> null; _ -> ReasoningContent end;
         C -> C
     end,
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
         provider => zhipu,
@@ -206,12 +206,12 @@ from_zhipu(Raw) ->
 %% @doc 从 DeepSeek 格式响应创建
 %% DeepSeek 使用 OpenAI 兼容格式，deepseek-reasoner 模型额外返回
 %% reasoning_content 字段（思维链内容，与最终回答 content 并存）。
--spec from_deepseek(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_deepseek(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_deepseek(#{<<"choices">> := [Choice | _]} = Raw) ->
     Message = maps:get(<<"message">>, Choice, #{}),
     ToolCalls = parse_tool_calls_openai(Message),
     ReasoningContent = maps:get(<<"reasoning_content">>, Message, null),
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
         provider => deepseek,
@@ -235,13 +235,13 @@ from_deepseek(Raw) ->
 %% @doc 从 DeepSeek FIM（填空补全）格式响应创建
 %% FIM 接口（/beta/completions）使用文本补全格式：
 %% 补全文本在 choices[0].text，没有 message 包装。
--spec from_deepseek_fim(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_deepseek_fim(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_deepseek_fim(#{<<"choices">> := [Choice | _]} = Raw) ->
     Text = case maps:get(<<"text">>, Choice, <<>>) of
         T when is_binary(T) -> T;
         _ -> <<>>
     end,
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
         provider => deepseek,
@@ -269,7 +269,7 @@ from_deepseek_fim(Raw) ->
 %% @doc 从 xAI (Grok) 格式响应创建
 %% OpenAI 兼容格式；推理模型额外返回 reasoning_content，
 %% 启用检索时顶层返回 citations（引用 URL 列表）。
--spec from_xai(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_xai(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_xai(Raw) ->
     from_openai_compatible(Raw, xai, fun(_Message, R) ->
         case maps:get(<<"citations">>, R, undefined) of
@@ -280,20 +280,20 @@ from_xai(Raw) ->
 
 %% @doc 从 Moonshot / Kimi 格式响应创建
 %% OpenAI 兼容格式；开启思考模式时返回 reasoning_content。
--spec from_moonshot(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_moonshot(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_moonshot(Raw) ->
     from_openai_compatible(Raw, moonshot, fun(_Message, _R) -> #{} end).
 
 %% @doc 从 SiliconFlow 格式响应创建
 %% OpenAI 兼容格式；混合推理模型返回 reasoning_content。
--spec from_siliconflow(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_siliconflow(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_siliconflow(Raw) ->
     from_openai_compatible(Raw, siliconflow, fun(_Message, _R) -> #{} end).
 
 %% @doc 从 OpenRouter 格式响应创建
 %% OpenAI 兼容格式；思维链字段名为 reasoning，
 %% 顶层 provider 指出实际承接请求的上游供应商，usage.cost 为本次费用（美元）。
--spec from_openrouter(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_openrouter(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_openrouter(Raw) ->
     from_openai_compatible(Raw, openrouter, fun(Message, R) ->
         Meta0 = case maps:get(<<"provider">>, R, undefined) of
@@ -310,9 +310,9 @@ from_openrouter(Raw) ->
 %% @private OpenAI 兼容响应的统一构造
 %% 覆盖「OpenAI 格式 + reasoning_content」这一类 Provider，
 %% Provider 特有的元信息由 MetaFun(Message, Raw) 追加。
--spec from_openai_compatible(map(), beamai_llm_response:provider(),
+-spec from_openai_compatible(map(), beamai_chat_response:provider(),
                              fun((map(), map()) -> map())) ->
-    {ok, beamai_llm_response:response()} | {error, term()}.
+    {ok, beamai_chat_response:response()} | {error, term()}.
 from_openai_compatible(#{<<"choices">> := [Choice | _]} = Raw, Provider, MetaFun) ->
     Message = maps:get(<<"message">>, Choice, #{}),
     Metadata0 = #{
@@ -320,7 +320,7 @@ from_openai_compatible(#{<<"choices">> := [Choice | _]} = Raw, Provider, MetaFun
         system_fingerprint => maps:get(<<"system_fingerprint">>, Raw, undefined),
         reasoning_content => maps:get(<<"reasoning_content">>, Message, null)
     },
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"id">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
         provider => Provider,
@@ -347,12 +347,12 @@ parse_usage_compatible(Usage, Raw) ->
 
 %% @doc 从 Ollama 格式响应创建
 %% 支持 Ollama 原生格式和 OpenAI 兼容格式
--spec from_ollama(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_ollama(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_ollama(#{<<"message">> := Message} = Raw) ->
     %% Ollama 原生格式
     ToolCalls = parse_tool_calls_openai(Message),
     Content = maps:get(<<"content">>, Message, <<>>),
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"created_at">>, Raw, <<>>),
         model => maps:get(<<"model">>, Raw, <<>>),
         provider => ollama,
@@ -383,7 +383,7 @@ from_ollama(Raw) ->
 
 %% @doc 从阿里云 DashScope 格式响应创建
 %% DashScope 使用 {output: {choices: [...]}, usage: {...}} 格式
--spec from_dashscope(map()) -> {ok, beamai_llm_response:response()} | {error, term()}.
+-spec from_dashscope(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_dashscope(#{<<"output">> := Output} = Raw) ->
     parse_dashscope_output(Output, Raw);
 from_dashscope(#{<<"error">> := Error}) ->
@@ -634,7 +634,7 @@ parse_dashscope_output(#{<<"choices">> := [Choice | _]}, Raw) ->
     Message = maps:get(<<"message">>, Choice, #{}),
     ToolCalls = parse_tool_calls_openai(Message),
     Content = maps:get(<<"content">>, Message, null),
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"request_id">>, Raw, <<>>),
         model => <<>>,  %% DashScope 响应不包含 model
         provider => dashscope,
@@ -650,7 +650,7 @@ parse_dashscope_output(#{<<"choices">> := [Choice | _]}, Raw) ->
     })};
 %% 兼容旧格式：text + finish_reason 直接在 output 下
 parse_dashscope_output(#{<<"text">> := Text, <<"finish_reason">> := FinishReason}, Raw) ->
-    {ok, beamai_llm_response:new(#{
+    {ok, beamai_chat_response:new(#{
         id => maps:get(<<"request_id">>, Raw, <<>>),
         model => <<>>,
         provider => dashscope,

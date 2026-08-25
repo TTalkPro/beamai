@@ -350,8 +350,8 @@ callback_on_llm_result_test() ->
     Self = self(),
     Callbacks = #{on_llm_result =>
         fun(Resp, _Meta) ->
-            Self ! {llm_result, beamai_llm_response:has_tool_calls(Resp),
-                    maps:get(total_tokens, beamai_llm_response:usage(Resp), 0)}
+            Self ! {llm_result, beamai_chat_response:has_tool_calls(Resp),
+                    maps:get(total_tokens, beamai_chat_response:usage(Resp), 0)}
         end},
     K = slow_tools_chat_client(fun(_A, _C) -> {ok, <<"ok">>} end),
     try
@@ -553,25 +553,25 @@ state_plugin_filters_ignored_test() ->
     #{filters := Filters} = beamai_agent:chat_client(State),
     ?assertEqual([], Filters),
     %% 工具正常注册
-    ?assertMatch({ok, _}, beamai_chat_client:get_tool(beamai_agent:chat_client(State), <<"plugin_tool">>)).
+    ?assertMatch({ok, _}, beamai_tool_registry:resolve(beamai_chat_client:tools(beamai_agent:chat_client(State)), <<"plugin_tool">>)).
 
 %%====================================================================
 %% extract_content 健壮性（#4）
 %%====================================================================
 
 extract_content_null_test() ->
-    Resp = beamai_llm_response:new(#{content => null}),
+    Resp = beamai_chat_response:new(#{content => null}),
     ?assertEqual(<<>>, beamai_agent_utils:extract_content(Resp)).
 
 extract_content_binary_test() ->
-    Resp = beamai_llm_response:new(#{content => <<"hello">>}),
+    Resp = beamai_chat_response:new(#{content => <<"hello">>}),
     ?assertEqual(<<"hello">>, beamai_agent_utils:extract_content(Resp)).
 
 extract_content_non_binary_test() ->
     %% 意外的非 binary content（如 list / map）兜底为空二进制，不崩溃
-    R1 = beamai_llm_response:new(#{content => [#{type => text, text => <<"a">>}]}),
+    R1 = beamai_chat_response:new(#{content => [#{type => text, text => <<"a">>}]}),
     ?assertEqual(<<>>, beamai_agent_utils:extract_content(R1)),
-    R2 = beamai_llm_response:new(#{content => #{foo => <<"bar">>}}),
+    R2 = beamai_chat_response:new(#{content => #{foo => <<"bar">>}}),
     ?assertEqual(<<>>, beamai_agent_utils:extract_content(R2)).
 
 %%====================================================================
@@ -585,7 +585,7 @@ stream_real_tokens_test() ->
         fun(_Config, _Messages, _RawCb, Opts) ->
             TokenCb = maps:get(on_llm_new_token, Opts),
             [TokenCb(T, #{}) || T <- [<<"Hel">>, <<"lo">>, <<"!">>]],
-            {ok, beamai_llm_response:new(
+            {ok, beamai_chat_response:new(
                 #{content => <<"Hello!">>, finish_reason => <<"stop">>})}
         end),
     Self = self(),
@@ -609,12 +609,12 @@ stream_with_tool_call_test() ->
             TokenCb = maps:get(on_llm_new_token, Opts),
             case counters:get(CallCount, 1) of
                 1 ->
-                    {ok, beamai_llm_response:new(
+                    {ok, beamai_chat_response:new(
                         #{content => null, tool_calls => [tc(<<"c1">>, <<"t1">>)],
                           finish_reason => <<"tool_calls">>})};
                 _ ->
                     TokenCb(<<"final">>, #{}),
-                    {ok, beamai_llm_response:new(
+                    {ok, beamai_chat_response:new(
                         #{content => <<"final">>, finish_reason => <<"stop">>})}
             end
         end),

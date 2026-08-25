@@ -776,7 +776,7 @@ backend handler 契约 + ChatClient 注册接口占位。
 ### 9.2 execute_result 是 behaviour 类型还是 plain map？
 
 **首版用 plain map**（`#{messages, records, context}`）。与 beamai 现有约定一致
-（`beamai_tool_result`、`beamai_llm_response` 都是 map）。
+（`beamai_tool_result`、`beamai_chat_response` 都是 map）。
 
 ### 9.3 manager 持有什么状态？
 

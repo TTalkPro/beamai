@@ -25,7 +25,7 @@ reasoner_filters_unsupported_params_test() ->
         logprobs => true,
         top_logprobs => 5
     },
-    Body = beamai_llm_provider_deepseek:build_request_body(Config, #{messages => []}),
+    Body = beamai_llm_provider_deepseek:build_request_body(Config, beamai_chat_request:new([])),
     %% reasoner 不支持的参数全部剔除
     ?assertNot(maps:is_key(<<"temperature">>, Body)),
     ?assertNot(maps:is_key(<<"top_p">>, Body)),
@@ -43,7 +43,7 @@ chat_model_keeps_params_test() ->
         top_p => 0.9,
         logprobs => true
     },
-    Body = beamai_llm_provider_deepseek:build_request_body(Config, #{messages => []}),
+    Body = beamai_llm_provider_deepseek:build_request_body(Config, beamai_chat_request:new([])),
     ?assertEqual(0.7, maps:get(<<"temperature">>, Body)),
     ?assertEqual(0.9, maps:get(<<"top_p">>, Body)),
     ?assertEqual(true, maps:get(<<"logprobs">>, Body)).
@@ -53,15 +53,15 @@ chat_model_keeps_params_test() ->
 %%====================================================================
 
 prefix_routes_to_beta_endpoint_test() ->
-    Request = #{messages => [
+    Request = beamai_chat_request:new([
         #{role => user, content => <<"写一首诗"/utf8>>},
         #{role => assistant, content => <<"床前明月光，"/utf8>>, prefix => true}
-    ]},
+    ]),
     ?assertEqual(<<"/beta/chat/completions">>,
                  beamai_llm_provider_deepseek:chat_endpoint(Request)).
 
 no_prefix_uses_default_endpoint_test() ->
-    Request = #{messages => [#{role => user, content => <<"hi">>}]},
+    Request = beamai_chat_request:new([#{role => user, content => <<"hi">>}]),
     ?assertEqual(<<"/chat/completions">>,
                  beamai_llm_provider_deepseek:chat_endpoint(Request)).
 
@@ -112,11 +112,11 @@ fim_stream_accumulate_test() ->
                       beamai_llm_http_client:init_stream_acc(), Events),
     {ok, Resp} = beamai_llm_provider_common:finalize_completions_stream(
                      Acc, beamai_llm_response_parser:parser_deepseek_fim()),
-    ?assertEqual(deepseek, beamai_llm_response:provider(Resp)),
-    ?assertEqual(<<"    if n <= 1: return n\n">>, beamai_llm_response:content(Resp)),
-    ?assertEqual(complete, beamai_llm_response:finish_reason(Resp)),
-    ?assertEqual(8, beamai_llm_response:input_tokens(Resp)),
-    ?assertEqual(12, beamai_llm_response:output_tokens(Resp)).
+    ?assertEqual(deepseek, beamai_chat_response:provider(Resp)),
+    ?assertEqual(<<"    if n <= 1: return n\n">>, beamai_chat_response:content(Resp)),
+    ?assertEqual(complete, beamai_chat_response:finish_reason(Resp)),
+    ?assertEqual(8, beamai_chat_response:input_tokens(Resp)),
+    ?assertEqual(12, beamai_chat_response:output_tokens(Resp)).
 
 %%====================================================================
 %% 缓存统计测试
@@ -139,7 +139,7 @@ cache_stats_in_usage_details_test() ->
         }
     },
     {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
-    Usage = beamai_llm_response:usage(Resp),
+    Usage = beamai_chat_response:usage(Resp),
     ?assertEqual(100, maps:get(input_tokens, Usage)),
     Details = maps:get(details, Usage),
     ?assertEqual(64, maps:get(prompt_cache_hit_tokens, Details)),
@@ -157,4 +157,4 @@ no_cache_stats_no_details_test() ->
                          <<"total_tokens">> => 10}
     },
     {ok, Resp} = beamai_llm_response_parser:from_deepseek(Raw),
-    ?assertNot(maps:is_key(details, beamai_llm_response:usage(Resp))).
+    ?assertNot(maps:is_key(details, beamai_chat_response:usage(Resp))).

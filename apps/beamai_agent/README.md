@@ -370,7 +370,7 @@ Results = beamai_agent_delegate:run_many(
 | `on_resume`     | 从中断恢复 | `(IntState, Meta)` |
 
 > `Meta` 含 `agent_id / agent_name / conversation_id / turn_count / run_id / timestamp`。
-> `on_llm_result` 的 `Response` 是原始 `beamai_llm_response`，可经访问器取
+> `on_llm_result` 的 `Response` 是原始 `beamai_chat_response`，可经访问器取
 > `content / tool_calls / usage / finish_reason`——这是观测**每次**（含中间轮）token
 > 用量的唯一途径（`run` 结果的 `usage` 只反映最后一次）。
 

@@ -94,7 +94,7 @@ return_direct_metadata_test() ->
                             [capture_filter(self())]),
     receive
         {captured, Resp} ->
-            ?assertMatch(#{return_direct := true}, beamai_llm_response:metadata(Resp))
+            ?assertMatch(#{return_direct := true}, beamai_chat_response:metadata(Resp))
     after 200 ->
         ?assert(false)
     end.
@@ -153,12 +153,12 @@ partial_failure_not_direct_test() ->
 return_direct_tool_lookup_test() ->
     K = chat_client([{<<"d">>, fun(_) -> {ok, <<>>} end, true},
                 {<<"p">>, fun(_) -> {ok, <<>>} end, false}], []),
-    ?assert(beamai_chat_client:return_direct_tool(K, <<"d">>)),
-    ?assertNot(beamai_chat_client:return_direct_tool(K, <<"p">>)).
+    ?assert(beamai_tool_registry:return_direct(beamai_chat_client:tools(K), <<"d">>)),
+    ?assertNot(beamai_tool_registry:return_direct(beamai_chat_client:tools(K), <<"p">>)).
 
 %% 未注册的工具名取保守值 false（直返会终止循环、丢弃同批其余结果）
 return_direct_unknown_tool_false_test() ->
-    ?assertNot(beamai_chat_client:return_direct_tool(beamai_chat_client:new(), <<"ghost">>)).
+    ?assertNot(beamai_tool_registry:return_direct(beamai_chat_client:tools(beamai_chat_client:new()), <<"ghost">>)).
 
 %% 未声明 return_direct 字段的工具 spec 默认 false
 is_return_direct_default_test() ->

@@ -111,7 +111,7 @@ provider_pool_e2e_test_() ->
            beamai_llm_fake_backend:set_response(#{<<"id">> => <<"x">>}, []),
            Config = #{api_key => <<"sk-test">>, model => <<"gpt-4">>,
                       pool => http_pool_stream},
-           _ = beamai_llm_provider_openai:chat(Config, #{messages => []}),
+           _ = beamai_llm_provider_openai:chat(Config, beamai_chat_request:new([])),
            ?assertEqual(http_pool_stream,
                         maps:get(pool, beamai_llm_fake_backend:last_opts()))
        end},
@@ -120,7 +120,7 @@ provider_pool_e2e_test_() ->
        fun() ->
            beamai_llm_fake_backend:set_response(#{<<"id">> => <<"x">>}, []),
            Config = #{api_key => <<"sk-test">>, model => <<"gpt-4">>},
-           _ = beamai_llm_provider_openai:chat(Config, #{messages => []}),
+           _ = beamai_llm_provider_openai:chat(Config, beamai_chat_request:new([])),
            ?assertNot(maps:is_key(pool, beamai_llm_fake_backend:last_opts()))
        end},
 
@@ -129,7 +129,7 @@ provider_pool_e2e_test_() ->
            beamai_llm_fake_backend:set_stream([<<"data: [DONE]\n">>], []),
            Config = #{api_key => <<"sk-test">>, model => <<"gpt-4">>,
                       pool => http_pool_short},
-           _ = beamai_llm_provider_openai:stream_chat(Config, #{messages => []},
+           _ = beamai_llm_provider_openai:stream_chat(Config, beamai_chat_request:new([]),
                                                       fun(_) -> ok end),
            ?assertEqual(http_pool_short,
                         maps:get(pool, beamai_llm_fake_backend:last_opts()))
