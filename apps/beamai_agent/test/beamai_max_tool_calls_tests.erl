@@ -95,19 +95,19 @@ agent(Extra) ->
 
 %% LLM 每轮都要求调 N 个工具，永不收尾
 with_looping_llm(N, Fun) ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         {ok, #{content => null,
                tool_calls => [tool_call(I) || I <- lists:seq(1, N)],
                finish_reason => <<"tool_calls">>}}
     end),
-    try Fun() after meck:unload(beamai_chat_completion) end.
+    try Fun() after meck:unload(beamai_chat_model) end.
 
 %% 第一轮调工具，之后收尾
 with_finishing_llm(Fun) ->
     Ctr = counters:new(1, []),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         case counters:get(Ctr, 1) of
             0 ->
                 counters:add(Ctr, 1, 1),
@@ -117,7 +117,7 @@ with_finishing_llm(Fun) ->
                 {ok, #{content => <<"done">>, tool_calls => [], finish_reason => <<"stop">>}}
         end
     end),
-    try Fun() after meck:unload(beamai_chat_completion) end.
+    try Fun() after meck:unload(beamai_chat_model) end.
 
 %% 用 test_plugin 真实提供的工具：要验证的是**成功执行**的调用被计入，
 %% 而不是 tool_not_found 的错误路径也被计入。

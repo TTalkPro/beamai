@@ -26,11 +26,11 @@
 %%% 使用方式:
 %%% ```
 %%% ApiKey = os:getenv("DASHSCOPE_API_KEY"),
-%%% Config = beamai_chat_completion:create(dashscope, #{
+%%% Config = beamai_chat_model:create(dashscope, #{
 %%%     api_key => list_to_binary(ApiKey),
 %%%     model => <<"qwen-plus">>
 %%% }),
-%%% {ok, Response} = beamai_chat_completion:chat(Config, [#{role => user, content => <<"你好">>}]).
+%%% {ok, Response} = beamai_chat_model:chat(Config, [#{role => user, content => <<"你好">>}]).
 %%% ```
 %%%
 %%% @end

@@ -85,7 +85,7 @@ beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
 beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
 
 %% 添加服务
-beamai_kernel:add_service(Kernel, Service) -> kernel().
+beamai_kernel:add_chat_model(Kernel, Service) -> kernel().
 
 %% 调用（kernel 只提供单次能力；ReAct 工具调用循环属于 Agent 层，见 beamai_agent）
 %% invoke_chat/3：单次 Chat Completion（经 around_chat → around_llm 两层链）。Messages 为本轮新消息；
@@ -182,7 +182,7 @@ Kernel 无状态，每次 invoke 只传单条最新消息；历史由 Memory Fil
 {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
 Store = beamai_chat_memory_ets:handle(my_mem),
 K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K = beamai_kernel:add_service(K0, LlmConfig),
+K = beamai_kernel:add_chat_model(K0, LlmConfig),
 
 %% 用 conversation_id 标识会话，每次只传最新消息
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),

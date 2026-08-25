@@ -37,7 +37,7 @@
     - [beamai_jsonrpc](#beamai_jsonrpc)
     - [beamai_id](#beamai_id)
 - [beamai_llm - LLM 客户端](#beamai_llm---llm-客户端)
-  - [Chat Completion：beamai_chat_completion](#chat-completionbeamai_chat_completion)
+  - [Chat Completion：beamai_chat_model](#chat-completionbeamai_chat_completion)
   - [错误结构：beamai_llm_error](#错误结构beamai_llm_error)
   - [HTTP 客户端：beamai_llm_http_client](#http-客户端beamai_llm_http_client)
   - [Output Parser](#output-parser)
@@ -117,11 +117,11 @@ Facade 入口，把 Kernel、Tool、Filter、Chat 调用的常见动作收拢到
     beamai_kernel:kernel().
 
 %% 通过 provider 原子与选项添加 LLM 服务
--spec add_llm(beamai_kernel:kernel(), beamai_chat_behaviour:provider(), map()) ->
+-spec add_chat_model(beamai_kernel:kernel(), beamai_chat_behaviour:provider(), map()) ->
     beamai_kernel:kernel().
 
 %% 使用预构建的 LLM 配置添加服务
--spec add_llm(beamai_kernel:kernel(), beamai_chat_behaviour:config()) ->
+-spec add_chat_model(beamai_kernel:kernel(), beamai_chat_behaviour:config()) ->
     beamai_kernel:kernel().
 
 %% 创建 filter（私有状态初值 #{}）
@@ -167,7 +167,7 @@ Facade 入口，把 Kernel、Tool、Filter、Chat 调用的常见动作收拢到
 典型用法（Kernel + Tool + 一个 chat filter）：
 
 ```erlang
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.6">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
 }),
@@ -179,7 +179,7 @@ System = beamai:filter(<<"system">>, #{
     end
 }),
 
-K = beamai:add_llm(beamai:kernel(#{}, [System]), LLM),
+K = beamai:add_chat_model(beamai:kernel(#{}, [System]), LLM),
 
 {ok, Resp, _Ctx} = beamai:chat(K, [
     #{role => user, content => <<"你好！"/utf8>>}
@@ -210,7 +210,7 @@ Kernel 是基础设施层，负责工具注册、LLM 服务配置、Filter 编�
 -spec add_tool_module(kernel(), module()) -> kernel().
 
 %% 设置 LLM 服务配置
--spec add_service(kernel(), beamai_chat_behaviour:config()) -> kernel().
+-spec add_chat_model(kernel(), beamai_chat_behaviour:config()) -> kernel().
 
 %% 调用 Kernel 中注册的工具
 -spec invoke_tool(kernel(), binary(), beamai_tool:args(),
@@ -245,7 +245,7 @@ Kernel 是基础设施层，负责工具注册、LLM 服务配置、Filter 编�
 -spec get_tool_schemas(kernel(), openai | anthropic | atom()) -> [map()].
 
 %% 取 LLM 服务配置
--spec get_service(kernel()) -> {ok, beamai_chat_behaviour:config()} | error.
+-spec chat_model(kernel()) -> {ok, beamai_chat_behaviour:config()} | error.
 
 %% 取 Kernel 的状态槽声明
 -spec state_slots(kernel()) -> beamai_context:state_slots().
@@ -656,7 +656,7 @@ K = beamai:kernel(#{}, [
 {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
 Store = beamai_chat_memory_ets:handle(my_mem),
 
-K = beamai:add_llm(
+K = beamai:add_chat_model(
       beamai:kernel(#{}, [beamai_memory_filter:memory_filter(Store)]),
       LLM),
 
@@ -1378,7 +1378,7 @@ JSON-RPC 2.0 编解码与标准错误构造。
 
 `beamai_llm` 提供统一的 LLM Chat Completion 客户端，支持 OpenAI / Anthropic / DeepSeek / Zhipu / DashScope / Ollama 六家 Provider，结构化错误、Output Parser、Provider 适配器。
 
-### Chat Completion：beamai_chat_completion
+### Chat Completion：beamai_chat_model
 
 Chat Completion 服务的统一入口。**这是最常用的 API**。
 
@@ -1418,13 +1418,13 @@ Chat Completion 服务的统一入口。**这是最常用的 API**。
 工作示例：
 
 ```erlang
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.6">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     temperature => 0.7
 }),
 
-{ok, Resp} = beamai_chat_completion:chat(LLM, [
+{ok, Resp} = beamai_chat_model:chat(LLM, [
     #{role => user, content => <<"你好！"/utf8>>}
 ]),
 io:format("~ts~n", [beamai_llm_response:content(Resp)]).
@@ -1818,7 +1818,7 @@ Provider 模块共享的工具函数（URL 构建、请求头、流式事件累�
 
 ### 支持的 Provider
 
-`beamai_chat_completion:create/2` 通过 `provider` 原子选择实现，所有 Provider 统一 `{ok, response()} | {error, term()}` 形态。
+`beamai_chat_model:create/2` 通过 `provider` 原子选择实现，所有 Provider 统一 `{ok, response()} | {error, term()}` 形态。
 
 | Provider | 模块 | API 模式 | 特性 |
 |----------|------|----------|------|
@@ -1951,7 +1951,7 @@ DashScope 额外说明：根据模型类型自动选择 endpoint（文本生成�
 **示例 1：基本 run 循环**
 
 ```erlang
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.6">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
 }),

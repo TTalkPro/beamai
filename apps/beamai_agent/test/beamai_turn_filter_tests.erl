@@ -9,8 +9,8 @@
 %% mock LLM：每次调用返回 <<"answer-N">>（N=调用序），可选把 messages 送回 Parent
 mock_llm(Parent) ->
     CC = counters:new(1, []),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         counters:add(CC, 1, 1),
         N = counters:get(CC, 1),
         Parent ! {llm_call, N, Messages},
@@ -20,8 +20,8 @@ mock_llm(Parent) ->
     CC.
 
 kernel_with_filters(Filters) ->
-    beamai_kernel:add_service(beamai_kernel:new(#{}, Filters),
-                              beamai_chat_completion:create(mock, #{})).
+    beamai_kernel:add_chat_model(beamai_kernel:new(#{}, Filters),
+                              beamai_chat_model:create(mock, #{})).
 
 turn_filter(Name, Fun) ->
     beamai_filter:new(Name, #{around_turn => Fun}).
@@ -64,7 +64,7 @@ rag_prepend_test() ->
                           (_) -> false
                       end, Msgs))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -89,7 +89,7 @@ around_observe_test() ->
             ?assertMatch({ok, _Resp, _TCM, _Iter, _Msgs}, Observed)
         after 1000 -> ?assert(false) end
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -120,7 +120,7 @@ reentry_runs_fresh_loop_test() ->
         ?assertEqual(2, length(drain_llm_calls([]))),
         ?assertEqual(<<"answer-2">>, maps:get(content, Result))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -149,7 +149,7 @@ registration_order_is_layering_test() ->
         ?assertEqual([{enter, <<"outer">>}, {enter, <<"inner">>},
                       {exit, <<"inner">>}, {exit, <<"outer">>}], Events)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 drain_events(Acc) ->
@@ -204,14 +204,14 @@ resume_through_turn_chain_reentry_test() ->
         %% LLM 共 3 次：run(1) + resume 延续(1) + 重入(1)
         ?assertEqual(3, length(drain_llm_calls([])))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% mock LLM（按调用序 N 分派），把 messages 送回 Parent
 mock_llm2(Fun, Parent) ->
     CC = counters:new(1, []),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         counters:add(CC, 1, 1),
         N = counters:get(CC, 1),
         Parent ! {llm_call, N, Messages},
@@ -251,7 +251,7 @@ resume_flag_probe_test() ->
         Flags = drain_resume_flags([]),
         ?assertEqual([false, true], Flags)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 drain_resume_flags(Acc) ->
@@ -282,7 +282,7 @@ validation_turn_filter_reentry_test() ->
         %% 首答 bad → 重入一次 → good：LLM 两次
         ?assertEqual(2, length(drain_llm_calls([])))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 validation_turn_filter_exhausts_test() ->
@@ -300,7 +300,7 @@ validation_turn_filter_exhausts_test() ->
         ?assertEqual(<<"bad">>, maps:get(content, Result)),
         ?assertEqual(2, length(drain_llm_calls([])))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -332,7 +332,7 @@ schema_validation_reentry_test() ->
         ?assertEqual(<<"{\"name\":\"bob\",\"age\":30}">>, maps:get(content, Result)),
         ?assertEqual(2, length(drain_llm_calls([])))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 反馈里带上 Schema 错误说明（模型得知道错在哪才改得对）
@@ -355,7 +355,7 @@ schema_validation_feedback_carries_error_test() ->
         Text = iolist_to_binary([C || #{content := C} <- Msgs, is_binary(C)]),
         ?assertNotEqual(nomatch, binary:match(Text, <<"age">>))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 非法 JSON 同样触发重入
@@ -376,7 +376,7 @@ schema_validation_rejects_non_json_test() ->
         ?assertEqual(<<"{\"name\":\"bob\",\"age\":30}">>, maps:get(content, Result)),
         ?assertEqual(2, length(drain_llm_calls([])))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% ```json 围栏缺省剥离（模型爱裹围栏，裹了也算过）
@@ -394,7 +394,7 @@ schema_validation_strips_code_fence_test() ->
         %% 一次过，不重入
         ?assertEqual(1, length(drain_llm_calls([])))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 关掉 code_fence 后围栏即不合法 JSON → 重入
@@ -412,7 +412,7 @@ schema_validation_code_fence_off_test() ->
         {ok, _Result, _} = beamai_agent:run(Agent, <<"go">>),
         ?assertEqual(2, length(drain_llm_calls([])))   %% 初 + 1 重试
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 重试耗尽：原样返回最后一次（仍不合格的）响应，不抛错（与 Spring 一致）
@@ -428,7 +428,7 @@ schema_validation_exhausts_test() ->
         ?assertEqual(<<"{}">>, maps:get(content, Result)),
         ?assertEqual(2, length(drain_llm_calls([])))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -463,7 +463,7 @@ schema_validation_reentry_keeps_question_without_memory_test() ->
         ?assertNotEqual(nomatch, binary:match(Text, <<"{\"name\":\"bob\"}">>)),
         ?assertNotEqual(nomatch, binary:match(Text, <<"age">>))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 记忆开启时同样正确，且原始问题**不重复**（load_history=false 由 filter 接管上下文）
@@ -485,5 +485,5 @@ schema_validation_reentry_no_duplicate_with_memory_test() ->
         Qs = [M || #{content := <<"MY-QUESTION">>} = M <- Second],
         ?assertEqual(1, length(Qs))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.

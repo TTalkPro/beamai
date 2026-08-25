@@ -361,7 +361,7 @@ Messages = [
         beamai_llm_content:image_url(<<"https://x/y.jpg">>, <<"high">>)
     ]}
 ],
-{ok, Resp} = beamai_chat_completion:chat(LLM, Messages).
+{ok, Resp} = beamai_chat_model:chat(LLM, Messages).
 ```
 
 Media sources come in three shapes, built via `beamai_llm_media`:
@@ -382,7 +382,7 @@ How each part maps:
 
 ### Text Embeddings
 
-`beamai_embedding` mirrors `beamai_chat_completion`: one config constructor, provider routing, automatic batching beyond a provider's per-request limit (results stay in input order), and transient-error retries via `beamai_llm_retry`.
+`beamai_embedding` mirrors `beamai_chat_model`: one config constructor, provider routing, automatic batching beyond a provider's per-request limit (results stay in input order), and transient-error retries via `beamai_llm_retry`.
 
 ```erlang
 Config = beamai_embedding:create(openai, #{
@@ -477,7 +477,7 @@ end.
 
 ### Automatic Retry & Retry-After
 
-Retry does **not** live in `beamai_chat_completion` — it is a filter on the llm chain
+Retry does **not** live in `beamai_chat_model` — it is a filter on the llm chain
 (`beamai_llm_filters:retry_filter/1`, see [FILTER_EN.md](../../docs/FILTER_EN.md)) that the kernel
 injects innermost by default, so calls through the kernel / agent behave exactly as before. On
 429 / 5xx, if the server returns a `Retry-After` header it **backs off accordingly** (capped at
@@ -499,11 +499,11 @@ The options still go in a single call's Opts (they win over the defaults given i
 Tune or disable the default: `beamai:kernel(#{llm_retry => #{max_retries => 5}}, Filters)` /
 `#{llm_retry => false}`.
 
-**Calling `beamai_chat_completion:chat/3` directly (bypassing the kernel) is a single request with
+**Calling `beamai_chat_model:chat/3` directly (bypassing the kernel) is a single request with
 no retry** — wrap it yourself:
 
 ```erlang
-beamai_llm_retry:run(fun() -> beamai_chat_completion:chat(LLM, Messages) end,
+beamai_llm_retry:run(fun() -> beamai_chat_model:chat(LLM, Messages) end,
                      beamai_llm_retry:opts(#{max_retries => 3})).
 ```
 

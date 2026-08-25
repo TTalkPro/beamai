@@ -94,7 +94,7 @@ run(Opts) ->
     %% 5. 添加 LLM 服务
     io:format("[5] Adding LLM service...~n"),
     LLMConfig = maps:get(llm_config, Opts, default_llm_config(Opts)),
-    K2 = beamai:add_llm(K1, LLMConfig),
+    K2 = beamai:add_chat_model(K1, LLMConfig),
     io:format("    LLM configured~n~n"),
 
     %% 6. 用 beamai_agent 进行对话（ReAct 工具循环属于 Agent 层，kernel 只提供单次能力）

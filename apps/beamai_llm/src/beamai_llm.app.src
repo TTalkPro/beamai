@@ -14,7 +14,7 @@
     ]},
     {modules, [
         %% Client
-        beamai_chat_completion,
+        beamai_chat_model,
         beamai_embedding,
         beamai_rerank,
         beamai_llm_http_client,

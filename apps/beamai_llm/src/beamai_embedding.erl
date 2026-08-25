@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc 文本向量化（Embedding）统一入口
 %%%
-%%% 与 beamai_chat_completion（对话）对等的门面模块：
+%%% 与 beamai_chat_model（对话）对等的门面模块：
 %%%   - 多 Provider 路由（openai / dashscope / zhipu / siliconflow / ollama / mock）
 %%%   - 自动分批（按 Provider 声明的 max_batch_size 切分并按序拼接）
 %%%   - 失败重试（复用 beamai_llm_retry：瞬态错误退避重试）
@@ -74,7 +74,7 @@
 %% @doc 创建向量化配置
 %%
 %% 合并 Provider 默认配置与用户配置，用法与
-%% beamai_chat_completion:create/2 一致。
+%% beamai_chat_model:create/2 一致。
 -spec create(provider(), map()) -> config().
 create(Provider, Opts) ->
     Module = provider_module(Provider),

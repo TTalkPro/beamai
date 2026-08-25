@@ -88,7 +88,7 @@ Store = beamai_chat_memory_ets:handle(my_mem),   %% handle {beamai_chat_memory_e
 
 %% 2. Build the Kernel and enable memory
 K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K  = beamai_kernel:add_service(K0, LlmConfig),
+K  = beamai_kernel:add_chat_model(K0, LlmConfig),
 
 %% 3. Identify the conversation with a conversation_id; pass only the latest message
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),

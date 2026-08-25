@@ -37,27 +37,27 @@ retry_after_http_date_unparsed_test() ->
 %%====================================================================
 
 is_retryable_rich_errors_test() ->
-    ?assert(beamai_chat_completion:is_retryable({http_error, 429, <<>>, #{retry_after_ms => 1000}})),
-    ?assert(beamai_chat_completion:is_retryable({http_error, 503, <<>>, #{}})),
+    ?assert(beamai_chat_model:is_retryable({http_error, 429, <<>>, #{retry_after_ms => 1000}})),
+    ?assert(beamai_chat_model:is_retryable({http_error, 503, <<>>, #{}})),
     %% 旧 3 元组仍可重试
-    ?assert(beamai_chat_completion:is_retryable({http_error, 429, <<>>})),
-    ?assert(beamai_chat_completion:is_retryable({http_error, 500, <<>>})),
-    ?assertNot(beamai_chat_completion:is_retryable({http_error, 400, <<>>, #{}})).
+    ?assert(beamai_chat_model:is_retryable({http_error, 429, <<>>})),
+    ?assert(beamai_chat_model:is_retryable({http_error, 500, <<>>})),
+    ?assertNot(beamai_chat_model:is_retryable({http_error, 400, <<>>, #{}})).
 
 compute_delay_honors_retry_after_test() ->
     RetryOpts = #{retry_delay => 1000, max_retries => 3},
     %% Retry-After=5s 优先于指数退避
-    ?assertEqual(5000, beamai_chat_completion:compute_delay(
+    ?assertEqual(5000, beamai_chat_model:compute_delay(
         RetryOpts, 0, {http_error, 429, <<>>, #{retry_after_ms => 5000}})),
     %% 上限封顶 60s
-    ?assertEqual(60000, beamai_chat_completion:compute_delay(
+    ?assertEqual(60000, beamai_chat_model:compute_delay(
         RetryOpts, 0, {http_error, 429, <<>>, #{retry_after_ms => 120000}})).
 
 compute_delay_falls_back_to_exponential_test() ->
     RetryOpts = #{retry_delay => 1000, max_retries => 3},
     %% 无 Retry-After：指数退避 retry_delay * (Attempt+1)
-    ?assertEqual(1000, beamai_chat_completion:compute_delay(RetryOpts, 0, {http_error, 500, <<>>})),
-    ?assertEqual(3000, beamai_chat_completion:compute_delay(RetryOpts, 2, {http_error, 500, <<>>})).
+    ?assertEqual(1000, beamai_chat_model:compute_delay(RetryOpts, 0, {http_error, 500, <<>>})),
+    ?assertEqual(3000, beamai_chat_model:compute_delay(RetryOpts, 2, {http_error, 500, <<>>})).
 
 %%====================================================================
 %% 端到端：429 响应把 Retry-After 透传到富错误

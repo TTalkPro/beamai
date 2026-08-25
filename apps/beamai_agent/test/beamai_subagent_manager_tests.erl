@@ -11,8 +11,8 @@ manager_test_() ->
       fun kill_running/0, fun restart_agent/0, fun drop_agent/0]}.
 
 setup() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         timer:sleep(100),
         {ok, #{content => <<"R:", (last_user(Messages))/binary>>, finish_reason => <<"stop">>}}
     end),
@@ -20,7 +20,7 @@ setup() ->
 
 cleanup(Pid) ->
     unlink(Pid), exit(Pid, kill),
-    meck:unload(beamai_chat_completion).
+    meck:unload(beamai_chat_model).
 
 spawn_await() ->
     {ok, Id} = beamai_subagent_manager:spawn(spec(<<"hi">>)),
@@ -58,8 +58,8 @@ drop_agent() ->
 
 %% TTL：完成条目在 ttl 后自动回收
 ttl_auto_drop_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         {ok, #{content => <<"x">>, finish_reason => <<"stop">>}}
     end),
     Pid = fresh_manager(#{ttl => 60}),
@@ -70,7 +70,7 @@ ttl_auto_drop_test() ->
         ?assertEqual({error, not_found}, beamai_subagent_manager:result(Id))
     after
         unlink(Pid), exit(Pid, kill),
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================

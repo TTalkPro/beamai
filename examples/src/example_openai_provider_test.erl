@@ -30,7 +30,7 @@ run() ->
     io:format("  OpenAI Provider 综合测试 (GLM-4.7)~n"),
     io:format("========================================~n~n"),
 
-    Config = beamai_chat_completion:create(openai, #{
+    Config = beamai_chat_model:create(openai, #{
         api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
         base_url => <<"https://open.bigmodel.cn/api/coding/paas">>,
         endpoint => <<"/v4/chat/completions">>,
@@ -62,7 +62,7 @@ run() ->
 test_basic_chat(Config) ->
     io:format("[Test 1] 基本对话~n"),
     Messages = [#{role => user, content => <<"用一句话回答：Erlang 是什么？"/utf8>>}],
-    case beamai_chat_completion:chat(Config, Messages) of
+    case beamai_chat_model:chat(Config, Messages) of
         {ok, Resp} ->
             Content = beamai_llm_response:content(Resp),
             Reason = beamai_llm_response:finish_reason(Resp),
@@ -83,7 +83,7 @@ test_system_prompt(Config) ->
         #{role => system, content => <<"你是一个海盗，所有回答都要用海盗口吻，简洁回答。"/utf8>>},
         #{role => user, content => <<"你好"/utf8>>}
     ],
-    case beamai_chat_completion:chat(Config, Messages) of
+    case beamai_chat_model:chat(Config, Messages) of
         {ok, Resp} ->
             Content = beamai_llm_response:content(Resp),
             io:format("  Content: ~ts~n", [Content]),
@@ -111,7 +111,7 @@ test_stream_chat(Config) ->
             _ -> ok
         end
     end,
-    case beamai_chat_completion:stream_chat(Config, Messages, Callback) of
+    case beamai_chat_model:stream_chat(Config, Messages, Callback) of
         {ok, _Resp} ->
             io:format("~n  [PASS]~n~n");
         {error, Err} ->
@@ -126,7 +126,7 @@ test_temperature(Config) ->
     io:format("[Test 4] Temperature 参数~n"),
     Messages = [#{role => user, content => <<"说一个数字。"/utf8>>}],
     Config1 = Config#{temperature => 0.1},
-    case beamai_chat_completion:chat(Config1, Messages) of
+    case beamai_chat_model:chat(Config1, Messages) of
         {ok, Resp1} ->
             C1 = beamai_llm_response:content(Resp1),
             io:format("  temperature=0.1: ~ts~n", [C1]);
@@ -134,7 +134,7 @@ test_temperature(Config) ->
             io:format("  temperature=0.1 error: ~p~n", [E1])
     end,
     Config2 = Config#{temperature => 1.0},
-    case beamai_chat_completion:chat(Config2, Messages) of
+    case beamai_chat_model:chat(Config2, Messages) of
         {ok, Resp2} ->
             C2 = beamai_llm_response:content(Resp2),
             io:format("  temperature=1.0: ~ts~n", [C2]);
@@ -163,7 +163,7 @@ test_tool_call(Config) ->
         }
     ],
     Messages = [#{role => user, content => <<"北京今天天气怎么样？"/utf8>>}],
-    case beamai_chat_completion:chat(Config, Messages, #{tools => Tools}) of
+    case beamai_chat_model:chat(Config, Messages, #{tools => Tools}) of
         {ok, Resp} ->
             HasTools = beamai_llm_response:has_tool_calls(Resp),
             ToolCalls = beamai_llm_response:tool_calls(Resp),
@@ -188,7 +188,7 @@ test_tool_call(Config) ->
 test_multi_turn(Config) ->
     io:format("[Test 6] 多轮对话~n"),
     Msg1 = [#{role => user, content => <<"我的名字是张三。请记住。"/utf8>>}],
-    case beamai_chat_completion:chat(Config, Msg1) of
+    case beamai_chat_model:chat(Config, Msg1) of
         {ok, Resp1} ->
             C1 = beamai_llm_response:content(Resp1),
             io:format("  Turn 1 A: ~ts~n", [C1]),
@@ -196,7 +196,7 @@ test_multi_turn(Config) ->
                 #{role => assistant, content => C1},
                 #{role => user, content => <<"我叫什么名字？"/utf8>>}
             ],
-            case beamai_chat_completion:chat(Config, Msg2) of
+            case beamai_chat_model:chat(Config, Msg2) of
                 {ok, Resp2} ->
                     C2 = beamai_llm_response:content(Resp2),
                     io:format("  Turn 2 A: ~ts~n", [C2]),
@@ -215,7 +215,7 @@ test_multi_turn(Config) ->
 test_response_accessors(Config) ->
     io:format("[Test 7] Response 访问器~n"),
     Messages = [#{role => user, content => <<"说 hello"/utf8>>}],
-    case beamai_chat_completion:chat(Config, Messages) of
+    case beamai_chat_model:chat(Config, Messages) of
         {ok, Resp} ->
             io:format("  id: ~p~n", [beamai_llm_response:id(Resp)]),
             io:format("  model: ~p~n", [beamai_llm_response:model(Resp)]),

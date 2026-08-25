@@ -64,7 +64,7 @@ beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_message
 
 ```erlang
 {ok, State} = beamai_agent:new(#{
-    %% LLM：{Provider, Opts} 元组，或 beamai_chat_completion:create/2 的结果，
+    %% LLM：{Provider, Opts} 元组，或 beamai_chat_model:create/2 的结果，
     %% 或直接传入已构建好的 kernel（kernel => K，此时忽略 llm/plugins）
     llm => {anthropic, #{model => <<"claude-sonnet-4-5">>, api_key => Key}},
 
@@ -128,7 +128,7 @@ io:format("~s~n", [maps:get(content, Result)]).
 ```
 
 > 若改用 `kernel => K` 传入预构建 kernel，则 `llm`/`plugins` 被忽略，需自行
-> `beamai_kernel:add_service/2` 配置 LLM、`add_tool_module/2` 注册工具。
+> `beamai_kernel:add_chat_model/2` 配置 LLM、`add_tool_module/2` 注册工具。
 
 ### 多轮对话
 
@@ -229,7 +229,7 @@ clear(Ref, ConvId) -> ok.
 Filter 是 **kernel 级**机制（不是 agent 特性——agent 的记忆/回调都不走 filter）。
 `new/1` **没有顶层 `filters` 键**。要在 agent 用到的 kernel 上加 filter，走
 **预构建 kernel，传 `kernel =>`**（filter 在 `beamai_kernel:new/2` 一次性给出，
-注册顺序即层序：列表靠前 = 外层；传 kernel 时 LLM 需自行 `add_service`；
+注册顺序即层序：列表靠前 = 外层；传 kernel 时 LLM 需自行 `add_chat_model`；
 记忆仍由 `memory` 配置独立解析为 provider，与 kernel 无关）：
 
 ```erlang
@@ -251,7 +251,7 @@ TimeTool = beamai_filter:new(<<"time_tool">>,
     end}),
 
 K0 = beamai_kernel:new(#{}, [LogChat, TimeTool]),
-K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(openai, #{model => <<"gpt-4o">>})),
+K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(openai, #{model => <<"gpt-4o">>})),
 {ok, A} = beamai_agent:new(#{kernel => K1, memory => {window, 20}}).
 ```
 
@@ -301,7 +301,7 @@ Delegate = beamai_agent_delegate:tool(#{
     isolation => process,   %% 默认;独立进程 + 超时（inline 退回当前进程）
     timeout => 60000        %% 默认 60s;超时则 kill 子 agent 返回 {error, sub_agent_timeout}
 }),
-K  = beamai_kernel:add_tools(beamai_kernel:add_service(beamai_kernel:new(), Llm), [Delegate]),
+K  = beamai_kernel:add_tools(beamai_kernel:add_chat_model(beamai_kernel:new(), Llm), [Delegate]),
 {ok, Parent} = beamai_agent:new(#{kernel => K, memory => ParentMem, conversation_id => ParentConv}).
 ```
 

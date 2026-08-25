@@ -254,9 +254,9 @@ collect_fired(N, Acc) ->
 %%====================================================================
 
 cross_turn_state_visible_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CC = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         counters:add(CC, 1, 1),
         case counters:get(CC, 1) of
             1 -> {ok, #{content => null, finish_reason => <<"tool_calls">>,
@@ -266,14 +266,14 @@ cross_turn_state_visible_test() ->
             _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
         end
     end),
-    K = beamai_kernel:add_service(
+    K = beamai_kernel:add_chat_model(
         kernel([
             {<<"writer">>, fun(_, _) -> {ok, <<"w">>, #{<<"note">> => <<"hello">>}} end},
             {<<"reader">>, fun(_, Ctx) ->
                 {ok, <<"SAW:", (beamai_context:state_get(Ctx, <<"note">>, <<"none">>))/binary>>}
             end}
         ], #{}),
-        beamai_chat_completion:create(mock, #{})),
+        beamai_chat_model:create(mock, #{})),
     try
         {ok, Agent} = beamai_agent:new(#{kernel => K}),
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
@@ -281,7 +281,7 @@ cross_turn_state_visible_test() ->
         %% reader 在下一轮读到上一轮 writer 折叠进 state 的 note
         ?assertEqual(<<"SAW:hello">>, result_of(Records, <<"reader">>))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -289,9 +289,9 @@ cross_turn_state_visible_test() ->
 %%====================================================================
 
 interrupt_resume_restores_state_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CC = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         counters:add(CC, 1, 1),
         case counters:get(CC, 1) of
             1 ->
@@ -307,14 +307,14 @@ interrupt_resume_restores_state_test() ->
                 {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
         end
     end),
-    K = beamai_kernel:add_service(
+    K = beamai_kernel:add_chat_model(
         kernel([
             {<<"writer">>, fun(_, _) -> {ok, <<"w">>, #{<<"note">> => <<"kept">>}} end},
             {<<"reader">>, fun(_, Ctx) ->
                 {ok, <<"SAW:", (beamai_context:state_get(Ctx, <<"note">>, <<"none">>))/binary>>}
             end}
         ], #{}),
-        beamai_chat_completion:create(mock, #{})),
+        beamai_chat_model:create(mock, #{})),
     try
         {ok, Agent} = beamai_agent:new(#{
             kernel => K,
@@ -328,5 +328,5 @@ interrupt_resume_restores_state_test() ->
         %% 中断前 writer 的写跨越中断被恢复，reader 读得到
         ?assertEqual(<<"SAW:kept">>, result_of(Records, <<"reader">>))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.

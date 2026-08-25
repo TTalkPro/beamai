@@ -11,12 +11,12 @@ tc(Id, Name) ->
       function => #{name => Name, arguments => <<"{}">>}}.
 
 mock_llm(Fun) ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) -> Fun() end).
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) -> Fun() end).
 
 kernel_with(Tools) ->
-    K0 = beamai_kernel:add_service(beamai_kernel:new(),
-                                   beamai_chat_completion:create(mock, #{})),
+    K0 = beamai_kernel:add_chat_model(beamai_kernel:new(),
+                                   beamai_chat_model:create(mock, #{})),
     lists:foldl(fun({Name, H}, K) ->
         beamai_kernel:add_tool(K, #{name => Name, parameters => #{}, handler => H})
     end, K0, Tools).
@@ -59,7 +59,7 @@ env_pause_and_resume_retry_test() ->
         ?assertNot(beamai_agent:is_interrupted(A2)),
         ?assertEqual(2, counters:get(TCtr, 1))  %% 初次失败 + retry 成功
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -86,7 +86,7 @@ env_error_proceed_default_test() ->
         ?assertEqual(<<"handled">>, maps:get(content, Result)),
         ?assertNot(beamai_agent:is_interrupted(A1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -113,5 +113,5 @@ semantic_error_goes_to_model_test() ->
         ?assertEqual(<<"ok">>, maps:get(content, Result)),
         ?assertNot(beamai_agent:is_interrupted(A1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.

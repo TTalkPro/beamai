@@ -84,7 +84,7 @@ beamai_kernel:add_tools(Kernel, [ToolSpec]) -> kernel().
 beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
 
 %% Add services
-beamai_kernel:add_service(Kernel, Service) -> kernel().
+beamai_kernel:add_chat_model(Kernel, Service) -> kernel().
 
 %% Invoke API (kernel is single-shot only; the ReAct tool-calling loop lives in beamai_agent)
 beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.
@@ -97,7 +97,7 @@ beamai_kernel:get_tools_by_tag(Kernel, Tag) -> [Tool].
 beamai_kernel:get_tool_specs(Kernel) -> [ToolSpec].
 beamai_kernel:get_tool_schemas(Kernel) -> [Schema].
 beamai_kernel:get_tool_schemas(Kernel, Provider) -> [Schema].
-beamai_kernel:get_service(Kernel) -> {ok, Service} | error.
+beamai_kernel:chat_model(Kernel) -> {ok, Service} | error.
 ```
 
 ### beamai_tool
@@ -170,7 +170,7 @@ by the Memory Filter keyed by `conversation_id`. See [docs/MEMORY_EN.md](../../d
 {ok, _} = beamai_chat_memory_ets:start_link(my_mem),
 Store = beamai_chat_memory_ets:handle(my_mem),
 K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K = beamai_kernel:add_service(K0, LlmConfig),
+K = beamai_kernel:add_chat_model(K0, LlmConfig),
 
 %% Identify the conversation with a conversation_id; pass only the latest message
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),

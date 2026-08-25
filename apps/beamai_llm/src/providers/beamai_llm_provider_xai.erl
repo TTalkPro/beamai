@@ -23,12 +23,12 @@
 %%% == 使用示例 ==
 %%%
 %%% ```erlang
-%%% Config = beamai_chat_completion:create(xai, #{
+%%% Config = beamai_chat_model:create(xai, #{
 %%%     api_key => <<"xai-...">>,
 %%%     model => <<"grok-4.5">>,
 %%%     reasoning_effort => <<"high">>
 %%% }),
-%%% {ok, Resp} = beamai_chat_completion:chat(Config, Messages).
+%%% {ok, Resp} = beamai_chat_model:chat(Config, Messages).
 %%% ```
 %%%
 %%% @end

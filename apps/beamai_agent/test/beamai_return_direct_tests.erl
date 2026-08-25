@@ -31,8 +31,8 @@ kernel(Tools, Filters) ->
 %% mock LLM：首轮发 ToolCalls，之后返回 <<"llm-answer">>
 mock_llm(ToolCalls) ->
     CC = counters:new(1, []),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         counters:add(CC, 1, 1),
         case counters:get(CC, 1) of
             1 -> {ok, #{content => null, finish_reason => <<"tool_calls">>,
@@ -48,14 +48,14 @@ run(Tools, ToolCalls) ->
 %% @returns {RunResult, LLM 调用次数}
 run(Tools, ToolCalls, Filters) ->
     CC = mock_llm(ToolCalls),
-    K = beamai_kernel:add_service(kernel(Tools, Filters),
-                                  beamai_chat_completion:create(mock, #{})),
+    K = beamai_kernel:add_chat_model(kernel(Tools, Filters),
+                                  beamai_chat_model:create(mock, #{})),
     try
         {ok, Agent} = beamai_agent:new(#{kernel => K, memory => false}),
         {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
         {Result, counters:get(CC, 1)}
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% turn filter：把工具循环的原始响应送回 Parent（run_result 不带 metadata）

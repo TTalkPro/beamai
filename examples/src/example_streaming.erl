@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc 流式对话示例
 %%%
-%%% 演示如何使用 beamai_chat_completion:stream_chat 进行流式对话，
+%%% 演示如何使用 beamai_chat_model:stream_chat 进行流式对话，
 %%% token 逐个输出到终端。
 %%%
 %%% 使用方法:
@@ -29,9 +29,9 @@ run() ->
 
 %% @doc 运行流式对话示例（使用指定 LLM 配置）
 %%
-%% 使用 beamai_chat_completion:stream_chat 直接进行流式调用，
+%% 使用 beamai_chat_model:stream_chat 直接进行流式调用，
 %% 每收到一个 token 立即打印到终端。
--spec run(beamai_chat_completion:config()) -> ok.
+-spec run(beamai_chat_model:config()) -> ok.
 run(LLMConfig) ->
     io:format("=== BeamAI Streaming Chat Example ===~n~n"),
 
@@ -51,7 +51,7 @@ run(LLMConfig) ->
         end
     end,
 
-    case beamai_chat_completion:stream_chat(LLMConfig, Messages, Callback) of
+    case beamai_chat_model:stream_chat(LLMConfig, Messages, Callback) of
         {ok, _FinalResponse} ->
             io:format("~n~n[Stream completed]~n");
         {error, Reason} ->

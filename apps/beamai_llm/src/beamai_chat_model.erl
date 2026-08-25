@@ -1,4 +1,4 @@
--module(beamai_chat_completion).
+-module(beamai_chat_model).
 
 %% @doc Chat Completion Service
 %%
@@ -48,7 +48,7 @@
 %% @doc Create a chat completion config for a given provider.
 %%
 %% Example:
-%%   Config = beamai_chat_completion:create(anthropic, #{
+%%   Config = beamai_chat_model:create(anthropic, #{
 %%       model => <<"claude-sonnet-4-20250514">>,
 %%       api_key => <<"sk-...">>
 %%   })

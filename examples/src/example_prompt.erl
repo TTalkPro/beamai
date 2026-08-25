@@ -98,11 +98,11 @@ run_structured() ->
 %% @doc 结合 LLM 获取结构化 JSON 输出
 %%
 %% 使用 Prompt 模板 + Output Parser，让 LLM 返回可解析的 JSON。
--spec run_structured(beamai_chat_completion:config()) -> ok.
+-spec run_structured(beamai_chat_model:config()) -> ok.
 run_structured(LLMConfig) ->
     io:format("~n=== BeamAI Structured Output Example ===~n~n"),
 
-    Kernel = beamai:add_llm(beamai:kernel(), LLMConfig),
+    Kernel = beamai:add_chat_model(beamai:kernel(), LLMConfig),
 
     %% 1. 获取格式指令
     FormatInstructions = beamai_output_parser:get_instructions(json),

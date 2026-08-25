@@ -84,7 +84,7 @@ Store = beamai_chat_memory_ets:handle(my_mem),   %% 句柄 {beamai_chat_memory_e
 
 %% 2. 构建 Kernel 并启用记忆（memory filter 放 filters 列表首位 = 最外层）
 K0 = beamai_kernel:new(#{}, [beamai_memory_filter:memory_filter(Store)]),
-K  = beamai_kernel:add_service(K0, LlmConfig),
+K  = beamai_kernel:add_chat_model(K0, LlmConfig),
 
 %% 3. 用 conversation_id 标识会话，每次只传最新消息
 Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>),

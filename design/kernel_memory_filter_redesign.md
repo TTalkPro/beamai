@@ -33,7 +33,7 @@
 
 - `beamai_context` 持有 `messages`（工作缓冲）+ `history`（追加日志）两个字段。
 - `beamai_kernel:invoke/3` 用 `ExistingMsgs ++ Messages` 拼接累积，并 `track_message/track_new_messages` 写回 context。
-- blast radius：消息累积 API 仅被 `beamai_kernel.erl` 与 `beamai_chat_completion_tests.erl` 使用。`beamai_memory:get_history` 是快照历史，无关。无任何 `conversation_id` 使用点。
+- blast radius：消息累积 API 仅被 `beamai_kernel.erl` 与 `beamai_chat_model_tests.erl` 使用。`beamai_memory:get_history` 是快照历史，无关。无任何 `conversation_id` 使用点。
 
 ## 3. 已定决策
 
@@ -136,7 +136,7 @@ invoke(Kernel, [User消息], #{context := Ctx(conv_id=s1)})
 | `beamai_core/src/kernel/beamai_kernel.erl` | 加 memory 字段 + with_memory；重写 invoke；删 track_* |
 | `beamai_core/src/kernel/beamai_context.erl` | 删 messages/history；加 conversation_id |
 | `beamai_core/src/beamai_core.app.src` | 注册新模块 |
-| `beamai_core/test/beamai_chat_completion_tests.erl` | 删除/改写 messages/history 相关用例 |
+| `beamai_core/test/beamai_chat_model_tests.erl` | 删除/改写 messages/history 相关用例 |
 | 新增测试 | memory filter 累积、工具循环、ephemeral 清理、窗口裁剪 |
 
 ## 7. 验证

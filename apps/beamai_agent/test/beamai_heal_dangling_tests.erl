@@ -7,9 +7,9 @@
 -include_lib("eunit/include/eunit.hrl").
 
 heal_dangling_on_new_chat_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CC = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         counters:add(CC, 1, 1),
         case counters:get(CC, 1) of
             1 -> {ok, #{content => null, finish_reason => <<"tool_calls">>,
@@ -40,7 +40,7 @@ heal_dangling_on_new_chat_test() ->
         ?assert(HasC1Result),
         ?assertEqual([], dangling(Msgs))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 与 beamai_agent:dangling_tool_call_ids 同逻辑（测试侧独立实现）

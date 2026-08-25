@@ -1,4 +1,4 @@
--module(beamai_chat_completion_tests).
+-module(beamai_chat_model_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 %%====================================================================
@@ -49,9 +49,9 @@ tool_schema_anthropic_format_test() ->
 
 llm_service_config_test() ->
     K0 = beamai_kernel:new(),
-    LlmConfig = beamai_chat_completion:create(mock, #{model => <<"test-model">>}),
-    K1 = beamai_kernel:add_service(K0, LlmConfig),
-    {ok, Svc} = beamai_kernel:get_service(K1),
+    LlmConfig = beamai_chat_model:create(mock, #{model => <<"test-model">>}),
+    K1 = beamai_kernel:add_chat_model(K0, LlmConfig),
+    {ok, Svc} = beamai_kernel:chat_model(K1),
     ?assertEqual(mock, maps:get(provider, Svc)),
     ?assertEqual(<<"test-model">>, maps:get(model, Svc)).
 

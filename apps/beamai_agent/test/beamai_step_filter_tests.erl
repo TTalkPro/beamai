@@ -17,8 +17,8 @@
 %% 第一轮要求调工具，第二轮给终答（两轮迭代）
 mock_two_rounds() ->
     Ctr = counters:new(1, []),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         case counters:get(Ctr, 1) of
             0 ->
                 counters:add(Ctr, 1, 1),
@@ -32,8 +32,8 @@ mock_two_rounds() ->
 
 %% 每轮都要求调工具，永不收尾（用于验证循环可被替换/刹住）
 mock_looping() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         {ok, #{content => null, tool_calls => [tool_call()],
                finish_reason => <<"tool_calls">>}}
     end).
@@ -45,7 +45,7 @@ tool_call() ->
 kernel(Filters) ->
     K0 = beamai_kernel:new(#{}, Filters),
     K1 = beamai_kernel:add_tool_module(K0, beamai_agent_test_plugin),
-    beamai_kernel:add_service(K1, beamai_chat_completion:create(mock, #{})).
+    beamai_kernel:add_chat_model(K1, beamai_chat_model:create(mock, #{})).
 
 agent(Filters) -> agent(Filters, #{}).
 agent(Filters, Extra) ->
@@ -86,7 +86,7 @@ count(X, L) -> length([E || E <- L, E =:= X]).
 
 with_meck(Fun) ->
     flush(),
-    try Fun() after meck:unload(beamai_chat_completion) end.
+    try Fun() after meck:unload(beamai_chat_model) end.
 
 %%====================================================================
 %% 粒度：turn 一次、step 每轮一次、tool 每次一次
@@ -161,7 +161,7 @@ step_filter_can_short_circuit_test() ->
         {ok, A} = agent([Short]),
         ?assertMatch({ok, #{content := <<"canned">>}, _}, beamai_agent:run(A, <<"go">>)),
         %% 短路即不调 LLM
-        ?assertEqual(0, meck:num_calls(beamai_chat_completion, chat, '_'))
+        ?assertEqual(0, meck:num_calls(beamai_chat_model, chat, '_'))
     end).
 
 %%====================================================================

@@ -19,7 +19,7 @@
 %%====================================================================
 
 provider_routing_test() ->
-    Cfg = fun(P) -> maps:get(model, beamai_chat_completion:create(P, #{api_key => <<"k">>})) end,
+    Cfg = fun(P) -> maps:get(model, beamai_chat_model:create(P, #{api_key => <<"k">>})) end,
     ?assertEqual(<<"grok-4.5">>, Cfg(xai)),
     ?assertEqual(<<"kimi-k2.5">>, Cfg(moonshot)),
     %% kimi 是 moonshot 的别名，走同一模块
@@ -32,7 +32,7 @@ provider_routing_test() ->
 %%====================================================================
 
 xai_body_basics_test() ->
-    Config = beamai_chat_completion:create(xai, #{api_key => <<"k">>, max_tokens => 100}),
+    Config = beamai_chat_model:create(xai, #{api_key => <<"k">>, max_tokens => 100}),
     Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES}),
     ?assertEqual(<<"grok-4.5">>, maps:get(<<"model">>, Body)),
     ?assertEqual(100, maps:get(<<"max_tokens">>, Body)),
@@ -40,7 +40,7 @@ xai_body_basics_test() ->
 
 xai_drops_unsupported_params_test() ->
     %% xAI 不支持 frequency_penalty / presence_penalty / stop / top_k
-    Config = beamai_chat_completion:create(xai, #{
+    Config = beamai_chat_model:create(xai, #{
         api_key => <<"k">>,
         frequency_penalty => 0.5,
         presence_penalty => 0.5,
@@ -54,13 +54,13 @@ xai_drops_unsupported_params_test() ->
     ?assertNot(maps:is_key(<<"top_k">>, Body)).
 
 xai_reasoning_effort_test() ->
-    Config = beamai_chat_completion:create(xai, #{api_key => <<"k">>,
+    Config = beamai_chat_model:create(xai, #{api_key => <<"k">>,
                                                  reasoning_effort => <<"high">>}),
     Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES}),
     ?assertEqual(<<"high">>, maps:get(<<"reasoning_effort">>, Body)).
 
 xai_reasoning_effort_dropped_for_grok_420_test() ->
-    Config = beamai_chat_completion:create(xai, #{api_key => <<"k">>,
+    Config = beamai_chat_model:create(xai, #{api_key => <<"k">>,
                                                  model => <<"grok-4.20-reasoning">>,
                                                  reasoning_effort => <<"none">>}),
     Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES}),
@@ -74,7 +74,7 @@ xai_supports_reasoning_effort_test() ->
     ?assert(beamai_llm_provider_xai:supports_reasoning_effort(<<"grok-4.20-multi-agent">>)).
 
 xai_stream_options_test() ->
-    Config = beamai_chat_completion:create(xai, #{api_key => <<"k">>}),
+    Config = beamai_chat_model:create(xai, #{api_key => <<"k">>}),
     Body = beamai_llm_provider_xai:build_request_body(Config, #{messages => ?MESSAGES, stream => true}),
     ?assert(maps:get(<<"stream">>, Body)),
     ?assertEqual(#{<<"include_usage">> => true}, maps:get(<<"stream_options">>, Body)).
@@ -105,19 +105,19 @@ xai_response_with_citations_test() ->
 %%====================================================================
 
 moonshot_url_region_test() ->
-    CN = beamai_chat_completion:create(moonshot, #{api_key => <<"k">>}),
+    CN = beamai_chat_model:create(moonshot, #{api_key => <<"k">>}),
     ?assertEqual(<<"https://api.moonshot.cn/v1/chat/completions">>,
                  beamai_llm_provider_moonshot:build_url(CN)),
-    Global = beamai_chat_completion:create(moonshot, #{api_key => <<"k">>, region => global}),
+    Global = beamai_chat_model:create(moonshot, #{api_key => <<"k">>, region => global}),
     ?assertEqual(<<"https://api.moonshot.ai/v1/chat/completions">>,
                  beamai_llm_provider_moonshot:build_url(Global)),
-    Custom = beamai_chat_completion:create(kimi, #{api_key => <<"k">>,
+    Custom = beamai_chat_model:create(kimi, #{api_key => <<"k">>,
                                                   base_url => <<"https://proxy.local">>}),
     ?assertEqual(<<"https://proxy.local/v1/chat/completions">>,
                  beamai_llm_provider_moonshot:build_url(Custom)).
 
 moonshot_thinking_test() ->
-    Config = beamai_chat_completion:create(moonshot, #{
+    Config = beamai_chat_model:create(moonshot, #{
         api_key => <<"k">>,
         thinking => #{type => enabled, budget_tokens => 2048},
         reasoning_history => <<"interleaved">>,
@@ -140,7 +140,7 @@ moonshot_strips_dollar_schema_test() ->
             }
         }
     },
-    Config = beamai_chat_completion:create(moonshot, #{api_key => <<"k">>,
+    Config = beamai_chat_model:create(moonshot, #{api_key => <<"k">>,
                                                       response_format => Format}),
     Body = beamai_llm_provider_moonshot:build_request_body(Config, #{messages => ?MESSAGES}),
     Schema = maps:get(<<"schema">>, maps:get(<<"json_schema">>,
@@ -168,7 +168,7 @@ moonshot_response_test() ->
 %%====================================================================
 
 openrouter_headers_test() ->
-    Config = beamai_chat_completion:create(openrouter, #{
+    Config = beamai_chat_model:create(openrouter, #{
         api_key => <<"sk-or">>, site_url => <<"https://app.local">>, site_name => <<"beamai">>
     }),
     Headers = beamai_llm_provider_openrouter:build_headers(Config),
@@ -177,13 +177,13 @@ openrouter_headers_test() ->
     ?assertEqual(<<"beamai">>, proplists:get_value(<<"X-Title">>, Headers)).
 
 openrouter_headers_without_site_test() ->
-    Config = beamai_chat_completion:create(openrouter, #{api_key => <<"sk-or">>}),
+    Config = beamai_chat_model:create(openrouter, #{api_key => <<"sk-or">>}),
     Headers = beamai_llm_provider_openrouter:build_headers(Config),
     ?assertEqual(undefined, proplists:get_value(<<"HTTP-Referer">>, Headers)),
     ?assertEqual(undefined, proplists:get_value(<<"X-Title">>, Headers)).
 
 openrouter_routing_body_test() ->
-    Config = beamai_chat_completion:create(openrouter, #{
+    Config = beamai_chat_model:create(openrouter, #{
         api_key => <<"k">>,
         model => <<"anthropic/claude-sonnet-4">>,
         models => [<<"openai/gpt-4o">>],
@@ -202,7 +202,7 @@ openrouter_routing_body_test() ->
     ?assertEqual(#{<<"include">> => true}, maps:get(<<"usage">>, Body)).
 
 openrouter_usage_off_by_default_test() ->
-    Config = beamai_chat_completion:create(openrouter, #{api_key => <<"k">>}),
+    Config = beamai_chat_model:create(openrouter, #{api_key => <<"k">>}),
     Body = beamai_llm_provider_openrouter:build_request_body(Config, #{messages => ?MESSAGES}),
     ?assertNot(maps:is_key(<<"usage">>, Body)).
 
@@ -230,15 +230,15 @@ openrouter_response_test() ->
 %%====================================================================
 
 siliconflow_url_region_test() ->
-    CN = beamai_chat_completion:create(siliconflow, #{api_key => <<"k">>}),
+    CN = beamai_chat_model:create(siliconflow, #{api_key => <<"k">>}),
     ?assertEqual(<<"https://api.siliconflow.cn/v1/chat/completions">>,
                  beamai_llm_provider_siliconflow:build_url(CN)),
-    Global = beamai_chat_completion:create(siliconflow, #{api_key => <<"k">>, region => global}),
+    Global = beamai_chat_model:create(siliconflow, #{api_key => <<"k">>, region => global}),
     ?assertEqual(<<"https://api.siliconflow.com/v1/chat/completions">>,
                  beamai_llm_provider_siliconflow:build_url(Global)).
 
 siliconflow_thinking_params_test() ->
-    Config = beamai_chat_completion:create(siliconflow, #{
+    Config = beamai_chat_model:create(siliconflow, #{
         api_key => <<"k">>,
         model => <<"Qwen/Qwen3-32B">>,
         enable_thinking => true,

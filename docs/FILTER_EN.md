@@ -265,7 +265,7 @@ the built-in retry filter passes it straight through — tokens have already rea
 re-run would show duplicates downstream. The llm chain itself still runs while streaming (rate
 limiting, accounting, mock); only retry stays out.
 
-> Calling `beamai_chat_completion:chat/3` directly (bypassing the kernel) does **not** retry — retry
+> Calling `beamai_chat_model:chat/3` directly (bypassing the kernel) does **not** retry — retry
 > moved up into the llm chain. Wrap such direct calls in `beamai_llm_retry:run/2` if you need it.
 
 ---
@@ -670,7 +670,7 @@ SystemAudit = beamai:filter(<<"system_and_audit">>, #{
 }),
 
 K0 = beamai:kernel(#{}, [SystemAudit]),
-K1 = beamai:add_llm(K0, LLMConfig).
+K1 = beamai:add_chat_model(K0, LLMConfig).
 
 %% On each request, the chat filter chain injects a system message and audits the response.
 ```

@@ -362,7 +362,7 @@ Messages = [
         beamai_llm_content:image_url(<<"https://x/y.jpg">>, <<"high">>)
     ]}
 ],
-{ok, Resp} = beamai_chat_completion:chat(LLM, Messages).
+{ok, Resp} = beamai_chat_model:chat(LLM, Messages).
 ```
 
 媒体源有三种形态，`beamai_llm_media` 负责构造与转换：
@@ -383,7 +383,7 @@ beamai_llm_media:file_id(<<"file-abc">>).              %% 供应商 Files API �
 
 ### 文本向量化（Embedding）
 
-`beamai_embedding` 与 `beamai_chat_completion` 对等：统一创建配置、多 Provider 路由、超过厂商上限时自动分批并按序拼接、瞬态错误按 `beamai_llm_retry` 退避重试。
+`beamai_embedding` 与 `beamai_chat_model` 对等：统一创建配置、多 Provider 路由、超过厂商上限时自动分批并按序拼接、瞬态错误按 `beamai_llm_retry` 退避重试。
 
 ```erlang
 Config = beamai_embedding:create(openai, #{
@@ -481,7 +481,7 @@ end.
 
 ### 自动重试与 Retry-After
 
-重试**不在** `beamai_chat_completion` 里，而是 llm 链上的一层 filter
+重试**不在** `beamai_chat_model` 里，而是 llm 链上的一层 filter
 （`beamai_llm_filters:retry_filter/1`，见 [FILTER.md](../../docs/FILTER.md)）：kernel 缺省把它注入在
 llm 链最内层，故经 kernel / agent 调用时行为与从前一致。遇到 429 / 5xx 时，若服务端返回
 `Retry-After` 头则**按其建议退避**（上限 60s），否则按 `retry_delay * 重试次数` 退避。
@@ -502,11 +502,11 @@ llm 链最内层，故经 kernel / agent 调用时行为与从前一致。遇到
 调整默认值或关掉：`beamai:kernel(#{llm_retry => #{max_retries => 5}}, Filters)` /
 `#{llm_retry => false}`。
 
-**直接调 `beamai_chat_completion:chat/3`（不经 kernel）是单次请求、不重试**——这类直连
+**直接调 `beamai_chat_model:chat/3`（不经 kernel）是单次请求、不重试**——这类直连
 调用要重试就自己包一层：
 
 ```erlang
-beamai_llm_retry:run(fun() -> beamai_chat_completion:chat(LLM, Messages) end,
+beamai_llm_retry:run(fun() -> beamai_chat_model:chat(LLM, Messages) end,
                      beamai_llm_retry:opts(#{max_retries => 3})).
 ```
 

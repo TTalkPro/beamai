@@ -3,7 +3,7 @@
 %%%
 %%% 演示 beamai Kernel 的多种对话模式：
 %%%   - run/0: 单轮对话（使用预建配置）
-%%%   - run_inline/0: 单轮对话（使用 beamai:add_llm/3 内联配置）
+%%%   - run_inline/0: 单轮对话（使用 beamai:add_chat_model/3 内联配置）
 %%%   - multi_turn/0: 多轮对话
 %%%
 %%% 使用方法:
@@ -32,13 +32,13 @@ run() ->
     run(LLMConfig).
 
 %% @doc 运行单轮对话示例（使用指定 LLM 配置）
--spec run(beamai_chat_completion:config()) -> ok.
+-spec run(beamai_chat_model:config()) -> ok.
 run(LLMConfig) ->
     io:format("=== BeamAI Kernel Chat Example ===~n~n"),
 
     %% 1. 构建 Kernel，添加 Chat Completion 服务
     K0 = beamai:kernel(),
-    K1 = beamai:add_llm(K0, LLMConfig),
+    K1 = beamai:add_chat_model(K0, LLMConfig),
 
     %% 2. 创建对话历史（消息列表）
     History0 = [
@@ -63,16 +63,16 @@ run(LLMConfig) ->
     end,
     ok.
 
-%% @doc 使用 beamai:add_llm/3 内联构建 Kernel（无需预建配置）
+%% @doc 使用 beamai:add_chat_model/3 内联构建 Kernel（无需预建配置）
 %%
 %% 展示最简洁的方式：直接传入 provider 和选项。
 -spec run_inline() -> ok.
 run_inline() ->
     io:format("=== BeamAI Inline LLM Config Example ===~n~n"),
 
-    %% 直接用 beamai:add_llm/3 传入 provider + 选项
+    %% 直接用 beamai:add_chat_model/3 传入 provider + 选项
     ApiKey = list_to_binary(os:getenv("ZHIPU_API_KEY")),
-    Kernel = beamai:add_llm(beamai:kernel(), anthropic, #{
+    Kernel = beamai:add_chat_model(beamai:kernel(), anthropic, #{
         api_key => ApiKey,
         base_url => <<"https://open.bigmodel.cn/api/anthropic">>,
         model => <<"glm-4.7">>,
@@ -102,13 +102,13 @@ multi_turn() ->
 %% @doc 运行多轮对话示例
 %%
 %% 演示如何维护对话历史进行多轮交互。
--spec multi_turn(beamai_chat_completion:config()) -> ok.
+-spec multi_turn(beamai_chat_model:config()) -> ok.
 multi_turn(LLMConfig) ->
     io:format("=== BeamAI Kernel Multi-Turn Chat ===~n~n"),
 
     %% 1. 构建 Kernel
     K0 = beamai:kernel(),
-    K1 = beamai:add_llm(K0, LLMConfig),
+    K1 = beamai:add_chat_model(K0, LLMConfig),
 
     %% 2. 初始化对话历史
     History0 = [

@@ -39,9 +39,9 @@ The reference describes every public module, its exports, and its key types. Sig
 -spec add_tool_module(beamai_kernel:kernel(), module()) ->
     beamai_kernel:kernel().
 
--spec add_llm(beamai_kernel:kernel(), atom(), map()) ->
+-spec add_chat_model(beamai_kernel:kernel(), atom(), map()) ->
     beamai_kernel:kernel().
--spec add_llm(beamai_kernel:kernel(), beamai_chat_completion:config()) ->
+-spec add_chat_model(beamai_kernel:kernel(), beamai_chat_model:config()) ->
     beamai_kernel:kernel().
 
 -spec filter(binary(), beamai_filter:hooks()) -> beamai_filter:filter().
@@ -75,7 +75,7 @@ The reference describes every public module, its exports, and its key types. Sig
 | `tool/2,3` | Construct a tool spec from name + handler, with optional options |
 | `add_tool/2`, `add_tools/2` | Register one tool or a batch |
 | `add_tool_module/2` | Load tools from a module implementing `beamai_tool_behaviour` |
-| `add_llm/2,3` | Register an LLM service (provider atom + opts, or prebuilt config) |
+| `add_chat_model/2,3` | Register an LLM service (provider atom + opts, or prebuilt config) |
 | `filter/2,3` | Build a filter from a hooks map, with optional private-context seed |
 | `invoke_tool/4` | Call a registered tool through the tool filter chain |
 | `chat/2,3` | Send a chat completion through the chat filter chain |
@@ -104,7 +104,7 @@ Logger = beamai:filter(<<"logger">>, #{
 
 K0 = beamai:kernel(#{}, [Logger]),
 K1 = beamai:add_tool(K0, AddTool),
-K2 = beamai:add_llm(K1, beamai_chat_completion:create(zhipu, #{
+K2 = beamai:add_chat_model(K1, beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
 })),
@@ -127,7 +127,7 @@ K2 = beamai:add_llm(K1, beamai_chat_completion:create(zhipu, #{
 -spec add_tool(kernel(), beamai_tool:tool_spec()) -> kernel().
 -spec add_tools(kernel(), [beamai_tool:tool_spec()]) -> kernel().
 -spec add_tool_module(kernel(), module()) -> kernel().
--spec add_service(kernel(), beamai_chat_completion:config()) -> kernel().
+-spec add_chat_model(kernel(), beamai_chat_model:config()) -> kernel().
 
 -spec invoke_tool(kernel(), binary(),
                    beamai_tool:args(), beamai_context:t()) ->
@@ -148,8 +148,8 @@ K2 = beamai:add_llm(K1, beamai_chat_completion:create(zhipu, #{
 -spec get_tool_schemas(kernel()) -> [map()].
 -spec get_tool_schemas(kernel(), openai | anthropic | atom()) -> [map()].
 
--spec get_service(kernel()) ->
-    {ok, beamai_chat_completion:config()} | error.
+-spec chat_model(kernel()) ->
+    {ok, beamai_chat_model:config()} | error.
 
 -spec state_slots(kernel()) -> beamai_context:state_slots().
 -spec serial_tool(kernel(), binary()) -> boolean().
@@ -162,7 +162,7 @@ K2 = beamai:add_llm(K1, beamai_chat_completion:create(zhipu, #{
 -type kernel() :: #{
     '__kernel__' := true,
     tools := #{binary() => beamai_tool:tool_spec()},
-    llm_config := beamai_chat_completion:config() | undefined,
+    llm_config := beamai_chat_model:config() | undefined,
     filters := [beamai_filter:filter()],
     settings := kernel_settings()
 }.
@@ -186,13 +186,13 @@ K2 = beamai:add_llm(K1, beamai_chat_completion:create(zhipu, #{
 | `new/0,1,2` | Construct a kernel (default settings / custom settings / settings + filters) |
 | `add_tool/2`, `add_tools/2` | Register one or many tools |
 | `add_tool_module/2` | Register all tools exposed by a tool module |
-| `add_service/2` | Attach an LLM service config |
+| `add_chat_model/2` | Attach an LLM service config |
 | `invoke_tool/4` | Run one tool through the tool filter chain |
 | `invoke_chat/3` | Run one LLM call through the chat filter chain (no tool loop) |
 | `invoke_chat_stream/4` | Streaming variant; same chat + llm chains plus the `token_transform` pipeline |
 | `get_tool/2`, `list_tools/1`, `get_tools_by_tag/2` | Look up tools |
 | `get_tool_specs/1`, `get_tool_schemas/1,2` | Export tool definitions for an LLM call |
-| `get_service/1` | Inspect the LLM service config |
+| `chat_model/1` | Inspect the LLM service config |
 | `state_slots/1` | Kernel-level declarations of tool-call state slots |
 | `serial_tool/2`, `return_direct_tool/2` | Query tool flags set during registration |
 
@@ -1034,9 +1034,9 @@ Generates prefixed, time-ordered identifiers.
 
 ## beamai_llm - LLM Client
 
-The `beamai_llm` app is the unified LLM client. It exposes one synchronous entry point (`beamai_chat_completion:chat/2,3`), one streaming entry point (`stream_chat/3,4`), a structured error type, and adapters for converting between the unified internal shapes and each provider's wire format.
+The `beamai_llm` app is the unified LLM client. It exposes one synchronous entry point (`beamai_chat_model:chat/2,3`), one streaming entry point (`stream_chat/3,4`), a structured error type, and adapters for converting between the unified internal shapes and each provider's wire format.
 
-### Chat Completion: beamai_chat_completion
+### Chat Completion: beamai_chat_model
 
 The most-used public API. Construct a `config()` with `create/2`, then call `chat/2,3` or `stream_chat/3,4`.
 
@@ -1068,13 +1068,13 @@ The most-used public API. Construct a `config()` with `create/2`, then call `cha
 **Example: create + chat**
 
 ```erlang
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     temperature => 0.7
 }),
 
-{ok, Resp} = beamai_chat_completion:chat(LLM, [
+{ok, Resp} = beamai_chat_model:chat(LLM, [
     #{role => user, content => <<"Hello">>}
 ]),
 
@@ -1269,7 +1269,7 @@ Retry primitives shared by the parsers.
 
 ### Provider Adapters
 
-The adapters convert between the unified internal shapes and each provider's wire format. They are not meant to be called by user code directly; they sit underneath `beamai_chat_completion`.
+The adapters convert between the unified internal shapes and each provider's wire format. They are not meant to be called by user code directly; they sit underneath `beamai_chat_model`.
 
 #### beamai_llm_response_parser
 
@@ -1431,7 +1431,7 @@ Helpers used by every provider module: URL building, default timeouts, bearer-au
 
 ### Supported Providers
 
-Pass the provider atom to `beamai_chat_completion:create/2`. Each adapter module implements `beamai_chat_behaviour` and ships with the same sync and streaming surface.
+Pass the provider atom to `beamai_chat_model:create/2`. Each adapter module implements `beamai_chat_behaviour` and ships with the same sync and streaming surface.
 
 | Provider | Module | API Mode | Multimodal | Streaming | Notes |
 |----------|--------|----------|------------|-----------|-------|
@@ -1537,7 +1537,7 @@ The primary public API. Every Agent interaction goes through `run/2,3`, `stream/
 
 ```erlang
 {ok, A0} = beamai_agent:new(#{
-    llm => beamai_chat_completion:create(zhipu, #{
+    llm => beamai_chat_model:create(zhipu, #{
         model => <<"glm-4.7">>,
         api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
     }),
@@ -2168,10 +2168,10 @@ Common error reasons you may see:
 
 | Reason | Where it comes from | Notes |
 |--------|--------------------|----|
-| `missing_api_key` | `beamai_chat_completion:create/2` | Provider config has no `api_key` and no env fallback |
+| `missing_api_key` | `beamai_chat_model:create/2` | Provider config has no `api_key` and no env fallback |
 | `{http_error, StatusCode, Body}` | LLM providers | Raw HTTP failure; wrap with `beamai_llm_error:from_reason/2` for the structured form |
 | `{api_error, Details}` | LLM providers | Provider returned a structured error body |
-| `{beamai_llm_error, _}` | `beamai_chat_completion:chat/2,3` etc. | Already structured; inspect fields directly |
+| `{beamai_llm_error, _}` | `beamai_chat_model:chat/2,3` etc. | Already structured; inspect fields directly |
 | `timeout` | Tools under `beamai_filters:timeout_filter/1` | Classified `transient` by `beamai_tool_error:classify/1` |
 | `not_found` | `beamai_subagent_manager` | `await/2` or `kill/1` on an unknown id |
 | `storage_not_enabled` | `beamai_agent_pause` | `load/1` called when no `pause_store` is configured |

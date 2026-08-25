@@ -21,7 +21,7 @@
 -export([add_tool_module/2]).
 
 %% Service (LLM)
--export([add_llm/3, add_llm/2]).
+-export([add_chat_model/3, add_chat_model/2]).
 
 %% Filter（洋葱式过滤器）
 -export([filter/2, filter/3]).
@@ -107,26 +107,26 @@ add_tool_module(Kernel, Module) ->
 
 %% @doc 通过提供商和选项添加 LLM 服务
 %%
-%% 自动调用 beamai_chat_completion:create/2 创建配置并注册。
+%% 自动调用 beamai_chat_model:create/2 创建配置并注册。
 %%
 %% 示例:
-%%   K1 = beamai:add_llm(K0, anthropic, #{
+%%   K1 = beamai:add_chat_model(K0, anthropic, #{
 %%       model => <<"claude-sonnet-4-20250514">>,
 %%       api_key => os:getenv("ANTHROPIC_API_KEY")
 %%   })
--spec add_llm(beamai_kernel:kernel(), beamai_chat_behaviour:provider(), map()) -> beamai_kernel:kernel().
-add_llm(Kernel, Provider, Opts) ->
-    LlmConfig = beamai_chat_completion:create(Provider, Opts),
-    beamai_kernel:add_service(Kernel, LlmConfig).
+-spec add_chat_model(beamai_kernel:kernel(), beamai_chat_behaviour:provider(), map()) -> beamai_kernel:kernel().
+add_chat_model(Kernel, Provider, Opts) ->
+    LlmConfig = beamai_chat_model:create(Provider, Opts),
+    beamai_kernel:add_chat_model(Kernel, LlmConfig).
 
 %% @doc 使用预构建的 LLM 配置添加服务
 %%
 %% 示例:
-%%   LLM = beamai_chat_completion:create(openai, #{model => <<"gpt-4">>, api_key => Key}),
-%%   K1 = beamai:add_llm(K0, LLM)
--spec add_llm(beamai_kernel:kernel(), beamai_chat_behaviour:config()) -> beamai_kernel:kernel().
-add_llm(Kernel, LlmConfig) ->
-    beamai_kernel:add_service(Kernel, LlmConfig).
+%%   LLM = beamai_chat_model:create(openai, #{model => <<"gpt-4">>, api_key => Key}),
+%%   K1 = beamai:add_chat_model(K0, LLM)
+-spec add_chat_model(beamai_kernel:kernel(), beamai_chat_behaviour:config()) -> beamai_kernel:kernel().
+add_chat_model(Kernel, LlmConfig) ->
+    beamai_kernel:add_chat_model(Kernel, LlmConfig).
 
 %%====================================================================
 %% Filter（洋葱式过滤器）

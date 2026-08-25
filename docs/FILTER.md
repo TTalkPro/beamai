@@ -274,7 +274,7 @@ K = beamai:kernel(#{llm_retry => false},
 见此标记直接透传——token 已经投递给 sink 了，重跑会让下游看到重复内容。llm 链本身在流式
 路径照常生效（限流、记账、mock 都还在），只是重试不介入。
 
-> 直接调 `beamai_chat_completion:chat/3`（不经 kernel）**不带重试**——重试已经上移到 llm 链。
+> 直接调 `beamai_chat_model:chat/3`（不经 kernel）**不带重试**——重试已经上移到 llm 链。
 > 这类直连调用要重试，自己用 `beamai_llm_retry:run/2` 包一层。
 
 ---
@@ -659,7 +659,7 @@ SystemAudit = beamai:filter(<<"system_and_audit">>, #{
 }),
 
 K0 = beamai:kernel(#{}, [SystemAudit]),
-K1 = beamai:add_llm(K0, LLMConfig).
+K1 = beamai:add_chat_model(K0, LLMConfig).
 
 %% 发送请求时，chat filter 链自动注入 system 消息并审计响应。
 ```

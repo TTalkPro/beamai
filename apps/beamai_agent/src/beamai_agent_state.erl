@@ -196,7 +196,7 @@ setup_tool_calling_manager(Config) ->
 %%   2. 从组件自动构建（依次添加 LLM 服务、plugins）
 %%
 %% 自动构建顺序：
-%%   new(Settings) → add_llm → add_plugins
+%%   new(Settings) → add_chat_model → add_plugins
 %%
 %% @param Config 配置 map
 %% @returns 构建完成的 kernel 实例
@@ -212,7 +212,7 @@ build_kernel(Config) ->
         Slots -> Settings0#{state_slots => Slots}
     end,
     K0 = beamai_kernel:new(Settings),
-    K1 = add_llm(K0, Config),
+    K1 = add_chat_model(K0, Config),
     add_plugins(K1, Config).
 
 %%====================================================================
@@ -289,17 +289,17 @@ start_orphan_store(Name) ->
 %%
 %% 支持三种 LLM 配置格式：
 %%   - undefined: 不添加 LLM（kernel 仅用于函数调用）
-%%   - config() map: 已通过 beamai_chat_completion:create 创建的配置
+%%   - config() map: 已通过 beamai_chat_model:create 创建的配置
 %%   - {Provider, Opts} 元组: 自动调用 create 构建配置
-add_llm(Kernel, Config) ->
+add_chat_model(Kernel, Config) ->
     case maps:get(llm, Config, undefined) of
         undefined ->
             Kernel;
         LlmConfig when is_map(LlmConfig) ->
-            beamai_kernel:add_service(Kernel, LlmConfig);
+            beamai_kernel:add_chat_model(Kernel, LlmConfig);
         {Provider, Opts} ->
-            LlmCfg = beamai_chat_completion:create(Provider, Opts),
-            beamai_kernel:add_service(Kernel, LlmCfg)
+            LlmCfg = beamai_chat_model:create(Provider, Opts),
+            beamai_kernel:add_chat_model(Kernel, LlmCfg)
     end.
 
 %% @private 加载工具模块到 kernel

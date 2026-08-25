@@ -16,13 +16,13 @@ kernel(Tools, Filters) ->
 %% 带 mock LLM 的 kernel（chat 链用）：LLM 每次返回 <<"llm-answer">> 并计数
 chat_kernel(Filters) ->
     CC = counters:new(1, []),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         counters:add(CC, 1, 1),
         {ok, #{content => <<"llm-answer">>, finish_reason => <<"stop">>}}
     end),
-    K = beamai_kernel:add_service(beamai_kernel:new(#{}, Filters),
-                                  beamai_chat_completion:create(mock, #{})),
+    K = beamai_kernel:add_chat_model(beamai_kernel:new(#{}, Filters),
+                                  beamai_chat_model:create(mock, #{})),
     {K, CC}.
 
 user_msg(Text) ->
@@ -96,7 +96,7 @@ safeguard_blocks_test() ->
         ?assertMatch(#{safeguard := blocked}, beamai_llm_response:metadata(Resp)),
         ?assertEqual(0, counters:get(CC, 1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% safeguard：未命中 → 照常调 LLM
@@ -107,7 +107,7 @@ safeguard_passes_test() ->
         ?assertEqual(<<"llm-answer">>, beamai_llm_response:content(Resp)),
         ?assertEqual(1, counters:get(CC, 1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% safeguard：缺省不区分大小写（Spring 的 String.contains 是区分的，此处有意分歧）
@@ -117,7 +117,7 @@ safeguard_case_insensitive_by_default_test() ->
         {ok, Resp, _} = beamai_kernel:invoke_chat(K, user_msg(<<"How To Make A BOMB">>), #{}),
         ?assertEqual(content_filtered, beamai_llm_response:finish_reason(Resp))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% safeguard：显式开 case_sensitive 后大小写不同即放行
@@ -128,7 +128,7 @@ safeguard_case_sensitive_opt_test() ->
         {ok, Resp, _} = beamai_kernel:invoke_chat(K, user_msg(<<"BOMB">>), #{}),
         ?assertEqual(<<"llm-answer">>, beamai_llm_response:content(Resp))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% safeguard：自定义拦截答复文本
@@ -139,7 +139,7 @@ safeguard_custom_failure_response_test() ->
         {ok, Resp, _} = beamai_kernel:invoke_chat(K, user_msg(<<"bomb">>), #{}),
         ?assertEqual(<<"NOPE">>, beamai_llm_response:content(Resp))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% safeguard：空词表恒放行（不做无谓扫描）
@@ -149,7 +149,7 @@ safeguard_empty_words_test() ->
         {ok, _Resp, _} = beamai_kernel:invoke_chat(K, user_msg(<<"anything">>), #{}),
         ?assertEqual(1, counters:get(CC, 1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% safeguard：多模态 content 列表里的 text 块同样被扫到
@@ -162,5 +162,5 @@ safeguard_scans_content_blocks_test() ->
         ?assertEqual(content_filtered, beamai_llm_response:finish_reason(Resp)),
         ?assertEqual(0, counters:get(CC, 1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.

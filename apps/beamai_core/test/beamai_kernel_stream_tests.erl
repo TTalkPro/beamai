@@ -15,8 +15,8 @@
 
 %% meck stream_chat：把 Tokens 依次喂给 on_llm_new_token，返回 Result
 mock_stream(Tokens, Result) ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, stream_chat,
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, stream_chat,
         fun(_Config, _Messages, _RawCb, Opts) ->
             TokenCb = maps:get(on_llm_new_token, Opts),
             [TokenCb(T, #{}) || T <- Tokens],
@@ -24,8 +24,8 @@ mock_stream(Tokens, Result) ->
         end).
 
 kernel_with(Filters) ->
-    beamai_kernel:add_service(beamai_kernel:new(#{}, Filters),
-                              beamai_chat_completion:create(mock, #{})).
+    beamai_kernel:add_chat_model(beamai_kernel:new(#{}, Filters),
+                              beamai_chat_model:create(mock, #{})).
 
 collector() ->
     Self = self(),
@@ -60,7 +60,7 @@ redact_transforms_sink_test() ->
         %% 硬边界：最终归一化响应不被变换
         ?assertEqual(<<"key=abc123 ok plain">>, maps:get(content, Resp))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -82,7 +82,7 @@ composition_order_test() ->
         %% A 先见原始 token → "Ax"，再经 B → "BAx"
         ?assertEqual([<<"BAx">>], drain([]))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -101,7 +101,7 @@ hold_release_pass_test() ->
         ?assertEqual([<<"he">>, <<"llo">>], drain([])),
         ?assertEqual(<<"hello">>, maps:get(content, Resp))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -120,7 +120,7 @@ hold_release_block_test() ->
         %% 硬边界：token 链只改交付；返回的响应仍是完整原文
         ?assertEqual(<<"bad stuff">>, maps:get(content, Resp))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -136,7 +136,7 @@ error_no_flush_test() ->
         %% hold_release 缓冲了 "partial"，错误路径不 flush → 不外泄
         ?assertEqual([], drain([]))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -155,7 +155,7 @@ no_token_transform_passthrough_test() ->
         {ok, _, _} = run_stream(K, collector()),
         ?assertEqual([<<"a">>, <<"b">>], drain([]))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================

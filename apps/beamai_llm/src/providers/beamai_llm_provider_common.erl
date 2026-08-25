@@ -149,7 +149,7 @@ request_timeout(Config, Provider) ->
 %%
 %% 让运维可以按 provider 覆盖连接池路由，例如把重推理模型的
 %% 流量整体放进 stream 池：
-%%   beamai_chat_completion:create(deepseek, #{..., pool => http_pool_stream})
+%%   beamai_chat_model:create(deepseek, #{..., pool => http_pool_stream})
 %% 未配置时不改动 Opts，由 beamai_llm_http_client 按请求形态走默认路由。
 -spec with_pool_opt(map(), map()) -> map().
 with_pool_opt(Opts, Config) ->

@@ -25,7 +25,7 @@
 %%% == 使用示例 ==
 %%%
 %%% ```erlang
-%%% Config = beamai_chat_completion:create(openrouter, #{
+%%% Config = beamai_chat_model:create(openrouter, #{
 %%%     api_key => <<"sk-or-...">>,
 %%%     model => <<"anthropic/claude-sonnet-4">>,
 %%%     models => [<<"openai/gpt-4o">>],
@@ -33,7 +33,7 @@
 %%%     provider => #{<<"sort">> => <<"throughput">>},
 %%%     site_name => <<"beamai">>
 %%% }),
-%%% {ok, Resp} = beamai_chat_completion:chat(Config, Messages).
+%%% {ok, Resp} = beamai_chat_model:chat(Config, Messages).
 %%% ```
 %%%
 %%% @end

@@ -952,10 +952,10 @@ routing_chat_uses_short_pool_test() ->
     Prev = beamai_http:get_backend(),
     beamai_llm_fake_backend:install(),
     try
-        LLM = beamai_chat_completion:create(openai,
+        LLM = beamai_chat_model:create(openai,
                   #{model => <<"gpt-4">>,
                     api_key => <<"sk-test">>}),
-        beamai_chat_completion:chat(LLM, [#{role => user,
+        beamai_chat_model:chat(LLM, [#{role => user,
                                            content => <<"hi">>}]),
         ?assertEqual(1, ets:lookup(Counts, http_pool_short))
     after
@@ -1044,7 +1044,7 @@ Each phase is independently mergeable, can be reverted without breaking the othe
 - All existing tests pass.
 - New `beamai_http_pool_tests.erl` (without coverage requirements met yet — just existence).
 - `gun:stats/0` calls show three pools registered.
-- Manual smoke: `beamai_chat_completion:chat(...)` still returns a result.
+- Manual smoke: `beamai_chat_model:chat(...)` still returns a result.
 
 **Rollback:** revert. Phase 1's single-pool code is in git history; can fast-forward to that commit if disaster strikes.
 

@@ -28,7 +28,7 @@
 -export([add_tool/2]).
 -export([add_tools/2]).
 -export([add_tool_module/2]).
--export([add_service/2]).
+-export([add_chat_model/2]).
 
 %% Invoke API（仅单次 chat / tool；ReAct 循环属于 Agent 层）
 -export([invoke_tool/4]).
@@ -41,7 +41,7 @@
 -export([get_tools_by_tag/2]).
 -export([get_tool_specs/1]).
 -export([get_tool_schemas/1, get_tool_schemas/2]).
--export([get_service/1]).
+-export([chat_model/1]).
 -export([state_slots/1]).
 -export([serial_tool/2]).
 -export([return_direct_tool/2]).
@@ -52,7 +52,7 @@
 -type kernel() :: #{
     '__kernel__' := true,
     tools := #{binary() => beamai_tool:tool_spec()},
-    llm_config := beamai_chat_behaviour:config() | undefined,
+    chat_model := beamai_chat_behaviour:config() | undefined,
     filters := [beamai_filter:filter()],
     settings := kernel_settings()
 }.
@@ -111,7 +111,7 @@ new(Settings, Filters) when is_map(Settings), is_list(Filters) ->
     #{
         '__kernel__' => true,
         tools => #{},
-        llm_config => undefined,
+        chat_model => undefined,
         filters => Filters,
         settings => Settings
     }.
@@ -156,15 +156,15 @@ add_tool_module(Kernel, Module) ->
 
 %% @doc 设置 LLM 服务配置
 %%
-%% 配置通过 beamai_chat_completion:create/2 创建。
+%% 配置通过 beamai_chat_model:create/2 创建。
 %% 设置后可使用 invoke_chat/3。
 %%
 %% @param Kernel Kernel 实例
 %% @param LlmConfig LLM 配置 Map
 %% @returns 更新后的 Kernel
--spec add_service(kernel(), beamai_chat_behaviour:config()) -> kernel().
-add_service(Kernel, LlmConfig) ->
-    Kernel#{llm_config => LlmConfig}.
+-spec add_chat_model(kernel(), beamai_chat_behaviour:config()) -> kernel().
+add_chat_model(Kernel, ChatModel) ->
+    Kernel#{chat_model => ChatModel}.
 
 %%====================================================================
 %% Invoke API
@@ -197,7 +197,7 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
 %% @doc 发送 Chat Completion 请求（不含工具调用循环）
 %%
 %% 执行流程：chat filter 洋葱链（around_chat：前置改写请求 → LLM 调用 → 后置改写响应）。
-%% Kernel 需先通过 add_service/2 配置 LLM。
+%% Kernel 需先通过 add_chat_model/2 配置 LLM。
 %%
 %% Opts 可含 system_prompts：作为临时**最内层** filter 注入（追加在全量 filter
 %% 之后），在所有 filter 之后、LLM 之前前置系统消息且不入存储——memory filter
@@ -210,7 +210,7 @@ invoke_tool(#{filters := Filters} = Kernel, ToolName, Args, Context0) ->
 -spec invoke_chat(kernel(), [map()], chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 invoke_chat(Kernel, Messages, Opts) ->
-    case get_service(Kernel) of
+    case chat_model(Kernel) of
         {ok, LlmConfig} ->
             #{filters := Filters0} = Kernel,
             %% 绑 kernel 进 context（与 invoke_tool 一致）：让 around_chat filter 可经
@@ -223,7 +223,7 @@ invoke_chat(Kernel, Messages, Opts) ->
             Filters = Filters0 ++ system_prompt_filter(SystemPrompts),
             run_chat(LlmConfig, Filters, kernel_settings(Kernel), Messages, Opts, Context);
         error ->
-            {error, no_llm_service}
+            {error, no_chat_model}
     end.
 
 %% @doc 流式 Chat Completion（经完整 around_chat 链）
@@ -244,7 +244,7 @@ invoke_chat(Kernel, Messages, Opts) ->
                          fun((binary(), map()) -> ok)) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 invoke_chat_stream(Kernel, Messages, Opts, TokenCallback) ->
-    case get_service(Kernel) of
+    case chat_model(Kernel) of
         {ok, LlmConfig} ->
             #{filters := Filters0} = Kernel,
             Context = beamai_context:with_kernel(
@@ -254,7 +254,7 @@ invoke_chat_stream(Kernel, Messages, Opts, TokenCallback) ->
             run_chat_stream(LlmConfig, Filters, kernel_settings(Kernel),
                             Messages, Opts, Context, TokenCallback);
         error ->
-            {error, no_llm_service}
+            {error, no_chat_model}
     end.
 
 %%====================================================================
@@ -310,9 +310,9 @@ get_tool_schemas(Kernel, Provider) ->
 %% @doc 获取 Kernel 的 LLM 服务配置
 %%
 %% 未配置 LLM 时返回 error。
--spec get_service(kernel()) -> {ok, beamai_chat_behaviour:config()} | error.
-get_service(#{llm_config := undefined}) -> error;
-get_service(#{llm_config := Config}) -> {ok, Config}.
+-spec chat_model(kernel()) -> {ok, beamai_chat_behaviour:config()} | error.
+chat_model(#{chat_model := undefined}) -> error;
+chat_model(#{chat_model := Model}) -> {ok, Model}.
 
 %% @doc 获取 Kernel 的状态槽声明（未配置返回 #{}）
 %%
@@ -385,7 +385,7 @@ llm_chain(Filters, Settings, Terminal) ->
 %% @private llm 链的缺省最内层 filter（重试）
 %%
 %% 重试实现在 beamai_llm（beamai_llm_filters:retry_filter/1）——core 不反向声明
-%% 对 beamai_llm 的依赖（会成环），故此处按 add_llm/3 同样的约定做运行时探测：
+%% 对 beamai_llm 的依赖（会成环），故此处按 add_chat_model/3 同样的约定做运行时探测：
 %% 用自定义 module 且未加载 beamai_llm 时退化为不注入。
 default_llm_filters(Settings) ->
     case maps:get(llm_retry, Settings, #{}) of
@@ -405,7 +405,7 @@ kernel_settings(#{settings := Settings}) -> Settings.
 
 %% @private llm 链最内层：真正调用 LLM（出错时 throw，由最外层 run/4 统一捕获）
 chat_terminal(LlmConfig) ->
-    Module = maps:get(module, LlmConfig, beamai_chat_completion),
+    Module = maps:get(module, LlmConfig, beamai_chat_model),
     fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
         case Module:chat(LlmConfig, Messages, Opts) of
             {ok, Response} -> #{response => Response, context => Ctx};
@@ -442,9 +442,9 @@ run_chat_stream(LlmConfig, Filters, Settings, Messages, Opts, Context, TokenCall
 %% Next 时每次流各自新状态）；Flush 只在 stream_chat 正常返回后调一次——错误路径
 %% 不 flush（缓冲丢弃，半截答案不外泄）。
 stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback) ->
-    Module = maps:get(module, LlmConfig, beamai_chat_completion),
+    Module = maps:get(module, LlmConfig, beamai_chat_model),
     fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
-        %% on_llm_new_token 由 beamai_chat_completion 的流式包装识别并逐 token 调用；
+        %% on_llm_new_token 由 beamai_chat_model 的流式包装识别并逐 token 调用；
         %% 原始 event 回调用空操作（统一响应由 stream_chat 返回值给出）。
         {WrappedCb, Flush} = beamai_token_stream:wrap(TokenXfs, TokenCallback),
         StreamOpts = Opts#{on_llm_new_token => WrappedCb},

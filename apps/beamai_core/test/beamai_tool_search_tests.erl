@@ -27,8 +27,8 @@ tools() ->
 
 %% mock LLM：把每次收到的 opts.tools 里的工具名送回 Parent，恒返回一句话
 mock_llm(Parent) ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, O) ->
         Parent ! {advertised, [N || #{name := N} <- maps:get(tools, O, [])]},
         {ok, #{content => <<"ok">>, finish_reason => <<"stop">>}}
     end).
@@ -39,7 +39,7 @@ search_kernel(Opts) ->
     {SearchTool, Filter} = beamai_tool_search:new(Tools, Opts),
     K0 = beamai_kernel:new(#{}, [Filter]),
     K = beamai_kernel:add_tools(K0, [SearchTool | Tools]),
-    beamai_kernel:add_service(K, beamai_chat_completion:create(mock, #{})).
+    beamai_kernel:add_chat_model(K, beamai_chat_model:create(mock, #{})).
 
 %% 走一次 invoke_chat，返回该轮广播的工具名（已排序）
 advertised(K, Messages) ->
@@ -73,7 +73,7 @@ flush() ->
 with_mock(Fun) ->
     flush(),
     mock_llm(self()),
-    try Fun() after meck:unload(beamai_chat_completion) end.
+    try Fun() after meck:unload(beamai_chat_model) end.
 
 %%====================================================================
 %% 裁剪行为
@@ -231,7 +231,7 @@ custom_tool_name_test() ->
         ?assertEqual(<<"find_tool">>, beamai_tool:get_name(SearchTool)),
         K0 = beamai_kernel:new(#{}, [Filter]),
         K1 = beamai_kernel:add_tools(K0, [SearchTool | Tools]),
-        K = beamai_kernel:add_service(K1, beamai_chat_completion:create(mock, #{})),
+        K = beamai_kernel:add_chat_model(K1, beamai_chat_model:create(mock, #{})),
         ?assertEqual([<<"find_tool">>], advertised(K, user(<<"q">>)))
     end).
 

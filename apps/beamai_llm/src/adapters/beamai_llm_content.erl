@@ -13,7 +13,7 @@
 %%%     beamai_llm_content:text(<<"这张图说明了什么？"/utf8>>),
 %%%     Img
 %%% ]),
-%%% {ok, Resp} = beamai_chat_completion:chat(Config, [Msg]).
+%%% {ok, Resp} = beamai_chat_model:chat(Config, [Msg]).
 %%% ```
 %%%
 %%% == 部件形态 ==

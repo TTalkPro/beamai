@@ -15,12 +15,12 @@ tc_args(Id, Name, Args) ->
       function => #{name => Name, arguments => Args}}.
 
 mock_llm(Fun) ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) -> Fun() end).
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) -> Fun() end).
 
 kernel_with(Tools) ->
-    K0 = beamai_kernel:add_service(beamai_kernel:new(),
-                                   beamai_chat_completion:create(mock, #{})),
+    K0 = beamai_kernel:add_chat_model(beamai_kernel:new(),
+                                   beamai_chat_model:create(mock, #{})),
     lists:foldl(fun({Name, H}, K) ->
         beamai_kernel:add_tool(K, #{name => Name, parameters => #{}, handler => H})
     end, K0, Tools).
@@ -81,7 +81,7 @@ cross_restart_resume_test() ->
         ?assertEqual(<<"resumed-done">>, maps:get(content, Result)),
         ?assertNot(beamai_agent:is_interrupted(Agent3))  %% 快照已清
     after
-        meck:unload(beamai_chat_completion),
+        meck:unload(beamai_chat_model),
         gen_server:stop(Pid)
     end.
 
@@ -104,8 +104,8 @@ mock_capture(Parent) ->
     end).
 
 mock_llm2(Fun) ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) -> Fun(Messages) end).
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) -> Fun(Messages) end).
 
 tool_result_in_msgs(Id) ->
     receive {llm_msgs, Messages} ->
@@ -129,7 +129,7 @@ resume_reply_test() ->
         ?assertEqual(<<"ok">>, maps:get(content, Result)),
         ?assertEqual(<<"选 B">>, tool_result_in_msgs(<<"c1">>))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% approved + args：编辑后批准，工具以替换参数执行
@@ -161,7 +161,7 @@ resume_approved_with_args_test() ->
         ?assertEqual(<<"ok">>, maps:get(content, Result)),
         ?assertEqual(<<"2">>, tool_result_in_msgs(<<"c1">>))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 拒绝 + 理由：结果「已拒绝执行：<理由>」
@@ -182,6 +182,6 @@ resume_reject_with_reason_test() ->
         %% 结果为「已拒绝执行：<理由>」——断言含理由（避免跨文件中文前缀字节比对）
         ?assertNotEqual(nomatch, binary:match(Content, <<"有未结算金额">>))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 

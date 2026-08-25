@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc 文档重排序（Rerank）统一入口
 %%%
-%%% 与 beamai_chat_completion（对话）、beamai_embedding（向量化）对等的门面：
+%%% 与 beamai_chat_model（对话）、beamai_embedding（向量化）对等的门面：
 %%%   - 多 Provider 路由（siliconflow / dashscope / jina / cohere / voyage / mock）
 %%%   - 结果归一（按相关性降序，index 指回原始文档下标，回填文档原文）
 %%%   - 条数上限校验（重排序是全局比较，不能分批，超限直接报错而非静默截断）

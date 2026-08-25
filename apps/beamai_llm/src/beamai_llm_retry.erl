@@ -2,7 +2,7 @@
 %%% @doc LLM 请求重试模块
 %%%
 %%% 把「按错误分类重试 + 退避」这一段逻辑从各调用方抽出，
-%%% 供 chat（beamai_chat_completion）与 embedding（beamai_embedding）共用。
+%%% 供 chat（beamai_chat_model）与 embedding（beamai_embedding）共用。
 %%%
 %%% 重试判定统一委托 beamai_llm_error（单一事实源）：
 %%%   - 瞬态错误（429 / 5xx / 网络超时）重试

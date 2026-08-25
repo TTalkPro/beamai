@@ -23,7 +23,7 @@
 %%%
 %%% 用法：
 %%% ```erlang
-%%% case beamai_chat_completion:chat(Config, Messages) of
+%%% case beamai_chat_model:chat(Config, Messages) of
 %%%     {ok, Resp} -> ...;
 %%%     {error, Reason} ->
 %%%         Err = beamai_llm_error:from_reason(Reason, anthropic),

@@ -4,7 +4,7 @@
 %%% 一个完整示例：组装带「自定义 chat filter + tool filter + 真实工具 +
 %%% 窗口记忆 + 回调」的 Agent，跑一轮 ReAct（工具调用 → 最终回复），
 %%% 验证各部件协同：
-%%%   - 预构建 kernel：new(Settings, Filters) 一次性给 filter + add_service(LLM) + 工具
+%%%   - 预构建 kernel：new(Settings, Filters) 一次性给 filter + add_chat_model(LLM) + 工具
 %%%   - memory => {window, N}
 %%%   - 回调 on_tool_result
 %%%   - filter / 工具 / 回调均按预期触发，历史经 filter-memory 落库
@@ -26,9 +26,9 @@
 
 end_to_end_example_test() ->
     %% --- 1. Mock LLM：第一轮请求工具，第二轮给最终答复 ---
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         counters:add(CallCount, 1, 1),
         case counters:get(CallCount, 1) of
             1 ->
@@ -63,7 +63,7 @@ end_to_end_example_test() ->
 
         %% --- 3. 预构建 kernel：filter 一次性给出 + LLM 服务 + 工具 ---
         K0 = beamai_kernel:new(#{}, [ChatFilter, ToolFilter]),
-        K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{})),
+        K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
         Kernel = beamai_kernel:add_tools(K1, [
             #{name => <<"get_weather">>,
               description => <<"查询城市天气"/utf8>>,
@@ -112,7 +112,7 @@ end_to_end_example_test() ->
         ?assertEqual(4, length(Msgs)),
         ?assertEqual(<<"上海 22℃，晴。"/utf8>>, beamai_agent:last_response(Agent1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================

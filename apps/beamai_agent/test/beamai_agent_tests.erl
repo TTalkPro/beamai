@@ -11,8 +11,8 @@
 
 new_with_kernel_test() ->
     Kernel = beamai_kernel:new(),
-    LlmConfig = beamai_chat_completion:create(mock, #{}),
-    K1 = beamai_kernel:add_service(Kernel, LlmConfig),
+    LlmConfig = beamai_chat_model:create(mock, #{}),
+    K1 = beamai_kernel:add_chat_model(Kernel, LlmConfig),
     {ok, Agent} = beamai_agent:new(#{kernel => K1}),
     ?assert(is_binary(beamai_agent:id(Agent))),
     ?assertEqual(<<"agent">>, beamai_agent:name(Agent)),
@@ -55,8 +55,8 @@ run_basic_test() ->
 
 run_with_system_prompt_test() ->
     %% 使用 meck 来验证 system prompt 被正确传递
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, Messages, _Opts) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_Config, Messages, _Opts) ->
         %% 验证第一条消息是 system prompt
         [#{role := system, content := <<"Test system">>} | _] = Messages,
         {ok, #{content => <<"OK">>, finish_reason => stop}}
@@ -69,7 +69,7 @@ run_with_system_prompt_test() ->
         {ok, Result, _} = beamai_agent:run(Agent, <<"Hi">>),
         ?assertEqual(<<"OK">>, maps:get(content, Result))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -90,9 +90,9 @@ multi_turn_test() ->
 
 multi_turn_history_accumulation_test() ->
     %% 验证每轮都带上完整历史
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, Messages, _Opts) ->
+    meck:expect(beamai_chat_model, chat, fun(_Config, Messages, _Opts) ->
         counters:add(CallCount, 1, 1),
         N = counters:get(CallCount, 1),
         %% 第 N 轮应有 2*(N-1) 条历史 + 1 条新 user msg
@@ -107,7 +107,7 @@ multi_turn_history_accumulation_test() ->
         {ok, _, _A3} = beamai_agent:run(A2, <<"Q3">>),
         ok
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -115,9 +115,9 @@ multi_turn_history_accumulation_test() ->
 %%====================================================================
 
 run_with_tool_calls_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         counters:add(CallCount, 1, 1),
         N = counters:get(CallCount, 1),
         case N of
@@ -142,8 +142,8 @@ run_with_tool_calls_test() ->
     end),
     %% 注册一个测试 tool
     Kernel0 = beamai_kernel:new(),
-    LlmConfig = beamai_chat_completion:create(mock, #{}),
-    K1 = beamai_kernel:add_service(Kernel0, LlmConfig),
+    LlmConfig = beamai_chat_model:create(mock, #{}),
+    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
     K2 = beamai_kernel:add_tools(K1, [
         #{name => <<"test_tool">>,
           description => <<"A test tool">>,
@@ -157,17 +157,17 @@ run_with_tool_calls_test() ->
         ?assertEqual(1, length(maps:get(tool_calls_made, Result, []))),
         ?assertEqual(1, beamai_agent:turn_count(Agent1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 一轮多个 tool_call：默认并发执行，结果按原顺序、且总耗时显著小于串行之和
 parallel_tool_calls_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
     ThreeCalls = [tc(<<"call_a">>, <<"slow_a">>),
                   tc(<<"call_b">>, <<"slow_b">>),
                   tc(<<"call_c">>, <<"slow_c">>)],
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         counters:add(CallCount, 1, 1),
         case counters:get(CallCount, 1) of
             1 -> {ok, #{content => null, tool_calls => ThreeCalls,
@@ -188,15 +188,15 @@ parallel_tool_calls_test() ->
         %% 并发：远小于串行 3*150=450ms（留余量，断言 < 350ms）
         ?assert(Micros < 350000)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% parallel_tools=false：串行执行，结果顺序仍正确
 sequential_tool_calls_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
     TwoCalls = [tc(<<"c1">>, <<"t1">>), tc(<<"c2">>, <<"t2">>)],
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         counters:add(CallCount, 1, 1),
         case counters:get(CallCount, 1) of
             1 -> {ok, #{content => null, tool_calls => TwoCalls,
@@ -212,7 +212,7 @@ sequential_tool_calls_test() ->
         Names = [maps:get(name, R) || R <- maps:get(tool_calls_made, Result, [])],
         ?assertEqual([<<"t1">>, <<"t2">>], Names)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% @private 构造一个 tool_call map
@@ -223,15 +223,15 @@ tc(Id, Name) ->
 %% @private 构造一个注册了多个同 handler 工具的 kernel
 slow_tools_kernel(Handler) ->
     Kernel0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_service(Kernel0, beamai_chat_completion:create(mock, #{})),
+    K1 = beamai_kernel:add_chat_model(Kernel0, beamai_chat_model:create(mock, #{})),
     Names = [<<"slow_a">>, <<"slow_b">>, <<"slow_c">>, <<"t1">>, <<"t2">>],
     beamai_kernel:add_tools(K1,
         [#{name => N, description => <<"t">>, parameters => #{}, handler => Handler}
          || N <- Names]).
 
 max_tool_iterations_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         %% 总是返回 tool_call，永远不结束
         {ok, #{
             content => null,
@@ -247,8 +247,8 @@ max_tool_iterations_test() ->
         }}
     end),
     Kernel0 = beamai_kernel:new(),
-    LlmConfig = beamai_chat_completion:create(mock, #{}),
-    K1 = beamai_kernel:add_service(Kernel0, LlmConfig),
+    LlmConfig = beamai_chat_model:create(mock, #{}),
+    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
     K2 = beamai_kernel:add_tools(K1, [
         #{name => <<"loop_tool">>,
           description => <<"loops">>,
@@ -259,7 +259,7 @@ max_tool_iterations_test() ->
         {ok, Agent} = beamai_agent:new(#{kernel => K2, max_tool_iterations => 3}),
         {error, {max_tool_iterations, _}} = beamai_agent:run(Agent, <<"Loop">>)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -288,8 +288,8 @@ callbacks_on_turn_start_end_test() ->
     end.
 
 callbacks_on_turn_error_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         {error, connection_failed}
     end),
     Self = self(),
@@ -306,7 +306,7 @@ callbacks_on_turn_error_test() ->
         after 1000 -> ?assert(false)
         end
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 callback_on_llm_call_test() ->
@@ -335,9 +335,9 @@ callback_on_llm_call_test() ->
 
 %% on_llm_result：每次 LLM 返回后触发；多工具回合含中间轮，可取各次 usage
 callback_on_llm_result_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         counters:add(CallCount, 1, 1),
         case counters:get(CallCount, 1) of
             1 -> {ok, #{content => null, tool_calls => [tc(<<"c1">>, <<"t1">>)],
@@ -361,7 +361,7 @@ callback_on_llm_result_test() ->
         ?assertEqual({true, 11}, recv_llm_result()),   %% 第一次：含 tool_calls
         ?assertEqual({false, 22}, recv_llm_result())   %% 第二次：最终回复
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 recv_llm_result() ->
@@ -370,9 +370,9 @@ recv_llm_result() ->
     end.
 
 callback_on_tool_call_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         counters:add(CallCount, 1, 1),
         case counters:get(CallCount, 1) of
             1 ->
@@ -397,8 +397,8 @@ callback_on_tool_call_test() ->
         on_tool_call => fun(Name, _Args) -> Self ! {tool_call, Name} end
     },
     Kernel0 = beamai_kernel:new(),
-    LlmConfig = beamai_chat_completion:create(mock, #{}),
-    K1 = beamai_kernel:add_service(Kernel0, LlmConfig),
+    LlmConfig = beamai_chat_model:create(mock, #{}),
+    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
     K2 = beamai_kernel:add_tools(K1, [
         #{name => <<"my_tool">>,
           description => <<"test">>,
@@ -414,7 +414,7 @@ callback_on_tool_call_test() ->
         %% on_tool_call 对每次工具调用只应触发一次（不再有 filter 双触发）
         ?assertEqual(0, drain_tool_calls())
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% @private 排空邮箱中剩余的 {tool_call, _} 消息，返回剩余条数
@@ -580,8 +580,8 @@ extract_content_non_binary_test() ->
 
 %% 单轮：token 经 on_token 实时、按序到达；最终统一响应驱动返回值
 stream_real_tokens_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, stream_chat,
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, stream_chat,
         fun(_Config, _Messages, _RawCb, Opts) ->
             TokenCb = maps:get(on_llm_new_token, Opts),
             [TokenCb(T, #{}) || T <- [<<"Hel">>, <<"lo">>, <<"!">>]],
@@ -596,14 +596,14 @@ stream_real_tokens_test() ->
         ?assertEqual(<<"Hello!">>, maps:get(content, Result)),
         ?assertEqual([<<"Hel">>, <<"lo">>, <<"!">>], collect_tokens(3))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% 跨工具轮：tool 调用轮无文本 token，最终回合逐 token 流出
 stream_with_tool_call_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, stream_chat,
+    meck:expect(beamai_chat_model, stream_chat,
         fun(_Config, _Messages, _RawCb, Opts) ->
             counters:add(CallCount, 1, 1),
             TokenCb = maps:get(on_llm_new_token, Opts),
@@ -629,7 +629,7 @@ stream_with_tool_call_test() ->
         %% 仅最终回合产生一个 token（工具轮 content=null 不产 token）
         ?assertEqual([<<"final">>], collect_tokens(1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% @private 按序收集 N 个 {token, _} 消息
@@ -645,9 +645,9 @@ collect_tokens(N) ->
 
 %% 工具执行后触发 on_tool_result（函数名 + 编码结果）
 on_tool_result_callback_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         counters:add(CallCount, 1, 1),
         case counters:get(CallCount, 1) of
             1 -> {ok, #{content => null, tool_calls => [tc(<<"c1">>, <<"t1">>)],
@@ -665,7 +665,7 @@ on_tool_result_callback_test() ->
         after 1000 -> ?assert(false)
         end
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -736,8 +736,8 @@ windowed_memory_test() ->
 %%====================================================================
 
 custom_memory_provider_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, _M, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
         {ok, #{content => <<"hi back">>, finish_reason => <<"stop">>}}
     end),
     Provider = beamai_agent_fake_memory:new(fake_mem_tab),
@@ -756,7 +756,7 @@ custom_memory_provider_test() ->
         ?assertEqual([<<"hello">>, <<"hi back">>],
                      [maps:get(content, M) || M <- beamai_agent:messages(Agent)])
     after
-        meck:unload(beamai_chat_completion),
+        meck:unload(beamai_chat_model),
         catch ets:delete(fake_mem_tab)
     end.
 

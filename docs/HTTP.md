@@ -88,7 +88,7 @@ BeamAI 的 Gun 后端使用三个按用途划分的连接池实例（均为 `bea
 （chat/stream，智谱含异步轮询）整体改道，例如把重推理模型放进 stream 池：
 
 ```erlang
-LLM = beamai_chat_completion:create(deepseek,
+LLM = beamai_chat_model:create(deepseek,
           #{api_key => ..., model => <<"deepseek-reasoner">>,
             pool => http_pool_stream}).
 ```

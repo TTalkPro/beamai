@@ -158,8 +158,8 @@ state_interrupt_tools_from_config_test() ->
 %%====================================================================
 
 interrupt_tool_triggers_interrupt_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         {ok, #{
             content => null,
             tool_calls => [#{
@@ -190,7 +190,7 @@ interrupt_tool_triggers_interrupt_test() ->
         ?assertEqual(tool_request, maps:get(interrupt_type, Info)),
         ?assert(beamai_agent:is_interrupted(Agent1))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -198,8 +198,8 @@ interrupt_tool_triggers_interrupt_test() ->
 %%====================================================================
 
 callback_triggers_interrupt_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         {ok, #{
             content => null,
             tool_calls => [#{
@@ -214,8 +214,8 @@ callback_triggers_interrupt_test() ->
         }}
     end),
     Kernel0 = beamai_kernel:new(),
-    LlmConfig = beamai_chat_completion:create(mock, #{}),
-    K1 = beamai_kernel:add_service(Kernel0, LlmConfig),
+    LlmConfig = beamai_chat_model:create(mock, #{}),
+    K1 = beamai_kernel:add_chat_model(Kernel0, LlmConfig),
     K2 = beamai_kernel:add_tools(K1, [
         #{name => <<"execute_sql">>,
           description => <<"Execute SQL">>,
@@ -246,7 +246,7 @@ callback_triggers_interrupt_test() ->
         {interrupt, Info, _Agent1} = Result,
         ?assertEqual(callback, maps:get(interrupt_type, Info))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -258,9 +258,9 @@ resume_not_interrupted_test() ->
     ?assertEqual({error, not_interrupted}, beamai_agent:resume(Agent, <<"input">>)).
 
 resume_after_interrupt_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     CallCount = counters:new(1, []),
-    meck:expect(beamai_chat_completion, chat, fun(_Config, _Messages, _Opts) ->
+    meck:expect(beamai_chat_model, chat, fun(_Config, _Messages, _Opts) ->
         counters:add(CallCount, 1, 1),
         case counters:get(CallCount, 1) of
             1 ->
@@ -300,5 +300,5 @@ resume_after_interrupt_test() ->
         ?assertNot(beamai_agent:is_interrupted(Agent2)),
         ?assertEqual(1, beamai_agent:turn_count(Agent2))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.

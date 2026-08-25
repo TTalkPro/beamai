@@ -2,7 +2,7 @@
 %%% @doc Chat Completion 行为接口定义
 %%%
 %%% 定义 Chat Completion 服务的标准接口。
-%%% 默认实现：beamai_chat_completion（位于 beamai_llm 应用）
+%%% 默认实现：beamai_chat_model（位于 beamai_llm 应用）
 %%%
 %%% @end
 %%%-------------------------------------------------------------------

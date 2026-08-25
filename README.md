@@ -62,13 +62,13 @@ rebar3 shell
 
 ```erlang
 %% 创建 LLM 配置
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
 }),
 
 %% 发送聊天请求
-{ok, Response} = beamai_chat_completion:chat(LLM, [
+{ok, Response} = beamai_chat_model:chat(LLM, [
     {role, user, content, <<"你好！"/utf8>>}
 ]),
 ```
@@ -179,7 +179,7 @@ apps/
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
 ├── beamai_llm/         # LLM 客户端
-│   ├── Chat           # beamai_chat_completion, beamai_llm_error
+│   ├── Chat           # beamai_chat_model, beamai_llm_error
 │   ├── Parser         # beamai_output_parser, beamai_parser_json
 │   ├── Adapters       # beamai_llm_message_adapter, beamai_llm_response_parser, beamai_llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama
@@ -253,18 +253,18 @@ Kernel 本身无状态、不记录消息；多轮对话历史由 **Memory Filter
 
 ### LLM 配置
 
-LLM 配置使用 `beamai_chat_completion:create/2` 创建：
+LLM 配置使用 `beamai_chat_model:create/2` 创建：
 
 ```erlang
 %% 创建 LLM 配置
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     temperature => 0.7
 }).
 
 %% 发送请求
-{ok, Response} = beamai_chat_completion:chat(LLM, [
+{ok, Response} = beamai_chat_model:chat(LLM, [
     {role, user, content, <<"你好"/utf8>>}
 ]).
 ```

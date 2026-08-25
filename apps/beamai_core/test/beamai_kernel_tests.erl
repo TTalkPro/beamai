@@ -49,7 +49,7 @@ new_default_test() ->
     K = beamai_kernel:new(),
     ?assertEqual(true, maps:get('__kernel__', K)),
     ?assertEqual(#{}, maps:get(tools, K)),
-    ?assertEqual(undefined, maps:get(llm_config, K)),
+    ?assertEqual(undefined, maps:get(chat_model, K)),
     ?assertEqual([], maps:get(filters, K)).
 
 new_with_settings_test() ->
@@ -165,18 +165,18 @@ get_tool_specs_test() ->
 
 add_service_test() ->
     K0 = beamai_kernel:new(),
-    LlmConfig = beamai_chat_completion:create(mock, #{model => <<"test">>}),
-    K1 = beamai_kernel:add_service(K0, LlmConfig),
-    {ok, Svc} = beamai_kernel:get_service(K1),
+    LlmConfig = beamai_chat_model:create(mock, #{model => <<"test">>}),
+    K1 = beamai_kernel:add_chat_model(K0, LlmConfig),
+    {ok, Svc} = beamai_kernel:chat_model(K1),
     ?assertEqual(mock, maps:get(provider, Svc)).
 
 get_service_not_found_test() ->
     K = beamai_kernel:new(),
-    ?assertEqual(error, beamai_kernel:get_service(K)).
+    ?assertEqual(error, beamai_kernel:chat_model(K)).
 
 no_llm_service_chat_test() ->
     K = make_math_kernel(),
-    ?assertEqual({error, no_llm_service},
+    ?assertEqual({error, no_chat_model},
                  beamai_kernel:invoke_chat(K, [#{role => user, content => <<"hi">>}], #{})).
 
 %% invoke_chat 与 invoke_tool 一致地把 kernel 绑进 context，around_chat filter 可取到
@@ -189,7 +189,7 @@ context_binds_kernel_in_chat_test() ->
         end
     }),
     K0 = beamai_kernel:new(#{}, [Filter]),
-    K2 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{model => <<"m">>})),
+    K2 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{model => <<"m">>})),
     {ok, _Resp, _Ctx} = beamai_kernel:invoke_chat(K2, [#{role => user, content => <<"hi">>}], #{}),
     receive {kernel_bound, Bound} -> ?assert(Bound)
     after 1000 -> ?assert(false)
@@ -264,8 +264,8 @@ facade_add_tool_test() ->
 
 facade_add_llm_test() ->
     K0 = beamai:kernel(),
-    K1 = beamai:add_llm(K0, mock, #{model => <<"test-model">>}),
-    {ok, Config} = beamai_kernel:get_service(K1),
+    K1 = beamai:add_chat_model(K0, mock, #{model => <<"test-model">>}),
+    {ok, Config} = beamai_kernel:chat_model(K1),
     ?assertEqual(mock, maps:get(provider, Config)).
 
 facade_tools_test() ->

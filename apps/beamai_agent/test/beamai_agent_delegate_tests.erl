@@ -25,8 +25,8 @@ tool_spec_shape_test() ->
 %%====================================================================
 
 delegate_e2e_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         HasTool = lists:any(fun(M) -> maps:get(role, M, undefined) =:= tool end, Messages),
         LastUser = last_user(Messages),
         if
@@ -61,7 +61,7 @@ delegate_e2e_test() ->
     }),
 
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{})),
+    K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
     K2 = beamai_kernel:add_tools(K1, [Delegate]),
     try
         {ok, Parent} = beamai_agent:new(#{kernel => K2, conversation_id => <<"deleg-parent">>}),
@@ -79,7 +79,7 @@ delegate_e2e_test() ->
                 binary:match(maps:get(content, M, <<>>), <<"ANSWER">>) =/= nomatch
             end, ParentMsgs))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -87,8 +87,8 @@ delegate_e2e_test() ->
 %%====================================================================
 
 management_tools_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         {ok, #{content => <<"R:", (last_user(Messages))/binary>>, finish_reason => <<"stop">>}}
     end),
     Tools = beamai_agent_delegate:management_tools(#{
@@ -113,7 +113,7 @@ management_tools_test() ->
         #{<<"status">> := <<"done">>, <<"result">> := <<"R:hi">>} = json:decode(J3),
         beamai_subagent_manager:drop(Id)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 handler(Name, Tools) ->
@@ -125,9 +125,9 @@ handler(Name, Tools) ->
 %%====================================================================
 
 fanout_concurrent_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
+    meck:new(beamai_chat_model, [passthrough]),
     %% 每个子 agent 的 LLM 调用 sleep 150ms 再返回；3 个并发 → ~150ms，串行则 ~450ms
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         timer:sleep(150),
         {ok, #{content => <<"ans:", (last_user(Messages))/binary>>, finish_reason => <<"stop">>}}
     end),
@@ -143,13 +143,13 @@ fanout_concurrent_test() ->
         %% 并发：远小于串行 3*150=450ms（留余量，断言 < 350ms）
         ?assert(Micros < 350000)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %% fanout_tool：LLM 一次调用传 tasks 列表 → 并发子 agent → 汇总结果
 fanout_tool_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         case is_sub(Messages) of
             true ->
                 {ok, #{content => <<"R:", (last_user(Messages))/binary>>, finish_reason => <<"stop">>}};
@@ -169,7 +169,7 @@ fanout_tool_test() ->
         subagent => fun(_Args, _Ctx) -> #{llm => {mock, #{}}} end
     }),
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{})),
+    K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
     K2 = beamai_kernel:add_tools(K1, [Fanout]),
     try
         {ok, Parent} = beamai_agent:new(#{kernel => K2,
@@ -182,7 +182,7 @@ fanout_tool_test() ->
         ?assert(binary:match(Combined, <<"SUBTASK a">>) =/= nomatch),
         ?assert(binary:match(Combined, <<"SUBTASK b">>) =/= nomatch)
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================
@@ -191,8 +191,8 @@ fanout_tool_test() ->
 
 %% 子 agent 超时 → {error, sub_agent_timeout}（父不被拖死）
 delegate_timeout_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         case is_sub(Messages) of
             true  -> timer:sleep(500),   %% 子 agent 故意拖时
                      {ok, #{content => <<"late">>, finish_reason => <<"stop">>}};
@@ -208,8 +208,8 @@ delegate_timeout_test() ->
 
 %% 子 agent 崩溃（error 类）→ {error, {sub_agent_crashed,_}}（父进程存活）
 delegate_crash_isolation_test() ->
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat, fun(_C, Messages, _O) ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, Messages, _O) ->
         case is_sub(Messages) of
             true  -> error(boom);        %% 子 agent 在独立进程里崩
             false -> parent_or_final(Messages)
@@ -224,7 +224,7 @@ delegate_crash_isolation_test() ->
 %% @private 跑父 agent；断言父存活、委派工具结果里带预期错误标记
 run_parent_and_assert_error(Delegate, ErrMarker) ->
     K0 = beamai_kernel:new(),
-    K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(mock, #{})),
+    K1 = beamai_kernel:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
     K2 = beamai_kernel:add_tools(K1, [Delegate]),
     try
         {ok, Parent} = beamai_agent:new(#{kernel => K2,
@@ -236,7 +236,7 @@ run_parent_and_assert_error(Delegate, ErrMarker) ->
                     maps:get(role, M, undefined) =:= tool],
         ?assert(lists:any(fun(C) -> binary:match(C, ErrMarker) =/= nomatch end, ToolMsgs))
     after
-        meck:unload(beamai_chat_completion)
+        meck:unload(beamai_chat_model)
     end.
 
 is_sub(Messages) ->

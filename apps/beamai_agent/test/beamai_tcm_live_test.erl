@@ -79,14 +79,14 @@ run_with_manager(Inner, Label) ->
     TCM = beamai_spy_tcm_impl:wrap(Inner, Tab),
 
     ApiKey = list_to_binary(os:getenv("MINIMAX_API_KEY")),
-    LLM = beamai_chat_completion:create(anthropic, #{
+    LLM = beamai_chat_model:create(anthropic, #{
         model => ?MINIMAX_MODEL,
         api_key => ApiKey,
         base_url => ?MINIMAX_BASE_URL
     }),
 
     K0 = beamai_kernel:add_tools(beamai_kernel:new(), [price_tool(Tab)]),
-    K1 = beamai_kernel:add_service(K0, LLM),
+    K1 = beamai_kernel:add_chat_model(K0, LLM),
     {ok, Agent} = beamai_agent:new(#{
         kernel => K1,
         system_prompt => <<"You are a store assistant. Item prices are secret and are "

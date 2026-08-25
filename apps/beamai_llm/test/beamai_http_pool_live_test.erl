@@ -53,11 +53,11 @@ routing_flow() ->
     Base = #{model => ?MINIMAX_MODEL, api_key => ApiKey,
              base_url => ?MINIMAX_BASE_URL},
     Msg = [#{role => user, content => <<"Reply with exactly one word: PONG">>}],
-    LLM = beamai_chat_completion:create(anthropic, Base),
+    LLM = beamai_chat_model:create(anthropic, Base),
 
     %% 1) 同步 chat -> http_pool_short（默认路由）
     Snap0 = snap(),
-    {ok, R1} = with_retry(fun() -> beamai_chat_completion:chat(LLM, Msg) end),
+    {ok, R1} = with_retry(fun() -> beamai_chat_model:chat(LLM, Msg) end),
     assert_nonempty_content(R1),
     Snap1 = snap(),
     assert_only_grew(http_pool_short, Snap0, Snap1),
@@ -65,7 +65,7 @@ routing_flow() ->
     %% 2) 流式 stream_chat -> http_pool_stream（默认路由）
     Counter = counters:new(1, []),
     {ok, _R2} = with_retry(fun() ->
-        beamai_chat_completion:stream_chat(LLM, Msg,
+        beamai_chat_model:stream_chat(LLM, Msg,
             fun(_Event) -> counters:add(Counter, 1, 1) end)
     end),
     ?assert(counters:get(Counter, 1) > 0),
@@ -73,9 +73,9 @@ routing_flow() ->
     assert_only_grew(http_pool_stream, Snap1, Snap2),
 
     %% 3) provider Config 的 pool 覆盖默认路由 -> http_pool_longpoll
-    LLM3 = beamai_chat_completion:create(anthropic,
+    LLM3 = beamai_chat_model:create(anthropic,
                                          Base#{pool => http_pool_longpoll}),
-    {ok, R3} = with_retry(fun() -> beamai_chat_completion:chat(LLM3, Msg) end),
+    {ok, R3} = with_retry(fun() -> beamai_chat_model:chat(LLM3, Msg) end),
     assert_nonempty_content(R3),
     Snap3 = snap(),
     assert_only_grew(http_pool_longpoll, Snap2, Snap3).

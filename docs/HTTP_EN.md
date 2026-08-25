@@ -87,7 +87,7 @@ Two explicit override levels sit above the automatic routing. Precedence: reques
 **Per provider** — set `pool` in the provider Config and all of that provider's requests (chat/stream, including Zhipu's async polling) are rerouted, e.g. to put a heavy reasoning model's traffic into the stream pool:
 
 ```erlang
-LLM = beamai_chat_completion:create(deepseek,
+LLM = beamai_chat_model:create(deepseek,
           #{api_key => ..., model => <<"deepseek-reasoner">>,
             pool => http_pool_stream}).
 ```

@@ -52,7 +52,7 @@ beamai_kernel:invoke_chat(Kernel, Messages, #{context => Ctx})
     |
     +-- pre_chat_filter: FilterCtx#{context => Ctx}  <-- 可访问
     |
-    +-- beamai_chat_completion:chat(...)
+    +-- beamai_chat_model:chat(...)
     |
     +-- post_chat_filter: FilterCtx#{context => Ctx} <-- 可访问
 ```
@@ -219,7 +219,7 @@ TransferTool = #{
 
 %% 2. 构建 Kernel
 K0 = beamai_kernel:new(),
-K1 = beamai_kernel:add_service(K0, LLMConfig),
+K1 = beamai_kernel:add_chat_model(K0, LLMConfig),
 K2 = beamai_kernel:add_tools(K1, [BalanceTool, TransferTool]).
 
 %% 3. 创建 Agent 并传入用户上下文

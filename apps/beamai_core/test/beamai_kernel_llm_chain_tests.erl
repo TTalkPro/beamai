@@ -21,8 +21,8 @@
 mock_chat(Failures) ->
     Self = self(),
     Attempts = counters:new(1, []),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, chat,
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat,
         fun(_Config, _Messages, _Opts) ->
             N = counters:get(Attempts, 1),
             counters:add(Attempts, 1, 1),
@@ -36,8 +36,8 @@ mock_chat(Failures) ->
 %% meck stream_chat/4：总是失败（用于验证流式不重试）
 mock_stream_failing() ->
     Self = self(),
-    meck:new(beamai_chat_completion, [passthrough]),
-    meck:expect(beamai_chat_completion, stream_chat,
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, stream_chat,
         fun(_Config, _Messages, _RawCb, _Opts) ->
             Self ! {trace, llm_stream},
             {error, ?BOOM}
@@ -62,8 +62,8 @@ tracing_filter(Name, Tag) ->
     }).
 
 kernel_with(Settings, Filters) ->
-    beamai_kernel:add_service(beamai_kernel:new(Settings, Filters),
-                              beamai_chat_completion:create(mock, #{})).
+    beamai_kernel:add_chat_model(beamai_kernel:new(Settings, Filters),
+                              beamai_chat_model:create(mock, #{})).
 
 invoke(K) -> invoke(K, #{}).
 invoke(K, Opts) -> beamai_kernel:invoke_chat(K, ?MSGS, Opts).
@@ -83,7 +83,7 @@ count(X, L) -> length([E || E <- L, E =:= X]).
 with_meck(Fun) ->
     flush(),
     try Fun()
-    after meck:unload(beamai_chat_completion)
+    after meck:unload(beamai_chat_model)
     end.
 
 %%====================================================================

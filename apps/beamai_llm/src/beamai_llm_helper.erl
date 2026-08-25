@@ -2,21 +2,21 @@
 %%% @doc 统一的 LLM 调用封装模块
 %%%
 %%% 提供与多种 LLM Provider 交互的统一接口。
-%%% 基于 beamai_chat_completion 抽象层，支持 OpenAI、Anthropic、Ollama 等。
+%%% 基于 beamai_chat_model 抽象层，支持 OpenAI、Anthropic、Ollama 等。
 %%%
 %%% 设计模式：
 %%%   - 门面模式：简化 LLM 调用接口
 %%%   - 错误传播：API 调用失败时返回错误信息，不进行 mock 回退
 %%%
 %%% 配置要求：
-%%%   - 推荐使用 beamai_chat_completion:create/2 创建配置
+%%%   - 推荐使用 beamai_chat_model:create/2 创建配置
 %%%   - 必须提供有效的 API Key（OpenAI、Anthropic、Zhipu）
 %%%   - 或配置 Ollama 本地服务
 %%%
 %%% 使用示例：
 %%% <pre>
 %%%   创建 LLM 配置（推荐）:
-%%%     LLM = beamai_chat_completion:create(anthropic, #{api_key =&gt; API_KEY, model =&gt; &lt;&lt;"glm-4.7"&gt;&gt;})
+%%%     LLM = beamai_chat_model:create(anthropic, #{api_key =&gt; API_KEY, model =&gt; &lt;&lt;"glm-4.7"&gt;&gt;})
 %%%   调用专家分析:
 %%%     Result = beamai_llm_helper:call_expert(Expert, Question, LLM)
 %%%   生成综合建议:
@@ -38,7 +38,7 @@
     system_prompt := binary(),
     focus := binary()
 }.
--type llm_config() :: beamai_chat_completion:config() | #{
+-type llm_config() :: beamai_chat_model:config() | #{
     api_key => binary(),
     model => binary(),
     max_tokens => pos_integer()
@@ -115,16 +115,16 @@ call_llm_internal(Messages, LLMConfig, MaxTokens) ->
 %% @private 直连 provider 的一次带重试调用
 %%
 %% 本模块不经 kernel，拿不到 llm 链上的重试 filter（重试已从
-%% beamai_chat_completion 上移到那层），故在此显式包一层 beamai_llm_retry。
+%% beamai_chat_model 上移到那层），故在此显式包一层 beamai_llm_retry。
 chat_with_retry(LLMConfig, Messages, MaxTokens) ->
     Config = build_config(LLMConfig, MaxTokens),
     RetryOpts = beamai_llm_retry:opts(LLMConfig),
     beamai_llm_retry:run(
-      fun() -> beamai_chat_completion:chat(Config, Messages) end, RetryOpts).
+      fun() -> beamai_chat_model:chat(Config, Messages) end, RetryOpts).
 
 %% @doc 构建 LLM 配置
-%% 将简化配置转换为完整的 beamai_chat_completion 配置
--spec build_config(map(), pos_integer()) -> beamai_chat_completion:config().
+%% 将简化配置转换为完整的 beamai_chat_model 配置
+-spec build_config(map(), pos_integer()) -> beamai_chat_model:config().
 build_config(LLMConfig, MaxTokens) ->
     Provider = detect_provider(LLMConfig),
     BaseConfig = #{
@@ -132,11 +132,11 @@ build_config(LLMConfig, MaxTokens) ->
     },
     %% 合并用户配置
     MergedConfig = maps:merge(BaseConfig, LLMConfig),
-    beamai_chat_completion:create(Provider, MergedConfig).
+    beamai_chat_model:create(Provider, MergedConfig).
 
 %% @doc 检测 Provider 类型
 %% 根据配置或 API Key 前缀自动判断
--spec detect_provider(map()) -> beamai_chat_completion:provider().
+-spec detect_provider(map()) -> beamai_chat_model:provider().
 detect_provider(#{provider := P}) -> P;
 detect_provider(#{api_key := Key}) when is_binary(Key) ->
     case Key of

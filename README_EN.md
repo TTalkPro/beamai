@@ -62,13 +62,13 @@ rebar3 shell
 
 ```erlang
 %% Create LLM configuration
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY"))
 }),
 
 %% Send chat request
-{ok, Response} = beamai_chat_completion:chat(LLM, [
+{ok, Response} = beamai_chat_model:chat(LLM, [
     {role, user, content, <<"你好！"/utf8>>}
 ]),
 ```
@@ -180,7 +180,7 @@ apps/
 │   └── Utils          # beamai_id, beamai_jsonrpc, beamai_sse, beamai_utils
 │
 ├── beamai_llm/         # LLM client
-│   ├── Chat           # beamai_chat_completion, beamai_llm_error
+│   ├── Chat           # beamai_chat_model, beamai_llm_error
 │   ├── Parser         # beamai_output_parser, beamai_parser_json
 │   ├── Adapters       # beamai_llm_message_adapter, beamai_llm_response_parser, beamai_llm_tool_adapter
 │   └── Providers      # OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama
@@ -256,18 +256,18 @@ The Kernel itself is stateless and does not record messages; multi-turn conversa
 
 ### LLM Configuration
 
-LLM configuration is created using `beamai_chat_completion:create/2`:
+LLM configuration is created using `beamai_chat_model:create/2`:
 
 ```erlang
 %% Create LLM configuration
-LLM = beamai_chat_completion:create(zhipu, #{
+LLM = beamai_chat_model:create(zhipu, #{
     model => <<"glm-4.7">>,
     api_key => list_to_binary(os:getenv("ZHIPU_API_KEY")),
     temperature => 0.7
 }).
 
 %% Send request
-{ok, Response} = beamai_chat_completion:chat(LLM, [
+{ok, Response} = beamai_chat_model:chat(LLM, [
     {role, user, content, <<"你好"/utf8>>}
 ]).
 ```

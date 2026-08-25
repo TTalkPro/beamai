@@ -31,7 +31,7 @@
 即：因为没有第 3 层，记忆（第 3 层的东西）与重试（第 4 层的东西）被迫在同一条链上争
 层序，怎么排都有一边是错的。当时选择用「约定放首位」回避。
 
-框架自带的重试当时埋在 `beamai_chat_completion:chat/3` 内部（比 `around_chat` 还低一
+框架自带的重试当时埋在 `beamai_chat_model:chat/3` 内部（比 `around_chat` 还低一
 层），所以这个雷没被自家代码引爆——代价是重试对整条 filter 链完全不可见：数不清真实
 调用次数、拿不到失败响应、也没法替换退避策略。
 
@@ -59,13 +59,13 @@ around_turn          每 turn 一次
 3. **重试变成 filter**：新增 `beamai_llm_filters:retry_filter/0,1`（around_llm），
    内部仍复用 `beamai_llm_retry`（错误分类 / Retry-After 退避不变），只是把链的 throw
    契约与 `{ok,_}|{error,_}` 契约就地互转。
-4. **`beamai_chat_completion:chat/3` 去掉重试**，退回单次请求——否则 filter 层与模块层
+4. **`beamai_chat_model:chat/3` 去掉重试**，退回单次请求——否则 filter 层与模块层
    会双重重试（3×3=9 次）。
 5. **缺省注入**：kernel 按 settings 的 `llm_retry` 把 retry_filter 追加在 llm 链**最内层**，
    缺省即 `#{}`（框架默认参数）。经 kernel / agent 的调用行为与拆分前一致。
    `llm_retry => false` 关闭注入，使用方可把 retry_filter 放到任意层序上。
    core 不能反向依赖 llm（会成环），故用 `code:ensure_loaded/1` 运行时探测——与
-   `beamai:add_llm/3 → beamai_chat_completion:create/2` 同一套约定。
+   `beamai:add_chat_model/3 → beamai_chat_model:create/2` 同一套约定。
 
 ### 层序取舍
 
@@ -83,7 +83,7 @@ token 已经投递给 sink，重跑会让下游看到重复内容（拆分前 `s
 
 ## 2. 破坏性变更
 
-- **`beamai_chat_completion:chat/3` 不再重试**（单次请求）。经 kernel / agent 的调用不受
+- **`beamai_chat_model:chat/3` 不再重试**（单次请求）。经 kernel / agent 的调用不受
   影响（缺省注入补上了）；**直连该模块的调用方要自己包 `beamai_llm_retry:run/2`**。
   项目内唯一的直连调用方 `beamai_llm_helper` 已就地补上。
 - `beamai_kernel` 私有函数 `run_chat/5`→`/6`、`run_chat_stream/6`→`/7`（多带 Settings）。

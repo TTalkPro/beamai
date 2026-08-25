@@ -94,7 +94,7 @@ run_chat() ->
 %% @doc 演示 chat filter
 %%
 %% around_chat: 前置自动注入 system 消息；后置记录响应统计
--spec run_chat(beamai_chat_completion:config()) -> ok.
+-spec run_chat(beamai_chat_model:config()) -> ok.
 run_chat(LLMConfig) ->
     io:format("=== BeamAI Filter Example (Chat) ===~n~n"),
 
@@ -121,7 +121,7 @@ run_chat(LLMConfig) ->
     }),
 
     K0 = beamai:kernel(#{}, [SystemAudit]),
-    K1 = beamai:add_llm(K0, LLMConfig),
+    K1 = beamai:add_chat_model(K0, LLMConfig),
 
     Messages = [#{role => user, content => <<"什么是 GenServer？"/utf8>>}],
     io:format("User: 什么是 GenServer？~n~n"),
