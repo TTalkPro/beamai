@@ -36,6 +36,8 @@
 %% Behaviour 回调
 -export([name/0, default_config/0, validate_config/1]).
 -export([chat/2, stream_chat/3]).
+-export([base_url/1, endpoint/2, headers/2, body/2, parser/1,
+         stream_accumulator/1, stream_finalizer/1]).
 -export([supports_tools/0, supports_streaming/0]).
 
 %% DeepSeek 特有 API（beta）
@@ -117,31 +119,13 @@ supports_streaming() -> true.
 %% 使用 DeepSeek 专用解析器，提取 reasoning_content（deepseek-reasoner）
 %% 和缓存统计。消息含 prefix => true 时自动路由到 /beta 端点。
 chat(Config, Request) ->
-    Url = build_url(Config, chat_endpoint(Request)),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_deepseek()).
+    beamai_llm_http_provider:chat(?MODULE, Config, Request).
 
 %% @doc 发送流式聊天请求
 %% 流式累加结果经 finalize_openai_stream 转换为与同步模式一致的统一响应
 %% （含分片工具调用拼接和 reasoning_content 累加）。
 stream_chat(Config, Request, Callback) ->
-    Url = build_url(Config, chat_endpoint(Request)),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request#{stream => true}),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
-        finalizer => fun(Acc) ->
-            beamai_llm_provider_common:finalize_openai_stream(Acc, deepseek)
-        end,
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
-                                          fun beamai_llm_provider_common:accumulate_openai_event/2).
+    beamai_llm_http_provider:stream_chat(?MODULE, Config, Request, Callback).
 
 %%====================================================================
 %% FIM 填空补全 API（beta）
@@ -164,7 +148,7 @@ stream_chat(Config, Request, Callback) ->
 %%     prompt => <<"def fib(n):">>,
 %%     suffix => <<"    return fib(n-1) + fib(n-2)">>
 %% }),
-%% Completion = beamai_llm_response:content(Resp)
+%% Completion = beamai_chat_response:content(Resp)
 %% ```
 -spec fim(map(), map()) -> {ok, map()} | {error, term()}.
 fim(Config, Request) ->
@@ -182,7 +166,7 @@ fim(Config, Request) ->
 stream_fim(Config, Request, Callback) ->
     Url = build_fim_url(Config),
     Headers = build_headers(Config),
-    Body = build_fim_request_body(Config, Request#{stream => true}),
+    Body = build_fim_request_body(Config, beamai_chat_request:put_option(Request, stream, true)),
     Opts = beamai_llm_provider_common:with_pool_opt(#{
         timeout => beamai_llm_provider_common:request_timeout(Config, deepseek),
         finalizer => fun(Acc) ->
@@ -194,12 +178,28 @@ stream_fim(Config, Request, Callback) ->
                                           fun beamai_llm_provider_common:accumulate_completions_event/2).
 
 %%====================================================================
+%% 声明式回调：底层信息（怎么发由 beamai_llm_http_provider 统一负责）
+%%====================================================================
+
+base_url(_Config) -> ?DEEPSEEK_BASE_URL.
+
+endpoint(_Config, Request) -> chat_endpoint(Request).
+
+headers(Config, _Request) -> build_headers(Config).
+
+body(Config, Request) -> build_request_body(Config, Request).
+
+parser(_Config) -> beamai_llm_response_parser:parser_deepseek().
+
+stream_accumulator(_Config) -> fun beamai_llm_provider_common:accumulate_openai_event/2.
+
+stream_finalizer(_Config) ->
+    fun(Acc) -> beamai_llm_provider_common:finalize_openai_stream(Acc, deepseek) end.
+
+%%====================================================================
 %% 请求构建（使用公共模块）
 %%====================================================================
 
-%% @private 构建请求 URL
-build_url(Config, DefaultEndpoint) ->
-    beamai_llm_provider_common:build_url(Config, DefaultEndpoint, ?DEEPSEEK_BASE_URL).
 
 %% @private 构建 FIM 请求 URL
 %% FIM 使用独立端点，可通过 Config 的 fim_endpoint 覆盖
@@ -230,7 +230,7 @@ build_headers(Config) ->
 
 %% @private 构建请求体（使用管道模式）
 build_request_body(Config, Request) ->
-    Messages = maps:get(messages, Request, []),
+    Messages = beamai_chat_request:messages(Request),
     Base = #{
         <<"model">> => maps:get(model, Config, ?DEEPSEEK_MODEL),
         <<"messages">> => beamai_llm_message_adapter:to_openai(Messages),
@@ -240,14 +240,16 @@ build_request_body(Config, Request) ->
     ?BUILD_BODY_PIPELINE(Base, [
         fun(B) -> beamai_llm_provider_common:maybe_add_top_p(B, Config) end,
         fun(B) -> beamai_llm_provider_common:maybe_add_params(B, Config, ?OPTIONAL_PARAMS) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, Request) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_tool_choice(B, Request) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, Request) end,
-        fun(B) -> maybe_add_response_format(B, Config, Request) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_tool_choice(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> maybe_add_response_format(B, Config, beamai_chat_request:options(Request)) end,
         fun(B) -> maybe_filter_reasoner_params(B) end
     ]).
 
 %% @private 构建 FIM 请求体
+%% 注：FIM（补全）不是 chat，请求形状是自己的一套（prompt/suffix/echo/logprobs），
+%% **不**走 beamai_chat_request——那是 chat 的输入类型。
 build_fim_request_body(Config, Request) ->
     Base = #{
         <<"model">> => maps:get(model, Config, ?DEEPSEEK_MODEL),
@@ -265,8 +267,8 @@ build_fim_request_body(Config, Request) ->
 
 %% @private 添加响应格式（JSON 模式）
 %% 优先取 Request，其次取 Config，支持 #{<<"type">> => <<"json_object">>}
-maybe_add_response_format(Body, Config, Request) ->
-    case maps:get(response_format, Request, maps:get(response_format, Config, undefined)) of
+maybe_add_response_format(Body, Config, Options) ->
+    case maps:get(response_format, Options, maps:get(response_format, Config, undefined)) of
         Format when is_map(Format) -> Body#{<<"response_format">> => Format};
         _ -> Body
     end.

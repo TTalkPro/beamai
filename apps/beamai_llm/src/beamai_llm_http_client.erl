@@ -198,7 +198,7 @@ stream_request(Url, Headers, Body, Opts, Callback) ->
 %% 使用 beamai_http:stream_request 作为底层，添加 SSE 解析
 %%
 %% Opts **必须**包含 finalizer，用于将累加结果转换为最终响应
-%% （如转成与同步模式一致的 beamai_llm_response 结构）。自定义累加器的
+%% （如转成与同步模式一致的 beamai_chat_response 结构）。自定义累加器的
 %% 中间形态只有与之配对的 finalizer 能理解，漏传几乎必是 provider 实现
 %% bug —— 返回 {error, {missing_stream_finalizer, _}}（经 beamai_llm_error
 %% 归一后不可重试）而非静默退化为通用 finalize（那会丢 usage、分片

@@ -98,13 +98,7 @@
 }.
 
 %% 聊天请求
--type chat_request() :: #{
-    messages := [message()],
-    tools => [tool()],
-    tool_choice => auto | none | required | binary(),
-    stream => boolean(),
-    extra => map()
-}.
+-type chat_request() :: beamai_chat_request:t().
 
 %% 聊天响应
 -type chat_response() :: #{
@@ -191,11 +185,51 @@
 -callback supports_streaming() -> boolean().
 
 %%====================================================================
+%% 声明式回调（HTTP provider）
+%%====================================================================
+%%
+%% 走 HTTP 的 provider **必须实现下面 7 个**，然后把 chat/2、stream_chat/3 一行
+%% 委托给 beamai_llm_http_provider——"怎么发请求"（超时/连接池/rate-limit/两条
+%% 路径的拼装）由它统一负责，provider 只声明自己的底层信息。
+%%
+%% 非 HTTP 的 provider（mock、测试桩）不实现它们，自己写 chat/2 即可。
+
+%% 该 provider 的默认 API 根地址（Config 的 base_url 可覆盖）。
+%% 带 Config 是因为有的 provider 按区域（moonshot/siliconflow）或协议（zhipu）选站点。
+-callback base_url(config()) -> binary().
+
+%% 相对端点路径。可依赖 Config（协议/模型分支）与 Request（如 deepseek 的 prefix 走 beta）
+-callback endpoint(config(), chat_request()) -> binary().
+
+%% 请求头。可依赖 Request（如 dashscope 流式要额外的 SSE 头）
+-callback headers(config(), chat_request()) -> [{binary(), binary()}].
+
+%% 请求体（provider 特定的 JSON 结构）
+-callback body(config(), chat_request()) -> map().
+
+%% 同步响应解析器：把 provider 原始响应归一为 beamai_chat_response
+-callback parser(config()) -> fun((map()) -> {ok, map()} | {error, term()}).
+
+%% 流式事件累加器
+-callback stream_accumulator(config()) -> fun((term(), term()) -> term()).
+
+%% 流末 finalizer：把累加结果重建为与同步一致的统一响应
+-callback stream_finalizer(config()) -> fun((term()) -> {ok, map()} | {error, term()}).
+
+%%====================================================================
 %% 可选回调
 %%====================================================================
 
 %% stream_chat/3 为可选回调
 %% 部分 Provider 可能不支持流式输出
 -optional_callbacks([
-    stream_chat/3
+    stream_chat/3,
+    %% 声明式回调：HTTP provider 全部实现，非 HTTP provider 一个都不实现
+    base_url/1,
+    endpoint/2,
+    headers/2,
+    body/2,
+    parser/1,
+    stream_accumulator/1,
+    stream_finalizer/1
 ]).

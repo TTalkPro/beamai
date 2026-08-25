@@ -47,8 +47,8 @@
 %%% build_request_body(Config, Request) ->
 %%%     Base = #{...},
 %%%     ?BUILD_BODY_PIPELINE(Base, [
-%%%         fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, Request) end,
-%%%         fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, Request) end
+%%%         fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, beamai_chat_request:options(Request)) end,
+%%%         fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, beamai_chat_request:options(Request)) end
 %%%     ]).
 %%% ```
 %%%

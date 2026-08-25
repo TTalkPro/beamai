@@ -25,6 +25,8 @@
 %% Behaviour 回调
 -export([name/0, default_config/0, validate_config/1]).
 -export([chat/2, stream_chat/3]).
+-export([base_url/1, endpoint/2, headers/2, body/2, parser/1,
+         stream_accumulator/1, stream_finalizer/1]).
 -export([supports_tools/0, supports_streaming/0]).
 
 %% 默认值
@@ -80,39 +82,37 @@ supports_streaming() -> true.
 
 %% @doc 发送聊天请求
 chat(Config, Request) ->
-    Url = build_url(Config, ?OPENAI_ENDPOINT),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, openai),
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_openai()).
+    beamai_llm_http_provider:chat(?MODULE, Config, Request).
 
 %% @doc 发送流式聊天请求
 %% 流式累加结果经 finalize_openai_stream 转换为与同步模式一致的统一响应
 %% （含分片工具调用拼接和末尾 usage chunk 捕获）。
 stream_chat(Config, Request, Callback) ->
-    Url = build_url(Config, ?OPENAI_ENDPOINT),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request#{stream => true}),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, openai),
-        finalizer => fun(Acc) ->
-            beamai_llm_provider_common:finalize_openai_stream(Acc, openai)
-        end,
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
-                                          fun beamai_llm_provider_common:accumulate_openai_event/2).
+    beamai_llm_http_provider:stream_chat(?MODULE, Config, Request, Callback).
+
+%%====================================================================
+%% 声明式回调：底层信息（怎么发由 beamai_llm_http_provider 统一负责）
+%%====================================================================
+
+base_url(_Config) -> ?OPENAI_BASE_URL.
+
+endpoint(_Config, _Request) -> ?OPENAI_ENDPOINT.
+
+headers(Config, _Request) -> build_headers(Config).
+
+body(Config, Request) -> build_request_body(Config, Request).
+
+parser(_Config) -> beamai_llm_response_parser:parser_openai().
+
+stream_accumulator(_Config) -> fun beamai_llm_provider_common:accumulate_openai_event/2.
+
+stream_finalizer(_Config) ->
+    fun(Acc) -> beamai_llm_provider_common:finalize_openai_stream(Acc, openai) end.
 
 %%====================================================================
 %% 请求构建（Provider 特定）
 %%====================================================================
 
-%% @private 构建请求 URL（使用公共模块）
-build_url(Config, DefaultEndpoint) ->
-    beamai_llm_provider_common:build_url(Config, DefaultEndpoint, ?OPENAI_BASE_URL).
 
 %% @private 构建请求头（使用公共模块）
 build_headers(Config) ->
@@ -120,7 +120,7 @@ build_headers(Config) ->
 
 %% @private 构建请求体（使用管道模式）
 build_request_body(Config, Request) ->
-    Messages = maps:get(messages, Request, []),
+    Messages = beamai_chat_request:messages(Request),
     Base = #{
         <<"model">> => maps:get(model, Config, ?OPENAI_MODEL),
         <<"messages">> => beamai_llm_message_adapter:to_openai(Messages),
@@ -130,10 +130,10 @@ build_request_body(Config, Request) ->
         fun(B) -> add_max_tokens(B, Config) end,
         fun(B) -> beamai_llm_provider_common:maybe_add_top_p(B, Config) end,
         fun(B) -> beamai_llm_provider_common:maybe_add_params(B, Config, ?OPTIONAL_PARAMS) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, Request) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_tool_choice(B, Request) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, Request) end,
-        fun(B) -> maybe_add_stream_options(B, Config, Request) end
+        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_tool_choice(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> maybe_add_stream_options(B, Config, beamai_chat_request:options(Request)) end
     ]).
 
 %% @private 添加 token 上限

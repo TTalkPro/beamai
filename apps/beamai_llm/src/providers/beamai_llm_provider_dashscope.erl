@@ -43,6 +43,8 @@
 %% Behaviour 回调
 -export([name/0, default_config/0, validate_config/1]).
 -export([chat/2, stream_chat/3]).
+-export([base_url/1, endpoint/2, headers/2, body/2, parser/1,
+         stream_accumulator/1, stream_finalizer/1]).
 -export([supports_tools/0, supports_streaming/0]).
 
 %% 默认值 - DashScope 原生 API
@@ -83,26 +85,33 @@ supports_streaming() -> true.
 
 %% @doc 发送聊天请求
 chat(Config, Request) ->
-    Url = build_url(Config, get_endpoint(Config)),
-    Headers = build_headers(Config, false),
-    Body = build_request_body(Config, Request),
-    Opts = (build_request_opts(Config))#{
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
-    beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_dashscope()).
+    beamai_llm_http_provider:chat(?MODULE, Config, Request).
 
 %% @doc 发送流式聊天请求
 %% 流式累加结果经 finalize_dashscope_stream 重建为 DashScope 原始格式后解析，
-%% 使流式响应与同步模式一致（统一 beamai_llm_response，含工具调用与 usage）。
+%% 使流式响应与同步模式一致（统一 beamai_chat_response，含工具调用与 usage）。
 stream_chat(Config, Request, Callback) ->
-    Url = build_url(Config, get_endpoint(Config)),
-    Headers = build_headers(Config, true),
-    Body = build_request_body(Config, Request#{stream => true}),
-    Opts = (build_request_opts(Config))#{
-        finalizer => fun finalize_dashscope_stream/1,
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback, fun accumulate_event/2).
+    beamai_llm_http_provider:stream_chat(?MODULE, Config, Request, Callback).
+
+%%====================================================================
+%% 声明式回调：底层信息（怎么发由 beamai_llm_http_provider 统一负责）
+%%====================================================================
+
+base_url(_Config) -> ?DASHSCOPE_BASE_URL.
+
+%% VL 模型走多模态端点
+endpoint(Config, _Request) -> get_endpoint(Config).
+
+%% 流式要额外的 SSE 开关头——所以 headers 回调带 Request
+headers(Config, Request) -> build_headers(Config, beamai_chat_request:is_stream(Request)).
+
+body(Config, Request) -> build_request_body(Config, Request).
+
+parser(_Config) -> beamai_llm_response_parser:parser_dashscope().
+
+stream_accumulator(_Config) -> fun accumulate_event/2.
+
+stream_finalizer(_Config) -> fun finalize_dashscope_stream/1.
 
 %%====================================================================
 %% 请求构建（DashScope 原生格式）
@@ -127,9 +136,6 @@ is_multimodal_model(Model) when is_binary(Model) ->
 is_multimodal_model(_) ->
     false.
 
-%% @private 构建请求 URL（使用公共模块）
-build_url(Config, DefaultEndpoint) ->
-    beamai_llm_provider_common:build_url(Config, DefaultEndpoint, ?DASHSCOPE_BASE_URL).
 
 %% @private 构建请求头
 %% DashScope 原生 API 流式输出需要 X-DashScope-SSE 头
@@ -143,17 +149,11 @@ build_headers(#{api_key := ApiKey}, IsStream) ->
         false -> BaseHeaders
     end.
 
-%% @private 构建请求选项（Config 的 pool 可按 provider 覆盖连接池路由）
-build_request_opts(Config) ->
-    beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, dashscope),
-        connect_timeout => maps:get(connect_timeout, Config, ?DASHSCOPE_CONNECT_TIMEOUT)
-    }, Config).
 
 %% @private 构建请求体 - DashScope 原生格式
 %% 格式: {model, input: {messages}, parameters: {...}}
 build_request_body(Config, Request) ->
-    Messages = maps:get(messages, Request, []),
+    Messages = beamai_chat_request:messages(Request),
 
     %% 构建 input 对象
     Input = #{
@@ -181,11 +181,11 @@ build_parameters(Config, Request) ->
 %% @private parameters 构建管道
 build_parameters_pipeline(Params, Config, Request) ->
     ?BUILD_BODY_PIPELINE(Params, [
-        fun(P) -> maybe_add_stream_param(P, Request) end,
-        fun(P) -> maybe_add_tools_param(P, Request) end,
+        fun(P) -> maybe_add_stream_param(P, beamai_chat_request:options(Request)) end,
+        fun(P) -> maybe_add_tools_param(P, beamai_chat_request:options(Request)) end,
         fun(P) -> maybe_add_top_p_param(P, Config) end,
         fun(P) -> maybe_add_enable_search_param(P, Config) end,
-        fun(P) -> maybe_add_tool_choice_param(P, Request) end
+        fun(P) -> maybe_add_tool_choice_param(P, beamai_chat_request:options(Request)) end
     ]).
 
 %% @private 添加流式参数

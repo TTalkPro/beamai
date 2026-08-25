@@ -28,6 +28,8 @@
 %% Behaviour 回调
 -export([name/0, default_config/0, validate_config/1]).
 -export([chat/2, stream_chat/3]).
+-export([base_url/1, endpoint/2, headers/2, body/2, parser/1,
+         stream_accumulator/1, stream_finalizer/1]).
 -export([supports_tools/0, supports_streaming/0]).
 
 -ifdef(TEST).
@@ -69,14 +71,7 @@ supports_streaming() -> true.
 
 %% @doc 发送聊天请求
 chat(Config, Request) ->
-    Url = build_url(Config, ?ANTHROPIC_ENDPOINT),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, anthropic),
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_anthropic()).
+    beamai_llm_http_provider:chat(?MODULE, Config, Request).
 
 %% @doc 发送流式聊天请求
 %% 使用公共模块的 Anthropic 事件累加器，完整处理
@@ -84,24 +79,30 @@ chat(Config, Request) ->
 %% 流式结束后重建为与同步模式一致的统一响应
 %% （含 tool_use 块、thinking 块和 usage 统计）。
 stream_chat(Config, Request, Callback) ->
-    Url = build_url(Config, ?ANTHROPIC_ENDPOINT),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request#{stream => true}),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, anthropic),
-        finalizer => fun beamai_llm_provider_common:finalize_anthropic_stream/1,
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
-                                          fun beamai_llm_provider_common:accumulate_anthropic_event/2).
+    beamai_llm_http_provider:stream_chat(?MODULE, Config, Request, Callback).
+
+%%====================================================================
+%% 声明式回调：底层信息（怎么发由 beamai_llm_http_provider 统一负责）
+%%====================================================================
+
+base_url(_Config) -> ?ANTHROPIC_BASE_URL.
+
+endpoint(_Config, _Request) -> ?ANTHROPIC_ENDPOINT.
+
+headers(Config, _Request) -> build_headers(Config).
+
+body(Config, Request) -> build_request_body(Config, Request).
+
+parser(_Config) -> beamai_llm_response_parser:parser_anthropic().
+
+stream_accumulator(_Config) -> fun beamai_llm_provider_common:accumulate_anthropic_event/2.
+
+stream_finalizer(_Config) -> fun beamai_llm_provider_common:finalize_anthropic_stream/1.
 
 %%====================================================================
 %% 请求构建（Provider 特定）
 %%====================================================================
 
-%% @private 构建请求 URL（使用公共模块）
-build_url(Config, DefaultEndpoint) ->
-    beamai_llm_provider_common:build_url(Config, DefaultEndpoint, ?ANTHROPIC_BASE_URL).
 
 %% @private 构建请求头（Anthropic 特有的 x-api-key 和 anthropic-version）
 build_headers(#{api_key := ApiKey}) ->
@@ -113,7 +114,7 @@ build_headers(#{api_key := ApiKey}) ->
 
 %% @private 构建请求体（使用管道模式）
 build_request_body(Config, Request) ->
-    Messages = maps:get(messages, Request, []),
+    Messages = beamai_chat_request:messages(Request),
     {SystemPrompt, UserMessages} = beamai_llm_message_adapter:extract_system_prompt(Messages),
     {CacheStrategy, CacheControl} = parse_cache_strategy(Config),
     Base = #{
@@ -124,20 +125,20 @@ build_request_body(Config, Request) ->
     },
     ?BUILD_BODY_PIPELINE(Base, [
         fun(B) -> maybe_add_system(B, SystemPrompt, CacheStrategy, CacheControl) end,
-        fun(B) -> maybe_add_tools(B, Request, CacheStrategy, CacheControl) end,
+        fun(B) -> maybe_add_tools(B, beamai_chat_request:options(Request), CacheStrategy, CacheControl) end,
         fun(B) -> maybe_add_web_search(B, Config) end,
-        fun(B) -> maybe_add_tool_choice(B, Request) end,
+        fun(B) -> maybe_add_tool_choice(B, beamai_chat_request:options(Request)) end,
         fun(B) -> maybe_add_thinking(B, Config) end,
         fun(B) -> maybe_add_temperature(B, Config) end,
         fun(B) -> maybe_add_top_p(B, Config) end,
         fun(B) -> maybe_add_top_k(B, Config) end,
-        fun(B) -> maybe_add_stop_sequences(B, Config, Request) end,
+        fun(B) -> maybe_add_stop_sequences(B, Config, beamai_chat_request:options(Request)) end,
         fun(B) -> maybe_add_metadata(B, Config) end,
         fun(B) -> beamai_llm_provider_common:maybe_add_params(B, Config, [
             {service_tier, <<"service_tier">>},
             {inference_geo, <<"inference_geo">>}
         ]) end,
-        fun(B) -> maybe_add_stream(B, Request) end
+        fun(B) -> maybe_add_stream(B, beamai_chat_request:options(Request)) end
     ]).
 
 %% @private 添加系统提示
@@ -218,8 +219,8 @@ maybe_add_top_k(Body, _) ->
     Body.
 
 %% @private 添加停止序列（从 Config 或 Request 获取）
-maybe_add_stop_sequences(Body, Config, Request) ->
-    case maps:get(stop_sequences, Request, maps:get(stop_sequences, Config, undefined)) of
+maybe_add_stop_sequences(Body, Config, Options) ->
+    case maps:get(stop_sequences, Options, maps:get(stop_sequences, Config, undefined)) of
         undefined -> Body;
         Seqs when is_list(Seqs), Seqs =/= [] ->
             Body#{<<"stop_sequences">> => Seqs};

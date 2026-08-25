@@ -33,10 +33,12 @@
 %% Behaviour 回调
 -export([name/0, default_config/0, validate_config/1]).
 -export([chat/2, stream_chat/3]).
+-export([base_url/1, endpoint/2, headers/2, body/2, parser/1,
+         stream_accumulator/1, stream_finalizer/1]).
 -export([supports_tools/0, supports_streaming/0]).
 
 -ifdef(TEST).
--export([build_request_body/2, build_url/1]).
+-export([build_request_body/2]).
 -endif.
 
 %% 默认值
@@ -91,39 +93,35 @@ supports_streaming() -> true.
 
 %% @doc 发送聊天请求
 chat(Config, Request) ->
-    Url = build_url(Config),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, siliconflow),
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:request(Url, Headers, Body, Opts,
-                                   beamai_llm_response_parser:parser_siliconflow()).
+    beamai_llm_http_provider:chat(?MODULE, Config, Request).
 
 %% @doc 发送流式聊天请求
 stream_chat(Config, Request, Callback) ->
-    Url = build_url(Config),
-    Headers = build_headers(Config),
-    Body = build_request_body(Config, Request#{stream => true}),
-    Opts = beamai_llm_provider_common:with_pool_opt(#{
-        timeout => beamai_llm_provider_common:request_timeout(Config, siliconflow),
-        finalizer => fun(Acc) ->
-            beamai_llm_provider_common:finalize_openai_stream(Acc, siliconflow)
-        end,
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    }, Config),
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
-                                          fun beamai_llm_provider_common:accumulate_openai_event/2).
+    beamai_llm_http_provider:stream_chat(?MODULE, Config, Request, Callback).
+
+%%====================================================================
+%% 声明式回调：底层信息（怎么发由 beamai_llm_http_provider 统一负责）
+%%====================================================================
+
+base_url(Config) -> region_base_url(maps:get(region, Config, cn)).
+
+endpoint(_Config, _Request) -> ?SILICONFLOW_ENDPOINT.
+
+headers(Config, _Request) -> build_headers(Config).
+
+body(Config, Request) -> build_request_body(Config, Request).
+
+parser(_Config) -> beamai_llm_response_parser:parser_siliconflow().
+
+stream_accumulator(_Config) -> fun beamai_llm_provider_common:accumulate_openai_event/2.
+
+stream_finalizer(_Config) ->
+    fun(Acc) -> beamai_llm_provider_common:finalize_openai_stream(Acc, siliconflow) end.
 
 %%====================================================================
 %% 请求构建
 %%====================================================================
 
-%% @private 构建请求 URL（base_url 优先，其次按 region 选择站点）
-build_url(Config) ->
-    Default = region_base_url(maps:get(region, Config, cn)),
-    beamai_llm_provider_common:build_url(Config, ?SILICONFLOW_ENDPOINT, Default).
 
 %% @private 区域对应的站点
 region_base_url(global) -> ?SILICONFLOW_BASE_URL_GLOBAL;
@@ -135,7 +133,7 @@ build_headers(Config) ->
 
 %% @private 构建请求体（使用管道模式）
 build_request_body(Config, Request) ->
-    Messages = maps:get(messages, Request, []),
+    Messages = beamai_chat_request:messages(Request),
     Base = #{
         <<"model">> => maps:get(model, Config, ?SILICONFLOW_MODEL),
         <<"messages">> => beamai_llm_message_adapter:to_openai(Messages),
@@ -145,10 +143,10 @@ build_request_body(Config, Request) ->
     ?BUILD_BODY_PIPELINE(Base, [
         fun(B) -> beamai_llm_provider_common:maybe_add_top_p(B, Config) end,
         fun(B) -> beamai_llm_provider_common:maybe_add_params(B, Config, ?OPTIONAL_PARAMS) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, Request) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_tool_choice(B, Request) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, Request) end,
-        fun(B) -> maybe_add_stream_options(B, Config, Request) end
+        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_tool_choice(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> maybe_add_stream_options(B, Config, beamai_chat_request:options(Request)) end
     ]).
 
 %% @private 流式模式下添加 stream_options（默认开启 include_usage）

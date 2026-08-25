@@ -68,6 +68,8 @@
 %% Behaviour 回调
 -export([name/0, default_config/0, validate_config/1]).
 -export([chat/2, stream_chat/3]).
+-export([base_url/1, endpoint/2, headers/2, body/2, parser/1,
+         stream_accumulator/1, stream_finalizer/1]).
 -export([supports_tools/0, supports_streaming/0]).
 
 %% 扩展 API - 异步调用
@@ -122,66 +124,63 @@ supports_streaming() -> true.
 %% @doc 发送聊天请求
 %% 根据 api_mode 配置选择 OpenAI 或 Anthropic 兼容模式
 chat(Config, Request) ->
-    case maps:get(api_mode, Config, openai) of
-        anthropic -> chat_anthropic(Config, Request);
-        _ -> chat_openai(Config, Request)
-    end.
+    beamai_llm_http_provider:chat(?MODULE, Config, Request).
 
 %% @doc 发送流式聊天请求
 stream_chat(Config, Request, Callback) ->
-    case maps:get(api_mode, Config, openai) of
-        anthropic -> stream_chat_anthropic(Config, Request, Callback);
-        _ -> stream_chat_openai(Config, Request, Callback)
+    beamai_llm_http_provider:stream_chat(?MODULE, Config, Request, Callback).
+
+%%====================================================================
+%% 声明式回调：底层信息（怎么发由 beamai_llm_http_provider 统一负责）
+%%====================================================================
+%%
+%% 智谱有两套兼容协议，`api_mode` 决定走哪套——端点/头/体/解析/累加器成套切换，
+%% 这正是这些回调都带 Config 的原因。
+
+base_url(Config) ->
+    case api_mode(Config) of
+        anthropic -> ?ZHIPU_ANTHROPIC_BASE_URL;
+        _ -> ?ZHIPU_BASE_URL
     end.
 
-%% @private OpenAI 兼容模式聊天
-chat_openai(Config, Request) ->
-    Url = build_openai_url(Config),
-    Headers = build_headers(Config),
-    Body = build_openai_request_body(Config, Request),
-    Opts = (build_request_opts(Config))#{
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
-    beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_zhipu()).
+endpoint(Config, _Request) ->
+    case api_mode(Config) of
+        anthropic -> ?ZHIPU_ANTHROPIC_ENDPOINT;
+        _ -> openai_endpoint(Config)
+    end.
 
-%% @private OpenAI 兼容模式流式聊天
-%% 复用公共 OpenAI 累加器 + finalizer，使流式响应与同步一致
-%% （统一 beamai_llm_response，含分片工具调用、reasoning_content、usage）。
-stream_chat_openai(Config, Request, Callback) ->
-    Url = build_openai_url(Config),
-    Headers = build_headers(Config),
-    Body = build_openai_request_body(Config, Request#{stream => true}),
-    Opts = (build_request_opts(Config))#{
-        finalizer => fun(Acc) ->
-            beamai_llm_provider_common:finalize_openai_stream(Acc, zhipu)
-        end,
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
-                                          fun beamai_llm_provider_common:accumulate_openai_event/2).
+headers(Config, _Request) ->
+    case api_mode(Config) of
+        anthropic -> build_anthropic_headers(Config);
+        _ -> build_headers(Config)
+    end.
 
-%% @private Anthropic 兼容模式聊天
-chat_anthropic(Config, Request) ->
-    Url = build_anthropic_url(Config),
-    Headers = build_anthropic_headers(Config),
-    Body = build_anthropic_request_body(Config, Request),
-    Opts = (build_request_opts(Config))#{
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
-    beamai_llm_http_client:request(Url, Headers, Body, Opts, beamai_llm_response_parser:parser_anthropic()).
+body(Config, Request) ->
+    case api_mode(Config) of
+        anthropic -> build_anthropic_request_body(Config, Request);
+        _ -> build_openai_request_body(Config, Request)
+    end.
 
-%% @private Anthropic 兼容模式流式聊天
-%% 复用公共 Anthropic 事件累加器 + finalizer（统一响应，含 tool_use / thinking / usage）。
-stream_chat_anthropic(Config, Request, Callback) ->
-    Url = build_anthropic_url(Config),
-    Headers = build_anthropic_headers(Config),
-    Body = build_anthropic_request_body(Config, Request#{stream => true}),
-    Opts = (build_request_opts(Config))#{
-        finalizer => fun beamai_llm_provider_common:finalize_anthropic_stream/1,
-        on_headers => fun beamai_llm_provider_common:rate_limit_metadata/1
-    },
-    beamai_llm_http_client:stream_request(Url, Headers, Body, Opts, Callback,
-                                          fun beamai_llm_provider_common:accumulate_anthropic_event/2).
+parser(Config) ->
+    case api_mode(Config) of
+        anthropic -> beamai_llm_response_parser:parser_anthropic();
+        _ -> beamai_llm_response_parser:parser_zhipu()
+    end.
+
+stream_accumulator(Config) ->
+    case api_mode(Config) of
+        anthropic -> fun beamai_llm_provider_common:accumulate_anthropic_event/2;
+        _ -> fun beamai_llm_provider_common:accumulate_openai_event/2
+    end.
+
+stream_finalizer(Config) ->
+    case api_mode(Config) of
+        anthropic -> fun beamai_llm_provider_common:finalize_anthropic_stream/1;
+        _ -> fun(Acc) -> beamai_llm_provider_common:finalize_openai_stream(Acc, zhipu) end
+    end.
+
+%% @private 兼容协议：openai（默认）| anthropic
+api_mode(Config) -> maps:get(api_mode, Config, openai).
 
 %%====================================================================
 %% 扩展 API - 异步调用
@@ -249,20 +248,12 @@ do_get_request(Url, Headers, Opts) ->
 %% 请求构建
 %%====================================================================
 
-%% @private 构建 OpenAI 兼容模式 URL
-build_openai_url(Config) ->
-    BaseUrl = maps:get(base_url, Config, ?ZHIPU_BASE_URL),
-    Endpoint = case maps:get(use_coding_api, Config, false) of
+%% @private OpenAI 兼容模式端点（coding API 走另一条路径）
+openai_endpoint(Config) ->
+    case maps:get(use_coding_api, Config, false) of
         true -> ?ZHIPU_CODING_ENDPOINT;
         false -> ?ZHIPU_OPENAI_ENDPOINT
-    end,
-    <<BaseUrl/binary, Endpoint/binary>>.
-
-%% @private 构建 Anthropic 兼容模式 URL
-build_anthropic_url(Config) ->
-    BaseUrl = maps:get(base_url, Config, ?ZHIPU_ANTHROPIC_BASE_URL),
-    Endpoint = maps:get(endpoint, Config, ?ZHIPU_ANTHROPIC_ENDPOINT),
-    <<BaseUrl/binary, Endpoint/binary>>.
+    end.
 
 %% @private 构建通用 URL（用于异步 API）
 build_url(Config, DefaultEndpoint) ->
@@ -289,7 +280,7 @@ build_request_opts(Config) ->
 
 %% @private 构建 OpenAI 兼容模式请求体
 build_openai_request_body(Config, Request) ->
-    Messages = maps:get(messages, Request, []),
+    Messages = beamai_chat_request:messages(Request),
     Base = #{
         <<"model">> => maps:get(model, Config, ?ZHIPU_MODEL),
         <<"messages">> => beamai_llm_message_adapter:to_openai(Messages),
@@ -297,14 +288,14 @@ build_openai_request_body(Config, Request) ->
         <<"temperature">> => maps:get(temperature, Config, ?ZHIPU_TEMPERATURE)
     },
     ?BUILD_BODY_PIPELINE(Base, [
-        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, Request) end,
-        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, Request) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_stream(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> beamai_llm_provider_common:maybe_add_tools(B, beamai_chat_request:options(Request)) end,
         fun(B) -> beamai_llm_provider_common:maybe_add_top_p(B, Config) end
     ]).
 
 %% @private 构建 Anthropic 兼容模式请求体
 build_anthropic_request_body(Config, Request) ->
-    Messages = maps:get(messages, Request, []),
+    Messages = beamai_chat_request:messages(Request),
     {SystemPrompt, UserMessages} = beamai_llm_message_adapter:extract_system_prompt(Messages),
     Base = #{
         <<"model">> => maps:get(model, Config, ?ZHIPU_MODEL),
@@ -313,8 +304,8 @@ build_anthropic_request_body(Config, Request) ->
     },
     ?BUILD_BODY_PIPELINE(Base, [
         fun(B) -> maybe_add_system(B, SystemPrompt) end,
-        fun(B) -> maybe_add_anthropic_tools(B, Request) end,
-        fun(B) -> maybe_add_anthropic_stream(B, Request) end
+        fun(B) -> maybe_add_anthropic_tools(B, beamai_chat_request:options(Request)) end,
+        fun(B) -> maybe_add_anthropic_stream(B, beamai_chat_request:options(Request)) end
     ]).
 
 %% @private 添加系统提示
