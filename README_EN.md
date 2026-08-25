@@ -103,7 +103,9 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 ### 4. Filter (Onion-style Interception)
 
 ```erlang
-%% A filter has 3 optional around hooks (around_chat/around_tool/around_turn).
+%% A filter has 5 optional around hooks (outer→inner: around_turn/around_step/
+%% around_chat/around_llm/around_tool). The tool loop is itself a link on the turn
+%% chain — its next is one iteration (around_step); retry lives in around_llm.
 %% Each around wraps a single invocation with one closure fun(Req, FCtx, Next) -> Resp;
 %% pre/post logic lives in one place, and not calling Next short-circuits.
 %% Filters are given once when the kernel is built; registration order is layer

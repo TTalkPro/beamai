@@ -14,7 +14,7 @@ Core abstraction based on Semantic Kernel concepts, managing Tool registration a
 - **beamai_tool** - Tool definitions, wraps callable tool functions
 - **beamai_tool_behaviour** - Tool module behavior interface
 - **beamai_context** - Context: carries agent state vars, conversation id, kernel ref, trace (stores no messages/history)
-- **beamai_filter** / **beamai_filter_chain** - Onion-style filters (one filter bundles around_chat/around_tool hooks, with a per-filter isolated private context) wrapping tool execution and LLM calls (see [docs/FILTER_EN.md](../../docs/FILTER_EN.md))
+- **beamai_filter** / **beamai_filter_chain** - Onion-style filters (one filter bundles around_turn/around_step/around_chat/around_llm/around_tool hooks, with a per-filter isolated private context) wrapping the tool loop, each iteration, each round's LLM call, each real LLM request, and tool execution (see [docs/FILTER_EN.md](../../docs/FILTER_EN.md))
 - **beamai_prompt** - Prompt template management
 - **beamai_result** - Tool call result types
 

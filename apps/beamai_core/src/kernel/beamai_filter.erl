@@ -2,14 +2,26 @@
 %%% @doc 洋葱式 Filter（around 模型）
 %%%
 %%% 一个 filter 是一层洋葱，用单个 `around` 闭包同时承担「前置 → 调内层 →
-%%% 后置」三段逻辑，最多绑定 4 个可选 around hook（一个机制四个粒度）：
+%%% 后置」三段逻辑，最多绑定 5 个可选 around hook（一个机制五个粒度）：
 %%% - `around_turn`：包裹整个工具循环（turn 链，每 turn 一次）——RAG 注入 /
 %%%   最终答案 guardrail / turn 级预算 / evaluator 递归重入
+%%% - `around_step`：包裹**一次 ReAct 迭代**（step 链，含该轮 LLM 调用与该轮
+%%%   工具执行）——每轮预算 / 轨迹记录 / 迭代级改写
 %%% - `around_chat`：包裹一轮的 **LLM 调用**（chat 链，每轮迭代恰好一次）——
 %%%   记忆 / 记账 / 审计这类「每轮只该发生一次」的逻辑放这层
 %%% - `around_llm`：包裹**一次真实 LLM 请求**（llm 链，嵌在 chat 链之内）——
 %%%   重试 / fallback 换模型 / 限流 / mock 这类「一轮内可能发生多次」的放这层
 %%% - `around_tool`：包裹一次工具执行（tool 链，每个 tool call 一次、并行任务内）
+%%%
+%%% 层次（外 → 内）：
+%%%
+%%%   around_turn            每 turn 一次
+%%%     tool_loop filter     循环驱动本身也是链上一环（beamai_agent_tool_loop）
+%%%       around_step        每轮迭代一次（chat + 该轮工具执行）
+%%%         around_chat      每轮的 LLM 调用一次   ← 重试不会让它重入
+%%%           around_llm     每次真实请求一次      ← 重试在这层重入 Next
+%%%             provider     真正的 chat 调用
+%%%         around_tool      每个 tool call 一次
 %%%
 %%% chat 与 llm 两层的差别只在「一轮里 LLM 被调用多次」时显形（重试、fallback、
 %%% N-best 投票）：那时 around_chat 进出一次、around_llm 进出 N 次。把重试放
@@ -28,6 +40,12 @@
 %%% 投影/合并，filter 代码只通过 FCtx 参数读、通过返回值写。
 %%%
 %%% Request / Response：
+%%% - step：Request `#{messages, context, iteration, tool_calls_made}` → Response
+%%%   `#{status, messages, context, tool_calls_made, ...}`，`status` 为
+%%%   `continue`（继续下一轮）/ `final`（本轮即最终答案，带 `response`）/
+%%%   `interrupt`（带 `type` 与 `interrupt_context`）/ `error`（带 `reason`）。
+%%%   循环驱动只认这四种 status；step filter 可改写 messages/context，也可不调
+%%%   Next 直接合成一个 status（短路本轮迭代）。
 %%% - chat：Request `#{messages, context, opts}` → Response `#{response, context}`
 %%% - llm：与 chat 同形；流式路径的 Request 额外带 `stream => true`（供 filter
 %%%   判定是否介入——token 已投递出去的流重试会重复投递，内置重试 filter 见此
@@ -47,9 +65,10 @@
 %%%   缺省 true（让 loop 前接跨轮历史）；只传新增消息而指望 loop 载入历史的写法，
 %%%   在 `memory => false` 时会丢掉原始问题——那正是 load_history 存在的理由。
 %%%
-%%% 某条链只会用到该链对应的 around（chat 链用 around_chat，llm 链用
-%%% around_llm，tool 链用 around_tool，turn 链用 around_turn），不含相关 hook 的
-%%% filter 在该链中被跳过。
+%%% 某条链只会用到该链对应的 around（turn 链用 around_turn，step 链用 around_step，
+%%% chat 链用 around_chat，llm 链用 around_llm，tool 链用 around_tool），不含相关
+%%% hook 的 filter 在该链中被跳过。同一个 filter 可同时声明多个 hook，各链中的
+%%% 相对层序一致。
 %%%
 %%% **注册顺序即层序**：filters 列表靠前 = 外层（前置先执行、后置后执行）。
 %%% 无 order 字段、无运行时排序——层次完全由构建 kernel 时给出的列表位置决定
@@ -80,8 +99,8 @@
 -export_type([filter/0, hooks/0, hook_type/0, request/0, response/0, fctx/0, next/0]).
 -export_type([token_data/0, token_step/0, token_flush/0, token_transform/0]).
 
--type hook_type() :: around_chat | around_llm | around_tool | around_turn |
-                     token_transform.
+-type hook_type() :: around_chat | around_llm | around_step | around_tool |
+                     around_turn | token_transform.
 -type request() :: map().
 -type response() :: map() | tuple().  %% chat/tool 为 map；turn 为工具循环结果 tuple
 -type fctx() :: map().
@@ -102,6 +121,7 @@
 -type hooks() :: #{
     around_chat => around_fun(),
     around_llm => around_fun(),
+    around_step => around_fun(),
     around_tool => around_fun(),
     around_turn => around_fun(),
     token_transform => token_transform()
@@ -121,8 +141,8 @@
 %% @doc 创建 filter（私有状态初值 #{}）
 %%
 %% @param Name 名称（调试标识，也是私有上下文的隔离键）
-%% @param Hooks hook map，可含 around_chat/around_llm/around_tool/around_turn/
-%%              token_transform 任意子集
+%% @param Hooks hook map，可含 around_chat/around_llm/around_step/around_tool/
+%%              around_turn/token_transform 任意子集
 -spec new(binary(), hooks()) -> filter().
 new(Name, Hooks) ->
     new(Name, Hooks, #{}).

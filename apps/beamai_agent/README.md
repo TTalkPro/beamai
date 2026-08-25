@@ -76,6 +76,11 @@ beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_message
     %% 最大工具循环迭代次数（默认 10）
     max_tool_iterations => 10,
 
+    %% 循环策略：ReAct 循环本身是 turn 链最内层的一个 filter，传构造器即可整体替换
+    %% （fun((LoopOpts) -> beamai_filter:filter())，Next 是 step 链 = 一轮迭代；
+    %%  契约见 docs/FILTER.md「循环也是链上一环」）
+    loop_filter => undefined,
+
     %% 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
     parallel_tools => true,
 
@@ -252,10 +257,13 @@ K1 = beamai_kernel:add_service(K0, beamai_chat_completion:create(openai, #{model
 
 **Filter hook 速查**
 
-| hook | Req 形状 | Next 返回 |
-|------|----------|-----------|
-| `around_chat` | `#{messages, context, opts}` | `#{response, context}` |
-| `around_tool` | `#{tool, args, context}` | `#{result, context}` |
+| hook | 粒度 | Req 形状 | Next 返回 |
+|------|------|----------|-----------|
+| `around_turn` | 每 turn 一次 | `#{messages, context, resume, load_history}` | 工具循环结果 tuple |
+| `around_step` | 每轮迭代一次（含该轮工具执行） | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}` |
+| `around_chat` | 每轮迭代一次 | `#{messages, context, opts}` | `#{response, context}` |
+| `around_llm` | 每次真实 LLM 请求一次（重试在这层重入） | 同 chat（流式另带 `stream => true`） | 同 chat |
+| `around_tool` | 每个 tool call 一次 | `#{tool, args, context}` | `#{result, context}` |
 
 - 闭包签名 `fun(Req, FCtx, Next) -> Resp`：前置改 `Req` 再 `Next(Req2)`；后置改 `Resp`；
   短路则不调 `Next` 直接返回。

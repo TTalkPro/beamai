@@ -1,34 +1,51 @@
 %%%-------------------------------------------------------------------
 %%% @doc Tool Loop 执行模块（Agent 自管编排：full-messages + 显式记忆/回调）
 %%%
-%%% 驱动 ReAct 工具调用循环。**记忆与回调都由本模块显式编排**，不经任何 kernel
-%%% filter：
+%%% 驱动 ReAct 工具调用循环。**循环本身是 turn 链上的一环**：`loop_filter/1`
+%%% 返回一个 `around_turn` filter（注册在 turn 链最内层），它的 `Next` 不是别的
+%%% turn filter，而是 **step 链**——一次迭代（该轮 LLM 调用 + 该轮工具执行）。
+%%% 于是层次成为：
 %%%
-%%%   - 本模块持有本轮**完整 messages**（within-run 累积）。
-%%%   - 每轮：触发 on_llm_call → 经 memory provider 的 prepare 变换(窗口/摘要) →
-%%%     invoke_chat(_stream) → 把 assistant 回合并入 messages 并 append 持久化 →
-%%%     有 tool_calls 则执行(触发 on_tool_call/result)、把工具结果并入并持久化 → 递归。
+%%%   around_turn（用户 turn filter，每 turn 一次）
+%%%     tool_loop filter（本模块：while 调 Next → 判 status → 继续/收尾）
+%%%       around_step（每轮迭代一次）
+%%%         step_terminal/1（本模块：一次迭代的真正执行）
+%%%
+%%% 换循环策略（plan-execute / reflexion / 树搜索）＝换掉这个 filter：agent 配置
+%%% `loop_filter => fun((LoopOpts) -> beamai_filter:filter())` 即可，agent 与 kernel
+%%% 代码一行不动（见 beamai_agent:run_turn_chain/3）。
+%%%
+%%% **记忆与回调都由本模块显式编排**，不经任何 kernel filter：
+%%%
+%%%   - 本轮**完整 messages**（within-run 累积）随 step 请求/响应逐轮穿线。
+%%%   - 每轮（step_terminal）：触发 on_llm_call → 经 memory provider 的 prepare
+%%%     变换(窗口/摘要) → invoke_chat(_stream) → 把 assistant 回合并入 messages 并
+%%%     append 持久化 → 有 tool_calls 则执行(触发 on_tool_call/result)、把工具结果
+%%%     并入并持久化 → 返回 status=continue 交回驱动。
 %%%   - 循环终止于四种情形：模型不再要工具（正常完成）、整批工具标注
 %%%     return_direct（工具结果即最终答案，不回灌模型）、中断（HITL/env_retry）、
 %%%     迭代耗尽。
 %%%   - 跨轮历史(cross-run)由 memory provider 的 history/append 负责；本模块只负责
 %%%     within-run 累积与按序持久化。memory=undefined 时仅在本轮内累积、不持久化。
 %%%
-%%% chat_opts 仍带 context（conversation_id，供工具执行 / 用户自加的 kernel filter）
-%%% 与 system_prompts（kernel invoke_chat 内按 opts 注入）。
+%%% chat_opts 带 system_prompts（kernel invoke_chat 内按 opts 注入）；context 不再
+%%% 固定在 chat_opts 里，而是随 step 请求逐轮穿线（每轮由 step_terminal 覆写进
+%%% chat_opts），turn filter 改写的 context 因此对循环全程可见。
 %%%
 %%% @end
 %%%-------------------------------------------------------------------
 -module(beamai_agent_tool_loop).
 
--export([run/2]).
+-export([run/2, loop_filter/1, step_terminal/1]).
 -export([build_env_interrupt_context/7]).
 
 -type provider() :: beamai_memory_provider:provider() | undefined.
 
 -type loop_opts() :: #{
     kernel := beamai_kernel:kernel(),
-    messages := [map()],            %% 已有上下文（resume 时为中断时携带的完整 messages）
+    %% 以下三项是**消息来源**：经 turn 链时由循环驱动按 turn 请求 / continuation
+    %% 覆盖填入，直跑 run/2 时由调用方给出
+    messages => [map()],            %% 已有上下文（resume 时为中断时携带的完整 messages）
     new_messages => [map()],        %% 本轮新增消息（入口处持久化后并入）
     load_history => boolean(),      %% 是否前接跨轮历史（首轮 true，resume false）
     chat_opts := map(),             %% 含 context 与 system_prompts
@@ -48,16 +65,43 @@
     tool_calling_manager := beamai_tool_calling_manager:manager(),
     %% 流式 token 处理器：设置时每轮 LLM 调用走 invoke_chat_stream，
     %% 文本 token 经此回调实时透出（undefined 则非流式）。
-    stream_token_handler => undefined | fun((binary()) -> ok)
+    stream_token_handler => undefined | fun((binary()) -> ok),
+    %% 之前已执行的 tool 调用记录（resume 续接时携带）
+    prev_tool_calls => [map()],
+    %% 首次进入循环时的一次性分派（resume 用）：返回 {result, TurnResult} 直接
+    %% 短路（如重跑后仍失败要再暂停），或 {loop, OptsOverride} 用覆盖后的 opts
+    %% 跑续接循环。只消费一次——turn filter 递归重入时走全新循环。
+    continuation => fun(() -> {result, term()} | {loop, map()})
 }.
 
--export_type([loop_opts/0]).
+%% step 链的请求/响应（见模块头层次图）
+-type step_request() :: #{
+    messages := [map()],                %% 本轮起始的完整消息序列
+    context := beamai_context:t(),      %% 贯穿全链的共享上下文
+    iteration := non_neg_integer(),     %% 已用迭代数（跨中断累计）
+    tool_calls_made := [map()]          %% 至此已发生的 tool 调用记录
+}.
+-type step_response() :: #{
+    status := continue | final | interrupt | error,
+    messages => [map()],
+    context := beamai_context:t(),
+    tool_calls_made => [map()],
+    response => map(),                  %% status=final
+    type => atom(),                     %% status=interrupt
+    interrupt_context => map(),         %% status=interrupt
+    reason => term()                    %% status=error
+}.
+
+-export_type([loop_opts/0, step_request/0, step_response/0]).
 
 %%====================================================================
 %% API
 %%====================================================================
 
-%% @doc tool loop 入口
+%% @doc 直接跑一轮 tool loop（不经 turn 链；供不走 agent 的调用方）
+%%
+%% 等价于「只有循环 filter、没有任何 step filter」：messages / new_messages /
+%% load_history 全取自 Opts（不从 turn 请求里拿）。
 %%
 %% @param Opts 循环选项（kernel、完整 messages、memory、回调等）
 %% @param PrevToolCalls 之前已执行的 tool 调用记录（resume 时携带）
@@ -73,9 +117,70 @@
     {ok, map(), [map()], pos_integer(), [map()]} |
     {interrupt, atom(), map()} |
     {error, term()}.
-run(Opts, PrevToolCalls) ->
+run(Opts0, PrevToolCalls) ->
+    %% continuation 返回空 override：首次进入即按 Opts 原样跑（不从 Req 取消息）
+    Opts = Opts0#{prev_tool_calls => PrevToolCalls,
+                  continuation => fun() -> {loop, #{}} end},
+    Around = beamai_filter:hook(loop_filter(Opts), around_turn),
+    Req = #{messages => maps:get(new_messages, Opts, []),
+            context => ctx(Opts),
+            load_history => maps:get(load_history, Opts, false)},
+    Around(Req, #{}, step_terminal(Opts)).
+
+%% @doc 循环驱动 filter（around_turn；注册在 turn 链**最内层**）
+%%
+%% 它的 `Next` 是 step 链——调一次 = 跑一轮迭代。驱动只做三件事：判限额、
+%% 按 step 响应的 status 决定继续/收尾、把最终状态折成工具循环结果 tuple。
+%%
+%% 首次进入时若 Opts 带 continuation（resume），一次性消费之：要么直接返回它给的
+%% 结果，要么用它给的 override 跑续接循环；之后（turn filter 递归重入）一律按
+%% turn 请求跑全新循环。CAS 保证「延续」只跑一次。
+-spec loop_filter(loop_opts()) -> beamai_filter:filter().
+loop_filter(Opts) ->
+    Consumed = atomics:new(1, [{signed, false}]),  %% 0=未消费
+    beamai_filter:new(<<"tool_loop">>, #{
+        around_turn => fun(Req, _FCtx, Next) ->
+            case consume(Opts, Consumed) of
+                {result, TurnResult} -> TurnResult;
+                {loop, Override} -> drive(maps:merge(Opts, Override), Req, Next);
+                fresh -> drive(fresh_opts(Opts, Req), Req, Next)
+            end
+        end
+    }).
+
+%% @doc step 链最内层：真正跑一轮迭代（LLM 调用 + 本轮工具执行）
+-spec step_terminal(loop_opts()) -> fun((step_request()) -> step_response()).
+step_terminal(Opts) ->
+    fun(StepReq) -> step(Opts, StepReq) end.
+
+%%====================================================================
+%% 内部函数 - 循环驱动
+%%====================================================================
+
+%% @private 一次性消费 continuation（无则 fresh）
+consume(#{continuation := Fun}, Consumed) when is_function(Fun, 0) ->
+    case atomics:compare_exchange(Consumed, 1, 0, 1) of
+        ok -> Fun();
+        _ -> fresh
+    end;
+consume(_Opts, _Consumed) ->
+    fresh.
+
+%% @private 全新循环的 opts：消息来源全取自 turn 请求（turn filter 可改写）
+fresh_opts(Opts, Req) ->
+    Opts#{messages => [],
+          new_messages => maps:get(messages, Req, []),
+          load_history => maps:get(load_history, Req, true),
+          prev_tool_calls => []}.
+
+%% @private 驱动循环：组装起始消息 → 逐轮调 step 链
+drive(Opts, Req, Next) ->
     #{max_iterations := MaxIter} = Opts,
-    iterate(init_messages(Opts), MaxIter, PrevToolCalls).
+    StepReq = #{messages => init_messages(Opts),
+                context => maps:get(context, Req, beamai_context:new()),
+                iteration => 0,
+                tool_calls_made => maps:get(prev_tool_calls, Opts, [])},
+    iterate(Opts, Next, MaxIter, StepReq).
 
 %% @private 组装本轮起始 messages（记忆编排统一入口）
 %%
@@ -90,33 +195,55 @@ init_messages(Opts) ->
     end,
     persist(Opts, New),
     Existing = maps:get(messages, Opts, []),
-    Opts#{messages => Prior ++ Existing ++ New}.
+    Prior ++ Existing ++ New.
 
 %% @private 载入跨轮历史（无 memory 则 []）
 load_history(#{memory := undefined}) -> [];
 load_history(#{memory := Provider, conversation_id := ConvId}) ->
     beamai_memory_provider:history(Provider, ConvId).
 
-%%====================================================================
-%% 内部函数 - 主循环
-%%====================================================================
-
 %% @private 迭代次数耗尽，返回错误
-iterate(_Opts, 0, ToolCallsMade) ->
+iterate(_Opts, _Next, 0, #{tool_calls_made := ToolCallsMade}) ->
     {error, {max_tool_iterations, ToolCallsMade}};
 
-%% @private 主循环体：用本轮完整 messages 调用 LLM 并根据响应分支处理
+%% @private 主循环体：调一次 step 链（= 一轮迭代），按 status 决定继续/收尾
 %%
 %% 限额在这里判、而不是放进 around_tool filter：filter 拿到的 context 是**每轮
 %% 初的只读快照**（见 beamai_agent_utils:execute_sequential/4 与
 %% design/context_split_parallel_tools.md §4.1「快照 + 屏障折叠，不引入批内穿线」），
 %% 批内每个工具读到的计数都一样，filter 里的计数器天生累加不起来。
 %% 循环这一层是串行的，length(ToolCallsMade) 无歧义——限额就该待在这。
-iterate(Opts, N, ToolCallsMade) ->
+iterate(Opts, Next, N, #{tool_calls_made := ToolCallsMade} = StepReq0) ->
     case over_tool_call_limit(Opts, ToolCallsMade) of
-        true -> {error, {max_tool_calls, ToolCallsMade}};
-        false -> do_iterate(Opts, N, ToolCallsMade)
+        true ->
+            {error, {max_tool_calls, ToolCallsMade}};
+        false ->
+            %% iteration 为**已用**迭代数（跨中断累计）：中断上下文按它还原剩余额度
+            Used = maps:get(max_tool_iterations, Opts) - N,
+            dispatch_step(Opts, Next, N, Next(StepReq0#{iteration => Used}))
     end.
+
+%% @private 按 step 响应的 status 分派
+dispatch_step(_Opts, _Next, _N, #{status := final, response := Response,
+                                  messages := Messages,
+                                  tool_calls_made := ToolCallsMade}) ->
+    {ok, Response, ToolCallsMade, compute_iterations(ToolCallsMade), Messages};
+dispatch_step(Opts, Next, N, #{status := continue} = Resp) ->
+    iterate(Opts, Next, N - 1, next_step_req(Resp));
+dispatch_step(_Opts, _Next, _N, #{status := interrupt, type := Type,
+                                  interrupt_context := Context}) ->
+    {interrupt, Type, Context};
+dispatch_step(_Opts, _Next, _N, #{status := error, reason := Reason}) ->
+    {error, Reason};
+%% step filter 合成了不认识的响应：当错误报出去，别把循环挂死
+dispatch_step(_Opts, _Next, _N, Other) ->
+    {error, {invalid_step_response, Other}}.
+
+%% @private 由 step 响应组装下一轮请求（只取契约字段，filter 加的键不穿线）
+next_step_req(#{messages := Messages, context := Ctx,
+                tool_calls_made := ToolCallsMade}) ->
+    #{messages => Messages, context => Ctx, iteration => 0,
+      tool_calls_made => ToolCallsMade}.
 
 %% @private 已发生的工具调用数是否已达上限
 %%
@@ -129,26 +256,36 @@ over_tool_call_limit(Opts, ToolCallsMade) ->
         Max when is_integer(Max) -> length(ToolCallsMade) >= Max
     end.
 
-do_iterate(Opts, N, ToolCallsMade) ->
-    #{messages := Messages, callbacks := Callbacks, meta := Meta} = Opts,
+%%====================================================================
+%% 内部函数 - 单步（step 链最内层）
+%%====================================================================
+
+%% @private 一轮迭代：LLM 调用 → assistant 入库 → 有工具则执行本轮工具
+%%
+%% context 从请求里来、从响应里回：chat 返回的 context（filter 私有状态、state 槽）
+%% 与工具批次折叠后的 context 都经响应穿线给下一轮。
+step(Opts, #{messages := Messages, context := Ctx,
+             tool_calls_made := ToolCallsMade} = StepReq) ->
+    #{callbacks := Callbacks, meta := Meta} = Opts,
     ToSend = prepare_messages(Opts, Messages),
     beamai_agent_callbacks:invoke(on_llm_call, [ToSend, Meta], Callbacks),
-    case invoke_llm(Opts, ToSend) of
+    case invoke_llm(Opts, ToSend, Ctx) of
         {ok, Response, ChatCtx} ->
             %% 每次 LLM 返回后触发（含中间轮，可据此累计各次 usage）
             beamai_agent_callbacks:invoke(on_llm_result, [Response, Meta], Callbacks),
             Messages1 = record_assistant(Opts, Response, Messages),
-            %% 穿线 chat 返回的 context：filter 私有状态与 state 槽跨轮存活
-            Opts1 = with_ctx(Opts, ChatCtx),
+            StepReq1 = StepReq#{messages => Messages1, context => ChatCtx},
             case beamai_llm_response:has_tool_calls(Response) of
                 true ->
-                    TCs = beamai_llm_response:tool_calls(Response),
-                    handle_tool_calls(TCs, Opts1#{messages => Messages1}, N, ToolCallsMade);
+                    handle_tool_calls(beamai_llm_response:tool_calls(Response),
+                                      Opts, StepReq1);
                 false ->
-                    finish(Response, ToolCallsMade, Messages1)
+                    #{status => final, response => Response, messages => Messages1,
+                      context => ChatCtx, tool_calls_made => ToolCallsMade}
             end;
-        {error, _} = Err ->
-            Err
+        {error, Reason} ->
+            #{status => error, reason => Reason, context => Ctx,
+              messages => Messages, tool_calls_made => ToolCallsMade}
     end.
 
 %% @private 经 memory provider 变换待发送消息（无 provider 则原样）
@@ -168,7 +305,9 @@ record_assistant(Opts, Response, Messages) ->
     end.
 
 %% @private 调用 LLM：有 stream_token_handler 则走流式，否则非流式
-invoke_llm(#{kernel := Kernel, chat_opts := ChatOpts} = Opts, ToSend) ->
+%% （context 每轮由 step 请求覆写进 chat_opts）
+invoke_llm(#{kernel := Kernel, chat_opts := ChatOpts0} = Opts, ToSend, Ctx) ->
+    ChatOpts = ChatOpts0#{context => Ctx},
     case maps:get(stream_token_handler, Opts, undefined) of
         undefined ->
             beamai_kernel:invoke_chat(Kernel, ToSend, ChatOpts);
@@ -177,22 +316,18 @@ invoke_llm(#{kernel := Kernel, chat_opts := ChatOpts} = Opts, ToSend) ->
             beamai_kernel:invoke_chat_stream(Kernel, ToSend, ChatOpts, TokenCb)
     end.
 
-%% @private 无 tool_calls，返回最终响应（Messages 为跑完的完整消息序列）
-finish(Response, ToolCallsMade, Messages) ->
-    {ok, Response, ToolCallsMade, compute_iterations(ToolCallsMade), Messages}.
-
 %%====================================================================
 %% 内部函数 - Tool Calls 处理
 %%====================================================================
 
 %% @private 处理 LLM 返回的 tool_calls：统一前置中断检测，命中则统一处理
-handle_tool_calls(TCs, Opts, N, ToolCallsMade) ->
+handle_tool_calls(TCs, Opts, StepReq) ->
     case find_first_interrupt(TCs, Opts) of
         {interrupt, Type, Reason, InterruptedTC, SafeCalls, SkippedCalls} ->
             handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls,
-                             Opts, N, ToolCallsMade);
+                             Opts, StepReq);
         no ->
-            execute_and_continue(TCs, Opts, N, ToolCallsMade)
+            execute_and_continue(TCs, Opts, StepReq)
     end.
 
 %% @private 统一中断检测：先查中断 tool（LLM 显式请求人类介入），
@@ -223,25 +358,26 @@ find_first_interrupt(TCs, Opts) ->
 %% 中 assistant 的每个 tool_call 都有对应结果（被中断的那个由人类输入补全），
 %% 不会出现 provider 拒绝的残缺历史。中断上下文携带当前完整 messages，供
 %% resume 续接。
-handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls,
-                 Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel, callbacks := Callbacks, messages := Messages,
-      max_tool_iterations := MaxIter,
-      tool_calling_manager := TCM} = Opts,
+handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls, Opts,
+                 #{messages := Messages, context := Ctx, iteration := Used,
+                   tool_calls_made := ToolCallsMade}) ->
+    #{kernel := Kernel, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     #{messages := SafeResults, records := SafeCallRecords, context := NewCtx} =
         beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, SafeCalls, #{
-            context => ctx(Opts),
+            context => Ctx,
             parallel => Parallel,
             on_result => tool_result_cb(Callbacks)
         }),
     AllResults = SafeResults ++ [skipped_result(TC) || TC <- SkippedCalls],
     persist(Opts, AllResults),
-    Context = build_interrupt_context(MaxIter - N, AllResults, InterruptedTC,
+    Context = build_interrupt_context(Used, AllResults, InterruptedTC,
                                       ToolCallsMade ++ SafeCallRecords, Reason,
                                       Messages ++ AllResults,
                                       beamai_context:get_state(NewCtx)),
-    {interrupt, Type, Context}.
+    #{status => interrupt, type => Type, interrupt_context => Context,
+      context => NewCtx, messages => Messages ++ AllResults,
+      tool_calls_made => ToolCallsMade ++ SafeCallRecords}.
 
 %% @private 被拦截未执行的 tool_call 的占位结果（保证消息历史完整）
 skipped_result(TC) ->
@@ -261,32 +397,34 @@ skipped_result(TC) ->
 %% 批次结果尚未持久化/交模型，携带在中断上下文的 batch_messages 里，resume 时按
 %% 决策重跑失败调用或原样放行（见 beamai_agent:resume）。其余情形正常续跑
 %% （语义/瞬态/策略类结果照旧 errors-are-data 交模型）。
-execute_and_continue(TCs, Opts, N, ToolCallsMade) ->
-    #{kernel := Kernel, callbacks := Callbacks, messages := Messages,
-      max_tool_iterations := MaxIter,
-      tool_calling_manager := TCM} = Opts,
+execute_and_continue(TCs, Opts, #{messages := Messages, context := Ctx,
+                                  iteration := Used,
+                                  tool_calls_made := ToolCallsMade}) ->
+    #{kernel := Kernel, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     #{messages := ToolResults, records := NewToolCalls, context := NewCtx} =
         beamai_tool_calling_manager:execute_tool_calls(TCM, Kernel, TCs, #{
-            context => ctx(Opts),
+            context => Ctx,
             parallel => Parallel,
             on_result => tool_result_cb(Callbacks)
         }),
     case env_pause(Opts, TCs, NewToolCalls) of
         {pause, FailedCalls} ->
             Context = build_env_interrupt_context(
-                        MaxIter - N, Messages, ToolResults, NewToolCalls, FailedCalls,
+                        Used, Messages, ToolResults, NewToolCalls, FailedCalls,
                         beamai_context:get_state(NewCtx), ToolCallsMade),
-            {interrupt, env_retry, Context};
+            #{status => interrupt, type => env_retry, interrupt_context => Context,
+              context => NewCtx, messages => Messages,
+              tool_calls_made => ToolCallsMade ++ NewToolCalls};
         proceed ->
             persist(Opts, ToolResults),
             %% 穿线折叠后的 context：本轮工具写下的 state 槽下一轮工具/ filter 可见
-            Opts0 = with_ctx(Opts, NewCtx),
-            Opts1 = Opts0#{messages => Messages ++ ToolResults},
+            Messages1 = Messages ++ ToolResults,
             AllCalls = ToolCallsMade ++ NewToolCalls,
-            case return_direct(Opts1, TCs, NewToolCalls) of
-                true -> finish_direct(Opts1, ToolResults, AllCalls);
-                false -> iterate(Opts1, N - 1, AllCalls)
+            case return_direct(Opts, TCs, NewToolCalls) of
+                true -> finish_direct(Opts, Messages1, ToolResults, NewCtx, AllCalls);
+                false -> #{status => continue, messages => Messages1,
+                           context => NewCtx, tool_calls_made => AllCalls}
             end
     end.
 
@@ -314,10 +452,11 @@ is_failed(_) -> false.
 %%
 %% 合成的 assistant 回合照常持久化：历史因此仍以 assistant 收尾（形如
 %% assistant(tool_calls) → tool(result) → assistant(答案)），下一轮续接不残缺。
-finish_direct(#{messages := Messages} = Opts, ToolResults, ToolCallsMade) ->
+finish_direct(Opts, Messages, ToolResults, Ctx, ToolCallsMade) ->
     Response = direct_response(ToolResults),
     Messages1 = record_assistant(Opts, Response, Messages),
-    finish(Response, ToolCallsMade, Messages1).
+    #{status => final, response => Response, messages => Messages1,
+      context => Ctx, tool_calls_made => ToolCallsMade}.
 
 %% @private 由工具结果合成最终响应（多工具按原始序换行拼接）
 direct_response(ToolResults) ->
@@ -362,14 +501,9 @@ tool_result_cb(Callbacks) ->
         beamai_agent_callbacks:invoke(on_tool_result, [Name, Result], Callbacks)
     end.
 
-%% @private 取贯穿全链的 context（带 conversation_id），缺省新建
+%% @private 取起始 context（仅 run/2 直跑路径用；经 turn 链时由请求给出）
 ctx(#{chat_opts := ChatOpts}) ->
     maps:get(context, ChatOpts, beamai_context:new()).
-
-%% @private 把更新后的 context 穿线回 chat_opts，供下一轮 chat/tool 复用
-%% （filter 私有状态跨轮存活、state 槽跨轮可见）
-with_ctx(#{chat_opts := ChatOpts} = Opts, Ctx) ->
-    Opts#{chat_opts => ChatOpts#{context => Ctx}}.
 
 %% @private 计算迭代次数
 compute_iterations([]) -> 1;

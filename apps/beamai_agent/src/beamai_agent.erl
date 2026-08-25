@@ -144,29 +144,43 @@ run(State, UserMessage, Opts) ->
     %% 记忆编排（载入跨轮历史 + 持久化新消息）统一由 tool_loop 负责，
     %% 这里只声明本轮新增消息并要求载入历史。整个工具循环包在 turn 洋葱内：
     %% turn filter 可改写入口消息（RAG 前置）、around（最终答案 guardrail/预算）、
-    %% 多次重入（校验重试/evaluator）。terminal = 一轮完整 tool loop。
+    %% 多次重入（校验重试/evaluator）。
     UserMsg = #{role => user, content => UserMessage},
     TurnReq = #{messages => [UserMsg],
                 context => initial_turn_context(State0),
                 resume => false},
-    Terminal = fun(TReq) ->
-        run_loop(State0,
-                 #{new => maps:get(messages, TReq),
-                   load_history => maps:get(load_history, TReq, true)},
-                 [], Opts#{turn_context => maps:get(context, TReq)})
-    end,
-    dispatch_turn_result(State0, run_turn_chain(State0, TurnReq, Terminal),
+    dispatch_turn_result(State0,
+                         run_turn_chain(State0, TurnReq, loop_opts(State0, Opts)),
                          Callbacks, Meta).
 
-%% @private turn 洋葱：把整个工具循环包进 around_turn filter 链
+%% @private turn 洋葱：用户 turn filter → 循环 filter → step 链
 %%
-%% 复用 beamai_filter_chain（Phase=around_turn）。TurnResult 为工具循环结果 tuple，
-%% filter 直接模式匹配（硬规则：interrupt/error 透传不重入）。filter/terminal 抛出
-%% 由链统一捕获为 {error, Reason}。
-run_turn_chain(#{kernel := #{filters := Filters}}, TurnReq, Terminal) ->
-    case beamai_filter_chain:run(Filters, around_turn, Terminal, TurnReq) of
+%% **循环是链上一环**：turn 链 = 用户 filter ++ [循环 filter]（最内层），链的
+%% terminal 是 **step 链**——循环 filter 每调一次 Next 就跑一轮迭代。于是
+%% around_turn 每 turn 一次、around_step 每轮一次，两者不再挤在同一个钩子上。
+%%
+%% TurnResult 为工具循环结果 tuple，turn filter 直接模式匹配（硬规则：
+%% interrupt/error 透传不重入）。filter/terminal 抛出由链统一捕获为 {error, Reason}。
+run_turn_chain(#{kernel := #{filters := Filters}} = State, TurnReq, LoopOpts) ->
+    Chain = Filters ++ [loop_filter(State, LoopOpts)],
+    StepChain = beamai_filter_chain:compose(
+                  Filters, around_step,
+                  beamai_agent_tool_loop:step_terminal(LoopOpts)),
+    case beamai_filter_chain:run(Chain, around_turn, StepChain, TurnReq) of
         {ok, TurnResult} -> TurnResult;
         {error, Reason} -> {error, Reason}
+    end.
+
+%% @private 取本轮的循环 filter：缺省 ReAct 循环，可整体替换
+%%
+%% agent 配置 `loop_filter => fun((LoopOpts) -> beamai_filter:filter())` 即可换掉
+%% 循环策略（plan-execute / reflexion / 树搜索）——它拿到的 Next 是 step 链，
+%% 只要按 step 契约驱动、最后返回工具循环结果 tuple 即可（契约见
+%% beamai_agent_tool_loop 的 step_request/0 与 step_response/0）。
+loop_filter(State, LoopOpts) ->
+    case maps:get(loop_filter, State, undefined) of
+        undefined -> beamai_agent_tool_loop:loop_filter(LoopOpts);
+        Fun when is_function(Fun, 1) -> Fun(LoopOpts)
     end.
 
 %% @private turn 入口初始 context（只读环境：conversation_id；首轮 state 空）
@@ -415,31 +429,24 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload) ->
             beamai_agent_callbacks:invoke(on_resume, [IntState, Meta], Callbacks),
             Agent1 = clear_interrupt(Agent),
             %% resume 同样经 turn 洋葱（guardrail/校验对被打断过的 turn 最终答案也生效），
-            %% 终端一次性分派：首次进入=延续暂停 turn（消费 interrupt_state），
-            %% 递归重入=全新循环（TurnReq.messages）。CAS 保证延续只跑一次。
-            Consumed = atomics:new(1, [{signed, false}]),  %% 0=未消费
+            %% 一次性分派交给循环 filter 的 continuation：首次进入=延续暂停 turn
+            %% （消费 interrupt_state），递归重入=全新循环（TurnReq.messages）。
             InitState = maps:get(saved_state, IntState, #{}),
             TurnReq = #{messages => [],
                         context => resume_context(Agent1, InitState),
                         resume => true},
-            Terminal = fun(TReq) ->
-                case atomics:compare_exchange(Consumed, 1, 0, 1) of
-                    ok ->
-                        resume_continuation(Agent1, Decision, Payload, IntState);
-                    _ ->
-                        %% 递归重入：全新循环
-                        run_loop(Agent1,
-                                 #{new => maps:get(messages, TReq),
-                                   load_history => maps:get(load_history, TReq, true)},
-                                 [], #{turn_context => maps:get(context, TReq)})
-                end
-            end,
-            dispatch_turn_result(Agent1, run_turn_chain(Agent1, TurnReq, Terminal),
+            LoopOpts = (loop_opts(Agent1, #{}))#{
+                continuation => fun() ->
+                    resume_continuation(Agent1, Decision, Payload, IntState)
+                end},
+            dispatch_turn_result(Agent1, run_turn_chain(Agent1, TurnReq, LoopOpts),
                                  Callbacks, Meta)
     end.
 
-%% @private 延续暂停的 turn：按 phase 消费 interrupt_state，返回**原始**工具循环结果
-%% tuple（由 dispatch_turn_result 统一分派 finalize/interrupt/error）。
+%% @private 延续暂停的 turn：按 phase 消费 interrupt_state
+%%
+%% 返回 `{loop, OptsOverride}`（用续接消息跑循环）或 `{result, TurnResult}`
+%% （直接给出原始工具循环结果 tuple，如重跑后仍失败要再暂停）。
 resume_continuation(Agent1, Decision, Payload, IntState) ->
     case maps:get(phase, IntState, approval) of
         env_retry -> resume_env_raw(Agent1, Decision, IntState);
@@ -468,10 +475,7 @@ resume_approval_raw(Agent1, Decision, Payload, IntState) ->
                 }),
             Msgs
     end,
-    run_loop(Agent1,
-             #{existing => Existing, new => ResumeMsgs},
-             PrevCalls,
-             #{max_iterations => MaxIter - Iter, init_state => InitState}).
+    {loop, continuation_opts(Existing, ResumeMsgs, PrevCalls, MaxIter - Iter)}.
 
 %% @private 环境暂停延续：retry 重跑失败调用并按 id 替换结果（仍失败则再暂停——返回
 %% 原始 {interrupt, env_retry, _}），否则 proceed 原错误结果放行；跑续接循环。
@@ -481,7 +485,7 @@ resume_env_raw(Agent1, Decision, IntState) ->
       batch_messages := BatchMsgs, failed_calls := FailedCalls} = IntState,
     InitState = maps:get(saved_state, IntState, #{}),
     Existing = maps:get(messages, IntState, []),
-    RemOpts = #{max_iterations => MaxIter - Iter, init_state => InitState},
+    Remaining = MaxIter - Iter,
     case is_retry_decision(Decision) of
         true ->
             Ctx = resume_context(Agent1, InitState),
@@ -499,19 +503,27 @@ resume_env_raw(Agent1, Decision, IntState) ->
             case {maps:get(on_env_error, Agent1, proceed), StillFailed} of
                 {pause, [_ | _]} ->
                     %% 重跑后仍有环境类失败 → 返回原始 interrupt tuple，dispatch 统一暂停
-                    {interrupt, env_retry,
-                     beamai_agent_tool_loop:build_env_interrupt_context(
-                       Iter, Existing, Corrected, RetryRecords, StillFailed,
-                       InitState, PrevCalls)};
+                    {result,
+                     {interrupt, env_retry,
+                      beamai_agent_tool_loop:build_env_interrupt_context(
+                        Iter, Existing, Corrected, RetryRecords, StillFailed,
+                        InitState, PrevCalls)}};
                 _ ->
-                    run_loop(Agent1, #{existing => Existing, new => Corrected},
-                             PrevCalls, RemOpts)
+                    {loop, continuation_opts(Existing, Corrected, PrevCalls, Remaining)}
             end;
         false ->
             %% proceed：原错误结果照常交模型
-            run_loop(Agent1, #{existing => Existing, new => BatchMsgs},
-                     PrevCalls, RemOpts)
+            {loop, continuation_opts(Existing, BatchMsgs, PrevCalls, Remaining)}
     end.
+
+%% @private 续接循环的 opts 覆盖：接着中断时的 messages 往下跑，不再载入历史
+%% （Existing 已是完整消息序列），迭代额度用剩余数。
+continuation_opts(Existing, NewMsgs, PrevCalls, Remaining) ->
+    #{messages => Existing,
+      new_messages => NewMsgs,
+      load_history => false,
+      prev_tool_calls => PrevCalls,
+      max_iterations => Remaining}.
 
 %% @private 构建 resume 执行/重跑用的只读环境 context（带 conversation_id + 恢复 state）
 resume_context(Agent, InitState) ->
@@ -627,22 +639,16 @@ get_interrupt_info(_) ->
 %% 内部函数 - 辅助
 %%====================================================================
 
-%% @private 运行一轮 tool loop（full-messages 模式）
+%% @private 组装本轮的 LoopOpts（run / resume 共用）
 %%
-%% 统一 run / resume 的 LoopOpts 组装。MsgSpec 描述本轮消息来源：
-%%   existing     — 已有上下文（resume 时为中断时携带的完整 messages）
-%%   new          — 本轮新增消息（用户输入 / resume 的人类输入）
-%%   load_history — 是否前接跨轮历史（首轮 true，resume false）
-%% 历史载入与新消息持久化全部由 tool_loop 编排（agent 不再直接碰 memory）。
-%% Opts 可含 max_iterations 覆盖（resume 用剩余迭代数）。
-run_loop(State, MsgSpec, PrevCalls, Opts) ->
+%% 消息来源不在这里定：全新循环取自 turn 请求（turn filter 可改写），续接循环
+%% 取自 continuation 给的 override。历史载入与新消息持久化全部由 tool_loop
+%% 编排（agent 不再直接碰 memory）。
+loop_opts(State, Opts) ->
     #{callbacks := Callbacks, kernel := Kernel} = State,
     MaxIter = maps:get(max_iterations, Opts, maps:get(max_tool_iterations, State)),
-    LoopOpts = #{
+    #{
         kernel => Kernel,
-        messages => maps:get(existing, MsgSpec, []),
-        new_messages => maps:get(new, MsgSpec, []),
-        load_history => maps:get(load_history, MsgSpec, false),
         chat_opts => build_chat_opts(State, Opts),
         callbacks => Callbacks,
         max_iterations => MaxIter,
@@ -659,8 +665,7 @@ run_loop(State, MsgSpec, PrevCalls, Opts) ->
                                          beamai_tool_calling_manager:default()),
         %% 流式时透传 token 处理器；非流式为 undefined
         stream_token_handler => maps:get(stream_token_handler, Opts, undefined)
-    },
-    beamai_agent_tool_loop:run(LoopOpts, PrevCalls).
+    }.
 
 %% @private 完成一轮对话：构建结果、更新状态、触发回调
 %%
@@ -700,16 +705,10 @@ finalize_turn(State0, Response, ToolCallsMade, Iterations) ->
 %% 注：记忆与 on_llm_call 等回调由 tool_loop 显式编排，不再经 chat_opts 引线。
 build_chat_opts(#{kernel := Kernel} = Agent, Opts) ->
     BaseOpts0 = beamai_agent_utils:build_chat_opts(Kernel, Opts),
-    %% turn filter 可改写 context → 若 turn 链传入 turn_context 则用之（已含
-    %% conversation_id/state）；否则按 conversation_id + init_state 构建默认。
-    Ctx = case maps:get(turn_context, Opts, undefined) of
-        undefined ->
-            Ctx0 = beamai_context:with_conversation_id(
-                     beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
-            beamai_context:with_state(Ctx0, maps:get(init_state, Opts, #{}));
-        TurnCtx ->
-            TurnCtx
-    end,
+    %% 这里的 context 只是兜底：真正生效的是 step 请求里逐轮穿线的那个
+    %% （turn filter 改写的 context 因此对循环全程可见），由 step_terminal 覆写。
+    Ctx = beamai_context:with_conversation_id(
+            beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
     BaseOpts1 = BaseOpts0#{
         context => Ctx,
         system_prompts => system_prompts(maps:get(system_prompt, Agent, undefined))

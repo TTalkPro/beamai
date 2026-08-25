@@ -7,8 +7,10 @@ beamai_core 的 Filter 系统提供了真正的**洋葱式（onion）**拦截机
 ## 目录
 
 - [概述](#概述)
-- [3 个 around hook 点](#3-个-around-hook-点)
-- [第四钩子：token_transform（token 流变换）](#第四钩子token_transformtoken-流变换)
+- [5 个 around hook 点](#5-个-around-hook-点)
+- [循环也是链上一环](#循环也是链上一环)
+- [chat 与 llm：为什么拆两层](#chat-与-llm为什么拆两层)
+- [token_transform（token 流变换）](#token_transformtoken-流变换)
 - [内置 filter](#内置-filter)
 - [filter 私有上下文](#filter-私有上下文)
 - [洋葱执行顺序](#洋葱执行顺序)
@@ -30,7 +32,7 @@ Filter 是 Kernel 工具执行和 Chat 调用的洋葱式拦截器，可以：
 - **私有状态**: 每个 filter 有一份按名字隔离的私有上下文，贯穿一次 invoke（含工具循环各轮）
 - **日志/审计**: 记录调用日志、统计响应长度等
 
-每个 filter 就是**一层洋葱**——它最多绑定 3 个可选 around hook：chat 链的 `around_chat`、tool 链的 `around_tool`、turn 链的 `around_turn`（包整个工具循环，Agent 层使用），外加流式专用的第四钩子 `token_transform`（token 流变换，不走洋葱，见专节）。一个 around 闭包形如：
+每个 filter 就是**一层洋葱**——它最多绑定 5 个可选 around hook：turn 链的 `around_turn`（包整个工具循环，Agent 层使用）、step 链的 `around_step`（包一轮 ReAct 迭代）、chat 链的 `around_chat`（包一轮的 LLM 调用）、llm 链的 `around_llm`（包一次真实 LLM 请求）、tool 链的 `around_tool`（包一次工具执行），外加流式专用的 `token_transform`（token 流变换，不走洋葱，见专节）。一个 around 闭包形如：
 
 ```erlang
 fun(Request, FCtx, Next) -> Response | {Response, NewFCtx} end
@@ -54,29 +56,47 @@ filter 链由 `beamai_filter_chain` 合成为嵌套调用，最内层是 **termi
 
 ---
 
-## 3 个 around hook 点
+## 5 个 around hook 点
 
-一个 filter 可定义以下 3 个 hook 的任意子集：
+一个 filter 可定义以下 5 个 hook 的任意子集：
 
-| hook | 含义 | 形态 |
+| hook | 粒度 | 形态 |
 |------|------|------|
-| `around_chat` | 环绕一次 LLM 调用 | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
-| `around_tool` | 环绕一次工具执行 | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
-| `around_turn` | 环绕整个工具循环（每 turn 一次，Agent 层） | 同上（Response 为工具循环结果 tuple） |
+| `around_turn` | 每 turn 一次（整个工具循环，Agent 层） | 同下（Response 为工具循环结果 tuple） |
+| `around_step` | 每轮 ReAct 迭代一次（含该轮工具执行） | 同下（Response 为 step 响应 map） |
+| `around_chat` | 每轮迭代**恰好一次**（该轮的 LLM 调用） | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
+| `around_llm` | 每次**真实** LLM 请求一次（重试在这层重入） | 同上 |
+| `around_tool` | 每个 tool call 一次（并行任务内） | 同上 |
+
+层次（外 → 内）：
+
+```
+around_turn            每 turn 一次           RAG 注入 / 最终答案校验 / turn 级预算
+  tool_loop filter     循环驱动本身就是链上一环（可整体替换）
+    around_step        每轮迭代一次           每轮预算 / 轨迹记录 / 迭代级改写
+      around_chat      该轮的 LLM 调用一次    记忆 / 记账 / 审计
+        around_llm     每次真实请求一次        重试 / fallback / 限流 / mock
+          provider     真正的 chat 调用
+      around_tool      每个 tool call 一次     超时 / 审批 / 参数改写
+```
 
 **每条链分别只用各自的 around：**
 
-- **chat 链**用每个 filter 的 `around_chat`，包裹一次 LLM 调用。
-- **tool 链**用每个 filter 的 `around_tool`，包裹一次工具执行。
-- **turn 链**用每个 filter 的 `around_turn`，包裹整个工具循环（RAG 注入 / 最终答案校验 / turn 级预算）。
+- **turn 链**用 `around_turn`，包裹整个工具循环；链的最内层是**循环 filter**，它的 terminal 是 step 链。
+- **step 链**用 `around_step`，包裹一轮迭代——注意它**同时包住该轮的工具执行**，这是 `around_chat` 做不到的。
+- **chat 链**用 `around_chat`，包裹该轮的 LLM 调用；它的 terminal 不是 LLM 调用本身，而是内层的 llm 链。
+- **llm 链**用 `around_llm`，包裹一次真正发出去的请求。
+- **tool 链**用 `around_tool`，包裹一次工具执行。
 
-某 filter 若对某条链不含对应 around，则在该链中被**跳过**。
+某 filter 若对某条链不含对应 around，则在该链中被**跳过**。同一个 filter 可同时声明多个 hook，各链中的相对层序一致。
 
 ### 各链的 Request / Response
 
 | 链 | Request | Response |
 |----|---------|----------|
+| step | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}`（见下节） |
 | chat | `#{messages, context, opts}` | `#{response, context}`（response 为 beamai_llm_response） |
+| llm | 与 chat 同形；流式路径额外带 `stream => true` | 同 chat |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 | turn | `#{messages, context, resume, load_history}` | 工具循环结果 tuple（`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`；interrupt/error 必须透传、不得重入） |
 
@@ -112,11 +132,13 @@ filter 是一个标记 map：
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),                  %% 名称（调试标识，也是私有上下文的隔离键）
-    hooks := #{                        %% 4 个 hook 的任意子集
+    hooks := #{                        %% 6 个 hook 的任意子集
         around_chat => around_fun(),
+        around_llm => around_fun(),
+        around_step => around_fun(),
         around_tool => around_fun(),
         around_turn => around_fun(),
-        token_transform => token_transform()         %% 第四钩子（token 流变换，见下节）
+        token_transform => token_transform()         %% token 流变换（见下节）
     },
     init := map()                      %% 私有上下文初值（首次进入时种入，缺省 #{}）
 }.
@@ -127,11 +149,141 @@ filter 是一个标记 map：
 
 ---
 
-## 第四钩子：token_transform（token 流变换）
+## 循环也是链上一环
 
-`token_transform` 是流式专用的第四钩子（对照 clj-agent `:token-xf`，Spring AI
+ReAct 工具循环不是 agent 里写死的 while，而是 turn 链**最内层的那个 filter**
+（`beamai_agent_tool_loop:loop_filter/1`）。它的 `Next` 不是别的 turn filter，而是
+**step 链**——调一次 = 跑一轮迭代：
+
+```
+turn 链：[用户 turn filter ...] ++ [循环 filter]
+                                      │ Next = step 链
+                                      ▼
+step 链：[用户 step filter ...] ++ step_terminal（一轮迭代的真正执行）
+```
+
+于是「一次对话进出各一次」（`around_turn`）与「每轮被复入一次」（`around_step`）
+落在两个不同的钩子上，不再挤在同一层。
+
+### step 契约
+
+step 请求：
+
+| 字段 | 含义 |
+|---|---|
+| `messages` | 本轮起始的完整消息序列 |
+| `context` | 贯穿全链的共享上下文（逐轮穿线） |
+| `iteration` | 已用迭代数（跨中断累计，从 0 开始） |
+| `tool_calls_made` | 至此已发生的 tool 调用记录 |
+
+step 响应按 `status` 分四种，循环驱动只认这四种：
+
+| status | 含义 | 额外字段 |
+|---|---|---|
+| `continue` | 本轮调了工具、结果已并入，继续下一轮 | `messages` / `context` / `tool_calls_made` |
+| `final` | 本轮即最终答案（纯文本回复或 return_direct） | `response` |
+| `interrupt` | HITL / 环境类暂停 | `type`、`interrupt_context` |
+| `error` | 本轮出错，循环终止 | `reason` |
+
+step filter 可以改写请求里的 `messages` / `context`，也可以**不调 Next 直接合成一个
+status**——那就是短路掉这一轮迭代（比如按缓存直接给出 `final`）。
+
+```erlang
+%% 每轮迭代记一条轨迹，并在超过 5 轮时强制收尾
+TraceStep = beamai:filter(<<"trace_step">>, #{
+    around_step => fun(#{iteration := I, context := Ctx} = Req, _FCtx, Next) ->
+        case I >= 5 of
+            true ->
+                #{status => final, context => Ctx, messages => maps:get(messages, Req),
+                  tool_calls_made => maps:get(tool_calls_made, Req),
+                  response => beamai_llm_response:new(
+                                #{content => <<"轮次用尽"/utf8>>, finish_reason => stop})};
+            false ->
+                logger:info("iteration ~p", [I]),
+                Next(Req)
+        end
+    end
+}).
+```
+
+### 换掉循环策略
+
+循环既然是链上一环，换掉它就不用动 agent 与 kernel 的代码——给 agent 配一个
+`loop_filter`（构造器，拿到本轮的 LoopOpts，返回一个 `around_turn` filter）：
+
+```erlang
+{ok, Agent} = beamai_agent:new(#{
+    kernel => K,
+    loop_filter => fun(_LoopOpts) ->
+        beamai:filter(<<"my_loop">>, #{
+            around_turn => fun(Req, _FCtx, Next) ->
+                %% Next 是 step 链：自己决定怎么驱动（plan-execute / reflexion / 树搜索）
+                StepReq = #{messages => maps:get(messages, Req),
+                            context => maps:get(context, Req),
+                            iteration => 0, tool_calls_made => []},
+                #{messages := Msgs, tool_calls_made := Made} = Next(StepReq),
+                {ok, MyResponse, Made, 1, Msgs}   %% 返回工具循环结果 tuple
+            end
+        })
+    end
+}).
+```
+
+自定义循环只需守两条：按 step 契约驱动 `Next`，最后返回 turn 链约定的工具循环
+结果 tuple（`{ok, Response, ToolCallsMade, Iterations, Messages}` / `{interrupt, _, _}` /
+`{error, _}`）。迭代上限、`max_tool_calls` 这类限额是缺省循环的策略，自定义循环自己负责。
+
+> 缺省循环还承担 resume 的一次性分派（首次进入=延续被打断的 turn，递归重入=全新循环），
+> 这部分逻辑随循环 filter 走。自定义循环若要支持 HITL resume，得自己处理
+> `LoopOpts` 里的 `continuation`。
+
+---
+
+## chat 与 llm：为什么拆两层
+
+一次迭代通常恰好一次 LLM 调用，此时两层同频、看不出差别。**一旦一轮里 LLM 被调用多次
+（重试、fallback 换模型、N-best 投票），差别就现形了**：
+
+| | around_chat | around_llm |
+|---|---|---|
+| 一轮里进出几次 | 恰好 1 次 | N 次（有几次真实请求就几次） |
+| 该放什么 | 记忆、记账、审计、提示词注入 | 重试、fallback、限流、mock、按尝试计费 |
+
+如果重试放在 chat 层，它内层的记忆/记账 filter 会跟着重跑 N 次——同一条 delta 被存两次、
+一次对话被记三次账。拆出 llm 层就是为了让重试的重入够不着这些 filter。
+
+框架自带的重试因此是一个 **around_llm filter**（`beamai_llm_filters:retry_filter/1`），
+由 kernel 缺省注入在 llm 链**最内层**，用 settings 的 `llm_retry` 控制：
+
+```erlang
+%% 缺省：按框架默认参数重试（单次 chat opts 里的 max_retries/retry_delay 优先级更高）
+K = beamai:kernel(#{}, Filters),
+
+%% 调默认重试参数
+K = beamai:kernel(#{llm_retry => #{max_retries => 5, retry_delay => 200}}, Filters),
+
+%% 关掉缺省注入，自己在任意层序上放重试（放得越靠后 = 越内层）
+K = beamai:kernel(#{llm_retry => false},
+                  [RateLimitFilter, beamai_llm_filters:retry_filter(#{}), MetricsFilter]).
+```
+
+缺省注入在最内层意味着：使用方自己注册的 around_llm filter 一律在重试**之外**，看到的是
+「逻辑一次调用」。要观测每一次真实尝试，就按上面第三种写法把自己的 filter 放到重试之内。
+
+**流式路径不重试**：`invoke_chat_stream` 的 Request 带 `stream => true`，内置重试 filter
+见此标记直接透传——token 已经投递给 sink 了，重跑会让下游看到重复内容。llm 链本身在流式
+路径照常生效（限流、记账、mock 都还在），只是重试不介入。
+
+> 直接调 `beamai_chat_completion:chat/3`（不经 kernel）**不带重试**——重试已经上移到 llm 链。
+> 这类直连调用要重试，自己用 `beamai_llm_retry:run/2` 包一层。
+
+---
+
+## token_transform（token 流变换）
+
+`token_transform` 是流式专用钩子（对照 clj-agent `:token-xf`，Spring AI
 `StreamAdvisor` 的算子思想）：按 filters **注册顺序**组装成 token 变换链，
-作用于送往 on-token sink 的**出站流**。三链解决"改请求/改响应"，token_transform
+作用于送往 on-token sink 的**出站流**。around 链解决"改请求/改响应"，token_transform
 解决"逐 token 介入"——改写、吞掉、缓冲后批量放行。
 
 ```erlang
@@ -183,7 +335,9 @@ K = beamai:kernel(#{}, [
 
 | filter | 链 | 说明 |
 |---|---|---|
-| `logging_filter()` | 三链 | turn/chat/tool 各记一对 debug 日志。放列表首位记全景；放在某 filter 之后则只看得到那层之内的改写 |
+| `beamai_agent_tool_loop:loop_filter(LoopOpts)` | turn | **缺省 ReAct 循环**，由 agent 自动追加在 turn 链最内层；agent 配 `loop_filter` 可整体替换 |
+| `logging_filter()` | turn/chat/tool | 三链各记一对 debug 日志。放列表首位记全景；放在某 filter 之后则只看得到那层之内的改写 |
+| `beamai_llm_filters:retry_filter()` / `(Defaults)` | llm | 可重试错误（429/5xx/网络超时）按退避重入 `Next`。**kernel 缺省注入**在 llm 链最内层，用 settings 的 `llm_retry` 调参或关闭；流式路径透传不重试 |
 | `safeguard_filter(Words)` / `(Words, Opts)` | chat | 敏感词命中即短路，不调 LLM，返回 `finish_reason=content_filtered` 的答复。Opts：`failure_response`、`case_sensitive`（缺省 `false`） |
 | `timeout_filter(Ms)` | tool | 单个工具执行墙钟超时 → `{error, timeout}`（归类 transient） |
 | `approval_filter(ApproveFun)` | tool | 仅拦 `sensitive => true` 的工具；拒绝结果作正常工具结果回模型。非交互式——交互式审批用 callbacks 的 `on_tool_call` |
@@ -293,7 +447,17 @@ compose([A, B], Phase, Terminal)
 
 filter 的 around 若不调用 `Next` 即为短路（跳过所有内层），由该 filter 直接构造并返回 `Response`。外层 filter 的后置仍照常执行。
 
-tool 链同理，把上面的 `around_chat` 换成 `around_tool`（Phase = `around_tool`）。
+其余各链同理，把上面的 `around_chat` 换成该链的 hook 名（Phase = `around_step` /
+`around_llm` / `around_tool` / `around_turn`）。
+
+chat 链有一处特别：它的 terminal 就是**内层 llm 链**（`llm 链的 terminal 才是真正的 LLM 调用`），
+所以 `[A, B]` 若两个 hook 都声明，实际展开是：
+
+```
+A_chat 前置 → B_chat 前置 → A_llm 前置 → B_llm 前置 → LLM → B_llm 后置 → A_llm 后置 → B_chat 后置 → A_chat 后置
+```
+
+——同一个 filter 在两条链上的相对层序保持一致（A 始终在 B 外面）。
 
 ---
 
@@ -305,7 +469,8 @@ tool 链同理，把上面的 `around_chat` 换成 `around_tool`（Phase = `arou
 
 ```erlang
 %% 创建 filter（私有状态初值 #{}）。
-%% Hooks 为 hook map，可含 around_chat/around_tool/around_turn 任意子集。
+%% Hooks 为 hook map，可含 around_chat/around_llm/around_step/around_tool/
+%% around_turn/token_transform 任意子集。
 -spec new(Name :: binary(), Hooks :: hooks()) -> filter().
 
 %% 创建 filter（指定私有状态初值 Init）
@@ -315,11 +480,15 @@ tool 链同理，把上面的 `around_chat` 换成 `around_tool`（Phase = `arou
 其中 hook 形态：
 
 ```erlang
--type hook_type() :: around_chat | around_tool | around_turn.
+-type hook_type() :: around_chat | around_llm | around_step | around_tool |
+                     around_turn | token_transform.
 -type hooks() :: #{
     around_chat => around_fun(),
+    around_llm => around_fun(),
+    around_step => around_fun(),
     around_tool => around_fun(),
-    around_turn => around_fun()
+    around_turn => around_fun(),
+    token_transform => token_transform()
 }.
 -type around_fun() :: fun((Request, FCtx, Next) -> Response | {Response, NewFCtx}).
 ```
@@ -340,17 +509,20 @@ around 不调用 `Next` 则短路（跳过内层），直接返回 `Response`。
 
 ```erlang
 %% 运行某条链的 filter 洋葱。
-%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，tool 链传
-%% around_tool。只参与该链（含对应 around）的 filter 进入洋葱，其余跳过。
+%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，llm 链传
+%% around_llm，step 链传 around_step，tool 链传 around_tool。只参与该链
+%% （含对应 around）的 filter 进入洋葱，其余跳过。
 %% Terminal 产出最内层响应，出错时 throw；run/4 用 try/catch 捕获，
 %% 统一返回 {ok, Response} | {error, Reason}。
 -spec run(Filters :: [filter()],
-          Phase :: around_chat | around_tool,
+          Phase :: hook_type(),
           Terminal :: fun((Request) -> Response),
           Request :: map()) -> {ok, Response} | {error, Reason}.
 
-%% 把 filter 列表与 terminal 合成为单个洋葱函数
--spec compose(Filters :: [filter()], Phase :: phase(),
+%% 把 filter 列表与 terminal 合成为单个洋葱函数（自行按 Phase 过滤，可直接传
+%% 整份 filters 列表）。不捕获 throw——嵌套使用时（chat 链的 terminal 就是
+%% llm 链）由最外层的 run/4 统一捕获。
+-spec compose(Filters :: [filter()], Phase :: hook_type(),
               Terminal :: fun()) -> fun((Request) -> Response).
 ```
 
@@ -536,7 +708,9 @@ K = beamai:kernel(#{}, [Counter]).
 - around 闭包 `fun(Request, FCtx, Next) -> Response` 对应中间件的「拿到请求 → 调 `next` → 处理响应」。
 - 前置/后置同处一个闭包，用局部变量桥接，无需在 before/after 间借共享上下文传值。
 - 短路 = 不调 `Next`；重试 = 多次调 `Next`；无需专门的 halt 协议。
-- 一个 filter 同时打包 chat 与 tool 两条链的 around（`around_chat` / `around_tool`），各链独立选用。
+- 一个 filter 同时打包多条链的 around（`around_turn` / `around_step` / `around_chat` / `around_llm` / `around_tool`），各链独立选用。
+- 工具循环本身也是链上一环（turn 链最内层的 filter），它的 `next` 就是一轮迭代——对应 Spring AI 的 `ToolCallingAdvisor`。
+- chat 与 llm 是**两层嵌套**的中间件栈：外层每轮一次，内层每次真实请求一次——对应 Spring AI 里 advisor 与 provider 层的分工。
 
 ---
 

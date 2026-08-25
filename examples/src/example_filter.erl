@@ -1,8 +1,8 @@
 %%%-------------------------------------------------------------------
 %%% @doc Filter 洋葱链示例
 %%%
-%%% 演示 beamai 的洋葱式 filter 机制：一个 filter 最多绑定 3 个 around hook
-%%% （around_chat/around_tool/around_turn），每个 around 用单个闭包
+%%% 演示 beamai 的洋葱式 filter 机制：一个 filter 最多绑定 5 个 around hook
+%%% （外→内 around_turn/around_step/around_chat/around_llm/around_tool），每个 around 用单个闭包
 %%% `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}` 包裹一次调用，前置/后置
 %%% 同处一处，不调 Next 即短路。
 %%%

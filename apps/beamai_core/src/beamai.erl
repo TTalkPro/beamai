@@ -134,8 +134,8 @@ add_llm(Kernel, LlmConfig) ->
 
 %% @doc 创建 filter（直接给 hook map；经 kernel/2 一次性注册）
 %%
-%% 一个 filter 含 around_chat/around_llm/around_tool/around_turn 任意子集，
-%% 每个 around 用单个闭包 `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}`
+%% 一个 filter 含 around_chat/around_llm/around_step/around_tool/around_turn 任意
+%% 子集，每个 around 用单个闭包 `fun(Req, FCtx, Next) -> Resp | {Resp, NewFCtx}`
 %% 包裹一次调用：前置改写请求、`Next(Req1)` 进入内层、后置改写响应；不调 Next
 %% 即短路。
 %%

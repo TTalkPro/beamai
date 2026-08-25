@@ -103,7 +103,9 @@ Kernel1 = beamai_kernel:add_tool(Kernel, SearchTool),
 ### 4. Filter（洋葱式拦截）
 
 ```erlang
-%% 一个 filter 含 3 个可选 around hook（around_chat/around_tool/around_turn）
+%% 一个 filter 含 5 个可选 around hook（外→内：around_turn/around_step/
+%% around_chat/around_llm/around_tool）：工具循环本身也是 turn 链上的一环，
+%% 它的 next 就是一轮迭代（around_step），重试则住在最内的 around_llm
 %% 每个 around 用单个闭包 fun(Req, FCtx, Next) -> Resp 包裹同一次调用，
 %% 前置/后置同处一处，不调 Next 即短路。
 %% filter 在构建 kernel 时一次性给出，注册顺序即层序（列表靠前 = 外层）。

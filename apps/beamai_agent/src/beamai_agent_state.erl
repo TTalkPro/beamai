@@ -47,7 +47,10 @@
     interrupt_tools := [map()],     %% 中断 tool 定义列表
     on_env_error := proceed | pause, %% 环境类工具失败策略（缺省按是否 HITL 计算）
     pause_store := beamai_pause_store:handle() | undefined, %% 暂停持久化句柄（跨进程 HITL）
-    tool_calling_manager := beamai_tool_calling_manager:manager() %% 工具批量执行管理器（可注入）
+    tool_calling_manager := beamai_tool_calling_manager:manager(), %% 工具批量执行管理器（可注入）
+    %% 循环驱动 filter 的构造器（可注入）：换掉它 = 换掉 ReAct 循环策略
+    %% （plan-execute / reflexion / 树搜索），未设则用 beamai_agent_tool_loop 的缺省实现
+    loop_filter := undefined | fun((map()) -> beamai_filter:filter())
 }.
 
 -type interrupt_state() :: #{
@@ -103,6 +106,8 @@
 %%   name — agent 名称（默认 <<"agent">>）
 %%   metadata — 用户自定义元数据 map
 %%   kernel_settings — 创建新 kernel 时的设置项
+%%   loop_filter — 循环驱动 filter 的构造器 fun((LoopOpts) -> filter())，替换缺省
+%%                 ReAct 循环（契约见 beamai_agent_tool_loop 的 step_request/0）
 %%
 %% @param Config 配置选项 map
 %% @returns {ok, agent_state()} 创建成功
@@ -140,7 +145,8 @@ create(Config) ->
             %% on_tool_call 回调）自动升 pause，其余 proceed（无人值守不收意外暂停）
             on_env_error => resolve_on_env_error(Config, Callbacks),
             pause_store => maps:get(pause_store, Config, undefined),
-            tool_calling_manager => TCM
+            tool_calling_manager => TCM,
+            loop_filter => maps:get(loop_filter, Config, undefined)
         },
         {ok, State}
     catch

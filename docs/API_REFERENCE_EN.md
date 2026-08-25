@@ -189,7 +189,7 @@ K2 = beamai:add_llm(K1, beamai_chat_completion:create(zhipu, #{
 | `add_service/2` | Attach an LLM service config |
 | `invoke_tool/4` | Run one tool through the tool filter chain |
 | `invoke_chat/3` | Run one LLM call through the chat filter chain (no tool loop) |
-| `invoke_chat_stream/4` | Streaming variant; same chain plus the `token_transform` pipeline |
+| `invoke_chat_stream/4` | Streaming variant; same chat + llm chains plus the `token_transform` pipeline |
 | `get_tool/2`, `list_tools/1`, `get_tools_by_tag/2` | Look up tools |
 | `get_tool_specs/1`, `get_tool_schemas/1,2` | Export tool definitions for an LLM call |
 | `get_service/1` | Inspect the LLM service config |
@@ -379,7 +379,7 @@ The Filter system is the onion-style interception mechanism that wraps LLM calls
 
 #### beamai_filter
 
-A `filter` bundles up to four hooks plus a private-context seed.
+A `filter` bundles up to six hooks plus a private-context seed.
 
 ```erlang
 -spec new(binary(), hooks()) -> filter().
@@ -392,10 +392,13 @@ A `filter` bundles up to four hooks plus a private-context seed.
 #### Types
 
 ```erlang
--type hook_type() :: around_chat | around_tool | around_turn | token_transform.
+-type hook_type() :: around_chat | around_llm | around_step | around_tool |
+                     around_turn | token_transform.
 
 -type hooks() :: #{
     around_chat     => around_fun(),
+    around_llm      => around_fun(),
+    around_step     => around_fun(),
     around_tool     => around_fun(),
     around_turn     => around_fun(),
     token_transform => token_transform()
@@ -422,16 +425,20 @@ A `filter` bundles up to four hooks plus a private-context seed.
 }.
 ```
 
-The four hooks:
+The six hooks (the first five are listed outermost → innermost):
 
-| Hook | Chain | Form |
-|------|-------|------|
-| `around_chat` | Chat (one LLM call) | `fun(Req, FCtx, Next) -> Resp \| {Resp, NewFCtx}` |
-| `around_tool` | Tool (one tool execution) | same |
-| `around_turn` | Turn (whole tool loop, Agent layer) | same |
+| Hook | Granularity | Form |
+|------|-------------|------|
+| `around_turn` | Turn (whole tool loop, Agent layer) | as below; `Resp` is the tool-loop result tuple |
+| `around_step` | One ReAct iteration (including that round's tool execution) | as below; `Resp` is a step-response map (four `status` values) |
+| `around_chat` | Exactly once per loop iteration (that round's LLM call) | `fun(Req, FCtx, Next) -> Resp \| {Resp, NewFCtx}` |
+| `around_llm` | Once per real LLM request (retries re-enter here) | same |
+| `around_tool` | Once per tool call | same |
 | `token_transform` | Streaming (per-token intervention) | `#{init, step, flush}` |
 
-`token_transform` is the streaming-only fourth hook: `step` is a 1-to-N function over one incoming `token_data()`; `flush` runs at end of normal stream and emits any buffered residue. Error paths do not flush. See [FILTER_EN.md](FILTER_EN.md#the-4th-hook-token_transform-token-stream-transform) for the full contract.
+The tool loop itself is the turn chain's **innermost filter** (`beamai_agent_tool_loop:loop_filter/1`); its terminal is the step chain, so calling `next` once runs one iteration, and the agent's `loop_filter` option replaces the loop strategy wholesale. chat and llm are likewise **nested**: the chat chain's terminal is the llm chain, whose terminal is the actual LLM call. Retries therefore re-enter only the llm layer and never re-run the chat-layer filters that must fire once per round (memory, accounting, audit). The built-in retry is `beamai_llm_filters:retry_filter/1`, injected by the kernel at the innermost position of the llm chain and controlled by the `llm_retry` setting.
+
+`token_transform` is the streaming-only hook: `step` is a 1-to-N function over one incoming `token_data()`; `flush` runs at end of normal stream and emits any buffered residue. Error paths do not flush. See [FILTER_EN.md](FILTER_EN.md#token_transform-token-stream-transform) for the full contract.
 
 | Function | Purpose |
 |----------|---------|
@@ -484,6 +491,7 @@ Composes and runs the onion chain for one phase.
 | Constructor | Chain | Purpose |
 |-------------|-------|---------|
 | `logging_filter/0` | chat / tool / turn | One pair of debug logs per chain; put first to see all layers |
+| `beamai_llm_filters:retry_filter/0,1` | llm | Backoff retry on retryable errors; kernel-injected innermost, tuned/disabled via the `llm_retry` setting |
 | `timeout_filter/1` | tool | Wall-clock timeout (ms) for a single tool execution |
 | `approval_filter/1` | tool | Rejects sensitive tools when the predicate returns `false` (non-interactive) |
 | `safeguard_filter/1,2` | chat | Substring pre-filter on a sensitive word list; short-circuits the LLM call |
@@ -2177,7 +2185,7 @@ For the full error taxonomy returned by LLM calls, see [Error Structure: beamai_
 
 - [README.md](../README.md) - Project overview (Chinese)
 - [README_EN.md](../README_EN.md) - Project overview (English)
-- [FILTER.md](FILTER.md) / [FILTER_EN.md](FILTER_EN.md) - Filter onion system, including the `token_transform` fourth hook
+- [FILTER.md](FILTER.md) / [FILTER_EN.md](FILTER_EN.md) - Filter onion system, including the chat/llm split and the `token_transform` hook
 - [MEMORY.md](MEMORY.md) / [MEMORY_EN.md](MEMORY_EN.md) - Conversation memory (Memory Filter)
 - [OUTPUT_PARSER.md](OUTPUT_PARSER.md) - Output Parser guide
 - [DEPENDENCIES.md](DEPENDENCIES.md) / [DEPENDENCIES_EN.md](DEPENDENCIES_EN.md) - Dependency details

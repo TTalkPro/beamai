@@ -16,7 +16,7 @@ BeamAI 框架的核心模块，提供 Kernel 架构、Filter/会话记忆、HTTP
 - **beamai_context** - 上下文（三分区）：env（只读运行环境：kernel 引用/会话标识/注入变量）、
   state（用户状态槽，工具经 writes 折叠、跨轮穿线，可序列化）、filter 私有状态（框架自管）。
   不记录消息/历史
-- **beamai_filter** / **beamai_filter_chain** - 洋葱式 filter（一个 filter 含 around_chat/around_tool 两个可选 around hook，带按名字隔离的私有上下文），包裹工具执行与 LLM 调用（详见 [docs/FILTER.md](../../docs/FILTER.md)）
+- **beamai_filter** / **beamai_filter_chain** - 洋葱式 filter（一个 filter 含 around_turn/around_step/around_chat/around_llm/around_tool 五个可选 around hook，带按名字隔离的私有上下文），包裹工具循环、每轮迭代、每轮 LLM 调用、每次真实 LLM 请求与工具执行（详见 [docs/FILTER.md](../../docs/FILTER.md)）
 - **beamai_prompt** - 提示词模板管理
 - **beamai_result** - 工具调用结果类型
 
@@ -88,7 +88,7 @@ beamai_kernel:add_tool_module(Kernel, Module) -> kernel().
 beamai_kernel:add_service(Kernel, Service) -> kernel().
 
 %% 调用（kernel 只提供单次能力；ReAct 工具调用循环属于 Agent 层，见 beamai_agent）
-%% invoke_chat/3：单次 Chat Completion（经 around_chat 链）。Messages 为本轮新消息；
+%% invoke_chat/3：单次 Chat Completion（经 around_chat → around_llm 两层链）。Messages 为本轮新消息；
 %% 若 context 带 conversation_id 且挂了 Memory Filter，则按 id 存储并展开历史。
 beamai_kernel:invoke_chat(Kernel, Messages, Opts) -> {ok, Response, Context} | {error, Reason}.
 beamai_kernel:invoke_tool(Kernel, ToolName, Args, Context) -> {ok, Result, Context} | {error, Reason}.

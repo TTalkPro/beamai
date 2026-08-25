@@ -221,7 +221,7 @@ Kernel 是基础设施层，负责工具注册、LLM 服务配置、Filter 编�
 -spec invoke_chat(kernel(), [map()], chat_opts()) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
 
-%% 流式 Chat Completion（经完整 around_chat 链；sink 收到 TokenCallback）
+%% 流式 Chat Completion（经 around_chat → around_llm 两层链；sink 收到 TokenCallback）
 -spec invoke_chat_stream(kernel(), [map()], chat_opts(),
                          fun((binary(), map()) -> ok)) ->
     {ok, map(), beamai_context:t()} | {error, term()}.
@@ -495,7 +495,7 @@ Filter 是 BeamAI 的**洋葱式（onion）拦截器**。采用通用 around（�
 
 #### beamai_filter
 
-Filter 记录与四个钩子类型。**核心钩子**：3 个 around（`around_chat` / `around_tool` / `around_turn`）+ 流式专用的 `token_transform`（token 流变换，不走洋葱）。
+Filter 记录与六个钩子类型。**核心钩子**：5 个 around（`around_turn` / `around_step` / `around_chat` / `around_llm` / `around_tool`）+ 流式专用的 `token_transform`（token 流变换，不走洋葱）。
 
 ```erlang
 %% 创建 filter（私有状态初值 #{}）
@@ -515,17 +515,20 @@ Filter 记录与四个钩子类型。**核心钩子**：3 个 around（`around_c
 
 ```erlang
 %% 钩子类型
--type hook_type() :: around_chat | around_tool | around_turn | token_transform.
+-type hook_type() :: around_chat | around_llm | around_step | around_tool |
+                     around_turn | token_transform.
 
 %% 一个 filter 可同时挂任意子集
 -type hooks() :: #{
     around_chat => around_fun(),
+    around_llm => around_fun(),
+    around_step => around_fun(),
     around_tool => around_fun(),
     around_turn => around_fun(),
     token_transform => token_transform()
 }.
 
-%% 三链 around 形态：闭包，前置/后置同处一处
+%% around 形态：闭包，前置/后置同处一处
 -type around_fun() ::
     fun((request(), fctx(), next()) ->
         response() | {response(), fctx()}).
@@ -550,14 +553,18 @@ Filter 记录与四个钩子类型。**核心钩子**：3 个 around（`around_c
 }.
 ```
 
-四条钩子的分工：
+六条钩子的分工（前五条按层次由外到内）：
 
-| 钩子 | 含义 | 形态 |
+| 钩子 | 粒度 | 形态 |
 |------|------|------|
-| `around_chat` | 环绕一次 LLM 调用 | `fun(Req, FCtx, Next) -> Resp \| {Resp, NewFCtx}` |
-| `around_tool` | 环绕一次工具执行 | 同上 |
-| `around_turn` | 环绕整个工具循环（Agent 层每 turn 一次） | 同上；`Resp` 是工具循环结果 tuple |
+| `around_turn` | 每 turn 一次（整个工具循环，Agent 层） | 同下；`Resp` 是工具循环结果 tuple |
+| `around_step` | 每轮 ReAct 迭代一次（含该轮工具执行） | 同下；`Resp` 是 step 响应 map（`status` 四态） |
+| `around_chat` | 每轮迭代恰好一次（该轮的 LLM 调用） | `fun(Req, FCtx, Next) -> Resp \| {Resp, NewFCtx}` |
+| `around_llm` | 每次真实 LLM 请求一次（重试在这层重入） | 同上 |
+| `around_tool` | 每个 tool call 一次 | 同上 |
 | `token_transform` | 改送往 sink 的 token 流（非洋葱） | `step/flush` 形态 |
+
+工具循环本身是 turn 链**最内层的一个 filter**（`beamai_agent_tool_loop:loop_filter/1`），它的 terminal 是 step 链——调一次跑一轮迭代；agent 配 `loop_filter` 可整体替换循环策略。chat 与 llm 同样是**两层嵌套**：chat 链的 terminal 就是 llm 链，llm 链的 terminal 才是真正的 LLM 调用。重试因此只让 llm 层重入，不连累 chat 层「每轮只该跑一次」的 filter（记忆/记账/审计）。内置重试 filter 见 `beamai_llm_filters:retry_filter/1`，由 kernel 按 settings 的 `llm_retry` 缺省注入在 llm 链最内层。
 
 filter 列表位置决定洋葱层序：靠前 = 外层（前置先执行、后置后执行）。Memory Filter 必须放**首位**（最外层，先展开完整历史）。
 
@@ -567,12 +574,14 @@ filter 列表位置决定洋葱层序：靠前 = 外层（前置先执行、后�
 
 ```erlang
 %% 运行某条链的 filter 洋葱
-%% Phase 指定该链用哪个 around hook：chat 链传 around_chat，tool 链传 around_tool
+%% Phase 指定该链用哪个 around hook：turn/step/chat/llm/tool 链分别传
+%% around_turn / around_step / around_chat / around_llm / around_tool
 %% Terminal 产出最内层响应，run/4 用 try/catch 统一返回 {ok, Response} | {error, Reason}
 -spec run([beamai_filter:filter()], phase(), terminal(), request()) ->
     {ok, response()} | {error, term()}.
 
-%% 把 filter 列表与 terminal 合成为单个洋葱函数
+%% 把 filter 列表与 terminal 合成为单个洋葱函数（自行按 Phase 过滤；不捕获
+%% throw——嵌套使用时由最外层 run/4 统一捕获）
 -spec compose([beamai_filter:filter()], phase(), terminal()) ->
     fun((request()) -> response()).
 ```
@@ -738,7 +747,7 @@ Store = beamai_chat_memory_dets:handle(my_mem).
     {fun((binary(), map()) -> ok), fun(() -> ok)}.
 ```
 
-`token_transform` 是流式专用的第四钩子，与三条 around 链相互独立：transform 只改「sink 看到的出站流」，不改「答案本身」。同步路径（`invoke_chat`）完全忽略 `token_transform`；无 token_transform filter 时流式路径零开销退化（`TokenCallback` 原样直通）。
+`token_transform` 是流式专用钩子，与各条 around 链相互独立：transform 只改「sink 看到的出站流」，不改「答案本身」。同步路径（`invoke_chat`）完全忽略 `token_transform`；无 token_transform filter 时流式路径零开销退化（`TokenCallback` 原样直通）。
 
 ### Tool 索引与检索
 
@@ -2655,7 +2664,7 @@ LLM 错误现在由 `beamai_llm_error` 提供**结构化**错误（`type` / `sta
 ## 更多文档
 
 - [README.md](../README.md) - 项目概述
-- [FILTER.md](FILTER.md) - Filter 洋葱系统（含 `token_transform` 第四钩子详解）
+- [FILTER.md](FILTER.md) - Filter 洋葱系统（含 chat/llm 分层与 `token_transform` 详解）
 - [MEMORY.md](MEMORY.md) - 会话记忆（Memory Filter）
 - [OUTPUT_PARSER.md](OUTPUT_PARSER.md) - Output Parser 指南
 - [DEPENDENCIES.md](DEPENDENCIES.md) - 依赖关系详解

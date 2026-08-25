@@ -7,8 +7,10 @@ beamai_core's Filter system provides a true **onion-style** interception mechani
 ## Table of Contents
 
 - [Overview](#overview)
-- [3 around hook points](#3-around-hook-points)
-- [The 4th hook: token_transform (token-stream transform)](#the-4th-hook-token_transform-token-stream-transform)
+- [5 around hook points](#5-around-hook-points)
+- [The loop is a chain link too](#the-loop-is-a-chain-link-too)
+- [chat vs llm: why two layers](#chat-vs-llm-why-two-layers)
+- [token_transform (token-stream transform)](#token_transform-token-stream-transform)
 - [Built-in filters](#built-in-filters)
 - [Per-filter private context](#per-filter-private-context)
 - [Onion execution order](#onion-execution-order)
@@ -30,7 +32,7 @@ A Filter is an onion-style interceptor around the Kernel's tool execution and ch
 - **Private state**: each filter has a per-name isolated private context that lives across one invoke (including each tool-loop iteration)
 - **Logging/auditing**: record call logs, measure response length, etc.
 
-Each filter is **one onion layer** — it binds at most 3 optional around hooks: `around_chat` for the chat chain, `around_tool` for the tool chain, and `around_turn` for the turn chain (wrapping the whole tool loop, used by the Agent layer) — plus a streaming-only 4th hook `token_transform` (token-stream transform, not part of the onion; see its own section). An around closure looks like:
+Each filter is **one onion layer** — it binds at most 5 optional around hooks: `around_turn` for the turn chain (wrapping the whole tool loop, used by the Agent layer), `around_step` for the step chain (one ReAct iteration), `around_chat` for the chat chain (that round's LLM call), `around_llm` for the llm chain (one real LLM request), and `around_tool` for the tool chain (one tool execution) — plus a streaming-only `token_transform` hook (token-stream transform, not part of the onion; see its own section). An around closure looks like:
 
 ```erlang
 fun(Request, FCtx, Next) -> Response | {Response, NewFCtx} end
@@ -54,29 +56,47 @@ The filter chain is composed by `beamai_filter_chain` into nested calls, with th
 
 ---
 
-## 3 around hook points
+## 5 around hook points
 
-A filter may define any subset of the following 3 hooks:
+A filter may define any subset of the following 5 hooks:
 
-| hook | Meaning | Form |
-|------|---------|------|
-| `around_chat` | Wrap one LLM call | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
-| `around_tool` | Wrap one tool execution | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
-| `around_turn` | Wrap the whole tool loop (once per turn, Agent layer) | same as above (Response is the tool-loop result tuple) |
+| hook | Granularity | Form |
+|------|-------------|------|
+| `around_turn` | Once per turn (the whole tool loop, Agent layer) | as below (Response is the tool-loop result tuple) |
+| `around_step` | Once per ReAct iteration (**including that round's tool execution**) | as below (Response is a step-response map) |
+| `around_chat` | **Exactly once** per loop iteration (that round's LLM call) | `fun(Request, FCtx, Next) -> Response \| {Response, NewFCtx}` |
+| `around_llm` | Once per **real** LLM request (retries re-enter here) | same as above |
+| `around_tool` | Once per tool call (inside parallel tasks) | same as above |
+
+Layering (outer → inner):
+
+```
+around_turn            once per turn          RAG injection / final-answer validation / turn budget
+  tool_loop filter     the loop driver is itself a chain link (fully replaceable)
+    around_step        once per iteration     per-round budget / trace / iteration rewriting
+      around_chat      that round's LLM call  memory / accounting / audit
+        around_llm     once per real request  retry / fallback / rate limit / mock
+          provider     the actual chat call
+      around_tool      once per tool call     timeout / approval / argument rewriting
+```
 
 **Each chain uses only its own around:**
 
-- The **chat chain** uses each filter's `around_chat`, wrapping one LLM call.
-- The **tool chain** uses each filter's `around_tool`, wrapping one tool execution.
-- The **turn chain** uses each filter's `around_turn`, wrapping the whole tool loop (RAG injection / final-answer validation / turn-level budgets).
+- The **turn chain** uses `around_turn`, wrapping the whole tool loop; its innermost element is the **loop filter**, whose terminal is the step chain.
+- The **step chain** uses `around_step`, wrapping one iteration — note it also wraps that round's **tool execution**, which `around_chat` cannot.
+- The **chat chain** uses `around_chat`, wrapping that round's LLM call; its terminal is not the LLM call itself but the inner llm chain.
+- The **llm chain** uses `around_llm`, wrapping one request actually sent out.
+- The **tool chain** uses `around_tool`, wrapping one tool execution.
 
-A filter without the corresponding around for a chain is **skipped** in that chain.
+A filter without the corresponding around for a chain is **skipped** in that chain. One filter may declare several hooks; its relative layering is the same in every chain.
 
 ### Request / Response per chain
 
 | Chain | Request | Response |
 |-------|---------|----------|
+| step | `#{messages, context, iteration, tool_calls_made}` | `#{status, messages, context, tool_calls_made, ...}` (see below) |
 | chat | `#{messages, context, opts}` | `#{response, context}` (response is a beamai_llm_response) |
+| llm | same shape as chat; the streaming path also carries `stream => true` | same as chat |
 | tool | `#{tool, args, context}` | `#{result, context}` |
 | turn | `#{messages, context, resume, load_history}` | tool-loop result tuple (`{ok, Resp, TCM, Iter, Messages}` \| `{interrupt, _, _}` \| `{error, _}`; interrupt/error must pass through, never re-enter) |
 
@@ -116,11 +136,13 @@ A filter is a tagged map:
 -type filter() :: #{
     '__filter__' := true,
     name := binary(),                  %% name (debug id, also the private-context isolation key)
-    hooks := #{                        %% any subset of the 4 hooks
+    hooks := #{                        %% any subset of the 6 hooks
         around_chat => around_fun(),
+        around_llm => around_fun(),
+        around_step => around_fun(),
         around_tool => around_fun(),
         around_turn => around_fun(),
-        token_transform => token_transform()         %% the 4th hook (token-stream transform, see below)
+        token_transform => token_transform()         %% token-stream transform (see below)
     },
     init := map()                      %% private context initial value (seeded on first entry, default #{})
 }.
@@ -131,12 +153,129 @@ A filter is a tagged map:
 
 ---
 
-## The 4th hook: token_transform (token-stream transform)
+## The loop is a chain link too
 
-`token_transform` is a streaming-only 4th hook (mirroring clj-agent's `:token-xf` and the
+The ReAct tool loop is not a `while` hard-wired into the agent — it is the **innermost filter of
+the turn chain** (`beamai_agent_tool_loop:loop_filter/1`). Its `Next` is not another turn filter
+but the **step chain**: calling it once runs one iteration.
+
+```
+turn chain: [user turn filters ...] ++ [loop filter]
+                                          │ Next = step chain
+                                          ▼
+step chain: [user step filters ...] ++ step_terminal (the actual iteration)
+```
+
+"Once per conversation" (`around_turn`) and "re-entered once per round" (`around_step`) are now
+two distinct hooks instead of fighting over one.
+
+### The step contract
+
+Step request:
+
+| Field | Meaning |
+|---|---|
+| `messages` | the full message sequence this round starts from |
+| `context` | the shared context, threaded round to round |
+| `iteration` | iterations already used (cumulative across interrupts, starts at 0) |
+| `tool_calls_made` | tool-call records so far |
+
+The step response is one of four `status` values — the loop driver knows only these:
+
+| status | Meaning | Extra fields |
+|---|---|---|
+| `continue` | tools ran, results merged, go to the next round | `messages` / `context` / `tool_calls_made` |
+| `final` | this round is the final answer (plain reply or return_direct) | `response` |
+| `interrupt` | HITL / environment pause | `type`, `interrupt_context` |
+| `error` | this round failed, the loop stops | `reason` |
+
+A step filter may rewrite `messages` / `context` in the request, or **synthesize a status without
+calling Next** — short-circuiting the whole iteration (serving from cache, for instance).
+
+### Replacing the loop strategy
+
+Since the loop is a chain link, swapping it needs no change to agent or kernel code — give the
+agent a `loop_filter` (a constructor that receives this run's LoopOpts and returns an
+`around_turn` filter):
+
+```erlang
+{ok, Agent} = beamai_agent:new(#{
+    kernel => K,
+    loop_filter => fun(_LoopOpts) ->
+        beamai:filter(<<"my_loop">>, #{
+            around_turn => fun(Req, _FCtx, Next) ->
+                %% Next is the step chain: drive it however you like
+                StepReq = #{messages => maps:get(messages, Req),
+                            context => maps:get(context, Req),
+                            iteration => 0, tool_calls_made => []},
+                #{messages := Msgs, tool_calls_made := Made} = Next(StepReq),
+                {ok, MyResponse, Made, 1, Msgs}   %% return the tool-loop result tuple
+            end
+        })
+    end
+}).
+```
+
+A custom loop owes only two things: drive `Next` per the step contract, and return the tool-loop
+result tuple the turn chain expects. Iteration caps and `max_tool_calls` are the default loop's
+policy — a custom loop owns its own.
+
+> The default loop also performs resume's one-shot dispatch (first entry continues the interrupted
+> turn, re-entry starts a fresh loop). A custom loop that wants HITL resume must handle the
+> `continuation` in its `LoopOpts`.
+
+---
+
+## chat vs llm: why two layers
+
+One iteration is usually exactly one LLM call, so the two layers fire at the same rate and look
+redundant. **The difference shows up the moment a single round calls the LLM more than once**
+(retry, fallback to another model, N-best voting):
+
+| | around_chat | around_llm |
+|---|---|---|
+| Times entered per round | exactly 1 | N (one per real request) |
+| What belongs here | memory, accounting, audit, prompt injection | retry, fallback, rate limiting, mock, per-attempt billing |
+
+Put retry in the chat layer and every memory/accounting filter inside it re-runs N times — the same
+delta stored twice, one conversation billed three times. The llm layer exists so that a retry's
+re-entry cannot reach those filters.
+
+The built-in retry is therefore an **around_llm filter** (`beamai_llm_filters:retry_filter/1`),
+injected by the kernel at the **innermost** position of the llm chain and controlled by the
+`llm_retry` setting:
+
+```erlang
+%% Default: retry with framework defaults (max_retries/retry_delay in a single chat's opts win)
+K = beamai:kernel(#{}, Filters),
+
+%% Tune the defaults
+K = beamai:kernel(#{llm_retry => #{max_retries => 5, retry_delay => 200}}, Filters),
+
+%% Disable the default injection and place retry at any layer you like (later = more inner)
+K = beamai:kernel(#{llm_retry => false},
+                  [RateLimitFilter, beamai_llm_filters:retry_filter(#{}), MetricsFilter]).
+```
+
+Injecting it innermost means your own around_llm filters sit **outside** retry and see "one logical
+call". To observe every real attempt, use the third form and place your filter inside retry.
+
+**No retry on the streaming path**: `invoke_chat_stream` marks its Request with `stream => true` and
+the built-in retry filter passes it straight through — tokens have already reached the sink, so a
+re-run would show duplicates downstream. The llm chain itself still runs while streaming (rate
+limiting, accounting, mock); only retry stays out.
+
+> Calling `beamai_chat_completion:chat/3` directly (bypassing the kernel) does **not** retry — retry
+> moved up into the llm chain. Wrap such direct calls in `beamai_llm_retry:run/2` if you need it.
+
+---
+
+## token_transform (token-stream transform)
+
+`token_transform` is a streaming-only hook (mirroring clj-agent's `:token-xf` and the
 operator idea of Spring AI's `StreamAdvisor`): the `token_transform` values collected from
 the filters (in **registration order**) are composed into a token-transform chain
-applied to the **outbound stream** delivered to the on-token sink. The three chains
+applied to the **outbound stream** delivered to the on-token sink. The around chains
 handle "rewrite request/response"; `token_transform` handles "per-token intervention" —
 rewrite, swallow, or buffer-then-release.
 
@@ -192,7 +331,9 @@ item-by-item trade-offs are in `design/spring_advisor_alignment.md`.)
 
 | filter | Chain | Description |
 |---|---|---|
-| `logging_filter()` | all 3 | One pair of debug logs each for turn/chat/tool. Put it first in the list for the full picture; placed after another filter it only sees rewrites made inside that layer |
+| `beamai_agent_tool_loop:loop_filter(LoopOpts)` | turn | The **default ReAct loop**, appended by the agent at the innermost position of the turn chain; replace it wholesale via the agent's `loop_filter` |
+| `logging_filter()` | turn/chat/tool | One pair of debug logs each for turn/chat/tool. Put it first in the list for the full picture; placed after another filter it only sees rewrites made inside that layer |
+| `beamai_llm_filters:retry_filter()` / `(Defaults)` | llm | Retryable errors (429/5xx/network timeouts) re-enter `Next` with backoff. **Injected by the kernel** at the innermost position of the llm chain; tune or disable via the `llm_retry` setting; passes through on the streaming path |
 | `safeguard_filter(Words)` / `(Words, Opts)` | chat | Short-circuits on a sensitive-word hit without calling the LLM, returning a reply with `finish_reason=content_filtered`. Opts: `failure_response`, `case_sensitive` (default `false`) |
 | `timeout_filter(Ms)` | tool | Wall-clock timeout for a single tool execution → `{error, timeout}` (classified transient) |
 | `approval_filter(ApproveFun)` | tool | Only intercepts tools marked `sensitive => true`; a rejection goes back to the model as a normal tool result. Non-interactive — for interactive approval use the `on_tool_call` callback |
@@ -316,7 +457,17 @@ where `X_around` is "run X's before, `Next` into the inner, then run X's after o
 
 If a filter's around does not call `Next`, that is a short-circuit (skip all inner layers); the filter constructs and returns the `Response` directly. Outer filters' after still runs.
 
-The tool chain works the same way, replacing `around_chat` with `around_tool` (Phase = `around_tool`).
+The other chains work the same way, replacing `around_chat` with that chain's hook name
+(Phase = `around_step` / `around_llm` / `around_tool` / `around_turn`).
+
+The chat chain has one twist: its terminal is the **inner llm chain** (whose terminal is the real
+LLM call). So for `[A, B]` declaring both hooks the actual expansion is:
+
+```
+A_chat pre → B_chat pre → A_llm pre → B_llm pre → LLM → B_llm post → A_llm post → B_chat post → A_chat post
+```
+
+— the same filter keeps its relative layering in both chains (A always outside B).
 
 ---
 
@@ -328,7 +479,8 @@ The tool chain works the same way, replacing `around_chat` with `around_tool` (P
 
 ```erlang
 %% Create a filter (private state initial value #{}).
-%% Hooks is a hook map, any subset of around_chat/around_tool/around_turn.
+%% Hooks is a hook map, any subset of around_chat/around_llm/around_step/
+%% around_tool/around_turn/token_transform.
 -spec new(Name :: binary(), Hooks :: hooks()) -> filter().
 
 %% Create a filter (with an explicit private state initial value Init)
@@ -338,11 +490,15 @@ The tool chain works the same way, replacing `around_chat` with `around_tool` (P
 Hook form:
 
 ```erlang
--type hook_type() :: around_chat | around_tool | around_turn.
+-type hook_type() :: around_chat | around_llm | around_step | around_tool |
+                     around_turn | token_transform.
 -type hooks() :: #{
     around_chat => around_fun(),
+    around_llm => around_fun(),
+    around_step => around_fun(),
     around_tool => around_fun(),
-    around_turn => around_fun()
+    around_turn => around_fun(),
+    token_transform => token_transform()
 }.
 -type around_fun() :: fun((Request, FCtx, Next) -> Response | {Response, NewFCtx}).
 ```
@@ -363,12 +519,13 @@ Not calling `Next` short-circuits (skips the inner layers), returning the `Respo
 
 ```erlang
 %% Run one chain's filter onion.
-%% Phase says which around hook the chain uses: around_chat for chat, around_tool
+%% Phase says which around hook the chain uses: around_chat for chat, around_llm
+%% for llm, around_step for step, around_tool
 %% for tool. Only filters with the matching around enter the onion; others are
 %% skipped. Terminal produces the innermost response; it throws on error, which
 %% run/4 catches with try/catch, returning {ok, Response} | {error, Reason}.
 -spec run(Filters :: [filter()],
-          Phase :: around_chat | around_tool,
+          Phase :: hook_type(),
           Terminal :: fun((Request) -> Response),
           Request :: map()) -> {ok, Response} | {error, Reason}.
 
@@ -562,7 +719,9 @@ This system uses the common **around middleware** form:
 - The around closure `fun(Request, FCtx, Next) -> Response` maps to middleware's "receive request → call `next` → handle response".
 - Before/after live in one closure, bridged by locals — no need to pass values through a shared context between before and after.
 - Short-circuit = don't call `Next`; retry = call `Next` multiple times; no dedicated halt protocol.
-- One filter bundles the arounds for both chains (`around_chat` / `around_tool`), each chain selected independently.
+- One filter bundles the arounds for several chains (`around_turn` / `around_step` / `around_chat` / `around_llm` / `around_tool`), each chain selected independently.
+- The tool loop itself is a chain link (the turn chain's innermost filter) whose `next` is one iteration — the counterpart of Spring AI's `ToolCallingAdvisor`.
+- chat and llm form **two nested middleware stacks**: the outer one runs once per round, the inner one once per real request — mirroring the advisor/provider split in Spring AI.
 
 ---
 
