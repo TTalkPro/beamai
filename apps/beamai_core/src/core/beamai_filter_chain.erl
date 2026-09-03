@@ -16,6 +16,15 @@
 %%% 仅返回 Response 时私有状态保持不变。私有状态随共享 context 透传，跨
 %%% 工具循环各轮存活。
 %%%
+%%% **tuple 响应（turn 链）的回写**：turn 链的响应是工具循环结果 tuple，没有
+%%% context 槽可合并。这类响应的 {Response, NewFCtx} 由链收集到进程内的写表，
+%%% 在 run/4、run_with_context/4 收尾时统一合并进**请求的 context**并返回
+%%% （见 run_with_context/4）。turn filter 每 turn 只进出一次，回写因此不是给
+%%% 本 turn 用的——调用方（beamai_agent）拿到这份 context 后按会话保存，下一
+%%% turn 建 context 时种回去，turn filter 的私有状态于是跨轮存活。
+%%% 判据是「first 元素为 tuple」：合法的 turn 结果 tuple 首元素都是 atom
+%%% （ok/interrupt/error），与 {Response, NewFCtx} 不会混淆。
+%%%
 %%% terminal 通过 throw 报错，run/4 用 try/catch 捕获，统一返回
 %%% `{ok, Response} | {error, Reason}`。
 %%%
@@ -23,7 +32,10 @@
 %%%-------------------------------------------------------------------
 -module(beamai_filter_chain).
 
--export([run/4, compose/3]).
+-export([run/4, run_with_context/4, compose/3]).
+
+%% 进程内 filter 写表（仅承接 tuple 响应的回写；map 响应直接合并进响应 context）
+-define(WRITES_KEY, '$beamai_filter_chain_writes').
 
 -type request() :: beamai_filter:request().
 -type response() :: beamai_filter:response().
@@ -46,11 +58,30 @@
 -spec run([beamai_filter:filter()], phase(), terminal(), request()) ->
     {ok, response()} | {error, term()}.
 run(Filters, Phase, Terminal, Request) ->
+    case run_with_context(Filters, Phase, Terminal, Request) of
+        {ok, Response, _Ctx} -> {ok, Response};
+        {error, Reason} -> {error, Reason}
+    end.
+
+%% @doc 同 run/4，另外返回**汇总了 tuple 响应回写**的 context
+%%
+%% Ctx = 请求的 context + 本次执行中各 filter 对 tuple 响应做的私有状态回写。
+%% map 响应（chat/step/tool 链）的回写本就在响应自己的 context 里，这里的
+%% Ctx 对它们没有额外信息；turn 链则只有这条路能把回写带出来。
+%%
+%% @returns {ok, Response, Context} | {error, Reason}
+-spec run_with_context([beamai_filter:filter()], phase(), terminal(), request()) ->
+    {ok, response(), beamai_context:t()} | {error, term()}.
+run_with_context(Filters, Phase, Terminal, Request) ->
     Run = compose(Filters, Phase, Terminal),
+    Saved = erlang:put(?WRITES_KEY, #{}),
     try
-        {ok, Run(Request)}
+        Response = Run(Request),
+        {ok, Response, merge_writes(Request, take_writes())}
     catch
         throw:Reason -> {error, Reason}
+    after
+        restore_writes(Saved)
     end.
 
 %% @doc 把 filter 列表与 terminal 合成为单个洋葱函数
@@ -78,8 +109,13 @@ compose_relevant([Filter | Rest], Phase, Terminal) ->
     fun(#{context := Ctx} = Req) ->
         FCtx = beamai_context:filter_state(Ctx, Name, Init),
         case Around(Req, FCtx, Next) of
-            {#{context := RCtx} = Resp, NewFCtx} ->
+            {#{context := RCtx} = Resp, NewFCtx} when is_map(NewFCtx) ->
                 Resp#{context => beamai_context:set_filter_state(RCtx, Name, NewFCtx)};
+            {Resp, NewFCtx} when is_tuple(Resp), is_map(NewFCtx) ->
+                %% tuple 响应（turn 链）没有 context 槽：记进进程写表，由
+                %% run_with_context/4 收尾时合并
+                record_write(Name, NewFCtx),
+                Resp;
             Resp ->
                 Resp
         end
@@ -88,3 +124,33 @@ compose_relevant([Filter | Rest], Phase, Terminal) ->
 %% @private 仅保留对该链有对应 around hook 的 filter
 relevant(Filters, Phase) ->
     [F || F <- Filters, beamai_filter:hook(F, Phase) =/= undefined].
+
+%% @private 记一笔 tuple 响应的私有状态回写（无写表时说明不在 run 内，忽略）
+record_write(Name, FCtx) ->
+    case erlang:get(?WRITES_KEY) of
+        Writes when is_map(Writes) -> erlang:put(?WRITES_KEY, Writes#{Name => FCtx});
+        undefined -> ok
+    end.
+
+%% @private 取出本次执行累积的写表
+take_writes() ->
+    case erlang:get(?WRITES_KEY) of
+        Writes when is_map(Writes) -> Writes;
+        undefined -> #{}
+    end.
+
+%% @private 还原外层（嵌套 run）的写表
+restore_writes(undefined) -> erlang:erase(?WRITES_KEY);
+restore_writes(Saved) -> erlang:put(?WRITES_KEY, Saved).
+
+%% @private 把写表合并进请求的 context
+merge_writes(Request, Writes) when map_size(Writes) =:= 0 ->
+    request_context(Request);
+merge_writes(Request, Writes) ->
+    maps:fold(fun(Name, FCtx, Ctx) ->
+                  beamai_context:set_filter_state(Ctx, Name, FCtx)
+              end, request_context(Request), Writes).
+
+%% @private 请求的 context（缺席则新建，仅为容错——链本身要求请求带 context）
+request_context(Request) ->
+    maps:get(context, Request, beamai_context:new()).

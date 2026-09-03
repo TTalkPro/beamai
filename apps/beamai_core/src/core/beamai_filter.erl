@@ -36,6 +36,11 @@
 %%% 含工具循环各轮），与请求里贯穿全链的共享 context 分离，由洋葱链负责
 %%% 投影/合并，filter 代码只通过 FCtx 参数读、通过返回值写。
 %%%
+%%% turn 链的 FCtx 生命周期不同：turn filter 每 turn 只进出一次，回写
+%%% （`{TurnResult, NewFCtx}`，TurnResult 仍是工具循环结果 tuple）由链收集后
+%%% 交给 agent 按会话保存，**下一 turn 进入时种回来**——turn 级预算/计数因此
+%%% 跨轮累积（chat/step/tool 的 FCtx 则每 turn 从 init 起算，只在循环内穿线）。
+%%%
 %%% Request / Response：
 %%% - step：Request `#{messages, context, iteration, tool_calls_made}` → Response
 %%%   `#{status, messages, context, tool_calls_made, ...}`，`status` 为
@@ -51,6 +56,9 @@
 %%%   `{interrupt, Type, Ctx}` | `{error, Reason}`）；turn filter 直接模式匹配该 tuple。
 %%%   **硬规则**：`{interrupt,_,_}` / `{error,_}` 必须透传、不得重入 Next
 %%%   （暂停/错误态上重试破坏 HITL 语义）。
+%%%
+%%%   turn filter 同样可以回写 FCtx：返回 `{TurnResultTuple, NewFCtx}`（判据是
+%%%   前一元为 tuple，与 `{error, Reason}` 这类结果本身不会混淆），状态跨 turn 存活。
 %%%
 %%%   **重入要用第 5 元 `Messages`**（该跑完整消息序列：跨轮历史 + 本轮新增 +
 %%%   各轮 assistant/工具结果，直至最终答案）。要接着上一跑续走时，传
