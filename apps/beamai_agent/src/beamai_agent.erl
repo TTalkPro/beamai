@@ -4,6 +4,7 @@
 %%% 封装 beamai_chat_client，提供：
 %%%   - 多轮对话管理（跨轮历史由 memory provider 按 conversation_id 维护）
 %%%   - 自实现 tool loop（full-messages 模式，自管编排记忆与回调）
+%%%   - 中断/恢复：resume/2,3,4 与流式的 stream_resume/2,3
 %%%   - 13 个观察性回调（on_turn_start/end/error, on_llm_call, on_llm_result,
 %%%     on_llm_event, on_message_start, on_message_end, on_tool_call,
 %%%     on_tool_result, on_token, on_interrupt, on_resume）
@@ -41,7 +42,8 @@
 -export([stream/2, stream/3]).
 
 %% 中断/恢复
--export([resume/2, resume/3]).
+-export([resume/2, resume/3, resume/4]).
+-export([stream_resume/2, stream_resume/3]).
 -export([is_interrupted/1, get_interrupt_info/1]).
 
 %% 查询
@@ -251,15 +253,18 @@ stream(State, UserMessage) ->
     {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
     {error, term()}.
 stream(State, UserMessage, Opts) ->
+    run(State, UserMessage, Opts#{stream_token_handler => token_handler(State)}).
+
+%% @private 桥接：ChatClient 逐 token 回调 → agent on_token 回调
+%%
+%% Info 由 tool loop 逐条消息给出（本轮 Meta + message_id），覆盖在这里的
+%% 基础 Meta 之上：一轮里 assistant 文本分成多条消息，token 必须能标出自己
+%% 属于哪条；而 run_id 这类字段循环里的那份才是最新的（本函数在进入循环前
+%% 就构造好了，此刻还看不到本次 run 的 id）。
+token_handler(State) ->
     #{callbacks := Callbacks} = State,
     Meta = beamai_agent_callbacks:build_metadata(State),
-    %% 桥接：ChatClient 逐 token 回调 → agent on_token 回调
-    %% Info 由 tool loop 逐条消息给出（message_id），并进 on_token 的 Meta：
-    %% 一轮里 assistant 文本分成多条消息，token 必须能标出自己属于哪条
-    TokenHandler = fun(Token, Info) ->
-                       emit_tokens(Token, maps:merge(Meta, Info), Callbacks)
-                   end,
-    run(State, UserMessage, Opts#{stream_token_handler => TokenHandler}).
+    fun(Token, Info) -> emit_tokens(Token, maps:merge(Meta, Info), Callbacks) end.
 
 %%====================================================================
 %% 查询 API
@@ -430,13 +435,25 @@ resume(Agent, Decision) ->
     {ok, run_result(), beamai_agent_state:agent_state()} |
     {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
     {error, term()}.
-resume(#{interrupt_state := undefined} = Agent, Decision, Payload) ->
+resume(Agent, Decision, Payload) ->
+    resume(Agent, Decision, Payload, #{}).
+
+%% @doc 从中断恢复执行（带 payload 与执行选项）
+%%
+%% Decision/Payload 语义同 resume/3；Opts 与 run/3 的一致（`chat_opts`、
+%% `stream_token_handler`）。直接给 `stream_token_handler` 也行，但流式续跑
+%% 通常用 stream_resume/2,3 —— 它顺带把 token 桥到 on_token 回调。
+-spec resume(beamai_agent_state:agent_state(), term(), map(), map()) ->
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
+resume(#{interrupt_state := undefined} = Agent, Decision, Payload, Opts) ->
     %% 本进程无中断态：透明回落 pause_store（跨重启恢复）
     case beamai_agent_pause:load(Agent) of
-        {ok, Restored} -> resume(Restored, Decision, Payload);
+        {ok, Restored} -> resume(Restored, Decision, Payload, Opts);
         none -> {error, not_interrupted}
     end;
-resume(#{interrupt_state := IntState} = Agent, Decision, Payload) ->
+resume(#{interrupt_state := IntState} = Agent, Decision, Payload, Opts) ->
     case beamai_agent_interrupt:validate_resume_input(IntState, Decision) of
         {error, _} = Err -> Err;
         ok ->
@@ -451,13 +468,37 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload) ->
             TurnReq = #{messages => [],
                         context => resume_context(Agent1, InitState),
                         resume => true},
-            LoopOpts = (loop_opts(Agent1, #{}))#{
+            LoopOpts = (loop_opts(Agent1, Opts))#{
                 continuation => fun() ->
                     resume_continuation(Agent1, Decision, Payload, IntState)
                 end},
             {TurnResult, Agent2} = run_turn_chain(Agent1, TurnReq, LoopOpts),
             dispatch_turn_result(Agent2, TurnResult, Callbacks, Meta)
     end.
+
+%% @doc 流式恢复中断的 agent（默认选项）
+-spec stream_resume(beamai_agent_state:agent_state(), term()) ->
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
+stream_resume(Agent, Decision) ->
+    stream_resume(Agent, Decision, #{}).
+
+%% @doc 流式恢复中断的 agent（带 payload）
+%%
+%% 与 resume/3 同样的恢复语义，区别在于续跑那一轮的 LLM 调用走 provider 级
+%% streaming，文本 token 经 on_token 回调实时推送——这是 stream/2,3 之于
+%% run/2,3 的同一件事。
+%%
+%% **HITL 场景基本都该用这个**：人回完话之后的那段答案才是用户在等的正文，
+%% 用 resume/3 的话它会等整轮跑完才整块出现。
+-spec stream_resume(beamai_agent_state:agent_state(), term(), map()) ->
+    {ok, run_result(), beamai_agent_state:agent_state()} |
+    {interrupt, interrupt_info(), beamai_agent_state:agent_state()} |
+    {error, term()}.
+stream_resume(Agent, Decision, Payload) ->
+    resume(Agent, Decision, Payload,
+           #{stream_token_handler => token_handler(Agent)}).
 
 %% @private 延续暂停的 turn：按 phase 消费 interrupt_state
 %%
@@ -487,7 +528,8 @@ resume_approval_raw(Agent1, Decision, Payload, IntState) ->
             #{messages := Msgs} =
                 beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, [ToolCall], #{
                     context => Ctx,
-                    parallel => false
+                    parallel => false,
+                    on_result => beamai_agent_tool_loop:agent_result_cb(Agent1)
                 }),
             Msgs
     end,
@@ -511,7 +553,8 @@ resume_env_raw(Agent1, Decision, IntState) ->
             #{messages := RetryMsgs, records := RetryRecords} =
                 beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, FailedCalls, #{
                     context => Ctx,
-                    parallel => Parallel
+                    parallel => Parallel,
+                    on_result => beamai_agent_tool_loop:agent_result_cb(Agent1)
                 }),
             Corrected = beamai_agent_interrupt:replace_results_by_id(BatchMsgs, RetryMsgs),
             StillFailed = [TC || {TC, R} <- lists:zip(FailedCalls, RetryRecords),
