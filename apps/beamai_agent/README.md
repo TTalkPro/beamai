@@ -379,6 +379,7 @@ Results = beamai_agent_delegate:run_many(
 | `on_llm_event`  | 流式模式下 provider 每个原始流事件（仅 `stream` / `stream_resume`） | `(Event, Meta)` |
 | `on_tool_call`  | 每个工具调用前，可返回 `{interrupt, Reason}` | `(Name, Args)` 或 `(Name, Args, Info)` |
 | `on_tool_result`| 每个工具执行得到结果后（并发时谁先完成谁先触发） | `(Name, Result)` 或 `(Name, Result, Info)` |
+| `on_state_change` | 工具 writes 折叠进 state 槽、且 state **确实变了** | `(State, Meta)` |
 | `on_message_start` | 一条 assistant 消息开始前（LLM 调用前分配 id） | `(MessageId, Meta)` |
 | `on_message_end` | 一条 assistant 消息落定后（无消息落定则 `undefined`） | `(Message, Meta)` |
 | `on_token`      | 流式模式逐 token 实时推送（`Meta` 带 `message_id`） | `(Token, Meta)` |
@@ -386,6 +387,11 @@ Results = beamai_agent_delegate:run_many(
 | `on_resume`     | 从中断恢复 | `(IntState, Meta)` |
 
 > `Meta` 含 `agent_id / agent_name / conversation_id / turn_count / run_id / timestamp`。
+>
+> `on_state_change` 在**屏障处**（整批工具执行完、结果尚未交给下一轮 LLM 之前）
+> 触发，参数是折叠后的**整份** state；不变就不发。每个 turn 的 state 初值来自
+> agent 配置的 `initial_state`（turn 的 context 每轮新建，不种就从空 state 起步）
+> —— 宿主用它把外部持有的状态灌进来，工具经 writes 在其上增量修改。
 >
 > 一轮 turn 里 assistant 文本**不止一条消息**（工具循环每迭代产出一条，直返还会
 > 再合成一条），`on_token` 是连续的裸 token 流分不出边界。`on_message_start` /
