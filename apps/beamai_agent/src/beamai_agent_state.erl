@@ -50,7 +50,11 @@
     tool_calling_manager := beamai_tool_calling_manager:manager(), %% 工具批量执行管理器（可注入）
     %% 循环驱动 filter 的构造器（可注入）：换掉它 = 换掉 ReAct 循环策略
     %% （plan-execute / reflexion / 树搜索），未设则用 beamai_agent_tool_loop 的缺省实现
-    loop_filter := undefined | fun((map()) -> beamai_filter:filter())
+    loop_filter := undefined | fun((map()) -> beamai_filter:filter()),
+    %% turn filter 的私有状态（按 filter 名索引）：turn 链的 context 每轮新建，
+    %% turn filter 每 turn 只进出一次，回写只能靠这里在轮与轮之间接上
+    %% （见 beamai_agent:initial_turn_context/1）
+    turn_filter_states := #{binary() => map()}
 }.
 
 -type interrupt_state() :: #{
@@ -146,7 +150,8 @@ create(Config) ->
             on_env_error => resolve_on_env_error(Config, Callbacks),
             pause_store => maps:get(pause_store, Config, undefined),
             tool_calling_manager => TCM,
-            loop_filter => maps:get(loop_filter, Config, undefined)
+            loop_filter => maps:get(loop_filter, Config, undefined),
+            turn_filter_states => #{}
         },
         {ok, State}
     catch

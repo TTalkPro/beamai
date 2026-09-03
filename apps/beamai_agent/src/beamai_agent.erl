@@ -149,9 +149,8 @@ run(State, UserMessage, Opts) ->
     TurnReq = #{messages => [UserMsg],
                 context => initial_turn_context(State0),
                 resume => false},
-    dispatch_turn_result(State0,
-                         run_turn_chain(State0, TurnReq, loop_opts(State0, Opts)),
-                         Callbacks, Meta).
+    {TurnResult, State1} = run_turn_chain(State0, TurnReq, loop_opts(State0, Opts)),
+    dispatch_turn_result(State1, TurnResult, Callbacks, Meta).
 
 %% @private turn 洋葱：用户 turn filter → 循环 filter → step 链
 %%
@@ -161,14 +160,20 @@ run(State, UserMessage, Opts) ->
 %%
 %% TurnResult 为工具循环结果 tuple，turn filter 直接模式匹配（硬规则：
 %% interrupt/error 透传不重入）。filter/terminal 抛出由链统一捕获为 {error, Reason}。
+%%
+%% 返回 {TurnResult, NewState}：turn filter 回写的私有状态（链以 run_with_context/4
+%% 汇总进 context）存进 agent 状态，下一 turn 由 initial_turn_context/1 种回去
+%% ——turn 链的 context 每轮新建，不这样接就等于回写不生效。
 run_turn_chain(#{chat_client := #{filters := Filters}} = State, TurnReq, LoopOpts) ->
     Chain = Filters ++ [loop_filter(State, LoopOpts)],
     StepChain = beamai_filter_chain:compose(
                   Filters, around_step,
                   beamai_agent_tool_loop:step_terminal(LoopOpts)),
-    case beamai_filter_chain:run(Chain, around_turn, StepChain, TurnReq) of
-        {ok, TurnResult} -> TurnResult;
-        {error, Reason} -> {error, Reason}
+    case beamai_filter_chain:run_with_context(Chain, around_turn, StepChain, TurnReq) of
+        {ok, TurnResult, Ctx} ->
+            {TurnResult, State#{turn_filter_states => beamai_context:filter_states(Ctx)}};
+        {error, Reason} ->
+            {{error, Reason}, State}
     end.
 
 %% @private 取本轮的循环 filter：缺省 ReAct 循环，可整体替换
@@ -184,9 +189,15 @@ loop_filter(State, LoopOpts) ->
     end.
 
 %% @private turn 入口初始 context（只读环境：conversation_id；首轮 state 空）
+%%
+%% filter 私有状态种入上一 turn 的回写：turn filter 每 turn 只进出一次，
+%% 其 FCtx 要有意义就必须跨 turn 存活（turn 级预算/计数即靠此累积）。
+%% 工具/chat filter 的私有状态不在此列——它们在循环内随 context 逐轮穿线，
+%% 每 turn 从这份初值起算。
 initial_turn_context(State) ->
-    beamai_context:with_conversation_id(
-        beamai_context:new(), beamai_agent_state:conversation_id(State)).
+    Ctx = beamai_context:with_conversation_id(
+            beamai_context:new(), beamai_agent_state:conversation_id(State)),
+    beamai_context:with_filter_states(Ctx, turn_filter_states(State)).
 
 %% @private 把工具循环结果 tuple 分派为 run/resume 的最终返回
 dispatch_turn_result(State0, TurnResult, Callbacks, Meta) ->
@@ -439,8 +450,8 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload) ->
                 continuation => fun() ->
                     resume_continuation(Agent1, Decision, Payload, IntState)
                 end},
-            dispatch_turn_result(Agent1, run_turn_chain(Agent1, TurnReq, LoopOpts),
-                                 Callbacks, Meta)
+            {TurnResult, Agent2} = run_turn_chain(Agent1, TurnReq, LoopOpts),
+            dispatch_turn_result(Agent2, TurnResult, Callbacks, Meta)
     end.
 
 %% @private 延续暂停的 turn：按 phase 消费 interrupt_state
@@ -525,11 +536,17 @@ continuation_opts(Existing, NewMsgs, PrevCalls, Remaining) ->
       prev_tool_calls => PrevCalls,
       max_iterations => Remaining}.
 
-%% @private 构建 resume 执行/重跑用的只读环境 context（带 conversation_id + 恢复 state）
+%% @private 构建 resume 执行/重跑用的只读环境 context（带 conversation_id + 恢复
+%% state + 上一 turn 的 turn filter 私有状态）
 resume_context(Agent, InitState) ->
     Ctx0 = beamai_context:with_conversation_id(
              beamai_context:new(), beamai_agent_state:conversation_id(Agent)),
-    beamai_context:with_state(Ctx0, InitState).
+    Ctx1 = beamai_context:with_filter_states(Ctx0, turn_filter_states(Agent)),
+    beamai_context:with_state(Ctx1, InitState).
+
+%% @private 上一 turn 结束时 turn filter 的私有状态（老状态 map 缺该键则为空）
+turn_filter_states(State) ->
+    maps:get(turn_filter_states, State, #{}).
 
 %% @private CallRecord 是否为环境类失败
 env_failed_record(#{error := #{class := environment}}) -> true;

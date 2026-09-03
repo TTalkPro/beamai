@@ -124,6 +124,43 @@ reentry_runs_fresh_loop_test() ->
     end.
 
 %%====================================================================
+%% 私有状态回写：turn filter 每 turn 进出一次，FCtx 跨 turn 存活
+%%====================================================================
+
+fctx_writeback_persists_across_turns_test() ->
+    Parent = self(),
+    flush(),
+    _ = mock_llm(Parent),
+    %% 每 turn 记一次数，并把当前计数报回来
+    Counter = turn_filter(<<"counter">>, fun(Req, FCtx, Next) ->
+        N = maps:get(n, FCtx, 0),
+        R = Next(Req),
+        Parent ! {observed, N},
+        {R, FCtx#{n => N + 1}}
+    end),
+    try
+        {ok, Agent0} = beamai_agent:new(#{chat_client => chat_client_with_filters([Counter]),
+                                          memory => false}),
+        {ok, R1, Agent1} = beamai_agent:run(Agent0, <<"go">>),
+        {ok, R2, Agent2} = beamai_agent:run(Agent1, <<"go again">>),
+        %% 回写不污染结果
+        ?assertEqual(<<"answer-1">>, maps:get(content, R1)),
+        ?assertEqual(<<"answer-2">>, maps:get(content, R2)),
+        %% 第一 turn 进来时 n=0，第二 turn 看到上一 turn 的回写 n=1
+        ?assertEqual([0, 1], drain_observed([])),
+        %% 状态存在 agent 状态里（下一 turn 由 initial_turn_context 种回 context）
+        ?assertEqual(#{<<"counter">> => #{n => 2}},
+                     maps:get(turn_filter_states, Agent2))
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+drain_observed(Acc) ->
+    receive {observed, N} -> drain_observed([N | Acc])
+    after 100 -> lists:reverse(Acc)
+    end.
+
+%%====================================================================
 %% 注册顺序 = 层序（靠前者最外层：最先见 req、最后见 resp）
 %%====================================================================
 
