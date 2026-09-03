@@ -367,11 +367,18 @@ Results = beamai_agent_delegate:run_many(
 | `on_llm_event`  | 流式模式下 provider 每个原始流事件（仅 `stream/2,3`） | `(Event, Meta)` |
 | `on_tool_call`  | 每个工具调用前，可返回 `{interrupt, Reason}` | `(Name, Args)` 或 `(Name, Args, Info)` |
 | `on_tool_result`| 每个工具执行得到结果后（并发时谁先完成谁先触发） | `(Name, Result)` 或 `(Name, Result, Info)` |
-| `on_token`      | 流式模式逐 token 实时推送 | `(Token, Meta)` |
+| `on_message_start` | 一条 assistant 消息开始前（LLM 调用前分配 id） | `(MessageId, Meta)` |
+| `on_message_end` | 一条 assistant 消息落定后（无消息落定则 `undefined`） | `(Message, Meta)` |
+| `on_token`      | 流式模式逐 token 实时推送（`Meta` 带 `message_id`） | `(Token, Meta)` |
 | `on_interrupt`  | 进入中断状态 | `(IntState, Meta)` |
 | `on_resume`     | 从中断恢复 | `(IntState, Meta)` |
 
 > `Meta` 含 `agent_id / agent_name / conversation_id / turn_count / run_id / timestamp`。
+>
+> 一轮 turn 里 assistant 文本**不止一条消息**（工具循环每迭代产出一条，直返还会
+> 再合成一条），`on_token` 是连续的裸 token 流分不出边界。`on_message_start` /
+> `on_message_end` 恒成对（失败路径的 `Message` 为 `undefined`），配合 `on_token`
+> 的 `Meta.message_id` 就能把 token 归到正确的消息。`message_id` 不进消息历史。
 >
 > `on_token` 给的是归一化后的**文本**；`on_llm_event` 给的是 provider 原样解出的
 > SSE chunk（binary 键、各家形状不同、不归一化）。tool_calls 的 `arguments` 增量、
