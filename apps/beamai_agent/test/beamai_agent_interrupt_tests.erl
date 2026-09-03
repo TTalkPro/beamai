@@ -302,3 +302,190 @@ resume_after_interrupt_test() ->
     after
         meck:unload(beamai_chat_model)
     end.
+
+%%====================================================================
+%% 测试: 流式恢复（stream_resume）
+%%====================================================================
+
+%% @private 首轮 chat 返回中断 tool，之后返回最终答案；stream_chat 逐 token 吐
+mock_interrupt_then_answer() ->
+    CallCount = counters:new(1, []),
+    meck:new(beamai_chat_model, [passthrough]),
+    AskTool = #{id => <<"call_ask">>, type => <<"function">>,
+                function => #{name => <<"ask_human">>, arguments => <<"{}">>}},
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
+        counters:add(CallCount, 1, 1),
+        case counters:get(CallCount, 1) of
+            1 -> {ok, #{content => null, tool_calls => [AskTool],
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"Done">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    meck:expect(beamai_chat_model, stream_chat, fun(_C, _M, _RawCb, Opts) ->
+        TokenCb = maps:get(on_llm_new_token, Opts),
+        _ = [TokenCb(T, #{}) || T <- [<<"Do">>, <<"ne">>]],
+        {ok, beamai_chat_response:new(
+            #{content => <<"Done">>, finish_reason => <<"stop">>})}
+    end),
+    ok.
+
+%% @private 起一个带中断工具的 agent
+interrupt_agent(Callbacks) ->
+    beamai_agent:new(#{
+        llm => {mock, #{}},
+        callbacks => Callbacks,
+        interrupt_tools => [#{name => <<"ask_human">>,
+                              description => <<"Ask">>,
+                              parameters => #{}}]
+    }).
+
+recv_token() ->
+    receive {token, T, M} -> {T, M} after 1000 -> timeout end.
+
+%% stream_resume：续跑那一轮走 provider streaming，token 实时到达
+stream_resume_emits_tokens_test() ->
+    ok = mock_interrupt_then_answer(),
+    Self = self(),
+    Callbacks = #{on_token => fun(T, M) -> Self ! {token, T, M} end},
+    try
+        {ok, Agent} = interrupt_agent(Callbacks),
+        {interrupt, _Info, Agent1} = beamai_agent:run(Agent, <<"go">>),
+        {ok, Result, Agent2} = beamai_agent:stream_resume(Agent1, <<"yes">>),
+        ?assertEqual(<<"Done">>, maps:get(content, Result)),
+        ?assertNot(beamai_agent:is_interrupted(Agent2)),
+        %% 逐 token 到达，且都归属续跑产出的那条 assistant 消息
+        {<<"Do">>, M1} = recv_token(),
+        {<<"ne">>, M2} = recv_token(),
+        MsgId = maps:get(message_id, M1),
+        ?assert(is_binary(MsgId)),
+        ?assertEqual(MsgId, maps:get(message_id, M2)),
+        %% Meta 是完整的一份（与 on_message_start 等看到的同源），不只有 message_id
+        ?assert(is_binary(maps:get(agent_id, M1))),
+        ?assert(is_binary(maps:get(conversation_id, M1)))
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% 对照：resume/3 不流式，一个 token 都不产生（答案在轮末整块给出）
+resume_does_not_stream_test() ->
+    ok = mock_interrupt_then_answer(),
+    Self = self(),
+    Callbacks = #{on_token => fun(T, M) -> Self ! {token, T, M} end},
+    try
+        {ok, Agent} = interrupt_agent(Callbacks),
+        {interrupt, _Info, Agent1} = beamai_agent:run(Agent, <<"go">>),
+        {ok, Result, _Agent2} = beamai_agent:resume(Agent1, <<"yes">>),
+        ?assertEqual(<<"Done">>, maps:get(content, Result)),
+        ?assertEqual(timeout, recv_token())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% resume/4 是底层入口：直接给 stream_token_handler 也能流（不经 on_token 桥接）
+resume_4_accepts_stream_handler_test() ->
+    ok = mock_interrupt_then_answer(),
+    Self = self(),
+    try
+        {ok, Agent} = interrupt_agent(#{}),
+        {interrupt, _Info, Agent1} = beamai_agent:run(Agent, <<"go">>),
+        Handler = fun(Token) -> Self ! {raw_token, Token} end,
+        {ok, Result, _Agent2} = beamai_agent:resume(
+                                  Agent1, <<"yes">>, #{},
+                                  #{stream_token_handler => Handler}),
+        ?assertEqual(<<"Done">>, maps:get(content, Result)),
+        ?assertEqual([<<"Do">>, <<"ne">>], drain_raw_tokens())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+drain_raw_tokens() ->
+    receive {raw_token, T} -> [T | drain_raw_tokens()] after 200 -> [] end.
+
+%%====================================================================
+%% 测试: 续跑里执行的工具照常触发 on_tool_result
+%%====================================================================
+
+recv_tool_result() ->
+    receive {tool_result, N, R, Id} -> {N, R, Id} after 300 -> timeout end.
+
+%% approved 续跑：被批准的工具真执行，结果回调带着原来的 tool_call_id
+%%
+%% 回归：这条路径在循环之外执行工具，曾经漏传 on_result，宿主于是看到一次
+%% 有始无终的工具调用（发了调用、永远等不到结果）。env_retry 的重跑路径
+%% 与本例共用同一个回调构造（beamai_agent_tool_loop:agent_result_cb/1）。
+resume_approved_fires_tool_result_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    CC = counters:new(1, []),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
+        counters:add(CC, 1, 1),
+        case counters:get(CC, 1) of
+            1 -> {ok, #{content => null,
+                        tool_calls => [#{id => <<"call_sql">>, type => <<"function">>,
+                                         function => #{name => <<"execute_sql">>,
+                                                       arguments => <<"{}">>}}],
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"ok">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    Self = self(),
+    Callbacks = #{
+        on_tool_call => fun(_N, _A) -> {interrupt, needs_approval} end,
+        on_tool_result =>
+            fun(Name, Result, Info) ->
+                Self ! {tool_result, Name, Result, maps:get(tool_call_id, Info, undefined)}
+            end
+    },
+    K0 = beamai_chat_client:add_chat_model(beamai_chat_client:new(),
+                                           beamai_chat_model:create(mock, #{})),
+    K = beamai_chat_client:add_tool(K0, #{name => <<"execute_sql">>,
+                                          parameters => #{},
+                                          handler => fun(_A, _C) -> {ok, <<"SQL-OUT">>} end}),
+    try
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
+        {interrupt, Info, Agent1} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(callback, maps:get(interrupt_type, Info)),
+        %% 中断时那次调用还没执行 → 不该有结果回调
+        ?assertEqual(timeout, recv_tool_result()),
+        {ok, _Result, _Agent2} = beamai_agent:resume(Agent1, <<"approved">>),
+        ?assertEqual({<<"execute_sql">>, <<"SQL-OUT">>, <<"call_sql">>},
+                     recv_tool_result())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% reply / 拒绝走的是"人给的答复即结果"，不执行工具，故不触发 on_tool_result
+resume_reply_does_not_fire_tool_result_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    CC = counters:new(1, []),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
+        counters:add(CC, 1, 1),
+        case counters:get(CC, 1) of
+            1 -> {ok, #{content => null,
+                        tool_calls => [#{id => <<"call_sql">>, type => <<"function">>,
+                                         function => #{name => <<"execute_sql">>,
+                                                       arguments => <<"{}">>}}],
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"ok">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    Self = self(),
+    Callbacks = #{
+        on_tool_call => fun(_N, _A) -> {interrupt, needs_approval} end,
+        on_tool_result =>
+            fun(Name, Result, Info) ->
+                Self ! {tool_result, Name, Result, maps:get(tool_call_id, Info, undefined)}
+            end
+    },
+    K0 = beamai_chat_client:add_chat_model(beamai_chat_client:new(),
+                                           beamai_chat_model:create(mock, #{})),
+    K = beamai_chat_client:add_tool(K0, #{name => <<"execute_sql">>,
+                                          parameters => #{},
+                                          handler => fun(_A, _C) -> {ok, <<"SQL-OUT">>} end}),
+    try
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
+        {interrupt, _Info, Agent1} = beamai_agent:run(Agent, <<"go">>),
+        {ok, _Result, _Agent2} = beamai_agent:resume(Agent1, <<"rejected">>, #{}),
+        ?assertEqual(timeout, recv_tool_result())
+    after
+        meck:unload(beamai_chat_model)
+    end.
