@@ -7,6 +7,7 @@
 
 -define(CHAT, around_chat).
 -define(TOOL, around_tool).
+-define(TURN, around_turn).
 
 %%====================================================================
 %% 构造器 / 工具
@@ -141,6 +142,51 @@ filter_state_init_test() ->
     ?assertEqual(#{seed => 42, seen => true}, beamai_context:filter_state(Ctx, <<"I">>, #{})).
 
 %%====================================================================
+%% 私有上下文：tuple 响应（turn 链）的回写经 run_with_context/4 带出
+%%====================================================================
+
+turn_tuple_writeback_test() ->
+    %% turn 链响应是工具循环结果 tuple，没有 context 槽——回写由链收集
+    T = turn_counter_filter(<<"T">>),
+    {ok, Resp, Ctx} = beamai_filter_chain:run_with_context(
+                        [T], ?TURN, turn_terminal(), turn_req()),
+    %% 响应仍是原样的 turn 结果 tuple（回写不污染结果）
+    ?assertEqual({ok, #{content => <<"a">>}, [], 1, []}, Resp),
+    ?assertEqual(#{n => 1}, beamai_context:filter_state(Ctx, <<"T">>, #{})).
+
+turn_tuple_writeback_accumulates_test() ->
+    %% 把上一次带出的 context 作为下一次请求的 context：计数器累积（跨 turn 语义）
+    T = turn_counter_filter(<<"T">>),
+    {ok, _, Ctx1} = beamai_filter_chain:run_with_context(
+                      [T], ?TURN, turn_terminal(), turn_req()),
+    {ok, _, Ctx2} = beamai_filter_chain:run_with_context(
+                      [T], ?TURN, turn_terminal(), #{context => Ctx1}),
+    ?assertEqual(#{n => 2}, beamai_context:filter_state(Ctx2, <<"T">>, #{})).
+
+turn_tuple_writeback_layers_test() ->
+    %% 多层各写各的私有槽，一次收尾全部合并
+    A = turn_counter_filter(<<"A">>),
+    B = turn_counter_filter(<<"B">>),
+    {ok, _, Ctx} = beamai_filter_chain:run_with_context(
+                     [A, B], ?TURN, turn_terminal(), turn_req()),
+    ?assertEqual(#{n => 1}, beamai_context:filter_state(Ctx, <<"A">>, #{})),
+    ?assertEqual(#{n => 1}, beamai_context:filter_state(Ctx, <<"B">>, #{})).
+
+turn_error_tuple_is_not_a_writeback_test() ->
+    %% {error, Map} 是合法的 turn 结果（首元素是 atom），不能被当成 {Resp, NewFCtx}
+    Pass = beamai_filter:new(<<"P">>, #{around_turn => fun(Req, _F, Next) -> Next(Req) end}),
+    Terminal = fun(_) -> {error, #{class => environment}} end,
+    {ok, Resp, Ctx} = beamai_filter_chain:run_with_context(
+                        [Pass], ?TURN, Terminal, turn_req()),
+    ?assertEqual({error, #{class => environment}}, Resp),
+    ?assertEqual(#{}, beamai_context:filter_state(Ctx, <<"P">>, #{})).
+
+turn_run_4_still_returns_pair_free_result_test() ->
+    T = turn_counter_filter(<<"T">>),
+    ?assertEqual({ok, {ok, #{content => <<"a">>}, [], 1, []}},
+                 beamai_filter_chain:run([T], ?TURN, turn_terminal(), turn_req())).
+
+%%====================================================================
 %% 辅助
 %%====================================================================
 
@@ -165,6 +211,24 @@ trace_filter(Name, BeforeTag, AfterTag) ->
 counter_filter(Name) ->
     beamai_filter:new(Name, #{
         around_chat => fun(Req, FCtx, Next) ->
+            N = maps:get(n, FCtx, 0),
+            Resp = Next(Req),
+            {Resp, FCtx#{n => N + 1}}
+        end
+    }).
+
+%% turn 测试请求（turn 链请求只要求带 context）
+turn_req() ->
+    #{messages => [], context => beamai_context:new()}.
+
+%% turn 测试 terminal：给出一个工具循环结果 tuple
+turn_terminal() ->
+    fun(_Req) -> {ok, #{content => <<"a">>}, [], 1, []} end.
+
+%% 私有上下文计数器 filter（turn 链版：响应是 tuple，回写走链的写表）
+turn_counter_filter(Name) ->
+    beamai_filter:new(Name, #{
+        around_turn => fun(Req, FCtx, Next) ->
             N = maps:get(n, FCtx, 0),
             Resp = Next(Req),
             {Resp, FCtx#{n => N + 1}}
