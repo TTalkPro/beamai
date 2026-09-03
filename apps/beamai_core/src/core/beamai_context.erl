@@ -37,6 +37,7 @@
 -export([state_get/2, state_get/3, get_state/1, with_state/2, apply_writes/3]).
 %% filter 私有状态（框架自管）
 -export([filter_state/3, set_filter_state/3]).
+-export([filter_states/1, with_filter_states/2]).
 %% 变量工具
 -export([normalize_key/1]).
 -export([keys/1, delete/2, has_key/2, update/3]).
@@ -247,6 +248,20 @@ filter_state(_, _Name, Default) ->
 -spec set_filter_state(t(), binary(), map()) -> t().
 set_filter_state(#{?FILTER_STATES_KEY := States} = Ctx, Name, State) ->
     Ctx#{?FILTER_STATES_KEY => States#{Name => State}}.
+
+%% @doc 取出整份 filter 私有状态表（按 filter 名索引）
+%%
+%% 供框架在 context 生命周期之外保存/还原 filter 私有状态：turn 链的 context
+%% 每轮新建，agent 用这一对存取器把 turn filter 的私有状态在轮与轮之间接上
+%% （见 beamai_agent:initial_turn_context/1）。
+-spec filter_states(t()) -> #{binary() => map()}.
+filter_states(#{?FILTER_STATES_KEY := States}) -> States;
+filter_states(_) -> #{}.
+
+%% @doc 整份放回 filter 私有状态表（覆盖式）
+-spec with_filter_states(t(), #{binary() => map()}) -> t().
+with_filter_states(Ctx, States) when is_map(States) ->
+    Ctx#{?FILTER_STATES_KEY => States}.
 
 %%====================================================================
 %% 内部
