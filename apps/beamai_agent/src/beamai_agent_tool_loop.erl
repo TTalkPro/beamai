@@ -65,7 +65,9 @@
     tool_calling_manager := beamai_tool_calling_manager:manager(),
     %% 流式 token 处理器：设置时每轮 LLM 调用走 invoke_chat_stream，
     %% 文本 token 经此回调实时透出（undefined 则非流式）。
-    stream_token_handler => undefined | fun((binary()) -> ok),
+    %% Fun/2 额外收 Info（目前只有 message_id），见 token_cb/2
+    stream_token_handler => undefined | fun((binary()) -> ok)
+                          | fun((binary(), map()) -> ok),
     %% 之前已执行的 tool 调用记录（resume 续接时携带）
     prev_tool_calls => [map()],
     %% 首次进入循环时的一次性分派（resume 用）：返回 {result, TurnResult} 直接
@@ -269,11 +271,14 @@ step(Opts, #{messages := Messages, context := Ctx,
     #{callbacks := Callbacks, meta := Meta} = Opts,
     ToSend = prepare_messages(Opts, Messages),
     beamai_agent_callbacks:invoke(on_llm_call, [ToSend, Meta], Callbacks),
-    case invoke_llm(Opts, ToSend, Ctx) of
+    %% 消息 id 在调用**之前**分配：流式 token 要能标出自己属于哪条 assistant 消息
+    MsgId = beamai_id:gen_id(<<"msg">>),
+    emit_message_start(Opts, MsgId),
+    case invoke_llm(Opts, ToSend, Ctx, MsgId) of
         {ok, Response, ChatCtx} ->
             %% 每次 LLM 返回后触发（含中间轮，可据此累计各次 usage）
             beamai_agent_callbacks:invoke(on_llm_result, [Response, Meta], Callbacks),
-            Messages1 = record_assistant(Opts, Response, Messages),
+            Messages1 = record_assistant(Opts, Response, Messages, MsgId),
             StepReq1 = StepReq#{messages => Messages1, context => ChatCtx},
             case beamai_chat_response:has_tool_calls(Response) of
                 true ->
@@ -284,6 +289,8 @@ step(Opts, #{messages := Messages, context := Ctx,
                       context => ChatCtx, tool_calls_made => ToolCallsMade}
             end;
         {error, Reason} ->
+            %% 出错也要闭合这条消息（Message=undefined），start/end 恒成对
+            emit_message_end(Opts, MsgId, undefined),
             #{status => error, reason => Reason, context => Ctx,
               messages => Messages, tool_calls_made => ToolCallsMade}
     end.
@@ -295,27 +302,57 @@ prepare_messages(#{memory := Provider, conversation_id := ConvId}, Messages) ->
     beamai_memory_provider:prepare(Provider, ConvId, Messages).
 
 %% @private 把 assistant 回合并入 messages 并持久化（无可存内容则原样返回）
-record_assistant(Opts, Response, Messages) ->
+%%
+%% 这里是「一条 assistant 消息到此为止」的**唯一**权威点——直返合成的回合也走
+%% 这条路径，故 on_message_end 对它同样成立。
+record_assistant(Opts, Response, Messages, MsgId) ->
     case beamai_message:from_response(Response) of
         undefined ->
+            emit_message_end(Opts, MsgId, undefined),
             Messages;
         Msg ->
             persist(Opts, [Msg]),
+            emit_message_end(Opts, MsgId, Msg),
             Messages ++ [Msg]
     end.
 
+%% @private 消息边界：一条 assistant 消息开始（id 已分配，尚未产出内容）
+emit_message_start(#{callbacks := Callbacks} = Opts, MsgId) ->
+    beamai_agent_callbacks:invoke(on_message_start, [MsgId, msg_meta(Opts, MsgId)],
+                                  Callbacks).
+
+%% @private 消息边界：一条 assistant 消息落定
+%% Msg=undefined 表示没有消息落定（LLM 出错、或响应无可存内容）
+emit_message_end(#{callbacks := Callbacks} = Opts, MsgId, Msg) ->
+    beamai_agent_callbacks:invoke(on_message_end, [Msg, msg_meta(Opts, MsgId)],
+                                  Callbacks).
+
+%% @private 消息级元数据：turn 级 Meta + 本条消息的 id
+msg_meta(Opts, MsgId) ->
+    (maps:get(meta, Opts, #{}))#{message_id => MsgId}.
+
 %% @private 调用 LLM：有 stream_token_handler 则走流式，否则非流式
 %% （context 每轮由 step 请求覆写进 chat_opts）
-invoke_llm(#{chat_client := ChatClient, chat_opts := ChatOpts0} = Opts, ToSend, Ctx) ->
+invoke_llm(#{chat_client := ChatClient, chat_opts := ChatOpts0} = Opts, ToSend, Ctx, MsgId) ->
     ChatOpts = ChatOpts0#{context => Ctx},
     case maps:get(stream_token_handler, Opts, undefined) of
         undefined ->
             beamai_chat_client:invoke_chat(ChatClient, ToSend, ChatOpts);
-        Handler when is_function(Handler, 1) ->
-            TokenCb = fun(Token, _Meta) -> Handler(Token) end,
+        Handler when is_function(Handler) ->
+            TokenCb = token_cb(Handler, #{message_id => MsgId}),
             beamai_chat_client:invoke_chat_stream(
               ChatClient, ToSend, with_raw_event_sink(ChatOpts, Opts), TokenCb)
     end.
+
+%% @private 桥接 ChatClient 的 (Token, Meta) 回调到 stream_token_handler
+%%
+%% Handler 按 arity 兼容：Fun/1 只收 Token（旧签名）；Fun/2 额外收 Info——目前
+%% 只有 message_id，它是把 token 归到哪条 assistant 消息的唯一依据（一轮工具
+%% 循环里 assistant 文本分成多条消息，靠 token 流本身猜不出边界）。
+token_cb(Handler, Info) when is_function(Handler, 2) ->
+    fun(Token, _Meta) -> Handler(Token, Info) end;
+token_cb(Handler, _Info) ->
+    fun(Token, _Meta) -> Handler(Token) end.
 
 %% @private 注册了 on_llm_event 才把 raw 事件汇挂上去
 %%
@@ -472,7 +509,11 @@ is_failed(_) -> false.
 %% assistant(tool_calls) → tool(result) → assistant(答案)），下一轮续接不残缺。
 finish_direct(Opts, Messages, ToolResults, Ctx, ToolCallsMade) ->
     Response = direct_response(ToolResults),
-    Messages1 = record_assistant(Opts, Response, Messages),
+    %% 合成的回合同样是一条 assistant 消息：边界照发（无流式 token，start 与 end
+    %% 紧挨着），否则只听边界回调的宿主会整条漏掉直返的答案
+    MsgId = beamai_id:gen_id(<<"msg">>),
+    emit_message_start(Opts, MsgId),
+    Messages1 = record_assistant(Opts, Response, Messages, MsgId),
     #{status => final, response => Response, messages => Messages1,
       context => Ctx, tool_calls_made => ToolCallsMade}.
 

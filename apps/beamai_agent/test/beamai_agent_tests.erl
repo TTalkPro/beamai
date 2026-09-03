@@ -640,6 +640,119 @@ collect_tokens(N) ->
     end.
 
 %%====================================================================
+%% 消息边界（on_message_start / on_message_end）
+%%====================================================================
+
+%% 一轮 turn 里每次 LLM 调用产出一条 assistant 消息：边界成对、id 各不相同，
+%% 且流式 token 的 Meta 带着自己所属消息的 id
+message_boundaries_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    CallCount = counters:new(1, []),
+    meck:expect(beamai_chat_model, stream_chat,
+        fun(_Config, _Messages, _RawCb, Opts) ->
+            counters:add(CallCount, 1, 1),
+            TokenCb = maps:get(on_llm_new_token, Opts),
+            case counters:get(CallCount, 1) of
+                1 ->
+                    {ok, beamai_chat_response:new(
+                        #{content => null, tool_calls => [tc(<<"c1">>, <<"t1">>)],
+                          finish_reason => <<"tool_calls">>})};
+                _ ->
+                    TokenCb(<<"fi">>, #{}),
+                    TokenCb(<<"nal">>, #{}),
+                    {ok, beamai_chat_response:new(
+                        #{content => <<"final">>, finish_reason => <<"stop">>})}
+            end
+        end),
+    Self = self(),
+    Callbacks = #{
+        on_message_start => fun(Id, _M) -> Self ! {mstart, Id} end,
+        on_message_end =>
+            fun(Msg, M) -> Self ! {mend, Msg, maps:get(message_id, M)} end,
+        on_token =>
+            fun(T, M) -> Self ! {tok, T, maps:get(message_id, M, undefined)} end
+    },
+    K = slow_tools_chat_client(fun(_A, _C) -> {ok, <<"ok">>} end),
+    try
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
+        {ok, _, _} = beamai_agent:stream(Agent, <<"go">>),
+        %% 第一条：只有 tool_calls 的 assistant 回合（不产文本 token）
+        {mstart, Id1} = recv_boundary(),
+        {mend, Msg1, Id1} = recv_boundary(),
+        ?assertMatch(#{tool_calls := [_]}, Msg1),
+        %% 第二条：文本回合，token 夹在这一对之间且带 Id2
+        {mstart, Id2} = recv_boundary(),
+        ?assertNotEqual(Id1, Id2),
+        ?assertEqual([{<<"fi">>, Id2}, {<<"nal">>, Id2}],
+                     [{T, I} || {tok, T, I} <- [recv_boundary(), recv_boundary()]]),
+        {mend, Msg2, Id2} = recv_boundary(),
+        ?assertEqual(<<"final">>, maps:get(content, Msg2))
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% LLM 出错也闭合这条消息（Message=undefined）：宿主不必为异常路径兜底
+message_boundary_closed_on_error_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) -> {error, boom} end),
+    Self = self(),
+    Callbacks = #{
+        on_message_start => fun(Id, _M) -> Self ! {mstart, Id} end,
+        on_message_end =>
+            fun(Msg, M) -> Self ! {mend, Msg, maps:get(message_id, M)} end
+    },
+    try
+        {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}}, callbacks => Callbacks}),
+        ?assertMatch({error, _}, beamai_agent:run(Agent, <<"hi">>)),
+        {mstart, Id} = recv_boundary(),
+        ?assertEqual({mend, undefined, Id}, recv_boundary())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% 直返合成的回合没有 LLM 调用，但它同样是一条 assistant 消息：边界照发
+return_direct_emits_message_boundary_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
+        {ok, #{content => null, tool_calls => [tc(<<"c1">>, <<"direct">>)],
+               finish_reason => <<"tool_calls">>}}
+    end),
+    Self = self(),
+    Callbacks = #{
+        on_message_start => fun(Id, _M) -> Self ! {mstart, Id} end,
+        on_message_end =>
+            fun(Msg, M) -> Self ! {mend, Msg, maps:get(message_id, M)} end
+    },
+    K0 = beamai_chat_client:add_chat_model(beamai_chat_client:new(),
+                                           beamai_chat_model:create(mock, #{})),
+    K = beamai_chat_client:add_tool(K0, #{name => <<"direct">>, parameters => #{},
+                                          handler => fun(_) -> {ok, <<"TOOL-OUT">>} end,
+                                          return_direct => true}),
+    try
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
+        {ok, Result, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(<<"TOOL-OUT">>, maps:get(content, Result)),
+        %% 第一条来自 LLM（tool_calls 回合），第二条是直返合成的
+        {mstart, Id1} = recv_boundary(),
+        {mend, _Msg1, Id1} = recv_boundary(),
+        {mstart, Id2} = recv_boundary(),
+        {mend, Msg2, Id2} = recv_boundary(),
+        ?assertNotEqual(Id1, Id2),
+        ?assertEqual(<<"TOOL-OUT">>, maps:get(content, Msg2))
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% @private 按到达顺序收一条边界/token 消息（超时返回 timeout）
+recv_boundary() ->
+    receive
+        M when element(1, M) =:= mstart;
+               element(1, M) =:= mend;
+               element(1, M) =:= tok -> M
+    after 1000 -> timeout
+    end.
+
+%%====================================================================
 %% 原始流事件（on_llm_event）：统一响应抹掉的东西经这条通道原样透出
 %%====================================================================
 

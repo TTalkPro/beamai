@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc Agent 回调系统
 %%%
-%%% 提供 11 个回调，用于监控和控制 agent 执行过程：
+%%% 提供 13 个回调，用于监控和控制 agent 执行过程：
 %%%   - on_turn_start: 新 turn 开始时触发
 %%%   - on_turn_end: turn 正常完成后触发
 %%%   - on_turn_error: turn 执行出错时触发
@@ -10,7 +10,9 @@
 %%%   - on_llm_event: 流式模式下 provider 每个原始流事件触发（见下「原始流事件」）
 %%%   - on_tool_call: 每次 tool 调用前触发，可返回 {interrupt, Reason}
 %%%   - on_tool_result: 每个 tool 执行得到结果后触发（观察用，不影响流程）
-%%%   - on_token: streaming 模式下每收到一个 token 时触发
+%%%   - on_message_start: 一条 assistant 消息开始前触发（见下「消息边界」）
+%%%   - on_message_end: 一条 assistant 消息落定后触发
+%%%   - on_token: streaming 模式下每收到一个 token 时触发（Meta 带 message_id）
 %%%   - on_interrupt: agent 进入中断状态时触发
 %%%   - on_resume: agent 从中断状态恢复时触发
 %%%
@@ -28,6 +30,24 @@
 %%% Info 的关联字段：
 %%%   - on_tool_call  —— `tool_call_id`
 %%%   - on_tool_result —— `tool_call_id`、`args`，工具失败时另有 `error`
+%%%
+%%% == 消息边界（on_message_start / on_message_end）==
+%%%
+%%% 一轮 turn 里 assistant 文本**不止一条消息**：工具循环每迭代一次就产出一条
+%%% assistant 回合（有的只有 tool_calls、有的是文本），直返路径还会再合成一条。
+%%% on_token 是连续的裸 token 流，本身分不出这些边界——需要按消息成段渲染的宿主
+%%% （前端事件流、trace）必须靠这两个回调。
+%%%
+%%%   - on_message_start(MessageId, Meta) —— **LLM 调用前**触发。id 提前分配，
+%%%     这样流式 token 到达时它已经在 on_token 的 Meta 里（`message_id`），
+%%%     宿主据此把 token 归到正确的消息。
+%%%   - on_message_end(Message, Meta) —— 消息落定后触发，`Message` 是完整的
+%%%     assistant 消息 map（含 content / tool_calls），Meta 同样带 `message_id`。
+%%%
+%%% **两者恒成对**：LLM 调用失败、或响应里没有可存内容时，on_message_end 的
+%%% `Message` 为 `undefined`——宿主不必为异常路径兜底关闭。
+%%%
+%%% 注意 message_id **不进消息历史**：它是这次流的关联标识，不是持久化字段。
 %%%
 %%% == 原始流事件（on_llm_event）==
 %%%
@@ -67,7 +87,13 @@
     %% 参数: 函数名, 编码后的结果（binary）[, Info]
     on_tool_result => fun((binary(), binary()) -> ok)
                     | fun((binary(), binary(), map()) -> ok),
-    on_token       => fun((binary(), map()) -> ok), %% 参数: token 文本, 元数据 map
+    on_message_start => fun((binary(), map()) -> ok),
+                                                    %% 参数: message_id, 元数据 map
+    on_message_end => fun((map() | undefined, map()) -> ok),
+                                                    %% 参数: assistant 消息（无则 undefined）,
+                                                    %% 元数据 map（带 message_id）
+    on_token       => fun((binary(), map()) -> ok), %% 参数: token 文本,
+                                                    %% 元数据 map（流式下带 message_id）
     on_interrupt   => fun((map(), map()) -> ok),    %% 参数: interrupt_state, 元数据 map
     on_resume      => fun((map(), map()) -> ok)     %% 参数: interrupt_state, 元数据 map
 }.
