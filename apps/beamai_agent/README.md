@@ -50,8 +50,12 @@ beamai_agent:new(Config) -> {ok, State} | {error, Reason}.
 beamai_agent:run(State, UserMsg)    -> {ok, Result, NewState} | {interrupt, Info, NewState} | {error, Reason}.
 beamai_agent:stream(State, UserMsg) -> {ok, Result, NewState} | {interrupt, Info, NewState} | {error, Reason}.
 
-%% 中断恢复
-beamai_agent:resume(State, HumanInput) -> {ok, Result, NewState} | {interrupt, Info, NewState} | {error, Reason}.
+%% 中断恢复（stream_resume 之于 resume，同 stream 之于 run）
+beamai_agent:resume(State, Decision)               -> {ok, Result, NewState} | {interrupt, Info, NewState} | {error, Reason}.
+beamai_agent:resume(State, Decision, Payload)      -> 同上.
+beamai_agent:resume(State, Decision, Payload, Opts)-> 同上（底层入口，Opts 同 run/3）.
+beamai_agent:stream_resume(State, Decision)          -> 同上，续跑那一轮逐 token 推送.
+beamai_agent:stream_resume(State, Decision, Payload) -> 同上.
 beamai_agent:is_interrupted(State)     -> boolean().
 beamai_agent:get_interrupt_info(State) -> Info | undefined.
 
@@ -155,6 +159,14 @@ case beamai_agent:run(State, <<"删除所有文件"/utf8>>) of
     {ok, Result, _S1} ->
         Result
 end.
+```
+
+人回完话之后的那段答案才是用户在等的正文，交互式场景用 `stream_resume`
+让它逐 token 出来（`resume` 会等整轮跑完才整块给出）：
+
+```erlang
+{interrupt, _Info, S1} = beamai_agent:stream(State, <<"删除所有文件"/utf8>>),
+{ok, Result, _S2} = beamai_agent:stream_resume(S1, <<"确认执行"/utf8>>).
 ```
 
 ## 会话记忆（Memory）
@@ -364,7 +376,7 @@ Results = beamai_agent_delegate:run_many(
 | `on_turn_error` | turn 执行出错 | `(Reason, Meta)` |
 | `on_llm_call`   | 每次 LLM 调用前 | `(Messages, Meta)` |
 | `on_llm_result` | 每次 LLM 返回后（含中间轮，可取各次 usage） | `(Response, Meta)` |
-| `on_llm_event`  | 流式模式下 provider 每个原始流事件（仅 `stream/2,3`） | `(Event, Meta)` |
+| `on_llm_event`  | 流式模式下 provider 每个原始流事件（仅 `stream` / `stream_resume`） | `(Event, Meta)` |
 | `on_tool_call`  | 每个工具调用前，可返回 `{interrupt, Reason}` | `(Name, Args)` 或 `(Name, Args, Info)` |
 | `on_tool_result`| 每个工具执行得到结果后（并发时谁先完成谁先触发） | `(Name, Result)` 或 `(Name, Result, Info)` |
 | `on_message_start` | 一条 assistant 消息开始前（LLM 调用前分配 id） | `(MessageId, Meta)` |
