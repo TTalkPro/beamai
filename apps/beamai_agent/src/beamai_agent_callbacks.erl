@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %%% @doc Agent 回调系统
 %%%
-%%% 提供 13 个回调，用于监控和控制 agent 执行过程：
+%%% 提供 14 个回调，用于监控和控制 agent 执行过程：
 %%%   - on_turn_start: 新 turn 开始时触发
 %%%   - on_turn_end: turn 正常完成后触发
 %%%   - on_turn_error: turn 执行出错时触发
@@ -10,6 +10,7 @@
 %%%   - on_llm_event: 流式模式下 provider 每个原始流事件触发（见下「原始流事件」）
 %%%   - on_tool_call: 每次 tool 调用前触发，可返回 {interrupt, Reason}
 %%%   - on_tool_result: 每个 tool 执行得到结果后触发（观察用，不影响流程）
+%%%   - on_state_change: 工具 writes 折叠进 state 槽、且 state **确实变了**时触发
 %%%   - on_message_start: 一条 assistant 消息开始前触发（见下「消息边界」）
 %%%   - on_message_end: 一条 assistant 消息落定后触发
 %%%   - on_token: streaming 模式下每收到一个 token 时触发（Meta 带 message_id）
@@ -30,6 +31,18 @@
 %%% Info 的关联字段：
 %%%   - on_tool_call  —— `tool_call_id`
 %%%   - on_tool_result —— `tool_call_id`、`args`，工具失败时另有 `error`
+%%%
+%%% == 状态变更（on_state_change）==
+%%%
+%%% state 槽（beamai_context 的 state）由工具经 writes 修改，在**屏障处**
+%%% （整批工具执行完、结果尚未交给下一轮 LLM 之前）按 tool_call 原始序折叠。
+%%% 折叠完 state 变了才触发这个回调，参数是折叠后的**整份** state。
+%%%
+%%% 只在变了的时候发：绝大多数工具不写 state，每批都发等于给宿主刷噪音。
+%%% 要增量（谁改了哪个键）由宿主自己与上一份比 —— 框架不替你决定 diff 的形状。
+%%%
+%%% 每个 turn 的 state 初值来自 agent 配置的 `initial_state`（turn 的 context
+%%% 每轮新建，不种就从空 state 起步）。
 %%%
 %%% == 消息边界（on_message_start / on_message_end）==
 %%%
@@ -87,6 +100,7 @@
     %% 参数: 函数名, 编码后的结果（binary）[, Info]
     on_tool_result => fun((binary(), binary()) -> ok)
                     | fun((binary(), binary(), map()) -> ok),
+    on_state_change => fun((map(), map()) -> ok),   %% 参数: 折叠后的整份 state, 元数据 map
     on_message_start => fun((binary(), map()) -> ok),
                                                     %% 参数: message_id, 元数据 map
     on_message_end => fun((map() | undefined, map()) -> ok),

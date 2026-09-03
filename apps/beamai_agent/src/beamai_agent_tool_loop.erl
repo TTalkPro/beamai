@@ -425,6 +425,7 @@ handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls, Opts,
             parallel => Parallel,
             on_result => tool_result_cb(Opts)
         }),
+    ok = emit_state_change(Opts, Ctx, NewCtx),
     AllResults = SafeResults ++ [skipped_result(TC) || TC <- SkippedCalls],
     persist(Opts, AllResults),
     Context = build_interrupt_context(Used, AllResults, InterruptedTC,
@@ -464,6 +465,7 @@ execute_and_continue(TCs, Opts, #{messages := Messages, context := Ctx,
             parallel => Parallel,
             on_result => tool_result_cb(Opts)
         }),
+    ok = emit_state_change(Opts, Ctx, NewCtx),
     case env_pause(Opts, TCs, NewToolCalls) of
         {pause, FailedCalls} ->
             Context = build_env_interrupt_context(
@@ -554,6 +556,20 @@ persist(#{memory := undefined}, _Msgs) -> ok;
 persist(_Opts, []) -> ok;
 persist(#{memory := Provider, conversation_id := ConvId}, Msgs) ->
     beamai_memory_provider:append(Provider, ConvId, Msgs).
+
+%% @private state 槽在屏障处折叠完 writes 后**确实变了**才通知宿主
+%%
+%% 不变就不发：绝大多数工具不写 state，每批都发等于给宿主刷噪音。比较的是折叠
+%% 前后的整份 state（纯数据，比较代价与它自身大小同阶）。
+emit_state_change(#{callbacks := Callbacks} = Opts, OldCtx, NewCtx) ->
+    Old = beamai_context:get_state(OldCtx),
+    case beamai_context:get_state(NewCtx) of
+        Old ->
+            ok;
+        New ->
+            beamai_agent_callbacks:invoke(on_state_change, [New, maps:get(meta, Opts, #{})],
+                                          Callbacks)
+    end.
 
 %% @private 构建实时结果回调：每个工具完成即触发 on_tool_result（进度实时性优先，
 %% 并发时触发顺序不确定；需确定顺序读 CallRecords）。经 callbacks:invoke 吞异常。
