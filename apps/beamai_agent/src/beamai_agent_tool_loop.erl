@@ -38,6 +38,7 @@
 
 -export([run/2, loop_filter/1, step_terminal/1]).
 -export([build_env_interrupt_context/7]).
+-export([agent_result_cb/1]).
 
 -type provider() :: beamai_memory_provider:provider() | undefined.
 
@@ -339,16 +340,17 @@ invoke_llm(#{chat_client := ChatClient, chat_opts := ChatOpts0} = Opts, ToSend, 
         undefined ->
             beamai_chat_client:invoke_chat(ChatClient, ToSend, ChatOpts);
         Handler when is_function(Handler) ->
-            TokenCb = token_cb(Handler, #{message_id => MsgId}),
+            TokenCb = token_cb(Handler, msg_meta(Opts, MsgId)),
             beamai_chat_client:invoke_chat_stream(
               ChatClient, ToSend, with_raw_event_sink(ChatOpts, Opts), TokenCb)
     end.
 
 %% @private 桥接 ChatClient 的 (Token, Meta) 回调到 stream_token_handler
 %%
-%% Handler 按 arity 兼容：Fun/1 只收 Token（旧签名）；Fun/2 额外收 Info——目前
-%% 只有 message_id，它是把 token 归到哪条 assistant 消息的唯一依据（一轮工具
-%% 循环里 assistant 文本分成多条消息，靠 token 流本身猜不出边界）。
+%% Handler 按 arity 兼容：Fun/1 只收 Token（旧签名）；Fun/2 额外收 Info——本轮
+%% Meta 加上 message_id。message_id 是把 token 归到哪条 assistant 消息的唯一
+%% 依据（一轮工具循环里 assistant 文本分成多条消息，靠 token 流本身猜不出边界）；
+%% 带上整份 Meta 则让 on_token 与其余回调看到同样的 run_id/turn_count。
 token_cb(Handler, Info) when is_function(Handler, 2) ->
     fun(Token, _Meta) -> Handler(Token, Info) end;
 token_cb(Handler, _Info) ->
@@ -559,6 +561,20 @@ persist(#{memory := Provider, conversation_id := ConvId}, Msgs) ->
 %% CallRecord 里的 tool_call_id / args / error 随 Info 一并透出（注册 arity-3
 %% 回调才收得到）：并发批次下触发顺序不定，tool_call_id 是把结果配回具体调用
 %% 的唯一依据。
+%% @doc 由 agent 状态构建实时工具结果回调（循环之外执行工具时用）
+%%
+%% resume 有两处在循环**外面**执行工具：审批通过的那次调用、环境失败的重跑。
+%% 那里没有 loop opts，但一样该触发 on_tool_result —— 否则宿主会看到一次
+%% 有始无终的工具调用（前端事件流尤其明显：TOOL_CALL_START 发了，
+%% TOOL_CALL_RESULT 永远不来）。
+%%
+%% 注意这里只补**结果**回调，不补 on_tool_call 那个策略门：被中断的调用刚被
+%% 人批过，再过一次门只会又拦下来，死循环。
+-spec agent_result_cb(map()) -> fun((map()) -> ok).
+agent_result_cb(Agent) ->
+    tool_result_cb(#{callbacks => maps:get(callbacks, Agent, #{}),
+                     meta => beamai_agent_callbacks:build_metadata(Agent)}).
+
 tool_result_cb(#{callbacks := Callbacks} = Opts) ->
     Meta = maps:get(meta, Opts, #{}),
     fun(#{name := Name, result := Result} = CallRecord) ->
