@@ -48,6 +48,7 @@
     on_env_error := proceed | pause, %% 环境类工具失败策略（缺省按是否 HITL 计算）
     pause_store := beamai_pause_store:handle() | undefined, %% 暂停持久化句柄（跨进程 HITL）
     tool_calling_manager := beamai_tool_calling_manager:manager(), %% 工具批量执行管理器（可注入）
+    initial_state := map(),         %% 每个 turn 的 state 槽初值（缺省 #{}）
     %% 循环驱动 filter 的构造器（可注入）：换掉它 = 换掉 ReAct 循环策略
     %% （plan-execute / reflexion / 树搜索），未设则用 beamai_agent_tool_loop 的缺省实现
     loop_filter := undefined | fun((map()) -> beamai_filter:filter()),
@@ -150,6 +151,10 @@ create(Config) ->
             on_env_error => resolve_on_env_error(Config, Callbacks),
             pause_store => maps:get(pause_store, Config, undefined),
             tool_calling_manager => TCM,
+            %% state 槽初值：turn 的 context 每轮新建（见 beamai_agent:initial_turn_context/1），
+            %% 没有这个种子工具就只能从空 state 起步。宿主用它把外部持有的状态
+            %% （如前端 UI 状态）灌进来，工具经 writes 在其上增量修改。
+            initial_state => maps:get(initial_state, Config, #{}),
             loop_filter => maps:get(loop_filter, Config, undefined),
             turn_filter_states => #{}
         },

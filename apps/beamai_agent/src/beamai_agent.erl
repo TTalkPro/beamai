@@ -198,8 +198,10 @@ loop_filter(State, LoopOpts) ->
 %% 工具/chat filter 的私有状态不在此列——它们在循环内随 context 逐轮穿线，
 %% 每 turn 从这份初值起算。
 initial_turn_context(State) ->
-    Ctx = beamai_context:with_conversation_id(
-            beamai_context:new(), beamai_agent_state:conversation_id(State)),
+    Ctx0 = beamai_context:with_conversation_id(
+             beamai_context:new(), beamai_agent_state:conversation_id(State)),
+    %% state 槽种初值：turn 的 context 每轮新建，不种就永远从空 state 起步
+    Ctx = beamai_context:with_state(Ctx0, maps:get(initial_state, State, #{})),
     beamai_context:with_filter_states(Ctx, turn_filter_states(State)).
 
 %% @private 把工具循环结果 tuple 分派为 run/resume 的最终返回
