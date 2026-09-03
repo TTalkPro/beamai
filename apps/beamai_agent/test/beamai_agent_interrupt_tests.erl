@@ -489,3 +489,88 @@ resume_reply_does_not_fire_tool_result_test() ->
     after
         meck:unload(beamai_chat_model)
     end.
+
+%%====================================================================
+%% 测试: 跨"节点重启"的 HITL（DETS pause_store）
+%%====================================================================
+
+%% @private 一次性的 DETS 暂停存储
+fresh_pause_store() ->
+    Unique = erlang:unique_integer([positive]),
+    Name = list_to_atom(lists:concat(["hitl_restart_", Unique])),
+    Dir = filename:join(os:getenv("TMPDIR", "/tmp"), "beamai_pause_dets_tests"),
+    ok = filelib:ensure_path(Dir),
+    File = filename:join(Dir, lists:concat(["hitl_", Unique, ".dets"])),
+    {ok, _} = beamai_pause_store_dets:start_link(Name, #{file => File}),
+    {Name, File}.
+
+%% 暂停落 DETS → store 进程重启 → **全新的 agent** 仍能接着跑
+%%
+%% 这是持久化 pause_store 存在的全部理由：ETS 版进程一死表就回收，人十分钟后
+%% 回话（或运维中间重启过）就只能作废这次会话。这里把那个断点真的制造出来。
+hitl_survives_store_restart_test() ->
+    ok = mock_interrupt_then_answer(),
+    {Name, File} = fresh_pause_store(),
+    Store = beamai_pause_store_dets:handle(Name),
+    ConvId = <<"conv-restart">>,
+    Config = #{llm => {mock, #{}},
+               memory => false,
+               conversation_id => ConvId,
+               pause_store => Store,
+               interrupt_tools => [#{name => <<"ask_human">>,
+                                     description => <<"Ask">>,
+                                     parameters => #{}}]},
+    try
+        %% 第一个 agent：停在人身上
+        {ok, Agent1} = beamai_agent:new(Config),
+        {interrupt, _Info, _} = beamai_agent:run(Agent1, <<"go">>),
+        ?assertMatch({ok, _}, beamai_pause_store:pause_load(Store, ConvId)),
+
+        %% 制造断点：store 进程停掉再从同一个文件开起来（≈ 节点重启）
+        ok = beamai_pause_store_dets:stop(Name),
+        {ok, _} = beamai_pause_store_dets:start_link(Name, #{file => File}),
+
+        %% 第二个 agent：全新实例，自身没有任何中断态，只靠 conversation_id
+        %% 从磁盘把中断态接回来（resume 的透明回落）
+        {ok, Agent2} = beamai_agent:new(Config),
+        %% 进程内什么都没有……
+        ?assertEqual(undefined, maps:get(interrupt_state, Agent2)),
+        %% ……但 is_interrupted/1 说有：它会去 store 里问，这正是持久化的意义
+        ?assert(beamai_agent:is_interrupted(Agent2)),
+        {ok, Result, Agent3} = beamai_agent:resume(Agent2, <<"yes">>),
+        ?assertEqual(<<"Done">>, maps:get(content, Result)),
+        ?assertNot(beamai_agent:is_interrupted(Agent3)),
+
+        %% 恢复成功后快照被清掉——否则同一个暂停会被 resume 第二次
+        ?assertEqual(none, beamai_pause_store:pause_load(Store, ConvId))
+    after
+        meck:unload(beamai_chat_model),
+        catch beamai_pause_store_dets:stop(Name),
+        file:delete(File)
+    end.
+
+%% 会话隔离：另一个会话的暂停不会被误认成本会话的
+restart_does_not_cross_conversations_test() ->
+    ok = mock_interrupt_then_answer(),
+    {Name, File} = fresh_pause_store(),
+    Store = beamai_pause_store_dets:handle(Name),
+    Config = fun(ConvId) ->
+        #{llm => {mock, #{}}, memory => false,
+          conversation_id => ConvId, pause_store => Store,
+          interrupt_tools => [#{name => <<"ask_human">>, description => <<"Ask">>,
+                                parameters => #{}}]}
+    end,
+    try
+        {ok, A} = beamai_agent:new(Config(<<"conv-a">>)),
+        {interrupt, _, _} = beamai_agent:run(A, <<"go">>),
+        ok = beamai_pause_store_dets:stop(Name),
+        {ok, _} = beamai_pause_store_dets:start_link(Name, #{file => File}),
+        %% 另一个会话没有未决暂停 → resume 应当拒绝，而不是捡起 conv-a 的
+        {ok, B} = beamai_agent:new(Config(<<"conv-b">>)),
+        ?assertEqual({error, not_interrupted}, beamai_agent:resume(B, <<"yes">>)),
+        ?assertMatch({ok, _}, beamai_pause_store:pause_load(Store, <<"conv-a">>))
+    after
+        meck:unload(beamai_chat_model),
+        catch beamai_pause_store_dets:stop(Name),
+        file:delete(File)
+    end.
