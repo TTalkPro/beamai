@@ -60,6 +60,9 @@
     tool_choice => auto | none | required,
     context => beamai_context:t(),
     system_prompts => [map()],
+    %% 仅 invoke_chat_stream/4：provider 原始流事件的汇（见该函数文档）。
+    %% ChatClient 层自己消费，不下发给 provider。
+    on_raw_event => fun((map()) -> ok),
     atom() => term()
 }.
 
@@ -193,9 +196,20 @@ invoke_chat(ChatClient, Messages, Opts) ->
 %%
 %% 要求 provider 的 stream_chat 返回汇聚后的统一 beamai_chat_response。
 %%
+%% == 两条出站通道 ==
+%%
+%% 1. **TokenCallback** —— 归一化后的文本 token（经 token_transform 链）。
+%% 2. **opts 里的 `on_raw_event`** —— provider **原样解出的** SSE chunk，不归一化。
+%%
+%% 通道 2 存在的理由正是通道 1 与统一响应都覆盖不到的那些东西：tool_calls 的
+%% arguments 增量、thinking / reasoning 增量、逐块 usage。它们各家形状不同
+%% （binary 键），要用就得按 provider 分支解读——这是刻意的：一旦在这里归一化，
+%% 就等于替所有宿主决定"哪些字段值得保留"，而这条通道的用户（前端事件流、
+%% 审计、trace）要的恰恰是没被裁剪过的原文。
+%%
 %% @param ChatClient ChatClient 实例
 %% @param Messages 消息列表
-%% @param Opts Chat 选项（同 invoke_chat/3）
+%% @param Opts Chat 选项（同 invoke_chat/3，另可给 `on_raw_event`）
 %% @param TokenCallback fun((Token :: binary(), Meta :: map()) -> ok)，逐 token 回调
 %% @returns {ok, 响应 Map, 更新后上下文} | {error, 原因}
 -spec invoke_chat_stream(chat_client(), [map()], chat_opts(),
@@ -243,6 +257,28 @@ chat_model(#{chat_model := Model}) -> {ok, Model}.
 -spec state_slots(chat_client()) -> beamai_context:state_slots().
 state_slots(#{settings := Settings}) -> maps:get(state_slots, Settings, #{});
 state_slots(_) -> #{}.
+
+%% @private provider 原始流事件的汇：宿主经 opts 的 on_raw_event 登记
+%%
+%% 未登记即空操作（零开销退化）。异常吞掉并记 warning：sink 是旁路观察者，
+%% 不该让它把正在进行的流打断——与 agent 侧回调"永不打断主流程"同一约定。
+raw_event_sink(Opts) ->
+    case maps:get(on_raw_event, Opts, undefined) of
+        Fun when is_function(Fun, 1) ->
+            fun(Event) ->
+                try
+                    _ = Fun(Event),
+                    ok
+                catch
+                    Class:Reason:Stack ->
+                        logger:warning("beamai_chat_client on_raw_event crashed: ~p:~p",
+                                       [Class, Reason], #{stacktrace => Stack}),
+                        ok
+                end
+            end;
+        _ ->
+            fun(_Event) -> ok end
+    end.
 
 %%====================================================================
 %% 内部函数 - 辅助
@@ -314,10 +350,16 @@ stream_chat_terminal(LlmConfig, TokenXfs, TokenCallback) ->
     Module = maps:get(module, LlmConfig, beamai_chat_model),
     fun(#{messages := Messages, opts := Opts, context := Ctx}) ->
         %% on_llm_new_token 由 beamai_chat_model 的流式包装识别并逐 token 调用；
-        %% 原始 event 回调用空操作（统一响应由 stream_chat 返回值给出）。
+        %% 原始 event 回调转交宿主登记的 on_raw_event（未登记即空操作）。
+        %%
+        %% Opts 取自**链上的请求**而非入口参数：filter 改写过的 opts 在这里生效，
+        %% 于是 filter 也能给这次流临时挂上／摘掉 raw 事件汇。
         {WrappedCb, Flush} = beamai_token_stream:wrap(TokenXfs, TokenCallback),
-        StreamOpts = Opts#{on_llm_new_token => WrappedCb},
-        case Module:stream_chat(LlmConfig, Messages, fun(_Event) -> ok end, StreamOpts) of
+        RawCb = raw_event_sink(Opts),
+        %% on_raw_event 是 ChatClient 层自己消费的选项，剥掉再下发——provider 只该
+        %% 看到与这次请求有关的模型参数（同 beamai_chat_model 的 MODEL_LEVEL_OPTS）。
+        StreamOpts = maps:without([on_raw_event], Opts#{on_llm_new_token => WrappedCb}),
+        case Module:stream_chat(LlmConfig, Messages, RawCb, StreamOpts) of
             {ok, Response} ->
                 ok = Flush(),
                 #{response => Response, context => Ctx};

@@ -640,6 +640,69 @@ collect_tokens(N) ->
     end.
 
 %%====================================================================
+%% 原始流事件（on_llm_event）：统一响应抹掉的东西经这条通道原样透出
+%%====================================================================
+
+%% tool_calls 的 arguments 增量既不是文本（不走 on_token）、也不在统一响应里，
+%% 只有 on_llm_event 看得见
+stream_raw_events_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, stream_chat,
+        fun(_Config, _Messages, RawCb, Opts) ->
+            TokenCb = maps:get(on_llm_new_token, Opts),
+            RawCb(#{<<"choices">> =>
+                        [#{<<"delta">> =>
+                               #{<<"tool_calls">> =>
+                                     [#{<<"index">> => 0,
+                                        <<"function">> =>
+                                            #{<<"arguments">> => <<"{\"x\"">>}}]}}]}),
+            TokenCb(<<"hi">>, #{}),
+            RawCb(#{<<"choices">> => [#{<<"delta">> => #{<<"content">> => <<"hi">>}}]}),
+            {ok, beamai_chat_response:new(
+                #{content => <<"hi">>, finish_reason => <<"stop">>})}
+        end),
+    Self = self(),
+    Callbacks = #{on_token => fun(T, _M) -> Self ! {token, T} end,
+                  on_llm_event => fun(Ev, Meta) -> Self ! {event, Ev, Meta} end},
+    try
+        {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}}, callbacks => Callbacks}),
+        {ok, Result, _} = beamai_agent:stream(Agent, <<"hi">>),
+        ?assertEqual(<<"hi">>, maps:get(content, Result)),
+        %% 第一条 raw 事件是 tool_calls 的 arguments 增量
+        {Ev1, Meta1} = recv_event(),
+        ?assertMatch(#{<<"choices">> := [#{<<"delta">> := #{<<"tool_calls">> := _}}]}, Ev1),
+        ?assert(is_binary(maps:get(run_id, Meta1))),
+        %% 文本 chunk 两条通道都到：on_token 拿归一化文本，on_llm_event 拿原文
+        {Ev2, _} = recv_event(),
+        ?assertMatch(#{<<"choices">> := [#{<<"delta">> := #{<<"content">> := <<"hi">>}}]}, Ev2),
+        ?assertEqual([<<"hi">>], collect_tokens(1))
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% 非流式 run/2 没有流事件：on_llm_event 一次都不触发
+run_emits_no_raw_events_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
+        {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
+    end),
+    Self = self(),
+    Callbacks = #{on_llm_event => fun(Ev, Meta) -> Self ! {event, Ev, Meta} end},
+    try
+        {ok, Agent} = beamai_agent:new(#{llm => {mock, #{}}, callbacks => Callbacks}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"hi">>),
+        ?assertEqual(timeout, recv_event())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% @private 收一条 {event, Ev, Meta}（超时返回 timeout）
+recv_event() ->
+    receive {event, Ev, Meta} -> {Ev, Meta}
+    after 300 -> timeout
+    end.
+
+%%====================================================================
 %% on_tool_result 回调（#7） + 工具错误结构化（#8）
 %%====================================================================
 
@@ -666,6 +729,59 @@ on_tool_result_callback_test() ->
         end
     after
         meck:unload(beamai_chat_model)
+    end.
+
+%% 注册 arity-3 的工具回调时，末位额外收到 Info（Meta + tool_call_id / args），
+%% 并发批次下靠 tool_call_id 把结果配回对应调用
+tool_callbacks_carry_tool_call_id_test() ->
+    meck:new(beamai_chat_model, [passthrough]),
+    CallCount = counters:new(1, []),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
+        counters:add(CallCount, 1, 1),
+        case counters:get(CallCount, 1) of
+            1 -> {ok, #{content => null,
+                        tool_calls => [tc(<<"call_a">>, <<"t1">>),
+                                       tc(<<"call_b">>, <<"t2">>)],
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    Self = self(),
+    Callbacks = #{
+        on_tool_call => fun(Name, _Args, Info) -> Self ! {call, Name, Info}, ok end,
+        on_tool_result =>
+            fun(Name, Result, Info) -> Self ! {result, Name, Result, Info} end
+    },
+    K = slow_tools_chat_client(fun(_A, _C) -> {ok, <<"out">>} end),
+    try
+        {ok, Agent} = beamai_agent:new(#{chat_client => K, callbacks => Callbacks}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
+        %% 每次调用带自己的 tool_call_id（on_tool_call 沿批次逆序触发，故排序比较）
+        Calls = recv_n(call, 2),
+        ?assertEqual([{<<"t1">>, <<"call_a">>}, {<<"t2">>, <<"call_b">>}],
+                     lists:sort([{N, maps:get(tool_call_id, I)} || {call, N, I} <- Calls])),
+        %% 结果同样带 id（并发下顺序不定，靠 id 而非工具名配对）+ 原始 args
+        Results = recv_n(result, 2),
+        ?assertEqual([{<<"t1">>, <<"call_a">>, <<"out">>},
+                      {<<"t2">>, <<"call_b">>, <<"out">>}],
+                     lists:sort([{N, maps:get(tool_call_id, I), R}
+                                 || {result, N, R, I} <- Results])),
+        ?assert(lists:all(fun({result, _, _, I}) -> maps:is_key(args, I) end, Results)),
+        %% Info 是 Meta 的超集：run_id / conversation_id 仍在
+        [{call, _, Info} | _] = Calls,
+        ?assert(is_binary(maps:get(run_id, Info))),
+        ?assert(is_binary(maps:get(conversation_id, Info)))
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% @private 收 N 条以 Tag 开头的消息（顺序不定，调用方自行排序）
+recv_n(Tag, N) -> recv_n(Tag, N, []).
+recv_n(_Tag, 0, Acc) -> Acc;
+recv_n(Tag, N, Acc) ->
+    receive
+        Msg when element(1, Msg) =:= Tag -> recv_n(Tag, N - 1, [Msg | Acc])
+    after 1000 -> Acc
     end.
 
 %%====================================================================

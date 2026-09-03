@@ -101,7 +101,8 @@ beamai_agent:set_system_prompt(State, P), add_message(State, Msg), clear_message
     callbacks => #{
         on_llm_call    => fun(Messages, Meta) -> ok end,
         on_tool_call   => fun(Name, Args) -> ok end,
-        on_tool_result => fun(Name, Result) -> ok end
+        %% 多写一个参数即可拿到 tool_call_id（见「回调类型」）
+        on_tool_result => fun(Name, Result, Info) -> ok end
     }
 }).
 ```
@@ -363,13 +364,25 @@ Results = beamai_agent_delegate:run_many(
 | `on_turn_error` | turn 执行出错 | `(Reason, Meta)` |
 | `on_llm_call`   | 每次 LLM 调用前 | `(Messages, Meta)` |
 | `on_llm_result` | 每次 LLM 返回后（含中间轮，可取各次 usage） | `(Response, Meta)` |
-| `on_tool_call`  | 每个工具调用前，可返回 `{interrupt, Reason}` | `(Name, Args)` |
-| `on_tool_result`| 每个工具执行得到结果后（并发时整批收齐后） | `(Name, Result)` |
+| `on_llm_event`  | 流式模式下 provider 每个原始流事件（仅 `stream/2,3`） | `(Event, Meta)` |
+| `on_tool_call`  | 每个工具调用前，可返回 `{interrupt, Reason}` | `(Name, Args)` 或 `(Name, Args, Info)` |
+| `on_tool_result`| 每个工具执行得到结果后（并发时谁先完成谁先触发） | `(Name, Result)` 或 `(Name, Result, Info)` |
 | `on_token`      | 流式模式逐 token 实时推送 | `(Token, Meta)` |
 | `on_interrupt`  | 进入中断状态 | `(IntState, Meta)` |
 | `on_resume`     | 从中断恢复 | `(IntState, Meta)` |
 
 > `Meta` 含 `agent_id / agent_name / conversation_id / turn_count / run_id / timestamp`。
+>
+> `on_token` 给的是归一化后的**文本**；`on_llm_event` 给的是 provider 原样解出的
+> SSE chunk（binary 键、各家形状不同、不归一化）。tool_calls 的 `arguments` 增量、
+> thinking / reasoning 增量、逐块 usage 只在后者里有——它们既不是文本、也在汇聚成
+> 统一响应时被抹掉。
+>
+> 两个工具回调按注册函数的 **arity** 分派：写 `Fun/2` 即旧签名；写 `Fun/3` 则末位
+> 额外收 `Info` —— `Meta` 加上本次调用的关联字段（`on_tool_call` 带 `tool_call_id`；
+> `on_tool_result` 带 `tool_call_id` / `args`，工具失败时另有 `error`）。
+> `parallel_tools` 缺省开启、`on_tool_result` 触发顺序不定，`tool_call_id` 是把结果
+> 配回具体调用的唯一依据——需要逐调用上报进度的宿主请用 `Fun/3`。
 > `on_llm_result` 的 `Response` 是原始 `beamai_chat_response`，可经访问器取
 > `content / tool_calls / usage / finish_reason`——这是观测**每次**（含中间轮）token
 > 用量的唯一途径（`run` 结果的 `usage` 只反映最后一次）。

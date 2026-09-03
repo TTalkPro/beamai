@@ -313,7 +313,24 @@ invoke_llm(#{chat_client := ChatClient, chat_opts := ChatOpts0} = Opts, ToSend, 
             beamai_chat_client:invoke_chat(ChatClient, ToSend, ChatOpts);
         Handler when is_function(Handler, 1) ->
             TokenCb = fun(Token, _Meta) -> Handler(Token) end,
-            beamai_chat_client:invoke_chat_stream(ChatClient, ToSend, ChatOpts, TokenCb)
+            beamai_chat_client:invoke_chat_stream(
+              ChatClient, ToSend, with_raw_event_sink(ChatOpts, Opts), TokenCb)
+    end.
+
+%% @private 注册了 on_llm_event 才把 raw 事件汇挂上去
+%%
+%% 未注册时不加这个键：ChatClient 侧据此退化成空操作，流式路径一分开销不多。
+%% 只在流式分支调用——非流式压根没有流事件。
+with_raw_event_sink(ChatOpts, #{callbacks := Callbacks} = Opts) ->
+    case maps:is_key(on_llm_event, Callbacks) of
+        false ->
+            ChatOpts;
+        true ->
+            Meta = maps:get(meta, Opts, #{}),
+            ChatOpts#{on_raw_event =>
+                fun(Event) ->
+                    beamai_agent_callbacks:invoke(on_llm_event, [Event, Meta], Callbacks)
+                end}
     end.
 
 %%====================================================================
@@ -343,7 +360,7 @@ find_first_interrupt(TCs, Opts) ->
             {interrupt, tool_request, extract_interrupt_reason(InterruptTC),
              InterruptTC, OtherCalls, []};
         no ->
-            case classify_tool_calls(TCs, maps:get(callbacks, Opts)) of
+            case classify_tool_calls(TCs, Opts) of
                 {interrupt, Reason, [Flagged | MoreFlagged], SafeCalls} ->
                     {interrupt, callback, Reason, Flagged, SafeCalls, MoreFlagged};
                 ok ->
@@ -361,13 +378,13 @@ find_first_interrupt(TCs, Opts) ->
 handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls, Opts,
                  #{messages := Messages, context := Ctx, iteration := Used,
                    tool_calls_made := ToolCallsMade}) ->
-    #{chat_client := ChatClient, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
+    #{chat_client := ChatClient, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     #{messages := SafeResults, records := SafeCallRecords, context := NewCtx} =
         beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, SafeCalls, #{
             context => Ctx,
             parallel => Parallel,
-            on_result => tool_result_cb(Callbacks)
+            on_result => tool_result_cb(Opts)
         }),
     AllResults = SafeResults ++ [skipped_result(TC) || TC <- SkippedCalls],
     persist(Opts, AllResults),
@@ -400,13 +417,13 @@ skipped_result(TC) ->
 execute_and_continue(TCs, Opts, #{messages := Messages, context := Ctx,
                                   iteration := Used,
                                   tool_calls_made := ToolCallsMade}) ->
-    #{chat_client := ChatClient, callbacks := Callbacks, tool_calling_manager := TCM} = Opts,
+    #{chat_client := ChatClient, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
     #{messages := ToolResults, records := NewToolCalls, context := NewCtx} =
         beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, TCs, #{
             context => Ctx,
             parallel => Parallel,
-            on_result => tool_result_cb(Callbacks)
+            on_result => tool_result_cb(Opts)
         }),
     case env_pause(Opts, TCs, NewToolCalls) of
         {pause, FailedCalls} ->
@@ -497,9 +514,15 @@ persist(#{memory := Provider, conversation_id := ConvId}, Msgs) ->
 
 %% @private 构建实时结果回调：每个工具完成即触发 on_tool_result（进度实时性优先，
 %% 并发时触发顺序不确定；需确定顺序读 CallRecords）。经 callbacks:invoke 吞异常。
-tool_result_cb(Callbacks) ->
-    fun(#{name := Name, result := Result}) ->
-        beamai_agent_callbacks:invoke(on_tool_result, [Name, Result], Callbacks)
+%%
+%% CallRecord 里的 tool_call_id / args / error 随 Info 一并透出（注册 arity-3
+%% 回调才收得到）：并发批次下触发顺序不定，tool_call_id 是把结果配回具体调用
+%% 的唯一依据。
+tool_result_cb(#{callbacks := Callbacks} = Opts) ->
+    Meta = maps:get(meta, Opts, #{}),
+    fun(#{name := Name, result := Result} = CallRecord) ->
+        Info = maps:merge(Meta, maps:with([tool_call_id, args, error], CallRecord)),
+        beamai_agent_callbacks:invoke(on_tool_result, [Name, Result], Info, Callbacks)
     end.
 
 %% @private 取起始 context（仅 run/2 直跑路径用；经 turn 链时由请求给出）
@@ -561,12 +584,13 @@ build_env_interrupt_context(Iteration, Messages, BatchMessages, Records, FailedC
 %% 对每个 tool_call 都执行回调（既是通知也是策略门），收集全部被拦截
 %% 的调用：首个作为中断点，其余作为 skipped；未拦截的为安全可执行。
 %% 返回 {interrupt, Reason, FlaggedCalls, SafeCalls} | ok。
-classify_tool_calls(ToolCalls, Callbacks) ->
+classify_tool_calls(ToolCalls, #{callbacks := Callbacks} = Opts) ->
     case maps:get(on_tool_call, Callbacks, undefined) of
         undefined ->
             ok;
         Fun ->
-            {Flagged, Safe} = partition_by_callback(ToolCalls, Fun),
+            {Flagged, Safe} = partition_by_callback(ToolCalls, Fun,
+                                                    maps:get(meta, Opts, #{})),
             case Flagged of
                 [] -> ok;
                 [{Reason, _TC} | _] ->
@@ -575,12 +599,16 @@ classify_tool_calls(ToolCalls, Callbacks) ->
     end.
 
 %% @private 按回调裁决分组：{被拦截的 [{Reason, TC}], 安全的 [TC]}（保持原顺序）
-partition_by_callback(ToolCalls, Fun) ->
+%%
+%% tool_call_id 随 Info 透出（注册 arity-3 回调才收得到）：宿主据此把这次调用
+%% 与随后的 on_tool_result 配对，也用于向前端发出带 id 的工具调用事件。
+partition_by_callback(ToolCalls, Fun, Meta) ->
     lists:foldr(fun(TC, {FAcc, SAcc}) ->
-        {_Id, Name, Args} = beamai_tool:parse_tool_call(TC),
-        case catch Fun(Name, Args) of
+        {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
+        Info = Meta#{tool_call_id => Id},
+        case beamai_agent_callbacks:tool_gate(Fun, Name, Args, Info) of
             {interrupt, Reason} -> {[{Reason, TC} | FAcc], SAcc};
-            _ -> {FAcc, [TC | SAcc]}
+            ok -> {FAcc, [TC | SAcc]}
         end
     end, {[], []}, ToolCalls).
 

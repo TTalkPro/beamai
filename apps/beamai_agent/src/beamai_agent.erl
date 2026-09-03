@@ -4,8 +4,9 @@
 %%% 封装 beamai_chat_client，提供：
 %%%   - 多轮对话管理（跨轮历史由 memory provider 按 conversation_id 维护）
 %%%   - 自实现 tool loop（full-messages 模式，自管编排记忆与回调）
-%%%   - 9 个观察性回调（on_turn_start/end/error, on_llm_call, on_tool_call,
-%%%     on_tool_result, on_token, on_interrupt, on_resume）
+%%%   - 11 个观察性回调（on_turn_start/end/error, on_llm_call, on_llm_result,
+%%%     on_llm_event, on_tool_call, on_tool_result, on_token, on_interrupt,
+%%%     on_resume）
 %%%
 %%% 核心设计决策（Agent 自管编排，不借道 ChatClient filter）：
 %%%   - **记忆是 Agent 自己的接口**（beamai_memory_provider），由 tool loop 显式调用

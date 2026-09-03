@@ -124,6 +124,51 @@ hold_release_block_test() ->
     end.
 
 %%====================================================================
+%% 原始流事件：经 opts 的 on_raw_event 原样透出，且不渗进 provider 请求参数
+%%====================================================================
+
+raw_event_sink_test() ->
+    Self = self(),
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, stream_chat,
+        fun(_Config, _Messages, RawCb, Opts) ->
+            %% on_raw_event 由 ChatClient 层自己消费，不该出现在下发 provider 的 opts 里
+            Self ! {leaked, maps:is_key(on_raw_event, Opts)},
+            %% Anthropic 形状的 thinking 增量：既不是文本、也不进统一响应，
+            %% 只有这条通道能看见
+            RawCb(#{<<"type">> => <<"content_block_delta">>,
+                    <<"delta">> => #{<<"type">> => <<"thinking_delta">>,
+                                     <<"thinking">> => <<"hmm">>}}),
+            {ok, #{content => <<"x">>, finish_reason => <<"stop">>}}
+        end),
+    try
+        K = chat_client_with([]),
+        Opts = #{on_raw_event => fun(Ev) -> Self ! {raw, Ev} end},
+        {ok, _, _} = beamai_chat_client:invoke_chat_stream(
+                       K, [#{role => user, content => <<"hi">>}], Opts, collector()),
+        receive {leaked, Leaked} -> ?assertEqual(false, Leaked)
+        after 1000 -> ?assert(false) end,
+        receive {raw, Ev} ->
+            ?assertMatch(#{<<"delta">> := #{<<"thinking">> := <<"hmm">>}}, Ev)
+        after 1000 -> ?assert(false) end
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% sink 抛异常不打断流：统一响应照常返回
+raw_event_sink_exception_ignored_test() ->
+    mock_stream([<<"tok">>], {ok, #{content => <<"tok">>, finish_reason => <<"stop">>}}),
+    try
+        K = chat_client_with([]),
+        Opts = #{on_raw_event => fun(_Ev) -> error(boom) end},
+        {ok, Resp, _} = beamai_chat_client:invoke_chat_stream(
+                          K, [#{role => user, content => <<"hi">>}], Opts, collector()),
+        ?assertEqual(<<"tok">>, maps:get(content, Resp))
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%%====================================================================
 %% 异常不 flush：stream_chat 出错 → 缓冲丢弃，sink 什么都收不到
 %%====================================================================
 
