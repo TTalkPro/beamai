@@ -330,3 +330,98 @@ interrupt_resume_restores_state_test() ->
     after
         meck:unload(beamai_chat_model)
     end.
+
+%%====================================================================
+%% on_state_change 回调 + initial_state 种子
+%%====================================================================
+
+%% @private mock 一轮工具调用后收尾的 LLM
+mock_one_tool_round(ToolName) ->
+    CC = counters:new(1, []),
+    meck:new(beamai_chat_model, [passthrough]),
+    meck:expect(beamai_chat_model, chat, fun(_C, _M, _O) ->
+        counters:add(CC, 1, 1),
+        case counters:get(CC, 1) of
+            1 -> {ok, #{content => null, tool_calls => [tc(<<"c1">>, ToolName)],
+                        finish_reason => <<"tool_calls">>}};
+            _ -> {ok, #{content => <<"done">>, finish_reason => <<"stop">>}}
+        end
+    end),
+    ok.
+
+recv_state() ->
+    receive {state, S} -> S after 300 -> timeout end.
+
+%% 工具写了 state → 屏障折叠后触发 on_state_change，参数是**整份** state
+on_state_change_fires_on_write_test() ->
+    ok = mock_one_tool_round(<<"w">>),
+    Self = self(),
+    K0 = chat_client([{<<"w">>, fun(_, _) -> {ok, <<"r">>, #{<<"note">> => <<"hi">>}} end}],
+                     #{}),
+    K = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+    try
+        {ok, Agent} = beamai_agent:new(#{
+            chat_client => K, memory => false,
+            callbacks => #{on_state_change => fun(S, _Meta) -> Self ! {state, S} end}}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(#{<<"note">> => <<"hi">>}, recv_state())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% 工具没写 state → 不触发（绝大多数工具不写，每批都发就是噪音）
+on_state_change_silent_without_write_test() ->
+    ok = mock_one_tool_round(<<"plain">>),
+    Self = self(),
+    K0 = chat_client([{<<"plain">>, fun(_, _) -> {ok, <<"r">>} end}], #{}),
+    K = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+    try
+        {ok, Agent} = beamai_agent:new(#{
+            chat_client => K, memory => false,
+            callbacks => #{on_state_change => fun(S, _Meta) -> Self ! {state, S} end}}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(timeout, recv_state())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% initial_state 种进每个 turn 的 context：工具读得到，写完的整份 state 含两者
+initial_state_seeds_turn_test() ->
+    ok = mock_one_tool_round(<<"bump">>),
+    Self = self(),
+    Bump = fun(_Args, Ctx) ->
+        N = beamai_context:state_get(Ctx, <<"counter">>, 0),
+        {ok, <<"ok">>, #{<<"counter">> => N + 1}}
+    end,
+    K0 = chat_client([{<<"bump">>, Bump}], #{}),
+    K = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+    try
+        {ok, Agent} = beamai_agent:new(#{
+            chat_client => K, memory => false,
+            initial_state => #{<<"counter">> => 41, <<"keep">> => <<"me">>},
+            callbacks => #{on_state_change => fun(S, _Meta) -> Self ! {state, S} end}}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
+        %% 工具在种子之上增量：41 → 42；没被碰的键原样留着
+        ?assertEqual(#{<<"counter">> => 42, <<"keep">> => <<"me">>}, recv_state())
+    after
+        meck:unload(beamai_chat_model)
+    end.
+
+%% 不给 initial_state 时行为不变（从空 state 起步）
+no_initial_state_starts_empty_test() ->
+    ok = mock_one_tool_round(<<"peek">>),
+    Self = self(),
+    Peek = fun(_Args, Ctx) ->
+        {ok, <<"ok">>, #{<<"seen">> => beamai_context:get_state(Ctx)}}
+    end,
+    K0 = chat_client([{<<"peek">>, Peek}], #{}),
+    K = beamai_chat_client:add_chat_model(K0, beamai_chat_model:create(mock, #{})),
+    try
+        {ok, Agent} = beamai_agent:new(#{
+            chat_client => K, memory => false,
+            callbacks => #{on_state_change => fun(S, _Meta) -> Self ! {state, S} end}}),
+        {ok, _, _} = beamai_agent:run(Agent, <<"go">>),
+        ?assertEqual(#{<<"seen">> => #{}}, recv_state())
+    after
+        meck:unload(beamai_chat_model)
+    end.
