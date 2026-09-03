@@ -161,6 +161,34 @@ case beamai_agent:run(State, <<"删除所有文件"/utf8>>) of
 end.
 ```
 
+### 跨进程 / 跨重启恢复
+
+配上 `pause_store` 后，中断态会按 `conversation_id` 落库；`resume` 在本进程没有
+中断态时会**透明回落**去 store 里读回来 —— 于是"暂停"和"恢复"可以发生在两个
+不同的进程、甚至两次不同的节点启动之间。
+
+| 实现 | 适用 |
+|---|---|
+| `beamai_pause_store_ets` | 同节点内跨 agent 实例；进程一死表就回收 |
+| `beamai_pause_store_dets` | **跨节点重启**；每次写后 `dets:sync` 落盘 |
+
+```erlang
+{ok, _} = beamai_pause_store_dets:start_link(my_pauses, #{file => "/var/lib/pauses.dets"}),
+{ok, Agent} = beamai_agent:new(#{
+    chat_client => K,
+    conversation_id => <<"conv-1">>,
+    pause_store => beamai_pause_store_dets:handle(my_pauses),
+    interrupt_tools => [...]}).
+```
+
+DETS 版另有 `conversations/1` 与 `prune/2`（按 `paused_at` 清理陈旧暂停）——
+behaviour 之外，纯运维用：ETS 版进程一死就干净了，持久版不会，被放弃的暂停会
+一直躺在磁盘上。
+
+**注意**：pause_store 只存"停在哪儿"，**不存对话历史**。跨重启恢复要连
+chat memory 一起换成持久的（`beamai_chat_memory_dets`），两者缺一，恢复出来的
+会话都是残的。
+
 人回完话之后的那段答案才是用户在等的正文，交互式场景用 `stream_resume`
 让它逐 token 出来（`resume` 会等整轮跑完才整块给出）：
 
