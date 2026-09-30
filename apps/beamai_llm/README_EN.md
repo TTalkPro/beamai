@@ -433,6 +433,7 @@ LLM = llm_client:create(anthropic, #{
     model => <<"claude-sonnet-4-5-20250929">>,
     api_key => ApiKey,
     %% strategy: none | system_only | tools_only | system_and_tools | conversation
+    %%           | full (= system_and_tools + conversation, recommended for multi-turn agents)
     cache_control => system_and_tools
     %% or with TTL: #{strategy => system_only, ttl => <<"1h">>}
 }).

@@ -12,7 +12,7 @@
 %%%   - 采样参数 (temperature, top_p, top_k)
 %%%   - 停止序列 (stop_sequences)
 %%%   - 用户元数据 (metadata) / 服务层级 (service_tier) / 数据驻留 (inference_geo)
-%%%   - Prompt 缓存：cache_control 注入（system / tools / conversation 策略，
+%%%   - Prompt 缓存：cache_control 注入（system / tools / conversation / full 策略，
 %%%     可选 TTL），降低重复上下文的费用
 %%%   - 内置 Web Search 工具 (web_search)
 %%%   - 引用 Citations（document 请求侧 + 响应侧解析到 metadata）
@@ -244,7 +244,10 @@ maybe_add_stream(Body, _) -> Body.
 %% @private 解析缓存策略与 cache_control 值
 %%
 %% Config 中 cache_control 可为：
-%%   - none | system_only | tools_only | system_and_tools | conversation（原子）
+%%   - none | system_only | tools_only | system_and_tools | conversation | full（原子）
+%%     full = system_and_tools + conversation：tools 末尾、system、最后一条消息各一个断点（共 3 个，
+%%     Anthropic 上限 4）。多轮 Agent 用它：同一会话续读整段历史，换会话 / 换任务时
+%%     system + tools 这段前缀仍能命中（conversation 单独用时，新会话的第一条请求整段未命中）。
 %%   - #{strategy => 上述原子, ttl => <<"5m">> | <<"1h">>}（带 TTL）
 %%
 %% 返回 {Strategy, CacheControl}，CacheControl 形如
@@ -265,11 +268,13 @@ parse_cache_strategy(Config) ->
 %% @private 是否缓存 system 提示
 caches_system(system_only) -> true;
 caches_system(system_and_tools) -> true;
+caches_system(full) -> true;
 caches_system(_) -> false.
 
 %% @private 是否缓存 tools 定义
 caches_tools(tools_only) -> true;
 caches_tools(system_and_tools) -> true;
+caches_tools(full) -> true;
 caches_tools(_) -> false.
 
 %% @private 在列表最后一个元素（map）上注入 cache_control
@@ -280,7 +285,8 @@ add_cache_control_to_last(List, CC) ->
 
 %% @private conversation 策略：在最后一条消息的末尾内容块上注入 cache_control
 %% 使截至当前的完整会话历史被缓存（增量缓存，每轮在新消息处打断点）。
-apply_conversation_cache(Messages, conversation, CC) when Messages =/= [] ->
+apply_conversation_cache(Messages, Strategy, CC) when
+    Messages =/= [], (Strategy =:= conversation orelse Strategy =:= full) ->
     {Init, [Last]} = lists:split(length(Messages) - 1, Messages),
     Init ++ [cache_last_content_block(Last, CC)];
 apply_conversation_cache(Messages, _Strategy, _CC) ->

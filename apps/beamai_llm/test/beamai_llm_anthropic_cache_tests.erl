@@ -3,7 +3,7 @@
 %%%
 %%% 覆盖：
 %%%   - cache_control 注入策略（system_only / tools_only / system_and_tools /
-%%%     conversation / none），含 TTL
+%%%     conversation / full / none），含 TTL
 %%%   - 内置 Web Search 工具注入
 %%% @end
 %%%-------------------------------------------------------------------
@@ -92,6 +92,33 @@ conversation_caches_last_message_test() ->
     %% 前面的消息不受影响（仍为字符串）
     First = hd(Messages),
     ?assert(is_binary(maps:get(<<"content">>, First))).
+
+%%====================================================================
+%% full：tools + system + 最后一条消息
+%%====================================================================
+
+full_caches_tools_system_and_last_message_test() ->
+    Body = build(#{cache_control => full},
+                 beamai_chat_request:new([?SYS_MSG, ?USER_MSG,
+                                          #{role => assistant, content => <<"a">>},
+                                          #{role => user, content => <<"再说"/utf8>>}],
+                                         #{tools => [?TOOL]})),
+    [SysBlock] = maps:get(<<"system">>, Body),
+    ?assert(maps:is_key(<<"cache_control">>, SysBlock)),
+    [Tool] = maps:get(<<"tools">>, Body),
+    ?assert(maps:is_key(<<"cache_control">>, Tool)),
+    Messages = maps:get(<<"messages">>, Body),
+    [Block] = maps:get(<<"content">>, lists:last(Messages)),
+    ?assertEqual(#{<<"type">> => <<"ephemeral">>}, maps:get(<<"cache_control">>, Block)),
+    ?assert(is_binary(maps:get(<<"content">>, hd(Messages)))).
+
+full_with_ttl_test() ->
+    Body = build(#{cache_control => #{strategy => full, ttl => <<"1h">>}},
+                 beamai_chat_request:new([?SYS_MSG, ?USER_MSG])),
+    [SysBlock] = maps:get(<<"system">>, Body),
+    ?assertEqual(<<"1h">>, maps:get(<<"ttl">>, maps:get(<<"cache_control">>, SysBlock))),
+    [Block] = maps:get(<<"content">>, lists:last(maps:get(<<"messages">>, Body))),
+    ?assertEqual(<<"1h">>, maps:get(<<"ttl">>, maps:get(<<"cache_control">>, Block))).
 
 %%====================================================================
 %% TTL 支持

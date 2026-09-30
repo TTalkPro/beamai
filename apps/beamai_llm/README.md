@@ -473,6 +473,7 @@ LLM = llm_client:create(anthropic, #{
     model => <<"claude-sonnet-4-5-20250929">>,
     api_key => ApiKey,
     %% 策略：none | system_only | tools_only | system_and_tools | conversation
+    %%       | full（= system_and_tools + conversation，多轮 Agent 推荐）
     cache_control => system_and_tools
     %% 或带 TTL：#{strategy => system_only, ttl => <<"1h">>}
 }).
