@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -123,12 +123,15 @@ Tool 安全变更提交：`4b5a632`。
 
 ### 批次 I：telemetry 基础设施
 
-- [ ] I1 新增轻量 telemetry behaviour 或等价 dispatch 模块。
-- [ ] I2 提供默认 logger backend。
-- [ ] I3 支持用户注入 handler。
-- [ ] I4 handler crash 不影响业务路径。
-- [ ] I5 支持按事件级别开启 / 关闭。
-- [ ] I6 定义公共 event map 结构。
+- [x] I1 新增轻量 telemetry behaviour 或等价 dispatch 模块。
+- [x] I2 提供默认 logger backend。
+- [x] I3 支持用户注入 handler。
+- [x] I4 handler crash 不影响业务路径。
+- [x] I5 支持按事件级别开启 / 关闭。
+- [x] I6 定义公共 event map 结构。
+
+批次 I 本地验证：`check_app_modules` 通过，`beamai_telemetry_tests` 6 tests /
+0 failures，`dialyzer` 0 warning，`xref` 0 warning。
 
 ### 批次 J：LLM 埋点
 

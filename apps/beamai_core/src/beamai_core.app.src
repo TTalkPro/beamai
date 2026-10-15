@@ -60,6 +60,7 @@
         beamai_sse,
         beamai_json_schema,
         beamai_token_stream,
+        beamai_telemetry,
         %% 工具
         beamai_id,
         beamai_tool_error,
