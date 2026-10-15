@@ -25,11 +25,14 @@ beamai_benchmark:run(Scenario, Opts).           %% 单场景，自定义 iterati
 
 ## 执行模型
 
-1. `Opts.warmup`（默认 10）次调用不计时。
-2. `Opts.iterations`（默认 1000）次调用逐次测量 wall-clock。
-3. 单次耗时以微秒记录。
-4. 输出 p50、p95、max 和 mean。
-5. 采样不做聚合执行；避免长时间循环掩盖尾部延迟。
+1. 场景 setup 只执行一次，用于构建固定输入和受控本地资源。
+2. `Opts.warmup`（默认 10）次调用不计时。
+3. `Opts.iterations`（默认 1000）次调用逐次测量 wall-clock。
+4. 单次耗时以微秒记录。
+5. 输出 p50、p95、max 和 mean。
+6. 采样不做聚合执行；避免长时间循环掩盖尾部延迟。
+7. 场景 cleanup 只执行一次，关闭 benchmark 自建的 ETS store、本地 TCP
+   listener、HTTP pool 等资源。
 
 时间源使用 `erlang:monotonic_time(nanosecond)`，不受系统时间跳变影响。
 
@@ -40,6 +43,22 @@ beamai_benchmark:run(Scenario, Opts).           %% 单场景，自定义 iterati
 - 工具使用纯内存 handler 或 mock provider。
 - HTTP pool 场景只测本地 acquire / release，不发起外部请求。
 - 场景名称是稳定 atom，结果可通过场景名和历史数据对比。
+
+## 核心场景
+
+批次 S 使用以下固定输入；除 HTTP listener 的 TCP 建连发生在 warmup 外，
+所有 measured iteration 都只访问本地内存或已建立的池化连接。
+
+| 场景 | 固定输入 |
+|---|---|
+| `noop` | 空操作冒烟路径 |
+| `filter_chain_0` / `filter_chain_1` / `filter_chain_4` / `filter_chain_16` | around_chat 洋葱链层数 |
+| `tool_dispatch_1` / `tool_dispatch_8` / `tool_dispatch_64` / `tool_dispatch_256` | 单批纯内存 tool call 数量，串行调度 |
+| `tool_manager_concurrent_16` / `tool_manager_sequential_16` | 同一组 16 个纯内存 tool call，`parallel=true`，只切换 manager 策略 |
+| `memory_history_append_read` | ETS memory provider：append 一条、读取、清空，保持每轮状态一致 |
+| `agent_event_fanout_4` | 同一统一事件广播到 4 个无副作用 consumer |
+| `http_pool_acquire_release` | 本地 listener + 1 连接 HTTP pool，warmup 建立连接后反复 acquire / release |
+| `provider_openai_encode_decode` | 固定 OpenAI request 编码后再用固定 response parser 解码 |
 
 ## 环境记录
 
@@ -56,5 +75,6 @@ beamai_benchmark:run(Scenario, Opts).           %% 单场景，自定义 iterati
 
 ## 基线策略
 
-批次 S 落地核心场景后，将当时机器输出记录到 `benchmarks/BASELINE.md`。
-后续影响热点路径的 PR 应运行受影响场景，并在 PR 描述中对比 p50 / p95 / max。
+批次 S 已在 [`benchmarks/BASELINE.md`](../benchmarks/BASELINE.md) 记录首份
+本地基线。后续影响热点路径的 PR 应运行受影响场景，并在 PR 描述中对比
+p50 / p95 / max。

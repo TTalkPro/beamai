@@ -300,20 +300,20 @@ consumer crash 隔离已覆盖。
 
 ### 批次 S：核心场景
 
-- [ ] S1 filter chain 0 / 1 / 4 / 16 层。
-- [ ] S2 tool dispatch 1 / 8 / 64 / 256 个。
-- [ ] S3 concurrent manager 与 sequential manager。
-- [ ] S4 memory history append / read。
-- [ ] S5 stream event fanout。
-- [ ] S6 HTTP pool acquire / release。
-- [ ] S7 provider adapter encode / decode。
+- [x] S1 filter chain 0 / 1 / 4 / 16 层。
+- [x] S2 tool dispatch 1 / 8 / 64 / 256 个。
+- [x] S3 concurrent manager 与 sequential manager。
+- [x] S4 memory history append / read。
+- [x] S5 stream event fanout。
+- [x] S6 HTTP pool acquire / release。
+- [x] S7 provider adapter encode / decode。
 
 ### Phase 5 验收
 
-- [ ] P5-V1 基准可重复运行。
-- [ ] P5-V2 输出 p50 / p95 / max 或等价统计。
-- [ ] P5-V3 基线结果入库或记录到文档。
-- [ ] P5-V4 后续性能修改必须对比基线。
+- [x] P5-V1 基准可重复运行。
+- [x] P5-V2 输出 p50 / p95 / max 或等价统计。
+- [x] P5-V3 基线结果入库或记录到文档。
+- [x] P5-V4 后续性能修改必须对比基线。
 
 ## 执行约束
 

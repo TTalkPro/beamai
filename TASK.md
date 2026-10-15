@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 实施完成；Phase 5 批次 R 实施完成（远端 CI 待确认）  
+> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 / Phase 5 实施完成（远端 CI 待确认）  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -102,7 +102,7 @@ per-run sequence 稳定，consumer crash 不影响主流程，敏感 payload 不
 `rebar3 xref` 0 warning，`rebar3 eunit` 852 tests / 0 failures。  
 Runtime 接入提交：`c8baa0d`。
 
-### Phase 5：性能基准 — 批次 R 实施完成
+### Phase 5：性能基准 — 实施完成
 
 目标：建立离线、可重复的性能基准入口，先提供统一测量、统计和运行环境
 记录，后续批次再逐步接入核心场景。
@@ -120,11 +120,21 @@ Runtime 接入提交：`c8baa0d`。
 设计文档：[`designs/performance_benchmark_harness.md`](designs/performance_benchmark_harness.md)。  
 Harness 提交：`65493aa`。
 
+批次 S 已接入核心场景：filter chain、tool dispatch、concurrent/sequential
+manager、memory history、event fanout、本地 HTTP pool acquire/release 和
+OpenAI provider encode/decode。`run/0` 现在输出统一汇总表，单场景运行继续
+支持自定义 iterations / warmup。
+
+批次 S 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
+`rebar3 xref` 0 warning，`rebar3 eunit` 857 tests / 0 failures。  
+基线数据：[`benchmarks/BASELINE.md`](benchmarks/BASELINE.md)。  
+核心场景提交：`42d8bd8`。
+
 ## 后续阶段
 
-1. **Phase 5：性能基准 — 核心场景**  
-   继续用可重复 benchmark 覆盖 filter、tool dispatch、memory、stream、
-   HTTP pool 和 provider adapter，再决定是否做性能重构。
+1. **性能回归跟进**  
+   影响热点路径的后续 PR 运行受影响 benchmark 场景，并对比
+   [`benchmarks/BASELINE.md`](benchmarks/BASELINE.md)。
 
 ## 全局验收
 
@@ -137,8 +147,7 @@ Harness 提交：`65493aa`。
 - [x] TLS 默认严格校验。
 - [x] Agent 关键路径具备结构化 telemetry。
 - [x] 所有非 experimental chat provider 接入 contract test。
-- [ ] 存在可重复运行的性能基准与基线数据。（harness 已完成，核心场景
-      与基线记录在批次 S 后补充）
+- [x] 存在可重复运行的性能基准与基线数据。
 
 ## 已归档任务
 
