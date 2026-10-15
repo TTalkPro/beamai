@@ -64,8 +64,46 @@ run(Filters, ToolSpec, Args, Context) ->
 terminal() ->
     fun(#{tool := ToolSpec, args := Args, context := Ctx}) ->
         case beamai_tool:invoke(ToolSpec, Args, Ctx) of
-            {ok, Value} -> #{result => Value, writes => #{}, context => Ctx};
-            {ok, Value, Writes} -> #{result => Value, writes => Writes, context => Ctx};
+            {ok, Value} ->
+                Value1 = enforce_result_policy(ToolSpec, Value),
+                #{result => Value1, writes => #{}, context => Ctx};
+            {ok, Value, Writes} ->
+                Value1 = enforce_result_policy(ToolSpec, Value),
+                #{result => Value1, writes => Writes, context => Ctx};
             {error, Reason} -> throw(Reason)
         end
+    end.
+
+%% @private 对真正回传模型的结果执行 redaction 与大小上限
+%%
+%% 两条策略都 opt-in：未配置的工具保持原有 term 返回，零迁移成本。
+%% redaction 先执行，避免 oversized payload 中已在文本内的秘密影响判断；
+%% 大小检查以最终将要回传的编码文本为准。
+enforce_result_policy(ToolSpec, Value) ->
+    Rules = maps:get(result_redaction, ToolSpec, []),
+    MaxBytes = maps:get(max_result_bytes, ToolSpec, undefined),
+    case Rules =:= [] andalso MaxBytes =:= undefined of
+        true -> Value;
+        false -> enforce_configured_result_policy(ToolSpec, Value)
+    end.
+
+enforce_configured_result_policy(ToolSpec, Value) ->
+    Rules = maps:get(result_redaction, ToolSpec, []),
+    case beamai_tool:redact_result(Value, Rules) of
+        {ok, Redacted} ->
+            case beamai_tool:result_size(
+                   Redacted, maps:get(max_result_bytes, ToolSpec, undefined)) of
+                ok -> Redacted;
+                {error, tool_result_too_large, Size, Max} ->
+                    throw(#{error_class => semantic,
+                            reason => tool_result_too_large,
+                            actual_bytes => Size,
+                            max_bytes => Max,
+                            stacktrace => []})
+            end;
+        {error, Reason} ->
+            throw(#{error_class => semantic,
+                    reason => invalid_result_redaction,
+                    detail => Reason,
+                    stacktrace => []})
     end.

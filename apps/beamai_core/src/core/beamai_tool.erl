@@ -39,6 +39,7 @@
 
 %% API - 工具调用协议
 -export([parse_tool_call/1, encode_result/1]).
+-export([redact_result/2, result_size/2]).
 
 %% API - 从模块加载
 -export([from_module/1]).
@@ -68,6 +69,20 @@
     serial => boolean(),
     %% sensitive：标记敏感工具，beamai_filters:approval_filter 据此拦截审批。缺省 false。
     sensitive => boolean(),
+    %% strict_args=true 时，执行前按 parameters 生成 JSON Schema 校验入参。
+    %% 缺省 false，保持既有工具零迁移成本；新工具建议开启。
+    strict_args => boolean(),
+    %% 执行权限声明（当前是元数据/审计约定；运行时 filter 可据此拦截）。
+    permissions => #{
+        filesystem => boolean(),
+        network => boolean(),
+        process => boolean(),
+        env => boolean()
+    },
+    %% 工具结果送回模型前的硬上限（按 JSON/文本编码后的 byte size）。
+    max_result_bytes => pos_integer(),
+    %% 结果 redaction：正则 + replacement，顺序应用于 encode_result 后的文本。
+    result_redaction => [{binary() | string(), binary()}],
     %% return_direct：工具结果**直接作为最终答案**返回，不再回灌模型续跑（对标
     %% Spring AI ToolExecutionResult.returnDirect）。缺省 false。
     %% 语义为整批 AND：一批 tool_calls 全部标注才直返（见 beamai_agent_tool_loop），
@@ -144,10 +159,16 @@ new(Name, Handler, Opts) ->
 %% @param ToolSpec 待验证的工具定义
 %% @returns ok 或 {error, 错误列表}
 -spec validate(tool_spec()) -> ok | {error, [term()]}.
-validate(#{name := Name, handler := Handler}) ->
+validate(#{name := Name, handler := Handler} = ToolSpec) ->
     Errors = lists:flatten([
         validate_name(Name),
-        validate_handler(Handler)
+        validate_handler(Handler),
+        validate_optional(maps:get(strict_args, ToolSpec, undefined),
+                          fun validate_boolean/1, invalid_strict_args),
+        validate_permissions(maps:get(permissions, ToolSpec, undefined)),
+        validate_optional(maps:get(max_result_bytes, ToolSpec, undefined),
+                          fun validate_pos_integer/1, invalid_max_result_bytes),
+        validate_redaction(maps:get(result_redaction, ToolSpec, undefined))
     ]),
     case Errors of
         [] -> ok;
@@ -177,9 +198,17 @@ invoke(ToolSpec, Args) ->
 %% 发往调用者的消息）。并发路径下本就如此，这里只是让所有路径一致。
 -spec invoke(tool_spec(), args(), beamai_context:t()) -> tool_result().
 invoke(#{handler := Handler} = ToolSpec, Args, Context) ->
-    Timeout = resolve_timeout(ToolSpec, Context),
-    {MaxRetries, InitialDelay} = retry_conf(maps:get(retry, ToolSpec, false)),
-    invoke_with_retry(Handler, Args, Context, MaxRetries, InitialDelay, Timeout).
+    case validate_args(ToolSpec, Args) of
+        ok ->
+            Timeout = resolve_timeout(ToolSpec, Context),
+            {MaxRetries, InitialDelay} = retry_conf(maps:get(retry, ToolSpec, false)),
+            invoke_with_retry(Handler, Args, Context, MaxRetries, InitialDelay, Timeout);
+        {error, Errors} ->
+            {error, #{error_class => semantic,
+                      reason => invalid_tool_args,
+                      errors => Errors,
+                      stacktrace => []}}
+    end.
 
 %% @private 超时优先级：工具自己声明 > ToolCallingManager 注入的缺省 > 不限时
 %%
@@ -305,6 +334,14 @@ parse_tool_call(TC) ->
     Args = extract_args(TC),
     {Id, Name, Args}.
 
+%% @doc 对结果文本应用 redaction 规则
+-spec redact_result(term(), [{binary() | string(), binary()}]) ->
+    {ok, binary()} | {error, {invalid_redaction_pattern, term()}}.
+redact_result(Value, []) ->
+    {ok, encode_result(Value)};
+redact_result(Value, Rules) when is_list(Rules) ->
+    apply_redaction(encode_result(Value), Rules).
+
 %% @doc 将工具执行结果编码为 LLM 可读的二进制
 -spec encode_result(term()) -> binary().
 encode_result(Value) when is_binary(Value) -> Value;
@@ -322,6 +359,19 @@ encode_result(Value) when is_atom(Value) ->
     atom_to_binary(Value, utf8);
 encode_result(Value) ->
     iolist_to_binary(io_lib:format("~p", [Value])).
+
+%% @doc 检查编码后的结果大小是否超过上限
+-spec result_size(term(), pos_integer() | undefined) ->
+    ok | {error, tool_result_too_large, non_neg_integer(), pos_integer()}.
+result_size(Value, undefined) ->
+    _ = encode_result(Value),
+    ok;
+result_size(Value, MaxBytes) when is_integer(MaxBytes), MaxBytes > 0 ->
+    Encoded = encode_result(Value),
+    case byte_size(Encoded) of
+        Size when Size =< MaxBytes -> ok;
+        Size -> {error, tool_result_too_large, Size, MaxBytes}
+    end.
 
 %%====================================================================
 %% API - 从模块加载
@@ -377,6 +427,71 @@ validate_handler(Fun) when is_function(Fun, 2) -> [];
 validate_handler({M, F}) when is_atom(M), is_atom(F) -> [];
 validate_handler({M, F, A}) when is_atom(M), is_atom(F), is_list(A) -> [];
 validate_handler(_) -> [{invalid_handler, <<"handler must be fun/1, fun/2, {M,F}, or {M,F,A}">>}].
+
+validate_optional(undefined, _Validator, _Tag) -> [];
+validate_optional(Value, Validator, Tag) ->
+    case Validator(Value) of
+        true -> [];
+        false -> [{Tag, Value}]
+    end.
+
+validate_boolean(Value) -> is_boolean(Value).
+
+validate_pos_integer(Value) -> is_integer(Value) andalso Value > 0.
+
+validate_permissions(undefined) -> [];
+validate_permissions(Permissions) when is_map(Permissions) ->
+    AllowedKeys = [filesystem, network, process, env],
+    BadKeys = maps:keys(Permissions) -- AllowedKeys,
+    BadValues = [{K, V} || {K, V} <- maps:to_list(Permissions),
+                           lists:member(K, AllowedKeys), not is_boolean(V)],
+    case {BadKeys, BadValues} of
+        {[], []} -> [];
+        _ -> [{invalid_permissions, #{unknown_keys => BadKeys,
+                                      invalid_values => BadValues}}]
+    end;
+validate_permissions(Value) -> [{invalid_permissions, Value}].
+
+validate_redaction(undefined) -> [];
+validate_redaction(Rules) when is_list(Rules) ->
+    Bad = [Rule || Rule <- Rules, not validate_redaction_rule(Rule)],
+    case Bad of
+        [] -> [];
+        _ -> [{invalid_result_redaction, Bad}]
+    end;
+validate_redaction(Value) -> [{invalid_result_redaction, Value}].
+
+validate_redaction_rule({Pattern, Replacement}) when
+      (is_binary(Pattern) orelse is_list(Pattern)), is_binary(Replacement) ->
+    case re:compile(Pattern) of
+        {ok, _} -> true;
+        {error, _} -> false
+    end;
+validate_redaction_rule(_) -> false.
+
+%% @private 执行前的参数 schema 校验
+validate_args(#{strict_args := true} = ToolSpec, Args) when is_map(Args) ->
+    Schema = build_json_schema(maps:get(parameters, ToolSpec, #{})),
+    case beamai_json_schema:validate(Schema, Args) of
+        ok -> ok;
+        {error, Errors} -> {error, Errors}
+    end;
+validate_args(#{strict_args := true}, Args) when not is_map(Args) ->
+    {error, [args_not_object]};
+validate_args(_, _) ->
+    ok.
+
+apply_redaction(Text, []) ->
+    {ok, Text};
+apply_redaction(Text, [{Pattern, Replacement} | Rest]) ->
+    case re:compile(Pattern) of
+        {ok, MP} ->
+            Redacted = re:replace(Text, MP, Replacement,
+                                  [global, {return, binary}]),
+            apply_redaction(Redacted, Rest);
+        {error, {Reason, _}} ->
+            {error, {invalid_redaction_pattern, Reason}}
+    end.
 
 %%====================================================================
 %% 内部函数 - 调用
