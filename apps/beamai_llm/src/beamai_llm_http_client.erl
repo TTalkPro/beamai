@@ -293,14 +293,14 @@ parse_sse_lines([], Acc) ->
     {<<>>, lists:reverse(Acc)};
 parse_sse_lines([<<>>], Acc) ->
     {<<>>, lists:reverse(Acc)};
+parse_sse_lines([LastLine], Acc) ->
+    %% 最后一行可能是不完整的数据，保留到下次处理
+    {LastLine, lists:reverse(Acc)};
 parse_sse_lines([<<"data: [DONE]">> | Rest], Acc) ->
     parse_sse_lines(Rest, [done | Acc]);
 parse_sse_lines([<<"data: ", Json/binary>> | Rest], Acc) ->
     Event = safe_decode_json(Json),
     parse_sse_lines(Rest, [Event | Acc]);
-parse_sse_lines([LastLine], Acc) ->
-    %% 最后一行可能是不完整的数据，保留到下次处理
-    {LastLine, lists:reverse(Acc)};
 parse_sse_lines([_ | Rest], Acc) ->
     parse_sse_lines(Rest, Acc).
 

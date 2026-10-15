@@ -145,6 +145,10 @@ maybe_add_tools(Body, Options) ->
 %% 便于统一 finalize_openai_stream 重建）
 accumulate_event(#{<<"message">> := #{<<"content">> := Content}}, Acc) ->
     Acc#{content => <<(maps:get(content, Acc, <<>>))/binary, Content/binary>>};
+%% OpenAI 兼容流式 API 可能在末尾发送仅含 usage 的独立 chunk。
+accumulate_event(#{<<"usage">> := Usage} = Event, Acc)
+  when is_map(Usage), map_size(Usage) > 0 ->
+    beamai_llm_provider_common:accumulate_openai_event(Event, Acc);
 %% @private OpenAI 兼容格式事件累加（使用公共模块）
 accumulate_event(#{<<"choices">> := _} = Event, Acc) ->
     beamai_llm_provider_common:accumulate_openai_event(Event, Acc);
