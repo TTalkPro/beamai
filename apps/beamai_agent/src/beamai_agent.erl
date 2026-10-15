@@ -143,10 +143,15 @@ run(State, UserMessage, Opts) ->
 
     RequestId = beamai_id:gen_id(<<"req">>),
     Meta = (beamai_agent_callbacks:build_metadata(State0))#{request_id => RequestId},
+    Emitter = event_emitter(State0, Meta),
+    reset_event_sequence(State0),
     StartedAt = erlang:monotonic_time(millisecond),
     dispatch_agent(info, [beamai, agent, run, started],
                    #{stream => maps:is_key(stream_token_handler, Opts)}, Meta),
     dispatch_agent(info, [beamai, agent, turn, started], #{resume => false}, Meta),
+    emit_event(Emitter, run_started,
+               #{stream => maps:is_key(stream_token_handler, Opts)}, #{}),
+    emit_event(Emitter, turn_started, #{resume => false}, #{}),
     beamai_agent_callbacks:invoke(on_turn_start, [Meta], Callbacks),
 
     %% 记忆编排（载入跨轮历史 + 持久化新消息）统一由 tool_loop 负责，
@@ -157,8 +162,9 @@ run(State, UserMessage, Opts) ->
     TurnReq = #{messages => [UserMsg],
                 context => initial_turn_context(State0),
                 resume => false},
-    {TurnResult, State1} = run_turn_chain(State0, TurnReq, loop_opts(State0, Opts)),
-    dispatch_turn_result(State1, TurnResult, Callbacks, Meta, StartedAt).
+    LoopOpts = maps:merge(loop_opts(State0, Opts), #{event_emitter => Emitter}),
+    {TurnResult, State1} = run_turn_chain(State0, TurnReq, LoopOpts),
+    dispatch_turn_result(State1, TurnResult, Callbacks, Meta, StartedAt, Emitter).
 
 %% @private turn 洋葱：用户 turn filter → 循环 filter → step 链
 %%
@@ -210,25 +216,30 @@ initial_turn_context(State) ->
     beamai_context:with_filter_states(Ctx, turn_filter_states(State)).
 
 %% @private 把工具循环结果 tuple 分派为 run/resume 的最终返回
-dispatch_turn_result(State0, TurnResult, Callbacks, Meta, StartedAt) ->
+dispatch_turn_result(State0, TurnResult, Callbacks, Meta, StartedAt, Emitter) ->
     case TurnResult of
         %% Messages（第 5 元）只服务于 turn filter 重入，agent 的最终返回用不上
         {ok, Response, ToolCallsMade, Iterations, _Messages} ->
             Result = finalize_turn(State0, Response, ToolCallsMade, Iterations),
-            dispatch_agent_finished(ok, #{}, Meta, StartedAt),
+            dispatch_agent_finished(ok, #{}, Meta, StartedAt, Emitter),
             Result;
         {interrupt, Type, Context} ->
             UserMsg = #{role => user, content => <<"[turn]">>},
             InterruptResult = handle_new_interrupt(
                                 State0, Type, Context, UserMsg, Callbacks, Meta),
+            emit_event(Emitter, interrupt_event_type(Type),
+                       #{interrupt_type => Type,
+                         phase => maps:get(phase, Context, approval)}, #{}),
             dispatch_agent(warning, [beamai, agent, interrupted],
                            #{interrupt_type => Type}, Meta),
             dispatch_agent_finished(interrupted, #{interrupt_type => Type},
-                                    Meta, StartedAt),
+                                    Meta, StartedAt, Emitter),
             InterruptResult;
         {error, Reason} ->
             beamai_agent_callbacks:invoke(on_turn_error, [Reason, Meta], Callbacks),
-            dispatch_agent_finished(error, #{}, Meta, StartedAt),
+            emit_event(Emitter, error_occurred,
+                       #{class => error_class(Reason)}, #{}),
+            dispatch_agent_finished(error, #{}, Meta, StartedAt, Emitter),
             {error, Reason}
     end.
 
@@ -475,6 +486,7 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload, Opts) ->
         ok ->
             RequestId = beamai_id:gen_id(<<"req">>),
             Meta = (beamai_agent_callbacks:build_metadata(Agent))#{request_id => RequestId},
+            Emitter = event_emitter(Agent, Meta),
             StartedAt = erlang:monotonic_time(millisecond),
             #{callbacks := Callbacks} = Agent,
             beamai_agent_callbacks:invoke(on_resume, [IntState, Meta], Callbacks),
@@ -482,6 +494,10 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload, Opts) ->
                            #{interrupt_type => maps:get(interrupt_type, IntState)},
                            Meta),
             dispatch_agent(info, [beamai, agent, turn, started], #{resume => true}, Meta),
+            emit_event(Emitter, resumed,
+                       #{interrupt_type => maps:get(interrupt_type, IntState),
+                         decision_class => decision_class(Decision)}, #{}),
+            emit_event(Emitter, turn_started, #{resume => true}, #{}),
             Agent1 = clear_interrupt(Agent),
             %% resume 同样经 turn 洋葱（guardrail/校验对被打断过的 turn 最终答案也生效），
             %% 一次性分派交给循环 filter 的 continuation：首次进入=延续暂停 turn
@@ -490,12 +506,14 @@ resume(#{interrupt_state := IntState} = Agent, Decision, Payload, Opts) ->
             TurnReq = #{messages => [],
                         context => resume_context(Agent1, InitState),
                         resume => true},
-            LoopOpts = (loop_opts(Agent1, Opts))#{
+            LoopOpts = maps:merge(loop_opts(Agent1, Opts), #{
+                event_emitter => Emitter,
                 continuation => fun() ->
                     resume_continuation(Agent1, Decision, Payload, IntState)
-                end},
+                end}),
             {TurnResult, Agent2} = run_turn_chain(Agent1, TurnReq, LoopOpts),
-            dispatch_turn_result(Agent2, TurnResult, Callbacks, Meta, StartedAt)
+            dispatch_turn_result(Agent2, TurnResult, Callbacks, Meta, StartedAt,
+                                 Emitter)
     end.
 
 %% @doc 流式恢复中断的 agent（默认选项）
@@ -831,8 +849,35 @@ find_last_assistant([_ | Rest]) -> find_last_assistant(Rest).
 dispatch_agent(Level, Name, Data, Meta) ->
     beamai_telemetry:dispatch(Level, Name, Data, Meta).
 
+%% @private 构建 per-run 统一事件 emitter
+event_emitter(State, BaseMeta) ->
+    beamai_agent_event:emitter(maps:get(event_consumers, State, []),
+                               BaseMeta, maps:get(event_counter, State)).
+
+reset_event_sequence(State) ->
+    atomics:put(maps:get(event_counter, State), 1, 0).
+
+emit_event(Emitter, Type, Data, Extra) when is_function(Emitter, 3) ->
+    _ = Emitter(Type, Data, Extra),
+    ok.
+
+interrupt_event_type(env_retry) -> interrupt_requested;
+interrupt_event_type(_Approval) -> approval_requested.
+
+%% @private 决策只归类，不发布原始用户 payload
+decision_class(Decision) when Decision =:= approved; Decision =:= retry ->
+    Decision;
+decision_class(<<"approved">>) -> approved;
+decision_class(<<"retry">>) -> retry;
+decision_class(_) -> other.
+
+%% @private 保守错误归类，避免把任意 term 直接放进事件负载
+error_class({Class, _}) when is_atom(Class) -> Class;
+error_class(Reason) when is_atom(Reason) -> Reason;
+error_class(_) -> unknown.
+
 %% @private run 结束事件同时闭合 turn 事件；不发布 response 内容
-dispatch_agent_finished(Status, Extra, Meta, StartedAt) ->
+dispatch_agent_finished(Status, Extra, Meta, StartedAt, Emitter) ->
     Finished = #{status => Status,
                  duration_ms => erlang:monotonic_time(millisecond) - StartedAt},
     Level = case Status of
@@ -843,7 +888,9 @@ dispatch_agent_finished(Status, Extra, Meta, StartedAt) ->
     beamai_telemetry:dispatch(Level, [beamai, agent, run, finished],
                               maps:merge(Finished, Extra), Meta),
     beamai_telemetry:dispatch(Level, [beamai, agent, turn, finished],
-                              maps:merge(Finished, Extra), Meta).
+                              maps:merge(Finished, Extra), Meta),
+    emit_event(Emitter, run_finished, maps:merge(Finished, Extra), #{}),
+    emit_event(Emitter, turn_finished, maps:merge(Finished, Extra), #{}).
 
 %%====================================================================
 %% 内部函数 - 中断支持

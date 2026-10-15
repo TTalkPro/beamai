@@ -63,6 +63,8 @@
     memory := provider(),           %% 记忆 provider（undefined 则不持久/不变换）
     conversation_id := binary(),
     meta := map(),                  %% 回调元数据（on_llm_call 等）
+    %% 统一 Agent 事件 emitter（可省略；直接复用 tool loop 的调用方无事件流）
+    event_emitter => beamai_agent_event:emitter(),
     tool_calling_manager := beamai_tool_calling_manager:manager(),
     %% 流式 token 处理器：设置时每轮 LLM 调用走 invoke_chat_stream，
     %% 文本 token 经此回调实时透出（undefined 则非流式）。
@@ -275,10 +277,20 @@ step(Opts, #{messages := Messages, context := Ctx,
     %% 消息 id 在调用**之前**分配：流式 token 要能标出自己属于哪条 assistant 消息
     MsgId = beamai_id:gen_id(<<"msg">>),
     emit_message_start(Opts, MsgId),
+    emit_event(Opts, chat_started,
+               #{message_count => length(ToSend),
+                 stream => maps:is_key(stream_token_handler, Opts)},
+               #{message_id => MsgId}),
     case invoke_llm(Opts, ToSend, Ctx, MsgId) of
         {ok, Response, ChatCtx} ->
             %% 每次 LLM 返回后触发（含中间轮，可据此累计各次 usage）
             beamai_agent_callbacks:invoke(on_llm_result, [Response, Meta], Callbacks),
+            emit_event(Opts, chat_finished,
+                       #{status => ok,
+                         finish_reason => beamai_chat_response:finish_reason(Response),
+                         usage => beamai_chat_response:usage(Response),
+                         tool_call_count => length(beamai_chat_response:tool_calls(Response))},
+                       #{message_id => MsgId}),
             Messages1 = record_assistant(Opts, Response, Messages, MsgId),
             StepReq1 = StepReq#{messages => Messages1, context => ChatCtx},
             case beamai_chat_response:has_tool_calls(Response) of
@@ -292,6 +304,11 @@ step(Opts, #{messages := Messages, context := Ctx,
         {error, Reason} ->
             %% 出错也要闭合这条消息（Message=undefined），start/end 恒成对
             emit_message_end(Opts, MsgId, undefined),
+            emit_event(Opts, chat_finished,
+                       #{status => error, class => error_class(Reason)},
+                       #{message_id => MsgId}),
+            emit_event(Opts, error_occurred, #{class => error_class(Reason)},
+                       #{message_id => MsgId}),
             #{status => error, reason => Reason, context => Ctx,
               messages => Messages, tool_calls_made => ToolCallsMade}
     end.
@@ -378,6 +395,7 @@ with_raw_event_sink(ChatOpts, #{callbacks := Callbacks} = Opts) ->
 
 %% @private 处理 LLM 返回的 tool_calls：统一前置中断检测，命中则统一处理
 handle_tool_calls(TCs, Opts, StepReq) ->
+    emit_tool_queued(Opts, TCs),
     case find_first_interrupt(TCs, Opts) of
         {interrupt, Type, Reason, InterruptedTC, SafeCalls, SkippedCalls} ->
             handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls,
@@ -419,6 +437,7 @@ handle_interrupt(Type, Reason, InterruptedTC, SafeCalls, SkippedCalls, Opts,
                    tool_calls_made := ToolCallsMade}) ->
     #{chat_client := ChatClient, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
+    emit_tool_started(Opts, SafeCalls),
     #{messages := SafeResults, records := SafeCallRecords, context := NewCtx} =
         beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, SafeCalls, #{
             context => Ctx,
@@ -459,6 +478,7 @@ execute_and_continue(TCs, Opts, #{messages := Messages, context := Ctx,
                                   tool_calls_made := ToolCallsMade}) ->
     #{chat_client := ChatClient, tool_calling_manager := TCM} = Opts,
     Parallel = maps:get(parallel_tools, Opts, true),
+    emit_tool_started(Opts, TCs),
     #{messages := ToolResults, records := NewToolCalls, context := NewCtx} =
         beamai_tool_calling_manager:execute_tool_calls(TCM, ChatClient, TCs, #{
             context => Ctx,
@@ -569,6 +589,7 @@ emit_state_change(#{callbacks := Callbacks} = Opts, OldCtx, NewCtx) ->
         New ->
             beamai_agent_callbacks:invoke(on_state_change, [New, maps:get(meta, Opts, #{})],
                                           Callbacks),
+            emit_event(Opts, state_changed, #{state_keys => maps:keys(New)}, #{}),
             beamai_telemetry:dispatch(
               info, [beamai, agent, state, changed],
               #{state_keys => maps:keys(New)},
@@ -593,14 +614,57 @@ emit_state_change(#{callbacks := Callbacks} = Opts, OldCtx, NewCtx) ->
 -spec agent_result_cb(map()) -> fun((map()) -> ok).
 agent_result_cb(Agent) ->
     tool_result_cb(#{callbacks => maps:get(callbacks, Agent, #{}),
-                     meta => beamai_agent_callbacks:build_metadata(Agent)}).
+                     meta => beamai_agent_callbacks:build_metadata(Agent),
+                     event_emitter =>
+                         beamai_agent_event:emitter(
+                           maps:get(event_consumers, Agent, []),
+                           beamai_agent_callbacks:build_metadata(Agent),
+                           maps:get(event_counter, Agent))}).
 
 tool_result_cb(#{callbacks := Callbacks} = Opts) ->
     Meta = maps:get(meta, Opts, #{}),
     fun(#{name := Name, result := Result} = CallRecord) ->
         Info = maps:merge(Meta, maps:with([tool_call_id, args, error], CallRecord)),
+        emit_event(Opts, tool_finished, tool_event_data(CallRecord),
+                   maps:with([tool_call_id], CallRecord)),
         beamai_agent_callbacks:invoke(on_tool_result, [Name, Result], Info, Callbacks)
     end.
+
+%% @private 在进入 manager 前按原始请求序声明排队 / 启动；完成乱序由
+%% `tool_call_id' 关联，重放时按 event sequence 排序。
+emit_tool_queued(Opts, ToolCalls) ->
+    lists:foreach(fun(TC) ->
+                          {Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
+                          emit_event(Opts, tool_queued, #{tool => Name},
+                                     #{tool_call_id => Id})
+                  end, ToolCalls).
+
+emit_tool_started(Opts, ToolCalls) ->
+    lists:foreach(fun(TC) ->
+                          {Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
+                          emit_event(Opts, tool_started, #{tool => Name},
+                                     #{tool_call_id => Id})
+                  end, ToolCalls).
+
+tool_event_data(#{name := Name} = CallRecord) ->
+    Base = #{tool => Name, status => ok},
+    case maps:find(error, CallRecord) of
+        {ok, Error} ->
+            Base#{status => error,
+                  class => maps:get(class, Error, unknown)};
+        _ -> Base
+    end.
+
+emit_event(#{event_emitter := Emitter}, Type, Data, Extra)
+  when is_function(Emitter, 3) ->
+    _ = Emitter(Type, Data, Extra),
+    ok;
+emit_event(_Opts, _Type, _Data, _Extra) ->
+    ok.
+
+error_class({Class, _}) when is_atom(Class) -> Class;
+error_class(Reason) when is_atom(Reason) -> Reason;
+error_class(_) -> unknown.
 
 %% @private 取起始 context（仅 run/2 直跑路径用；经 turn 链时由请求给出）
 ctx(#{chat_opts := ChatOpts}) ->

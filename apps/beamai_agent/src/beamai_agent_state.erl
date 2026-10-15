@@ -38,6 +38,8 @@
     max_tool_calls := pos_integer() | infinity, %% 整轮 run 的工具调用总数上限（默认 infinity）
     parallel_tools := boolean(),           %% 一轮多个 tool_call 是否并发执行（默认 true）
     callbacks := beamai_agent_callbacks:callbacks(), %% 回调函数表
+    event_consumers := [beamai_agent_event:consumer()], %% 统一事件消费器
+    event_counter := atomics:atomics_ref(),         %% per-run event sequence
     turn_count := non_neg_integer(),%% 已完成的对话轮数
     metadata := map(),              %% 用户自定义元数据
     created_at := integer(),        %% 创建时间戳（毫秒）
@@ -102,6 +104,7 @@
 %%     三层超时的缺省一致）。
 %%   parallel_tools — 一轮多个 tool_call 是否并发执行（默认 true；false 则串行）
 %%   callbacks — 观察性回调 map（参见 beamai_agent_callbacks:callbacks()）
+%%   event_consumers — 统一事件消费器列表（观测用，不改变执行流程）
 %%   memory — 会话记忆（解析为 beamai_memory_provider，与 ChatClient 正交）：
 %%            缺省用默认 provider+共享 store；{window,N} 套滑动窗口；
 %%            {store,Handle} 指定存储后端；{Mod,Ref} 自定义 provider（摘要/RAG…）；
@@ -121,6 +124,8 @@
 create(Config) ->
     try
         Callbacks = maps:get(callbacks, Config, #{}),
+        EventConsumers = event_consumers(maps:get(event_consumers,
+                                                  Config, [])),
         ChatClient = build_chat_client(Config),
         %% 解析记忆 provider：跨轮历史由 Agent 在 tool loop 里显式委托给 provider，
         %% 不再注入 ChatClient filter（callbacks 同理，全在 loop 触发）。
@@ -139,6 +144,8 @@ create(Config) ->
             max_tool_calls => maps:get(max_tool_calls, Config, infinity),
             parallel_tools => maps:get(parallel_tools, Config, true),
             callbacks => Callbacks,
+            event_consumers => EventConsumers,
+            event_counter => atomics:new(1, [{signed, false}]),
             turn_count => 0,
             metadata => maps:get(metadata, Config, #{}),
             created_at => erlang:system_time(millisecond),
@@ -176,6 +183,10 @@ resolve_on_env_error(Config, Callbacks) ->
                 orelse maps:is_key(on_tool_call, Callbacks),
             case HitlEnabled of true -> pause; false -> proceed end
     end.
+
+%% @private 规范事件消费器配置：单个 consumer 也接受列表写法
+event_consumers(Consumer) when is_function(Consumer, 1) -> [Consumer];
+event_consumers(Consumers) when is_list(Consumers) -> Consumers.
 
 %% @doc 获取 agent 的记忆 provider（无记忆时 undefined）
 -spec memory(agent_state()) -> beamai_memory_provider:provider() | undefined.

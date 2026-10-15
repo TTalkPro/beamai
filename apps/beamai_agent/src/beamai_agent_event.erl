@@ -13,9 +13,11 @@
 %%%-------------------------------------------------------------------
 -module(beamai_agent_event).
 
--export([new/4, sort/1, publish/2, to_telemetry/1, telemetry_name/1]).
+-export([new/4, emitter/3, sort/1, publish/2, to_telemetry/1,
+         telemetry_name/1]).
 
--export_type([event_type/0, event/0, consumer/0, telemetry_event/0]).
+-export_type([event_type/0, event/0, consumer/0, emitter/0,
+              telemetry_event/0]).
 
 -type event_type() ::
     run_started | run_finished |
@@ -38,6 +40,9 @@
 }.
 
 -type consumer() :: fun((event()) -> term()).
+
+-type emitter() ::
+    fun((event_type(), map(), map()) -> event()).
 
 -type telemetry_event() :: #{
     name := beamai_telemetry:event_name(),
@@ -73,6 +78,22 @@ new(Type, Metadata, Data, Sequence)
                                  Metadata)
     },
     Event.
+
+%% @doc Create a sequence-producing event emitter.
+%%
+%% Agent runtime owns `Counter' for one run and resets it when a new `run_id'
+%% is generated. `ExtraMetadata' is merged over `BaseMetadata' before common
+%% correlation fields are normalized by `new/4'.
+-spec emitter([consumer()], map(), atomics:atomics_ref()) -> emitter().
+emitter(Consumers, BaseMetadata, Counter) when is_list(Consumers) ->
+    fun(Type, Data, ExtraMetadata) ->
+        Sequence = atomics:add_get(Counter, 1, 1),
+        Metadata = maps:without([timestamp],
+                                maps:merge(BaseMetadata, ExtraMetadata)),
+        Event = new(Type, Metadata, Data, Sequence),
+        publish(Event, Consumers),
+        Event
+    end.
 
 %% @doc Sort events deterministically within and across runs.
 %%
