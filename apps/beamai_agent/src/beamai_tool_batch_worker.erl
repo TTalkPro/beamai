@@ -75,16 +75,19 @@ execute_isolated(ChatClient, ToolCalls, Context0, Parallel, OnResult, MgrOpts) -
                 Context0, maps:get(tool_timeout, MgrOpts, undefined)),
     Parent = self(),
     Tag = make_ref(),
+    BatchId = beamai_id:gen_id(<<"tool_batch">>),
+    BatchStartedAt = erlang:monotonic_time(millisecond),
     %% proxy：worker 内每工具完成即把 CallRecord 转回父进程，由父进程触发真回调
     Proxy = fun(CR) -> Parent ! {tcm_on_result, Tag, CR}, ok end,
     {Pid, MRef} = spawn_monitor(fun() ->
         Result = beamai_agent_utils:execute_tools(ChatClient, ToolCalls, Context,
-                                                  Parallel, Proxy),
+                                                  Parallel, Proxy, BatchId),
         Parent ! {tcm_batch_result, Tag, Result}
     end),
     Deadline = deadline(batch_timeout(MgrOpts)),
     %% 失败合成用注入前的 Context0：策略是执行细节，不该渗进返回给调用方的状态
-    await_batch(Tag, Pid, MRef, ToolCalls, Context0, OnResult, Deadline).
+    await_batch(Tag, Pid, MRef, ToolCalls, Context0, OnResult, Deadline,
+                BatchId, BatchStartedAt).
 
 %% @private infinity 的截止即无截止
 deadline(infinity) -> infinity;
@@ -94,11 +97,13 @@ deadline(Timeout) -> erlang:monotonic_time(millisecond) + Timeout.
 %%
 %% 同一发送者到同一接收者的消息保序，故 worker 的 tcm_on_result 必然排在
 %% tcm_batch_result 之前 —— 拿到批结果时进度回调已全部触发过，无需 drain。
-await_batch(Tag, Pid, MRef, ToolCalls, Context, OnResult, Deadline) ->
+await_batch(Tag, Pid, MRef, ToolCalls, Context, OnResult, Deadline,
+            BatchId, BatchStartedAt) ->
     receive
         {tcm_on_result, Tag, CallRecord} ->
             _ = OnResult(CallRecord),
-            await_batch(Tag, Pid, MRef, ToolCalls, Context, OnResult, Deadline);
+            await_batch(Tag, Pid, MRef, ToolCalls, Context, OnResult, Deadline,
+                        BatchId, BatchStartedAt);
         {tcm_batch_result, Tag, {Msgs, Records, NewCtx}} ->
             erlang:demonitor(MRef, [flush]),
             %% 剥掉下发的执行策略：它是本批的执行细节，不该随 context 穿到下一轮
@@ -106,14 +111,16 @@ await_batch(Tag, Pid, MRef, ToolCalls, Context, OnResult, Deadline) ->
             {Msgs, Records, beamai_context:with_default_tool_timeout(NewCtx, undefined)};
         {'DOWN', MRef, process, Pid, Reason} ->
             %% worker 被工具带崩（含 link 传播的退出信号）：整批合成 error
-            synth_batch(ToolCalls, Context, tool_batch_crash, Reason, OnResult)
+            synth_batch(ToolCalls, Context, tool_batch_crash, Reason, OnResult,
+                        BatchId, BatchStartedAt)
     after remaining(Deadline) ->
         %% 仅当调用方显式配了 batch_timeout 才会走到这里（缺省 infinity）：
         %% kill worker，整批合成 timeout
         erlang:demonitor(MRef, [flush]),
         exit(Pid, kill),
         drain(Tag),
-        synth_batch(ToolCalls, Context, tool_timeout, batch_timeout_exceeded, OnResult)
+        synth_batch(ToolCalls, Context, tool_timeout, batch_timeout_exceeded,
+                    OnResult, BatchId, BatchStartedAt)
     end.
 
 %% @private 距截止还剩多久（infinity 即不设限，永远等 worker 交付或 DOWN）
@@ -132,9 +139,27 @@ drain(Tag) ->
 %%
 %% 注意：批内已完成的工具会再触发一次 OnResult（携 error 记录）。批失败时其
 %% 结果本就作废，最终态即 error——进度 UX 可能看到该工具的重复记录。
-synth_batch(ToolCalls, Context, Type, Reason, OnResult) ->
+synth_batch(ToolCalls, Context, Type, Reason, OnResult, BatchId, BatchStartedAt) ->
     Ordered = [begin
         {_Msg, CallRecord, _W} = R = beamai_agent_utils:synth_result(TC, Type, Reason),
+        beamai_telemetry:dispatch(
+          case Type of
+              tool_timeout -> warning;
+              _ -> error
+          end,
+          case Type of
+              tool_timeout -> [beamai, tool, timeout];
+              _ -> [beamai, tool, crash]
+          end,
+          #{reason_class => Type,
+            attempt => 1,
+            duration_ms => erlang:monotonic_time(millisecond) - BatchStartedAt,
+            result_size => byte_size(maps:get(result, CallRecord)),
+            error_class => maps:get(class, maps:get(error, CallRecord, #{}))},
+          #{tool_call_id => maps:get(tool_call_id, CallRecord),
+            tool => maps:get(name, CallRecord),
+            batch_id => BatchId,
+            conversation_id => beamai_context:conversation_id(Context)}),
         _ = OnResult(CallRecord),
         R
     end || TC <- ToolCalls],

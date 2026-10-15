@@ -17,6 +17,7 @@
     execute_tools/3,
     execute_tools/4,
     execute_tools/5,
+    execute_tools/6,
     run_one_tool/3,
     synth_result/3,
     tool_error/1
@@ -102,12 +103,24 @@ execute_tools(ChatClient, ToolCalls, Context, Parallel) ->
                     fun((map()) -> ok)) ->
     {[map()], [map()], beamai_context:t()}.
 execute_tools(ChatClient, ToolCalls, Context, Parallel, OnResult) ->
+    BatchId = beamai_id:gen_id(<<"tool_batch">>),
+    execute_tools(ChatClient, ToolCalls, Context, Parallel, OnResult, BatchId).
+
+%% @private 供批级隔离 worker 复用外层生成的 batch id；不作为公共契约
+%%
+%% 批级超时 / crash 埋点必须和批内 queued / started / finished 使用同一个
+%% `batch_id`，否则调用方无法把隔离层的兜底事件和原始批次关联起来。
+-spec execute_tools(beamai_chat_client:chat_client(), [map()], beamai_context:t(), boolean(),
+                    fun((map()) -> ok), binary()) ->
+    {[map()], [map()], beamai_context:t()}.
+execute_tools(ChatClient, ToolCalls, Context, Parallel, OnResult, BatchId) ->
+    lists:foreach(fun(TC) -> emit_tool_queued(TC, Context, BatchId) end, ToolCalls),
     Concurrent = Parallel
         andalso length(ToolCalls) > 1
         andalso not batch_has_serial(ChatClient, ToolCalls),
     case Concurrent of
-        true -> execute_concurrent(ChatClient, ToolCalls, Context, OnResult);
-        false -> execute_sequential(ChatClient, ToolCalls, Context, OnResult)
+        true -> execute_concurrent(ChatClient, ToolCalls, Context, OnResult, BatchId);
+        false -> execute_sequential(ChatClient, ToolCalls, Context, OnResult, BatchId)
     end.
 
 %% @private 批内是否含 serial 工具（命中则整批退化串行，保住副作用顺序）
@@ -126,7 +139,16 @@ batch_has_serial(ChatClient, ToolCalls) ->
 -spec run_one_tool(beamai_chat_client:chat_client(), map(), beamai_context:t()) ->
     {map(), map(), beamai_context:writes()}.
 run_one_tool(ChatClient, TC, Context) ->
+    BatchId = beamai_id:gen_id(<<"tool_batch">>),
+    run_one_tool(ChatClient, TC, Context, BatchId).
+
+%% @private 单工具执行统一入口，BatchId 由批次调度方生成
+run_one_tool(ChatClient, TC, Context, BatchId) ->
     {Id, Name, Args} = beamai_tool:parse_tool_call(TC),
+    Meta = tool_meta(Id, Name, BatchId, Context),
+    StartedAt = erlang:monotonic_time(millisecond),
+    beamai_telemetry:dispatch([beamai, tool, started], #{tool => Name, attempt => 1},
+                              Meta),
     {Result, Writes, ErrInfo} = case beamai_tool_executor:invoke(ChatClient, Name, Args, Context) of
         {ok, Value, W} ->
             {beamai_tool:encode_result(Value), W, undefined};
@@ -141,6 +163,7 @@ run_one_tool(ChatClient, TC, Context) ->
     %% + 审计。失败工具 Writes=#{} → 无 writes 键（历史自然缺席，与事务性同真同假）。
     Msg = with_writes(#{role => tool, tool_call_id => Id, content => Result}, Writes),
     CallRecord0 = #{name => Name, args => Args, result => Result, tool_call_id => Id},
+    dispatch_tool_finished(StartedAt, Result, ErrInfo, Meta),
     {Msg, with_error(CallRecord0, ErrInfo), Writes}.
 
 %% @private 成功无 error 字段；失败带 #{class, message}（屏障处按 class 路由）
@@ -172,8 +195,10 @@ reason_to_binary(R) -> iolist_to_binary(io_lib:format("~p", [R])).
 
 %% @private 串行执行 tool_calls（每个工具拿同一轮初快照，屏障处折叠）
 %% 每个工具完成即触发 OnResult（实时）。
-execute_sequential(ChatClient, ToolCalls, Context, OnResult) ->
-    Ordered = [fire_result(OnResult, run_one_tool(ChatClient, TC, Context)) || TC <- ToolCalls],
+execute_sequential(ChatClient, ToolCalls, Context, OnResult, BatchId) ->
+    Ordered = [fire_result(OnResult,
+                           run_one_tool(ChatClient, TC, Context, BatchId))
+               || TC <- ToolCalls],
     finalize(ChatClient, Context, Ordered).
 
 %% @private 触发实时结果回调并原样返回结果三元组
@@ -190,16 +215,18 @@ fire_result(OnResult, {_Msg, CallRecord, _Writes} = Result) ->
 %% 经 OnResult 实时可见。显式配了截止才到点 kill 未交付者、为其合成 timeout
 %% error 结果（已完成的结果照常保留）。结果按原 tool_call 顺序（索引）重排，
 %% 屏障处折叠 writes。
-execute_concurrent(ChatClient, ToolCalls, Context, OnResult) ->
+execute_concurrent(ChatClient, ToolCalls, Context, OnResult, BatchId) ->
     Parent = self(),
     Indexed = lists:zip(lists:seq(1, length(ToolCalls)), ToolCalls),
     Workers = lists:foldl(fun({Idx, TC}, Acc) ->
         {Pid, MRef} = spawn_monitor(fun() ->
-            Parent ! {tool_result, self(), run_one_tool(ChatClient, TC, Context)}
+            Parent ! {tool_result, self(),
+                      run_one_tool(ChatClient, TC, Context, BatchId)}
         end),
         Acc#{Pid => #{idx => Idx, tc => TC, mref => MRef}}
     end, #{}, Indexed),
-    ResultMap = collect_tools(Workers, #{}, deadline(gather_timeout()), OnResult),
+    ResultMap = collect_tools(Workers, #{}, deadline(gather_timeout()), OnResult,
+                              BatchId, Context),
     Ordered = [maps:get(Idx, ResultMap) || {Idx, _TC} <- Indexed],
     finalize(ChatClient, Context, Ordered).
 
@@ -226,35 +253,44 @@ warn_conflicts(Conflicts) ->
 
 %% @private 收集并发工作进程结果，直到每个 tool 都有结果（idx 为键）或超时
 %% 每个结果落地即触发 OnResult（实时；顺序不确定）。
-collect_tools(Workers, Acc, _Deadline, _OnResult) when map_size(Acc) =:= map_size(Workers) ->
+collect_tools(Workers, Acc, _Deadline, _OnResult, _BatchId, _Context)
+  when map_size(Acc) =:= map_size(Workers) ->
     Acc;
-collect_tools(Workers, Acc, Deadline, OnResult) ->
+collect_tools(Workers, Acc, Deadline, OnResult, BatchId, Context) ->
     receive
         {tool_result, Pid, RC} ->
             case maps:get(Pid, Workers, undefined) of
                 undefined ->
                     %% 上一批被 kill 的 worker 在死前发出的迟到结果，忽略
-                    collect_tools(Workers, Acc, Deadline, OnResult);
+                    collect_tools(Workers, Acc, Deadline, OnResult,
+                                  BatchId, Context);
                 #{idx := Idx, mref := MRef} ->
                     erlang:demonitor(MRef, [flush]),
                     _ = fire_result(OnResult, RC),
-                    collect_tools(Workers, Acc#{Idx => RC}, Deadline, OnResult)
+                    collect_tools(Workers, Acc#{Idx => RC}, Deadline, OnResult,
+                                  BatchId, Context)
             end;
         {'DOWN', _MRef, process, Pid, Reason} ->
             case maps:get(Pid, Workers, undefined) of
                 undefined ->
-                    collect_tools(Workers, Acc, Deadline, OnResult);
+                    collect_tools(Workers, Acc, Deadline, OnResult,
+                                  BatchId, Context);
                 #{idx := Idx, tc := TC} ->
                     case maps:is_key(Idx, Acc) of
-                        true -> collect_tools(Workers, Acc, Deadline, OnResult);  %% 结果已先到，DOWN 忽略
+                        true ->
+                            collect_tools(Workers, Acc, Deadline, OnResult,
+	                                          BatchId, Context);
                         false ->
                             R = synth_result(TC, tool_worker_crash, Reason),
+                            dispatch_tool_lifecycle(
+                              error, [beamai, tool, crash], Reason, R, BatchId, Context),
                             _ = fire_result(OnResult, R),
-                            collect_tools(Workers, Acc#{Idx => R}, Deadline, OnResult)
+                            collect_tools(Workers, Acc#{Idx => R}, Deadline,
+                                          OnResult, BatchId, Context)
                     end
             end
     after remaining(Deadline) ->
-        kill_pending(Workers, Acc, OnResult)
+        kill_pending(Workers, Acc, OnResult, BatchId, Context)
     end.
 
 %% @private infinity 的截止即无截止（缺省——不替用户决定何时放弃）
@@ -266,7 +302,7 @@ remaining(infinity) -> infinity;
 remaining(Deadline) -> max(0, Deadline - erlang:monotonic_time(millisecond)).
 
 %% @private 超时收尾：kill 所有未交付结果的 worker，并合成 timeout error 结果
-kill_pending(Workers, Acc, OnResult) ->
+kill_pending(Workers, Acc, OnResult, BatchId, Context) ->
     maps:fold(fun(Pid, #{idx := Idx, tc := TC, mref := MRef}, A) ->
         case maps:is_key(Idx, A) of
             true ->
@@ -275,6 +311,9 @@ kill_pending(Workers, Acc, OnResult) ->
                 erlang:demonitor(MRef, [flush]),
                 exit(Pid, kill),
                 R = synth_result(TC, tool_timeout, gather_timeout_exceeded),
+                dispatch_tool_lifecycle(
+                  warning, [beamai, tool, timeout], gather_timeout_exceeded,
+                  R, BatchId, Context),
                 _ = fire_result(OnResult, R),
                 A#{Idx => R}
         end
@@ -295,6 +334,52 @@ synth_result(TC, Type, Reason) ->
     CallRecord = #{name => Name, args => Args, result => Result, tool_call_id => Id,
                    error => #{class => beamai_tool_error:classify(Type), message => Msg0}},
     {Msg, CallRecord, #{}}.
+
+%% @private 发布批量排队事件；不携带 arguments，避免敏感负载进入 telemetry
+emit_tool_queued(TC, Context, BatchId) ->
+    {Id, Name, _Args} = beamai_tool:parse_tool_call(TC),
+    beamai_telemetry:dispatch([beamai, tool, queued], #{tool => Name},
+                              tool_meta(Id, Name, BatchId, Context)).
+
+%% @private 成功 / 业务错误统一归入 finished；错误类别只发布归一后的类别
+dispatch_tool_finished(StartedAt, Result, ErrInfo, Meta) ->
+    Level = case ErrInfo of
+        undefined -> info;
+        _ -> warning
+    end,
+    ErrorClass = case ErrInfo of
+        undefined -> undefined;
+        #{class := Class} -> Class
+    end,
+    beamai_telemetry:dispatch(
+      Level, [beamai, tool, finished],
+      #{status => case ErrInfo of
+                      undefined -> ok;
+                      _ -> error
+                  end,
+        duration_ms => erlang:monotonic_time(millisecond) - StartedAt,
+        result_size => byte_size(Result),
+        error_class => ErrorClass},
+      Meta).
+
+%% @private worker crash / 批级 timeout 使用统一字段，便于和 finished 区分
+dispatch_tool_lifecycle(Level, Name, Reason, {_Msg, CallRecord, _W}, BatchId, Context) ->
+    #{name := ToolName, tool_call_id := Id, result := Result} = CallRecord,
+    beamai_telemetry:dispatch(
+      Level, Name,
+      #{reason_class => Reason,
+        attempt => 1,
+        duration_ms => 0,
+        result_size => byte_size(Result),
+        error_class => maps:get(class, maps:get(error, CallRecord, #{}), undefined)},
+      tool_meta(Id, ToolName, BatchId, Context)).
+
+%% @private telemetry 关联字段；tool_call_id 是单个调用的稳定关联键
+tool_meta(Id, Name, BatchId, Context) ->
+    #{tool_call_id => Id,
+      tool => Name,
+      batch_id => BatchId,
+      conversation_id => beamai_context:conversation_id(Context)}.
 
 %% @private 并发收集的全局截止时长（毫秒，**缺省 infinity —— 不设截止**）
 %%

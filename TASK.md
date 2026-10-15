@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J 实施完成  
+> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J / K 实施完成  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -40,7 +40,7 @@
 本地验证：`rebar3 xref` 0 warning，`rebar3 dialyzer` 0 warning，
 `rebar3 eunit` 796 tests / 0 failures。
 
-### Phase 2：可观测性 — 批次 I / J 实施完成
+### Phase 2：可观测性 — 批次 I / J / K 实施完成
 
 目标：建立轻量 telemetry dispatch 与默认日志后端，覆盖 LLM、Tool、Agent、
 HTTP Pool 关键路径。
@@ -48,7 +48,7 @@ HTTP Pool 关键路径。
 - [x] 新增 telemetry dispatch 模块、公共 event map 和默认 logger backend。
 - [x] 支持 handler 注入、crash 隔离、按级别开启 / 关闭。
 - [x] 增加 LLM request / retry / stream 埋点。
-- [ ] 增加 Tool queue / start / finish / timeout / crash 埋点。
+- [x] 增加 Tool queue / start / finish / timeout / crash 埋点。
 - [ ] 增加 Agent run / turn / interrupt / resume / state 埋点。
 - [ ] 增加 HTTP Pool acquire / reuse / failure / timeout / reap 埋点。
 - [ ] 确保默认日志不输出 prompt、tool result 全文和 API key。

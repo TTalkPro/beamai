@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J / K 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -147,12 +147,15 @@ Tool 安全变更提交：`4b5a632`。
 
 ### 批次 K：Tool 埋点
 
-- [ ] K1 `tool_queued`。
-- [ ] K2 `tool_started`。
-- [ ] K3 `tool_finished`。
-- [ ] K4 `tool_timeout`。
-- [ ] K5 `tool_crash`。
-- [ ] K6 记录 batch id、attempt、duration、result size。
+- [x] K1 `tool_queued`。
+- [x] K2 `tool_started`。
+- [x] K3 `tool_finished`。
+- [x] K4 `tool_timeout`。
+- [x] K5 `tool_crash`。
+- [x] K6 记录 batch id、attempt、duration、result size。
+
+批次 K 本地验证：`beamai_tool_telemetry_tests` 4 tests / 0 failures，
+`dialyzer` 0 warning，`xref` 0 warning，application modules 一致。
 
 ### 批次 L：Agent 埋点
 
