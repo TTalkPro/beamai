@@ -185,9 +185,7 @@ Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>)
 ## Dependencies
 
 - OTP's built-in `json` module - JSON encoding/decoding (requires OTP 27+)
-- uuid - UUID generation
 - gun - HTTP/2 client
-- poolboy - Connection pooling
 
 ## License
 

@@ -11,8 +11,6 @@
 | 依赖包 | 版本 | 用途 |
 |-------|------|------|
 | [gun](https://github.com/ninenines/gun) | 2.1.0 | HTTP/1.1, HTTP/2, WebSocket 客户端（唯一内置 HTTP 后端） |
-| [uuid](https://github.com/okeuday/uuid) | 2.0.6 | UUID 生成（包名：uuid_erl） |
-| [esqlite](https://github.com/mmzeeman/esqlite3) | 0.8.8 | SQLite 数据库支持（用于持久化存储） |
 
 ### HTTP 后端配置
 
@@ -83,7 +81,7 @@ application:set_env(beamai_core, http_backend, beamai_llm_fake_backend).
                                                 ▼
                               ┌───────────────────────────────────┐
                               │  Erlang/OTP 27+ + 外部依赖         │
-                              │  (gun / uuid / esqlite / poolboy) │
+                              │              (gun)                │
                               └───────────────────────────────────┘
 ```
 
@@ -242,8 +240,7 @@ Config = #{
 
 #### beamai_examples（示例，位于 `examples/`）
 
-**依赖**: poolboy（beamai_core / beamai_llm / beamai_agent 经 `ERL_LIBS` 提供，
-见 `examples/rebar.config`）
+**依赖**: 仅依赖 Erlang/OTP 和通过 `ERL_LIBS` 提供的 BeamAI 应用。
 
 **提供功能**:
 - LLM 配置助手（example_llm_config）

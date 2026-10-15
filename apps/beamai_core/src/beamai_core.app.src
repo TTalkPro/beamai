@@ -8,7 +8,7 @@
     {mod, {beamai_core_app, []}},
     %% gun 是硬依赖：beamai_core_sup 无条件启动三个 beamai_http_pool
     %% （http_pool_short/stream/longpoll），它们直接调 gun:open。
-    {applications, [kernel, stdlib, uuid, gun]},
+    {applications, [kernel, stdlib, gun]},
     %% 不声明 beamai_llm 依赖：beamai_llm 的 applications 含 beamai_core，
     %% 反向声明会成环。core 里唯一的运行时反向调用是门面
     %% beamai:add_chat_model/3 → beamai_chat_model:create/2，由使用方保证

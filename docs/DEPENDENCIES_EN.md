@@ -11,8 +11,6 @@ This document describes the dependencies of the BeamAI Framework, including exte
 | Package | Version | Purpose |
 |-------|------|------|
 | [gun](https://github.com/ninenines/gun) | 2.1.0 | HTTP/1.1, HTTP/2, WebSocket client (the only built-in HTTP backend) |
-| [uuid](https://github.com/okeuday/uuid) | 2.0.6 | UUID generation (package name: uuid_erl) |
-| [esqlite](https://github.com/mmzeeman/esqlite3) | 0.8.8 | SQLite database support (for persistent storage) |
 
 ### HTTP Backend Configuration
 
@@ -88,7 +86,7 @@ combined view; the edges are taken from each app's `.app.src`:
                                                 v
                               +-----------------------------------+
                               |  Erlang/OTP 27+ + external deps   |
-                              |  (gun / uuid / esqlite / poolboy) |
+                              |              (gun)                |
                               +-----------------------------------+
 ```
 
@@ -247,8 +245,7 @@ Config = #{
 
 #### beamai_examples (Examples, under `examples/`)
 
-**Dependencies**: poolboy (beamai_core / beamai_llm / beamai_agent are supplied via
-`ERL_LIBS`; see `examples/rebar.config`)
+**Dependencies**: only Erlang/OTP plus BeamAI applications supplied via ERL_LIBS.
 
 **Provides**:
 - LLM config helper (example_llm_config)

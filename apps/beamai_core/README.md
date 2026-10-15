@@ -198,9 +198,7 @@ Ctx = beamai_context:with_conversation_id(beamai_context:new(), <<"session-1">>)
 ## 依赖
 
 - OTP 内置 `json` 模块 - JSON 编解码（需 OTP 27+）
-- uuid - UUID 生成
 - gun - HTTP/2 客户端
-- poolboy - 连接池
 
 ## 许可证
 
