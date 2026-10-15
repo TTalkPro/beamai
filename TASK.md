@@ -141,7 +141,7 @@ OpenAI provider encode/decode。`run/0` 现在输出统一汇总表，单场景�
 - [ ] `rebar3 xref`：0 warning。
 - [ ] `rebar3 dialyzer`：0 warning。
 - [ ] `rebar3 eunit`：全部通过。
-- [ ] `rebar3 ct`：全部通过。
+- [x] `rebar3 ct`：全部通过。（当前没有 CT suites，命令返回通过）
 - [ ] OTP 27 / OTP 28 CI 全绿。
 - [ ] 根项目无未用依赖。
 - [x] TLS 默认严格校验。

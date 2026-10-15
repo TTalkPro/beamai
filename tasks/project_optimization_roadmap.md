@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 / Phase 2 实施完成；Phase 3 批次 N 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 / Phase 5 实施完成；等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -70,13 +70,13 @@
 
 ### Phase 0 验收
 
-- [ ] P0-V1 `rebar3 xref`：0 warning。
-- [ ] P0-V2 `rebar3 dialyzer`：0 warning。
-- [ ] P0-V3 `rebar3 eunit`：全部通过。
-- [ ] P0-V4 `rebar3 ct`：全部通过。
+- [x] P0-V1 `rebar3 xref`：0 warning。
+- [x] P0-V2 `rebar3 dialyzer`：0 warning。
+- [x] P0-V3 `rebar3 eunit`：全部通过。
+- [x] P0-V4 `rebar3 ct`：全部通过（当前没有 CT suites，命令返回通过）。
 - [ ] P0-V5 OTP 27 / OTP 28 CI 通过。
-- [ ] P0-V6 examples job 通过。
-- [ ] P0-V7 根项目无未用依赖。
+- [x] P0-V6 examples job 通过。
+- [x] P0-V7 根项目无未用依赖。
 
 本地已完成验证：application modules 一致、`rebar3 xref` 0 warning、
 `rebar3 dialyzer` 0 warning、`rebar3 eunit` 780 tests / 0 failures、
