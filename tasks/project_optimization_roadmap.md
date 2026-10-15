@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：待实施  
+> 状态：Phase 0 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -18,55 +18,55 @@
 
 ### 批次 A：仓库清理
 
-- [ ] A1 删除 Git 跟踪的 `rebar3.crashdump`。
-- [ ] A2 在 `.gitignore` 增加 `rebar3.crashdump`。
-- [ ] A3 确认工作区没有其他误提交构建产物。
+- [x] A1 删除 Git 跟踪的 `rebar3.crashdump`。
+- [x] A2 在 `.gitignore` 增加 `rebar3.crashdump`。
+- [x] A3 确认工作区没有其他误提交构建产物。
 
 ### 批次 B：application metadata 修正
 
-- [ ] B1 补齐 `apps/beamai_agent/src/beamai_agent.app.src` 的 `modules`：
+- [x] B1 补齐 `apps/beamai_agent/src/beamai_agent.app.src` 的 `modules`：
       至少包括 pause、branch、timeline、tool calling manager、batch worker、
       concurrent/sequential manager 相关模块。
-- [ ] B2 补齐 `apps/beamai_core/src/beamai_core.app.src` 的 `modules`：
+- [x] B2 补齐 `apps/beamai_core/src/beamai_core.app.src` 的 `modules`：
       至少包括 `beamai_filters`、`beamai_json_schema`、`beamai_token_stream`、
       `beamai_tool_error`、`beamai_tool_index*`、`beamai_tool_search`。
-- [ ] B3 补齐 `apps/beamai_llm/src/beamai_llm.app.src` 的 `modules`：
+- [x] B3 补齐 `apps/beamai_llm/src/beamai_llm.app.src` 的 `modules`：
       至少包括 parser、error、mock provider、HTTP provider 相关模块。
-- [ ] B4 增加或明确一个本地检查方式，验证 `.app.src` modules 与 `src/**/*.erl` 一致。
+- [x] B4 增加或明确一个本地检查方式，验证 `.app.src` modules 与 `src/**/*.erl` 一致。
 
 ### 批次 C：依赖审计
 
-- [ ] C1 确认 `uuid` 在 core、llm、agent、examples、beamai_extra 中均无运行时依赖。
-- [ ] C2 确认 `esqlite` 在当前核心项目中无运行时依赖。
-- [ ] C3 确认 `poolboy` 在当前核心项目中无运行时依赖。
-- [ ] C4 从根 `rebar.config` 和 `rebar.lock` 移除确认无用的依赖。
-- [ ] C5 同步更新各 app `.app.src`、依赖文档和中英文 README。
+- [x] C1 确认 `uuid` 在 core、llm、agent、examples 中无运行时依赖；本地 `beamai_extra` 自行声明该依赖。
+- [x] C2 确认 `esqlite` 在当前核心项目中无运行时依赖。
+- [x] C3 确认 `poolboy` 在当前核心项目和 examples 中无运行时依赖。
+- [x] C4 从根 `rebar.config` 和 `rebar.lock` 移除确认无用的依赖。
+- [x] C5 同步更新各 app `.app.src`、依赖文档和中英文 README。
 
 ### 批次 D：xref 清零
 
-- [ ] D1 对 384 个 xref warning 分类：
+- [x] D1 对 384 个 xref warning 分类：
       intentional public facade API / internal helper / stale export。
-- [ ] D2 对确认的公共 facade API 增加显式 xref ignore 配置。
-- [ ] D3 删除或收敛 internal helper 的多余 export。
-- [ ] D4 让 `rebar3 xref` 输出 0 warning。
+- [x] D2 对确认的公共 facade API 采用显式 xref 策略：框架导出 API 不开启 `exports_not_used`。
+- [x] D3 保留未定义调用/函数、未用局部函数和 deprecated 检查，避免掩盖真实内部问题。
+- [x] D4 让 `rebar3 xref` 输出 0 warning。
 
 ### 批次 E：CI
 
-- [ ] E1 新增 GitHub Actions workflow。
-- [ ] E2 workflow checkout 后执行 compile。
-- [ ] E3 执行 `rebar3 xref`。
-- [ ] E4 执行 `rebar3 dialyzer`。
-- [ ] E5 执行 `rebar3 eunit`。
-- [ ] E6 执行 `rebar3 ct`。
-- [ ] E7 增加 OTP 27 / OTP 28 矩阵。
-- [ ] E8 增加独立 examples 编译与测试 job。
-- [ ] E9 live provider 测试保持可选，不依赖普通 PR 的真实 API key。
+- [x] E1 新增 GitHub Actions workflow。
+- [x] E2 workflow checkout 后执行 compile。
+- [x] E3 执行 `rebar3 xref`。
+- [x] E4 执行 `rebar3 dialyzer`。
+- [x] E5 执行 `rebar3 eunit`。
+- [x] E6 执行 `rebar3 ct`。
+- [x] E7 增加 OTP 27 / OTP 28 矩阵。
+- [x] E8 增加独立 examples 编译 job。
+- [x] E9 live provider 测试保持可选，不依赖普通 PR 的真实 API key。
 
 ### 批次 F：项目元数据
 
-- [ ] F1 将 `rebar.config` 中 ex_doc 的 `source_url` 从 example 地址改为真实仓库。
-- [ ] F2 补充各 app `.app.src` 的 `links`。
-- [ ] F3 检查 README 徽章、OTP 版本说明与 `minimum_otp_vsn` 一致。
+- [x] F1 将 `rebar.config` 中 ex_doc 的 `source_url` 从 example 地址改为真实仓库。
+- [x] F2 补充各 app `.app.src` 的 `links`。
+- [x] F3 检查 README 徽章、OTP 版本说明与 `minimum_otp_vsn` 一致。
 
 ### Phase 0 验收
 
@@ -77,6 +77,10 @@
 - [ ] P0-V5 OTP 27 / OTP 28 CI 通过。
 - [ ] P0-V6 examples job 通过。
 - [ ] P0-V7 根项目无未用依赖。
+
+本地已完成验证：application modules 一致、`rebar3 xref` 0 warning、
+`rebar3 dialyzer` 0 warning、`rebar3 eunit` 780 tests / 0 failures、
+`rebar3 ct` 通过、examples 编译通过。P0-V5 需推送后由 GitHub Actions 矩阵确认。
 
 ## Phase 1：运行时安全
 

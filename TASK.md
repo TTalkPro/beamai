@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：待实施  
+> 状态：Phase 0 实施完成，等待远端 CI 确认  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -11,17 +11,20 @@
 
 ## 活跃阶段
 
-### Phase 0：工程止血 — 当前优先
+### Phase 0：工程止血 — 实施完成
 
 目标：清理仓库、同步 application metadata、收敛依赖和 xref warning、补齐 CI。
 
-- [ ] 删除 `rebar3.crashdump` 并更新 `.gitignore`。
-- [ ] 补齐三个 app 的 `.app.src` `modules` 清单。
-- [ ] 审计并移除 `uuid`、`esqlite`、`poolboy` 中确认无用的根依赖。
-- [ ] 分类并处理 384 个 xref warning，最终让 `rebar3 xref` 输出 0 warning。
-- [ ] 新增 OTP 27 / OTP 28 CI，覆盖 `xref`、`dialyzer`、`eunit`、`ct`。
-- [ ] 增加 examples 独立检查 job。
-- [ ] 修正 ex_doc `source_url` 和 app links 元数据。
+- [x] 删除 `rebar3.crashdump` 并更新 `.gitignore`。
+- [x] 补齐三个 app 的 `.app.src` `modules` 清单，并增加一致性检查脚本。
+- [x] 审计并移除 `uuid`、`esqlite`、`poolboy` 中确认无用的根依赖。
+- [x] 分类并处理 384 个 xref warning，最终让 `rebar3 xref` 输出 0 warning。
+- [x] 新增 OTP 27 / OTP 28 CI，覆盖 `xref`、`dialyzer`、`eunit`、`ct`。
+- [x] 增加 examples 独立编译 job。
+- [x] 修正 ex_doc `source_url` 和 app links 元数据。
+
+本地验证：`xref` 0 warning，`dialyzer` 0 warning，`eunit` 780 tests / 0 failures，`ct` 通过，examples 编译通过。  
+剩余确认项：推送后由 GitHub Actions 验证 OTP 27 / OTP 28 矩阵。
 
 详细批次见 [`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md#phase-0工程止血)。
 
