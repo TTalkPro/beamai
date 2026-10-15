@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J / K / L 实施完成  
+> 状态：Phase 0 / Phase 1 实施完成；Phase 2 实施完成（远端 CI 待确认）  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -40,7 +40,7 @@
 本地验证：`rebar3 xref` 0 warning，`rebar3 dialyzer` 0 warning，
 `rebar3 eunit` 796 tests / 0 failures。
 
-### Phase 2：可观测性 — 批次 I / J / K / L 实施完成
+### Phase 2：可观测性 — 实施完成
 
 目标：建立轻量 telemetry dispatch 与默认日志后端，覆盖 LLM、Tool、Agent、
 HTTP Pool 关键路径。
@@ -50,8 +50,12 @@ HTTP Pool 关键路径。
 - [x] 增加 LLM request / retry / stream 埋点。
 - [x] 增加 Tool queue / start / finish / timeout / crash 埋点。
 - [x] 增加 Agent run / turn / interrupt / resume / state 埋点。
-- [ ] 增加 HTTP Pool acquire / reuse / failure / timeout / reap 埋点。
-- [ ] 确保默认日志不输出 prompt、tool result 全文和 API key。
+- [x] 增加 HTTP Pool acquire / reuse / failure / timeout / reap 埋点。
+- [x] 确保默认日志不输出 prompt、tool result 全文和 API key。
+
+本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
+`rebar3 xref` 0 warning，`rebar3 eunit` 817 tests / 0 failures。  
+HTTP Pool 变更提交：`04ef802`。
 
 ## 后续阶段
 
@@ -73,7 +77,7 @@ HTTP Pool 关键路径。
 - [ ] OTP 27 / OTP 28 CI 全绿。
 - [ ] 根项目无未用依赖。
 - [x] TLS 默认严格校验。
-- [ ] Agent 关键路径具备结构化 telemetry。
+- [x] Agent 关键路径具备结构化 telemetry。
 - [ ] 所有非 experimental chat provider 接入 contract test。
 - [ ] 存在可重复运行的性能基准与基线数据。
 

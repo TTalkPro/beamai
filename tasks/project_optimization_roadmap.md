@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J / K / L 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 实施完成；Phase 2 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -171,20 +171,24 @@ Tool 安全变更提交：`4b5a632`。
 
 ### 批次 M：HTTP Pool 埋点
 
-- [ ] M1 connection acquired 事件和等待时间。
-- [ ] M2 connection reused 事件。
-- [ ] M3 connection failed 事件。
-- [ ] M4 wait timeout 事件。
-- [ ] M5 idle reap 事件。
-- [ ] M6 保持 `beamai_http_pool:stats/1` 可用且信息不回退。
+- [x] M1 connection acquired 事件和等待时间。
+- [x] M2 connection reused 事件。
+- [x] M3 connection failed 事件。
+- [x] M4 wait timeout 事件。
+- [x] M5 idle reap 事件。
+- [x] M6 保持 `beamai_http_pool:stats/1` 可用且信息不回退。
+
+批次 M 本地验证：`beamai_http_pool_telemetry_tests` 4 tests / 0 failures，
+`dialyzer` 0 warning，`xref` 0 warning，`eunit` 817 tests / 0 failures，
+application modules 一致。
 
 ### Phase 2 验收
 
 - [ ] P2-V1 一次 Agent run 可通过事件还原完整时序。
-- [ ] P2-V2 telemetry handler crash 不影响 Agent。
-- [ ] P2-V3 默认日志不输出 prompt、tool result 全文和 API key。
-- [ ] P2-V4 高频事件可关闭。
-- [ ] P2-V5 eunit / dialyzer / xref 全绿。
+- [x] P2-V2 telemetry handler crash 不影响 Agent。
+- [x] P2-V3 默认日志不输出 prompt、tool result 全文和 API key。
+- [x] P2-V4 高频事件可关闭。
+- [x] P2-V5 eunit / dialyzer / xref 全绿。
 
 ## Phase 3：Provider contract test
 
