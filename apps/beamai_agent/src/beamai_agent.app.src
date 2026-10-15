@@ -18,6 +18,7 @@
         beamai_agent_pause,
         beamai_agent_tool_loop,
         beamai_agent_utils,
+        beamai_benchmark,
         beamai_agent_delegate,
         %% 暂停快照存储
         beamai_pause_store,
