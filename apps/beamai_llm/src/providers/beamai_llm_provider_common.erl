@@ -78,6 +78,8 @@
     finalize_anthropic_stream/1,
     accumulate_completions_event/2,
     finalize_completions_stream/2,
+    accumulate_responses_event/2,
+    finalize_responses_stream/1,
 
     %% 响应解析
     parse_tool_calls/1,
@@ -133,6 +135,7 @@ default_timeout(moonshot) -> 300000;   %% Kimi 思考模式耗时较长
 default_timeout(siliconflow) -> 300000;
 default_timeout(openrouter) -> 120000; %% 网关转发叠加上游耗时
 default_timeout(xai) -> 60000;
+default_timeout(openai_responses) -> 120000; %% 推理模型（o 系列 / gpt-5）单次耗时更长
 %% rerank 类 Provider（jina / cohere / voyage）走 60s 默认值
 default_timeout(_) -> 60000.
 
@@ -486,6 +489,139 @@ finalize_completions_stream(Acc, Parser) ->
         <<"usage">> => maps:get(usage_raw, Acc, #{})
     },
     Parser(Raw).
+
+%%====================================================================
+%% OpenAI Responses API 流式响应累加
+%%====================================================================
+
+%% @doc OpenAI Responses API 流式事件累加器
+%%
+%% Responses 流是带 `type' 的语义事件（response.created → output_item.added →
+%% output_text.delta… → output_item.done → response.completed）。两条线并行记录：
+%%   - `response.output_item.added / done'：按 output_index 存输出项（done 的是
+%%     完整项，覆盖 added 的空壳）
+%%   - `*.delta'：按 output_index 累加文本 / 推理 / 参数片段——只在流被截断、
+%%     没等到 done 时用来补全输出项
+%%   - `response.completed / incomplete / failed'：带完整 response 对象，finalize
+%%     直接用它（权威），上面的累加只是兜底
+%%   - `response.error' / `error'：记录错误，finalize 时返回 {error, ...}
+%%
+%% 此函数作为 beamai_llm_http_client:stream_request 的 accumulator 参数使用。
+-spec accumulate_responses_event(map(), map()) -> map().
+accumulate_responses_event(#{<<"type">> := <<"response.", _/binary>> = Type} = Event, Acc0) ->
+    Acc = ensure_responses_acc(Acc0),
+    case Type of
+        <<"response.created">> -> merge_responses_meta(Event, Acc);
+        <<"response.in_progress">> -> merge_responses_meta(Event, Acc);
+        <<"response.queued">> -> merge_responses_meta(Event, Acc);
+        <<"response.output_item.added">> -> put_responses_item(Event, Acc);
+        <<"response.output_item.done">> -> put_responses_item(Event, Acc);
+        <<"response.output_text.delta">> -> append_responses_delta(text, Event, Acc);
+        <<"response.reasoning_text.delta">> -> append_responses_delta(reasoning, Event, Acc);
+        <<"response.reasoning_summary_text.delta">> -> append_responses_delta(summary, Event, Acc);
+        <<"response.function_call_arguments.delta">> -> append_responses_delta(arguments, Event, Acc);
+        <<"response.completed">> -> set_responses_final(Event, Acc);
+        <<"response.incomplete">> -> set_responses_final(Event, Acc);
+        <<"response.failed">> -> set_responses_final(Event, Acc);
+        <<"response.error">> -> Acc#{error => maps:get(<<"error">>, Event, Event)};
+        _ -> Acc
+    end;
+accumulate_responses_event(#{<<"type">> := <<"error">>} = Event, Acc) ->
+    (ensure_responses_acc(Acc))#{error => maps:get(<<"error">>, Event, Event)};
+accumulate_responses_event(_, Acc) ->
+    Acc.
+
+%% @doc 将 Responses 流累加结果转为统一响应
+%%
+%% 优先用 response.completed 携带的完整 response；没等到时（连接中断、代理
+%% 截断）用累加的输出项与 delta 片段重建一个 Responses 对象再解析，status 标为
+%% incomplete 使 finish_reason 为 length_limit 而非误报 complete。
+-spec finalize_responses_stream(map()) -> {ok, map()} | {error, term()}.
+finalize_responses_stream(#{error := Error}) when Error =/= undefined ->
+    {error, {api_error, Error}};
+finalize_responses_stream(#{final := Final}) when is_map(Final) ->
+    beamai_llm_response_parser:from_openai_responses(Final);
+finalize_responses_stream(Acc0) ->
+    Acc = ensure_responses_acc(Acc0),
+    Items = maps:get(items, Acc),
+    Deltas = maps:get(deltas, Acc),
+    Indexes = lists:usort(maps:keys(Items) ++ maps:keys(Deltas)),
+    Output = [rebuild_responses_item(maps:get(I, Items, undefined), maps:get(I, Deltas, #{})) || I <- Indexes],
+    beamai_llm_response_parser:from_openai_responses(#{
+        <<"id">> => maps:get(id, Acc, <<>>),
+        <<"object">> => <<"response">>,
+        <<"model">> => maps:get(model, Acc, <<>>),
+        <<"status">> => <<"incomplete">>,
+        <<"incomplete_details">> => #{<<"reason">> => <<"stream_truncated">>},
+        <<"output">> => Output,
+        <<"usage">> => maps:get(usage, Acc, #{})
+    }).
+
+%% @private http client 的初始累加器没有本格式的字段，首个事件时补齐
+ensure_responses_acc(#{items := _} = Acc) -> Acc;
+ensure_responses_acc(Acc) ->
+    Acc#{items => #{}, deltas => #{}, final => undefined, error => undefined, usage => #{}}.
+
+merge_responses_meta(#{<<"response">> := Resp}, Acc) when is_map(Resp) ->
+    Acc#{id => first_nonempty(maps:get(<<"id">>, Resp, <<>>), maps:get(id, Acc, <<>>)),
+         model => first_nonempty(maps:get(<<"model">>, Resp, <<>>), maps:get(model, Acc, <<>>))};
+merge_responses_meta(_, Acc) ->
+    Acc.
+
+put_responses_item(#{<<"output_index">> := Index, <<"item">> := Item}, Acc)
+  when is_integer(Index), is_map(Item) ->
+    Acc#{items => maps:put(Index, Item, maps:get(items, Acc))};
+put_responses_item(_, Acc) ->
+    Acc.
+
+append_responses_delta(Kind, #{<<"output_index">> := Index, <<"delta">> := Delta}, Acc)
+  when is_integer(Index), is_binary(Delta) ->
+    Deltas = maps:get(deltas, Acc),
+    ForItem = maps:get(Index, Deltas, #{}),
+    Prev = maps:get(Kind, ForItem, <<>>),
+    Acc#{deltas => Deltas#{Index => ForItem#{Kind => <<Prev/binary, Delta/binary>>}}};
+append_responses_delta(_, _, Acc) ->
+    Acc.
+
+set_responses_final(#{<<"response">> := Resp}, Acc) when is_map(Resp) ->
+    Acc#{final => Resp, usage => maps:get(<<"usage">>, Resp, #{})};
+set_responses_final(_, Acc) ->
+    Acc.
+
+%% @private 没等到 output_item.done 的项用 delta 片段补全
+rebuild_responses_item(undefined, Deltas) ->
+    case Deltas of
+        #{arguments := Args} ->
+            #{<<"type">> => <<"function_call">>, <<"call_id">> => <<>>, <<"name">> => <<>>,
+              <<"arguments">> => Args};
+        _ ->
+            #{<<"type">> => <<"message">>, <<"role">> => <<"assistant">>,
+              <<"content">> => [#{<<"type">> => <<"output_text">>,
+                                  <<"text">> => maps:get(text, Deltas, <<>>)}]}
+    end;
+rebuild_responses_item(#{<<"type">> := <<"message">>} = Item, Deltas) ->
+    case {maps:get(<<"content">>, Item, []), maps:get(text, Deltas, <<>>)} of
+        {Content, _} when is_list(Content), Content =/= [] -> Item;
+        {_, Text} -> Item#{<<"content">> => [#{<<"type">> => <<"output_text">>, <<"text">> => Text}]}
+    end;
+rebuild_responses_item(#{<<"type">> := <<"function_call">>} = Item, Deltas) ->
+    case maps:get(<<"arguments">>, Item, <<>>) of
+        Args when is_binary(Args), Args =/= <<>> -> Item;
+        _ -> Item#{<<"arguments">> => maps:get(arguments, Deltas, <<>>)}
+    end;
+rebuild_responses_item(#{<<"type">> := <<"reasoning">>} = Item, Deltas) ->
+    Item1 = case {maps:get(<<"content">>, Item, []), maps:get(reasoning, Deltas, <<>>)} of
+        {Content, _} when is_list(Content), Content =/= [] -> Item;
+        {_, <<>>} -> Item;
+        {_, Text} -> Item#{<<"content">> => [#{<<"type">> => <<"reasoning_text">>, <<"text">> => Text}]}
+    end,
+    case {maps:get(<<"summary">>, Item1, []), maps:get(summary, Deltas, <<>>)} of
+        {Summary, _} when is_list(Summary), Summary =/= [] -> Item1;
+        {_, <<>>} -> Item1;
+        {_, S} -> Item1#{<<"summary">> => [#{<<"type">> => <<"summary_text">>, <<"text">> => S}]}
+    end;
+rebuild_responses_item(Item, _Deltas) ->
+    Item.
 
 %%====================================================================
 %% Anthropic 流式响应累加

@@ -3,8 +3,8 @@
 %% @doc Chat Completion Service
 %%
 %% Provides LLM chat completion with:
-%% - Multi-provider routing (openai, anthropic, zhipu, ollama, deepseek, dashscope,
-%%   xai, moonshot/kimi, openrouter, siliconflow)
+%% - Multi-provider routing (openai, openai_responses, anthropic, zhipu, ollama,
+%%   deepseek, dashscope, xai, moonshot/kimi, openrouter, siliconflow)
 %% - Request building (messages, tools, tool_choice, stream)
 %% - Retry with backoff (see 重试 below)
 %% - Streaming support with token callbacks
@@ -40,8 +40,8 @@
 -define(MODEL_LEVEL_OPTS, [max_retries, retry_delay, on_retry, callback_meta,
                            on_llm_new_token]).
 
--type provider() :: openai | anthropic | ollama | zhipu | dashscope | deepseek |
-                    xai | moonshot | kimi | openrouter | siliconflow |
+-type provider() :: openai | openai_responses | anthropic | ollama | zhipu | dashscope |
+                    deepseek | xai | moonshot | kimi | openrouter | siliconflow |
                     mock | {custom, module()}.
 -type config() :: #{
     provider := provider(),
@@ -126,6 +126,7 @@ stream_chat(Config, Messages, Callback, Opts) ->
 %%====================================================================
 
 provider_module(openai) -> beamai_llm_provider_openai;
+provider_module(openai_responses) -> beamai_llm_provider_openai_responses;  %% OpenAI Responses API（/v1/responses）
 provider_module(anthropic) -> beamai_llm_provider_anthropic;
 provider_module(ollama) -> beamai_llm_provider_ollama;
 provider_module(zhipu) -> beamai_llm_provider_zhipu;
@@ -181,6 +182,13 @@ invoke_new_token_callback(_, _, _) -> ok.
 
 extract_token_from_event(#{<<"choices">> := [#{<<"delta">> := Delta} | _]}) ->
     maps:get(<<"content">>, Delta, <<>>);
+%% OpenAI Responses API：只有 output_text.delta 是正文 token；reasoning_text.delta /
+%% function_call_arguments.delta 等同样带 delta 字段，但不是要投递给用户的文本
+extract_token_from_event(#{<<"type">> := <<"response.output_text.delta">>, <<"delta">> := D})
+  when is_binary(D) ->
+    D;
+extract_token_from_event(#{<<"type">> := <<"response.", _/binary>>}) ->
+    <<>>;
 extract_token_from_event(#{<<"delta">> := #{<<"text">> := Text}}) ->
     Text;
 extract_token_from_event(#{<<"response">> := Response}) when is_binary(Response) ->

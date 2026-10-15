@@ -9,6 +9,7 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 | Provider | Module | API Mode | Description |
 |----------|--------|----------|-------------|
 | OpenAI | `beamai_llm_provider_openai` | OpenAI | GPT-4, GPT-3.5-turbo, etc. |
+| OpenAI Responses | `beamai_llm_provider_openai_responses` | OpenAI Responses | `/v1/responses`: reasoning item replay, flat tools, built-in tool pass-through; works with Responses gateways (LiteGate, OpenRouter) |
 | Anthropic | `beamai_llm_provider_anthropic` | Anthropic | Claude 3, Claude 2, etc. |
 | DeepSeek | `beamai_llm_provider_deepseek` | OpenAI Compatible | deepseek-chat, deepseek-reasoner |
 | Ollama | `beamai_llm_provider_ollama` | OpenAI Compatible | Local model deployment |
@@ -19,7 +20,7 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 | OpenRouter | `beamai_llm_provider_openrouter` | OpenAI Compatible | Multi-vendor gateway (model fallback, provider routing, cost) |
 | SiliconFlow | `beamai_llm_provider_siliconflow` | OpenAI Compatible | Hosted models (enable_thinking) |
 
-> `provider` values: `openai | anthropic | deepseek | ollama | zhipu | dashscope | xai | moonshot | kimi | openrouter | siliconflow` (`kimi` is an alias of `moonshot`).
+> `provider` values: `openai | openai_responses | anthropic | deepseek | ollama | zhipu | dashscope | xai | moonshot | kimi | openrouter | siliconflow` (`kimi` is an alias of `moonshot`).
 
 ### Embedding Providers
 
@@ -42,6 +43,15 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 | Cohere | `beamai_rerank_provider_cohere` | rerank-v3.5 | 1000 |
 | Voyage AI | `beamai_rerank_provider_voyage` | rerank-2.5 | 1000 |
 | Mock (testing) | `beamai_rerank_provider_mock` | mock-rerank | 10000 |
+
+### Decision Providers (TypeSafe System One protocol)
+
+| Provider | Module | Default Site / Model | Notes |
+|----------|--------|----------------------|-------|
+| TypeSafe | `beamai_decision_provider_typesafe` | api.typesafe.ai / jev-latest | Origin of the System One protocol, api_key required |
+| Alibaba Cloud DashScope | `beamai_decision_provider_dashscope` | token-plan.cn-beijing.maas.aliyuncs.com / decision-model-preview | Workspace keys: build base_url with `workspace_base_url/1` |
+| Generic System One | `beamai_decision_provider_systemone` | none (`base_url` / `model` required) | LiteGate gateway, local Laya / vLLM; api_key optional |
+| Mock (testing) | `beamai_decision_provider_mock` | mock-decision | Deterministic answers, override per question via `answers` |
 
 ## Module Overview
 
@@ -423,6 +433,71 @@ Indices = beamai_rerank:indices(Results).
 - `document` is **backfilled by index** when the provider does not echo the text back
 - Exceeding a provider's document limit returns `{error, {too_many_documents, Count, Max}}` — reranking compares globally and cannot be batched like embeddings, so pre-filtering is the caller's call
 - Use `beamai_rerank:rerank_full/3,4` when you need usage stats or the raw response
+
+### OpenAI Responses API
+
+The `openai_responses` provider talks to `/v1/responses`. Unified messages, tools and responses are
+identical to every other provider; only the wire protocol differs: system messages become
+`instructions`, other messages expand into `input` items, and tools are flat function definitions.
+
+```erlang
+Config = beamai_chat_model:create(openai_responses, #{
+    api_key => <<"sk-...">>,
+    model => <<"gpt-5">>,
+    %% base_url => <<"http://127.0.0.1:4000">>,   %% any Responses-compatible gateway
+    reasoning_effort => <<"medium">>,             %% -> reasoning.effort
+    max_output_tokens => 2000
+}),
+{ok, Resp} = beamai_chat_model:chat(Config, Messages, #{
+    tools => [WeatherTool],                       %% flattened; #{<<"type">> => <<"web_search">>} passes through
+    response_format => #{type => json_schema, json_schema => #{name => <<"out">>, schema => Schema, strict => true}},
+    previous_response_id => PrevId                %% per-call options override Config
+}),
+beamai_chat_response:reasoning_content(Resp),
+beamai_chat_response:usage(Resp).                 %% details: cached_tokens / reasoning_tokens
+```
+
+- Reasoning output items are kept in `content_blocks` (with `id` / `encrypted_content`);
+  `beamai_message:from_response/1` preserves them and the adapter replays them on the next turn
+- `tool_calls` ids are the `call_id`, which is what `function_call_output` needs
+- `temperature` / `max_output_tokens` are not sent unless configured (reasoning models reject
+  temperature; reasoning tokens count against the output limit)
+- Streaming accumulates semantic events; `response.completed` is authoritative. A truncated stream
+  is rebuilt from received items and deltas with `finish_reason = length_limit`
+- `on_llm_new_token` only delivers `output_text.delta`
+
+### Structured Decisions (TypeSafe System One)
+
+A decision model does not generate text: given a `state` (the message to judge plus context) and a
+set of questions with ids, it answers each one with probabilities in tens of milliseconds. Use it
+for agent pre-routing (which rule / how strong a model), HITL gating, content grading. Question
+types: `choice`, `noul` (yes / no) and `score` (ordered levels).
+
+```erlang
+Config = beamai_decision:create(systemone, #{
+    base_url => <<"http://127.0.0.1:4000/v1">>, api_key => <<"lgk-...">>,
+    model => <<"decision-model-preview">>
+}),
+Questions = #{
+    department => beamai_decision:choice_question(<<"Which department should handle the `message`?">>,
+                      #{billing => <<"payment, invoice, refund">>, tech => <<"bugs, outages">>}),
+    escalate   => beamai_decision:noul_question(<<"Should this be escalated to a human?">>),
+    severity   => beamai_decision:score_question(<<"How severe is the issue?">>,
+                      [<<"trivial">>, <<"minor">>, <<"major">>, <<"critical">>])
+},
+{ok, Resp} = beamai_decision:decide(Config, <<"Charged twice, refund now!">>, Questions),
+{<<"billing">>, 1.0} = beamai_decision:choice(Resp, department),
+0.94 = beamai_decision:probability(Resp, escalate),
+2.81 = beamai_decision:score(Resp, severity),
+
+{ok, #{intent := Intent}} = beamai_decision:classify(Config, Text, [<<"tests">>, <<"ui">>], #{min_confidence => 0.6}),
+{ok, P} = beamai_decision:judge(Config, Text, <<"Does the `message` ask for a destructive action?">>),
+{ok, #{level := Level}} = beamai_decision:rate(Config, Text, <<"How much reasoning is needed?">>,
+                                               [<<"low">>, <<"medium">>, <<"high">>]).
+```
+
+`classify` adds a "none of these" option automatically (`intent = none` when chosen or below the
+threshold) and numbers options `i1..iN` internally. Question shapes are validated before any request.
 
 ### Anthropic Prompt Caching (cache_control)
 

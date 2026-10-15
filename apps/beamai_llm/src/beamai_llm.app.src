@@ -26,6 +26,7 @@
         beamai_rerank_provider_behaviour,
         %% Providers - Chat
         beamai_llm_provider_openai,
+        beamai_llm_provider_openai_responses,
         beamai_llm_provider_anthropic,
         beamai_llm_provider_deepseek,
         beamai_llm_provider_ollama,
@@ -52,6 +53,14 @@
         beamai_rerank_provider_cohere,
         beamai_rerank_provider_voyage,
         beamai_rerank_provider_mock,
+        %% Providers - Decision (TypeSafe System One)
+        beamai_decision,
+        beamai_decision_provider_behaviour,
+        beamai_decision_common,
+        beamai_decision_provider_systemone,
+        beamai_decision_provider_typesafe,
+        beamai_decision_provider_dashscope,
+        beamai_decision_provider_mock,
         %% Note: beamai_chat_response 已移至 beamai_core
         %% Adapters
         beamai_llm_message_adapter,

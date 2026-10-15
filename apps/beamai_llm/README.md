@@ -9,6 +9,7 @@
 | 提供商 | 模块 | API 模式 | 说明 |
 |--------|------|----------|------|
 | OpenAI | `beamai_llm_provider_openai` | OpenAI | GPT-4, GPT-3.5-turbo 等 |
+| OpenAI Responses | `beamai_llm_provider_openai_responses` | OpenAI Responses | `/v1/responses` 新接口：推理项回放、扁平工具、内置工具透传；兼容 LiteGate / OpenRouter 等 Responses 网关 |
 | Anthropic | `beamai_llm_provider_anthropic` | Anthropic | Claude 3, Claude 2 等 |
 | DeepSeek | `beamai_llm_provider_deepseek` | OpenAI 兼容 | deepseek-chat, deepseek-reasoner |
 | Ollama | `beamai_llm_provider_ollama` | OpenAI 兼容 | 本地模型部署 |
@@ -19,7 +20,7 @@
 | OpenRouter | `beamai_llm_provider_openrouter` | OpenAI 兼容 | 多厂商网关（模型回退、供应商路由、成本统计） |
 | SiliconFlow | `beamai_llm_provider_siliconflow` | OpenAI 兼容 | 硅基流动托管模型（enable_thinking） |
 
-> `provider` 取值：`openai | anthropic | deepseek | ollama | zhipu | dashscope | xai | moonshot | kimi | openrouter | siliconflow`（`kimi` 为 `moonshot` 的别名）。
+> `provider` 取值：`openai | openai_responses | anthropic | deepseek | ollama | zhipu | dashscope | xai | moonshot | kimi | openrouter | siliconflow`（`kimi` 为 `moonshot` 的别名）。
 
 ### 向量化（Embedding）提供商
 
@@ -42,6 +43,15 @@
 | Cohere | `beamai_rerank_provider_cohere` | rerank-v3.5 | 1000 |
 | Voyage AI | `beamai_rerank_provider_voyage` | rerank-2.5 | 1000 |
 | Mock（测试） | `beamai_rerank_provider_mock` | mock-rerank | 10000 |
+
+### 结构化决策（Decision，TypeSafe System One 协议）提供商
+
+| 提供商 | 模块 | 默认站点 / 模型 | 说明 |
+|--------|------|----------------|------|
+| TypeSafe | `beamai_decision_provider_typesafe` | api.typesafe.ai / jev-latest | System One 协议出处，需 api_key |
+| 阿里云百炼 | `beamai_decision_provider_dashscope` | token-plan.cn-beijing.maas.aliyuncs.com / decision-model-preview | 工作空间 Key 用 `workspace_base_url/1` 生成 base_url |
+| 通用 System One | `beamai_decision_provider_systemone` | 无（`base_url` / `model` 必填） | LiteGate 网关、本地 Laya / vLLM 等兼容服务，api_key 可选 |
+| Mock（测试） | `beamai_decision_provider_mock` | mock-decision | 确定性回答，`answers` 可逐题覆盖 |
 
 ## 分层：provider 声明底层信息，chat_model 干重活
 
@@ -107,6 +117,13 @@ provider 的**非 chat 扩展 API**（deepseek FIM、zhipu 异步）也保留各
 - **beamai_embedding** - 向量化统一入口（多 Provider 路由、自动分批、重试、向量工具）
 - **beamai_embedding_provider_behaviour** - 向量化提供商行为定义
 - **beamai_embedding_common** - 向量化公共函数（请求体构建、响应解析、分批合并）
+
+### 决策（System One）
+
+- **beamai_decision** - 结构化决策门面（decide / classify / judge / rate、题目构造与回答访问）
+- **beamai_decision_provider_behaviour** - 决策 Provider 行为定义
+- **beamai_decision_common** - System One 请求构建 / 响应解析 / HTTP 调用
+- **beamai_decision_provider_typesafe / dashscope / systemone / mock** - 各 Provider
 
 ### 重排序
 
@@ -463,6 +480,80 @@ Indices = beamai_rerank:indices(Results).
 - 服务端未回传原文时按 `index` **自动回填** `document`，无需再对着原列表取值
 - 文档条数超过 Provider 上限时返回 `{error, {too_many_documents, Count, Max}}`：重排序是全局比较，不能像向量化那样分批，是否先粗筛由上层决定
 - 需要 usage / 原始响应时用 `beamai_rerank:rerank_full/3,4`
+
+### OpenAI Responses API
+
+`openai_responses` provider 走 `/v1/responses`，统一消息 / 工具 / 响应结构与其他 provider 完全一致，
+只是线上协议不同：system 消息变成 `instructions`，其余消息展开为 `input` 项，工具是扁平函数定义。
+
+```erlang
+Config = beamai_chat_model:create(openai_responses, #{
+    api_key => <<"sk-...">>,
+    model => <<"gpt-5">>,
+    %% 走 Responses 网关时改 base_url 即可（如 LiteGate）
+    %% base_url => <<"http://127.0.0.1:4000">>,
+    reasoning_effort => <<"medium">>,   %% → reasoning.effort
+    max_output_tokens => 2000
+}),
+
+{ok, Resp} = beamai_chat_model:chat(Config, Messages, #{
+    tools => [WeatherTool],              %% 扁平化；#{<<"type">> => <<"web_search">>} 等内置工具原样透传
+    response_format => #{type => json_schema, json_schema => #{name => <<"out">>, schema => Schema, strict => true}},
+    previous_response_id => PrevId       %% 本次调用参数覆盖 Config 同名项
+}),
+beamai_chat_response:reasoning_content(Resp),   %% reasoning 项文本
+beamai_chat_response:usage(Resp).               %% details 含 cached_tokens / reasoning_tokens
+```
+
+要点：
+
+- **推理项回放**：响应的 `reasoning` 输出项进 `content_blocks`（含 `id` / `encrypted_content`），
+  `beamai_message:from_response/1` 会保留它，多轮工具调用时适配器原样拼回，推理上下文不丢
+- **tool_calls 的 id 是 `call_id`**，回传 `function_call_output` 用的正是它
+- **不默认发 temperature / max_output_tokens**：推理模型拒绝 temperature，推理 token 又计入输出上限
+- 流式：语义事件（`response.output_text.delta` 等）累加，`response.completed` 携带的完整对象为准；
+  流被截断时用已收到的项与 delta 片段重建，`finish_reason` 为 `length_limit`
+- `on_llm_new_token` 只投递 `output_text.delta`，推理 / 参数片段不投
+
+### 结构化决策（TypeSafe System One）
+
+决策模型不生成文本：给它一段 `state`（待判断的消息及上下文）和几道带 id 的题，几十毫秒内返回
+每道题**带概率**的结构化回答。适合 agent 前置路由（这轮走哪条规则 / 用多强的模型）、HITL 判定、
+内容分级等。三种题型：`choice`（多选一）、`noul`（是 / 否）、`score`（有序等级打分）。
+
+```erlang
+%% 经 LiteGate 网关问百炼的 decision-model-preview
+Config = beamai_decision:create(systemone, #{
+    base_url => <<"http://127.0.0.1:4000/v1">>,
+    api_key => <<"lgk-...">>,
+    model => <<"decision-model-preview">>
+}),
+
+Questions = #{
+    department => beamai_decision:choice_question(<<"该由哪个部门处理 `message`？"/utf8>>,
+                      #{billing => <<"付款、账单、退款"/utf8>>, tech => <<"故障、报错"/utf8>>}),
+    escalate   => beamai_decision:noul_question(<<"是否需要转人工？"/utf8>>),
+    severity   => beamai_decision:score_question(<<"问题多严重？"/utf8>>,
+                      [<<"轻微"/utf8>>, <<"一般"/utf8>>, <<"严重"/utf8>>, <<"紧急"/utf8>>])
+},
+{ok, Resp} = beamai_decision:decide(Config, <<"账单扣了两次，要退款！"/utf8>>, Questions),
+{<<"billing">>, 1.0} = beamai_decision:choice(Resp, department),
+0.94 = beamai_decision:probability(Resp, escalate),
+2.81 = beamai_decision:score(Resp, severity),          %% 0 ~ N-1 的连续值
+beamai_decision:probabilities(Resp, severity),         %% #{<<"0">> => 0.01, ..., <<"3">> => 0.85}
+
+%% 决策支持便捷接口
+{ok, #{intent := Intent, confidence := C}} =
+    beamai_decision:classify(Config, Text, [<<"写测试"/utf8>>, <<"改界面"/utf8>>], #{min_confidence => 0.6}),
+{ok, P} = beamai_decision:judge(Config, Text, <<"这条 `message` 是否包含危险的破坏性操作？"/utf8>>),
+{ok, #{level := Level}} = beamai_decision:rate(Config, Text, <<"需要多少推理量？"/utf8>>,
+                                               [<<"low">>, <<"medium">>, <<"high">>]).
+```
+
+- `classify` 自动追加「都不是」选项，选中它或置信度低于阈值时 `intent` 为 `none`；
+  选项内部用 ASCII 的 `i1..iN` 编号，不依赖模型回显中文意图名
+- `state` 可给 map，携带 `previous_message_kind` 之类的上下文字段供题干引用
+- 题目形状在发请求前校验（`{error, {invalid_question, Id, Reason}}`），重试策略与对话层相同
 
 ### Anthropic Prompt 缓存（cache_control）
 

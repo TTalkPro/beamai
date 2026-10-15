@@ -74,13 +74,17 @@
     metadata := map()
 }.
 
--type provider() :: openai | anthropic | deepseek | zhipu | ollama | dashscope |
-                    xai | moonshot | openrouter | siliconflow | unknown.
+-type provider() :: openai | openai_responses | anthropic | deepseek | zhipu | ollama |
+                    dashscope | xai | moonshot | openrouter | siliconflow | unknown.
 
 -type content_block() ::
     #{type := text, text := binary()} |
     #{type := thinking, thinking := binary(), signature := binary()} |
     #{type := redacted_thinking, data := binary()} |
+    %% OpenAI Responses API 的 reasoning 输出项：回放历史时适配器按 id /
+    %% encrypted_content 原样拼回，使多轮工具调用保留推理上下文
+    #{type := reasoning, id := binary(), text := binary(), summary := [binary()],
+      encrypted_content := binary() | null} |
     #{type := tool_use, id := binary(), name := binary(), input := map()}.
 
 -type tool_call() :: #{

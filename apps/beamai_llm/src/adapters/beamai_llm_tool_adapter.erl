@@ -9,6 +9,7 @@
 
 %% API
 -export([to_openai/1, from_openai/1]).
+-export([to_openai_responses/1]).
 -export([to_anthropic/1, from_anthropic/1]).
 -export([to_provider/2, from_provider/2]).
 
@@ -99,6 +100,46 @@ from_openai_tool(Func) when is_map(Func) ->
         description => maps:get(<<"description">>, Func, <<>>),
         parameters => maps:get(<<"parameters">>, Func, default_params())
     }.
+
+%%====================================================================
+%% OpenAI Responses API 格式转换
+%%====================================================================
+
+%% @doc 转换为 OpenAI Responses API 的工具格式
+%%
+%% Responses API 的函数工具是**扁平**的：`{type: function, name, description,
+%% parameters, strict}'，没有 Chat Completions 的 `function' 嵌套。接受：
+%%   - 统一格式 / atom 键的 Chat 格式（经 to_openai_tool/1 归一后压平）
+%%   - binary 键的 Chat 格式（ChatClient 的 tool registry 产出）→ 压平
+%%   - 其他 binary 键且带 type 的 map（已是 Responses 格式，或 web_search 等
+%%     内置工具）→ 原样透传
+-spec to_openai_responses([tool() | tool_spec() | map()]) -> [map()].
+to_openai_responses(Tools) ->
+    [to_responses_tool(T) || T <- Tools].
+
+to_responses_tool(#{<<"type">> := <<"function">>, <<"function">> := Func}) when is_map(Func) ->
+    flatten_function(Func);
+to_responses_tool(#{<<"type">> := _} = Native) ->
+    Native;
+to_responses_tool(#{type := function, function := Func} = Tool) when is_map(Func) ->
+    #{<<"function">> := F} = to_openai_tool(Tool),
+    flatten_function(maybe_strict(F, Func));
+to_responses_tool(Tool) when is_map(Tool) ->
+    #{<<"function">> := F} = to_openai_tool(Tool),
+    flatten_function(maybe_strict(F, Tool)).
+
+maybe_strict(F, #{strict := Strict}) when is_boolean(Strict) -> F#{<<"strict">> => Strict};
+maybe_strict(F, _) -> F.
+
+flatten_function(Func) ->
+    Base = #{<<"type">> => <<"function">>,
+             <<"name">> => maps:get(<<"name">>, Func, <<>>),
+             <<"description">> => maps:get(<<"description">>, Func, <<>>),
+             <<"parameters">> => maps:get(<<"parameters">>, Func, default_params())},
+    case maps:get(<<"strict">>, Func, undefined) of
+        Strict when is_boolean(Strict) -> Base#{<<"strict">> => Strict};
+        _ -> Base
+    end.
 
 %%====================================================================
 %% Anthropic 格式转换

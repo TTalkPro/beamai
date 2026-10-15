@@ -10,12 +10,12 @@
 -module(beamai_llm_response_parser).
 
 %% 构造函数
--export([from_provider/2, from_openai/1, from_anthropic/1]).
+-export([from_provider/2, from_openai/1, from_anthropic/1, from_openai_responses/1]).
 -export([from_ollama/1, from_dashscope/1, from_zhipu/1, from_deepseek/1, from_deepseek_fim/1]).
 -export([from_xai/1, from_moonshot/1, from_openrouter/1, from_siliconflow/1]).
 
 %% HTTP Client 解析器（可直接传给 beamai_llm_http_client:request/5）
--export([parser_openai/0, parser_anthropic/0, parser/1]).
+-export([parser_openai/0, parser_anthropic/0, parser/1, parser_openai_responses/0]).
 -export([parser_ollama/0, parser_dashscope/0, parser_zhipu/0, parser_deepseek/0, parser_deepseek_fim/0]).
 -export([parser_xai/0, parser_moonshot/0, parser_openrouter/0, parser_siliconflow/0]).
 
@@ -29,6 +29,11 @@
 parser_openai() ->
     fun from_openai/1.
 
+%% @doc 返回 OpenAI Responses API 格式的解析器函数
+-spec parser_openai_responses() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
+parser_openai_responses() ->
+    fun from_openai_responses/1.
+
 %% @doc 返回 Anthropic 格式的解析器函数
 -spec parser_anthropic() -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser_anthropic() ->
@@ -37,6 +42,7 @@ parser_anthropic() ->
 %% @doc 返回指定 Provider 的解析器函数
 -spec parser(beamai_chat_response:provider()) -> fun((map()) -> {ok, beamai_chat_response:response()} | {error, term()}).
 parser(openai) -> parser_openai();
+parser(openai_responses) -> parser_openai_responses();
 parser(anthropic) -> parser_anthropic();
 parser(deepseek) -> parser_deepseek();
 parser(zhipu) -> parser_zhipu();
@@ -100,6 +106,7 @@ parser_siliconflow() ->
 %% @doc 从指定 Provider 的原始响应创建统一响应
 -spec from_provider(map(), beamai_chat_response:provider()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_provider(Raw, openai) -> from_openai(Raw);
+from_provider(Raw, openai_responses) -> from_openai_responses(Raw);
 from_provider(Raw, anthropic) -> from_anthropic(Raw);
 from_provider(Raw, deepseek) -> from_deepseek(Raw); % DeepSeek 使用 OpenAI 格式 + reasoning_content
 from_provider(Raw, zhipu) -> from_zhipu(Raw);      % 智谱使用 OpenAI 格式 + reasoning_content
@@ -140,6 +147,58 @@ from_openai(#{<<"choices">> := [Choice | _]} = Raw) ->
 from_openai(#{<<"error">> := Error}) ->
     {error, {api_error, Error}};
 from_openai(Raw) ->
+    {error, {invalid_response, Raw}}.
+
+%% @doc 从 OpenAI Responses API 响应创建
+%%
+%% Responses 对象的 `output' 是有序输出项列表，逐类归一：
+%%   - message（output_text 部件）→ content（多项拼接）/ text 内容块；
+%%     refusal 部件记入 metadata.refusal
+%%   - function_call → tool_calls（id 取 call_id，回传工具结果时用它）/ tool_use 块
+%%   - reasoning → reasoning 内容块（保留 id / encrypted_content 供多轮回放）
+%%     + metadata.reasoning_content（reasoning_text 与 summary_text 拼接）
+%% finish_reason 由 `status' + `incomplete_details.reason' 推出；usage 的
+%% cached_tokens / reasoning_tokens 进 details。
+-spec from_openai_responses(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
+from_openai_responses(#{<<"error">> := Error}) when is_map(Error) ->
+    {error, {api_error, Error}};
+from_openai_responses(#{<<"output">> := Output} = Raw) when is_list(Output) ->
+    Items = [I || I <- Output, is_map(I)],
+    Texts = [T || #{<<"type">> := <<"message">>} = M <- Items,
+                  #{<<"type">> := <<"output_text">>, <<"text">> := T} <- list_or_empty(maps:get(<<"content">>, M, [])),
+                  is_binary(T)],
+    Refusals = [R || #{<<"type">> := <<"message">>} = M <- Items,
+                     #{<<"type">> := <<"refusal">>, <<"refusal">> := R} <- list_or_empty(maps:get(<<"content">>, M, [])),
+                     is_binary(R)],
+    ToolCalls = [parse_function_call_responses(I) || #{<<"type">> := <<"function_call">>} = I <- Items],
+    Reasoning = reasoning_text_responses(Items),
+    Status = maps:get(<<"status">>, Raw, <<"completed">>),
+    Metadata0 = #{
+        object => maps:get(<<"object">>, Raw, undefined),
+        created_at => maps:get(<<"created_at">>, Raw, undefined),
+        status => Status,
+        incomplete_details => maps:get(<<"incomplete_details">>, Raw, null),
+        previous_response_id => maps:get(<<"previous_response_id">>, Raw, null),
+        reasoning_content => Reasoning
+    },
+    Metadata = case Refusals of
+        [] -> Metadata0;
+        _ -> Metadata0#{refusal => iolist_to_binary(Refusals)}
+    end,
+    {ok, beamai_chat_response:new(#{
+        id => maps:get(<<"id">>, Raw, <<>>),
+        model => maps:get(<<"model">>, Raw, <<>>),
+        provider => openai_responses,
+        content => case Texts of [] -> null; _ -> iolist_to_binary(Texts) end,
+        content_blocks => lists:append([content_blocks_responses(I) || I <- Items]),
+        tool_calls => ToolCalls,
+        finish_reason => finish_reason_responses(Status, maps:get(<<"incomplete_details">>, Raw, null),
+                                                 ToolCalls, Texts, Refusals),
+        usage => parse_usage_responses(maps:get(<<"usage">>, Raw, #{})),
+        raw => Raw,
+        metadata => Metadata
+    })};
+from_openai_responses(Raw) ->
     {error, {invalid_response, Raw}}.
 
 %% @doc 从 Anthropic 格式响应创建
@@ -436,6 +495,107 @@ build_content_blocks_openai(#{<<"tool_calls">> := ToolCalls}) when is_list(ToolC
     } || TC <- ToolCalls];
 build_content_blocks_openai(_) ->
     [].
+
+%%====================================================================
+%% OpenAI Responses API 内部函数
+%%====================================================================
+
+%% @private function_call 输出项 → 统一 tool_call（id 用 call_id：回传
+%% function_call_output 时要的正是它，而非输出项自身的 fc_ id）
+parse_function_call_responses(Item) ->
+    RawArgs = case maps:get(<<"arguments">>, Item, <<"{}">>) of
+        A when is_binary(A), A =/= <<>> -> A;
+        _ -> <<"{}">>
+    end,
+    #{
+        id => maps:get(<<"call_id">>, Item, maps:get(<<"id">>, Item, <<>>)),
+        name => maps:get(<<"name">>, Item, <<>>),
+        arguments => safe_decode_json(RawArgs),
+        raw_arguments => RawArgs
+    }.
+
+%% @private 输出项 → 统一内容块（不认识的项——web_search_call 等——跳过）
+content_blocks_responses(#{<<"type">> := <<"message">>} = Item) ->
+    [#{type => text, text => T}
+     || #{<<"type">> := <<"output_text">>, <<"text">> := T} <- list_or_empty(maps:get(<<"content">>, Item, [])),
+        is_binary(T)];
+content_blocks_responses(#{<<"type">> := <<"function_call">>} = Item) ->
+    #{id := Id, name := Name, arguments := Args} = parse_function_call_responses(Item),
+    [#{type => tool_use, id => Id, name => Name, input => Args}];
+content_blocks_responses(#{<<"type">> := <<"reasoning">>} = Item) ->
+    [#{type => reasoning,
+       id => maps:get(<<"id">>, Item, <<>>),
+       text => iolist_to_binary(reasoning_texts(Item)),
+       summary => [S || #{<<"text">> := S} <- list_or_empty(maps:get(<<"summary">>, Item, [])), is_binary(S)],
+       encrypted_content => case maps:get(<<"encrypted_content">>, Item, null) of
+                                EC when is_binary(EC) -> EC;
+                                _ -> null
+                            end}];
+content_blocks_responses(_) ->
+    [].
+
+%% @private 所有 reasoning 项的文本拼接（reasoning_text 优先，没有则用 summary）
+reasoning_text_responses(Items) ->
+    Texts = lists:append([case reasoning_texts(I) of
+                              [] -> [S || #{<<"text">> := S} <- list_or_empty(maps:get(<<"summary">>, I, [])), is_binary(S)];
+                              Ts -> Ts
+                          end || #{<<"type">> := <<"reasoning">>} = I <- Items]),
+    case Texts of
+        [] -> null;
+        _ -> iolist_to_binary(Texts)
+    end.
+
+reasoning_texts(Item) ->
+    [T || #{<<"type">> := <<"reasoning_text">>, <<"text">> := T} <- list_or_empty(maps:get(<<"content">>, Item, [])),
+          is_binary(T)].
+
+%% @private status / incomplete_details → 统一 finish_reason
+finish_reason_responses(<<"completed">>, _, ToolCalls, Texts, Refusals) ->
+    case {ToolCalls, Texts, Refusals} of
+        {[_ | _], _, _} -> tool_use;
+        {[], [], [_ | _]} -> refusal;
+        _ -> complete
+    end;
+finish_reason_responses(<<"incomplete">>, #{<<"reason">> := <<"max_output_tokens">>}, _, _, _) ->
+    length_limit;
+finish_reason_responses(<<"incomplete">>, #{<<"reason">> := <<"content_filter">>}, _, _, _) ->
+    content_filtered;
+finish_reason_responses(<<"incomplete">>, _, _, _, _) ->
+    length_limit;
+finish_reason_responses(<<"failed">>, _, _, _, _) ->
+    error;
+finish_reason_responses(_, _, _, _, _) ->
+    unknown.
+
+%% @private Responses usage（input/output_tokens + 缓存与推理 token 明细）
+parse_usage_responses(Usage) when is_map(Usage) ->
+    InputTokens = int_or_zero(maps:get(<<"input_tokens">>, Usage, 0)),
+    OutputTokens = int_or_zero(maps:get(<<"output_tokens">>, Usage, 0)),
+    Base = #{
+        input_tokens => InputTokens,
+        output_tokens => OutputTokens,
+        total_tokens => int_or_zero(maps:get(<<"total_tokens">>, Usage, InputTokens + OutputTokens))
+    },
+    Details0 = case maps:get(<<"input_tokens_details">>, Usage, undefined) of
+        #{<<"cached_tokens">> := Cached} when is_integer(Cached) -> #{cached_tokens => Cached};
+        _ -> #{}
+    end,
+    Details = case maps:get(<<"output_tokens_details">>, Usage, undefined) of
+        #{<<"reasoning_tokens">> := R} when is_integer(R) -> Details0#{reasoning_tokens => R};
+        _ -> Details0
+    end,
+    case maps:size(Details) of
+        0 -> Base;
+        _ -> Base#{details => Details}
+    end;
+parse_usage_responses(_) ->
+    #{input_tokens => 0, output_tokens => 0, total_tokens => 0}.
+
+int_or_zero(N) when is_integer(N) -> N;
+int_or_zero(_) -> 0.
+
+list_or_empty(L) when is_list(L) -> L;
+list_or_empty(_) -> [].
 
 %% @private 解析 OpenAI usage
 parse_usage_openai(Usage, Raw) ->
