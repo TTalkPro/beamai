@@ -568,7 +568,11 @@ emit_state_change(#{callbacks := Callbacks} = Opts, OldCtx, NewCtx) ->
             ok;
         New ->
             beamai_agent_callbacks:invoke(on_state_change, [New, maps:get(meta, Opts, #{})],
-                                          Callbacks)
+                                          Callbacks),
+            beamai_telemetry:dispatch(
+              info, [beamai, agent, state, changed],
+              #{state_keys => maps:keys(New)},
+              maps:get(meta, Opts, #{}))
     end.
 
 %% @private 构建实时结果回调：每个工具完成即触发 on_tool_result（进度实时性优先，

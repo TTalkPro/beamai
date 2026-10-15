@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J / K 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J / K / L 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -159,12 +159,15 @@ Tool 安全变更提交：`4b5a632`。
 
 ### 批次 L：Agent 埋点
 
-- [ ] L1 `agent_run_started` / `agent_run_finished`。
-- [ ] L2 `agent_turn_started` / `agent_turn_finished`。
-- [ ] L3 `agent_interrupted`。
-- [ ] L4 `agent_resumed`。
-- [ ] L5 `agent_state_changed`。
-- [ ] L6 事件链路携带 request id、run id、conversation id。
+- [x] L1 `agent_run_started` / `agent_run_finished`。
+- [x] L2 `agent_turn_started` / `agent_turn_finished`。
+- [x] L3 `agent_interrupted`。
+- [x] L4 `agent_resumed`。
+- [x] L5 `agent_state_changed`。
+- [x] L6 事件链路携带 request id、run id、conversation id。
+
+批次 L 本地验证：`beamai_agent_telemetry_tests` 3 tests / 0 failures，
+`dialyzer` 0 warning，`xref` 0 warning，application modules 一致。
 
 ### 批次 M：HTTP Pool 埋点
 
