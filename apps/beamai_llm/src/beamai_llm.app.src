@@ -18,8 +18,10 @@
         beamai_embedding,
         beamai_rerank,
         beamai_llm_http_client,
+        beamai_llm_http_provider,
         beamai_llm_helper,
         beamai_llm_retry,
+        beamai_llm_error,
         %% Behaviour
         beamai_llm_provider_behaviour,
         beamai_embedding_provider_behaviour,
@@ -36,6 +38,7 @@
         beamai_llm_provider_moonshot,
         beamai_llm_provider_openrouter,
         beamai_llm_provider_siliconflow,
+        beamai_llm_provider_mock,
         beamai_llm_provider_common,
         %% Providers - Embedding
         beamai_embedding_common,
@@ -67,7 +70,12 @@
         beamai_llm_tool_adapter,
         beamai_llm_response_parser,
         beamai_llm_media,
-        beamai_llm_content
+        beamai_llm_content,
+        %% Output Parser
+        beamai_output_parser,
+        beamai_parser_instructions,
+        beamai_parser_json,
+        beamai_parser_retry
     ]},
     {licenses, ["Apache-2.0"]},
     {links, []}

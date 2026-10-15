@@ -5,6 +5,34 @@
     {mod, {beamai_agent_app, []}},
     {applications, [kernel, stdlib, beamai_core, beamai_llm]},
     {env, []},
-    {modules, [beamai_agent, beamai_agent_app, beamai_agent_sup, beamai_agent_state, beamai_agent_callbacks, beamai_agent_interrupt, beamai_agent_utils, beamai_agent_tool_loop, beamai_agent_delegate, beamai_subagent_manager]},
+    {modules, [
+        %% OTP 应用
+        beamai_agent_app,
+        beamai_agent_sup,
+        %% Agent 核心
+        beamai_agent,
+        beamai_agent_state,
+        beamai_agent_callbacks,
+        beamai_agent_interrupt,
+        beamai_agent_pause,
+        beamai_agent_tool_loop,
+        beamai_agent_utils,
+        beamai_agent_delegate,
+        %% 暂停快照存储
+        beamai_pause_store,
+        beamai_pause_store_ets,
+        beamai_pause_store_dets,
+        %% 分支 / 时间线
+        beamai_branch_store,
+        beamai_branch_store_ets,
+        beamai_timeline,
+        %% 工具执行
+        beamai_tool_calling_manager,
+        beamai_concurrent_tool_calling_manager,
+        beamai_sequential_tool_calling_manager,
+        beamai_tool_batch_worker,
+        %% 子 Agent
+        beamai_subagent_manager
+    ]},
     {licenses, ["Apache-2.0"]}
 ]}.

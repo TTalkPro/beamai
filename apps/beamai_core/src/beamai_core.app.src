@@ -45,8 +45,11 @@
         beamai_memory_provider,
         %% 会话记忆（Memory Filter 机制）
         beamai_chat_memory_ets,
+        beamai_chat_memory_dets,
         beamai_memory_provider_default,
         beamai_memory_filter,
+        %% 内置 Filter 组合
+        beamai_filters,
         %% HTTP 客户端
         beamai_http,
         beamai_http_gun,
@@ -55,8 +58,15 @@
         beamai_jsonrpc,
         %% SSE
         beamai_sse,
+        beamai_json_schema,
+        beamai_token_stream,
         %% 工具
         beamai_id,
+        beamai_tool_error,
+        beamai_tool_index,
+        beamai_tool_index_keyword,
+        beamai_tool_index_regex,
+        beamai_tool_search,
         beamai_utils
     ]},
     {licenses, ["Apache-2.0"]},
