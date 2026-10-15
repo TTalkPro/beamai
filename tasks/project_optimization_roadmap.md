@@ -292,11 +292,11 @@ consumer crash 隔离已覆盖。
 
 ### 批次 R：benchmark harness
 
-- [ ] R1 建立可重复运行的 benchmark 入口。
-- [ ] R2 使用 mock provider 避免外部网络抖动。
-- [ ] R3 输出文本表格基线。
-- [ ] R4 记录运行环境：OTP 版本、CPU、Erlang scheduler、时间戳。
-- [ ] R5 支持单场景运行，避免每次全量耗时过长。
+- [x] R1 建立可重复运行的 benchmark 入口。
+- [x] R2 使用 mock provider 避免外部网络抖动。
+- [x] R3 输出文本表格基线。
+- [x] R4 记录运行环境：OTP 版本、CPU、Erlang scheduler、时间戳。
+- [x] R5 支持单场景运行，避免每次全量耗时过长。
 
 ### 批次 S：核心场景
 

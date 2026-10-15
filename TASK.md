@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 实施完成（远端 CI 待确认）  
+> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 实施完成；Phase 5 批次 R 实施完成（远端 CI 待确认）  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -102,10 +102,29 @@ per-run sequence 稳定，consumer crash 不影响主流程，敏感 payload 不
 `rebar3 xref` 0 warning，`rebar3 eunit` 852 tests / 0 failures。  
 Runtime 接入提交：`c8baa0d`。
 
+### Phase 5：性能基准 — 批次 R 实施完成
+
+目标：建立离线、可重复的性能基准入口，先提供统一测量、统计和运行环境
+记录，后续批次再逐步接入核心场景。
+
+批次 R 已完成：
+
+- [x] 在 `beamai_agent` 提供 `beamai_benchmark` 稳定入口。
+- [x] 支持 `available/0`、`run/0`、`run/1`、`run/2` 和 `format/1`。
+- [x] 支持 iterations / warmup、p50 / p95 / max / mean 统计。
+- [x] 输出文本表格和 OTP、CPU topology、scheduler、时间戳环境信息。
+- [x] 当前离线场景先覆盖 `noop` 冒烟路径，不访问外部网络。
+
+批次 R 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
+`rebar3 xref` 0 warning，`rebar3 eunit` 855 tests / 0 failures。  
+设计文档：[`designs/performance_benchmark_harness.md`](designs/performance_benchmark_harness.md)。  
+Harness 提交：`65493aa`。
+
 ## 后续阶段
 
-1. **Phase 5：性能基准**  
-   用可重复 benchmark 覆盖 filter、tool dispatch、memory、stream 和 HTTP pool，再决定是否做性能重构。
+1. **Phase 5：性能基准 — 核心场景**  
+   继续用可重复 benchmark 覆盖 filter、tool dispatch、memory、stream、
+   HTTP pool 和 provider adapter，再决定是否做性能重构。
 
 ## 全局验收
 
@@ -118,7 +137,8 @@ Runtime 接入提交：`c8baa0d`。
 - [x] TLS 默认严格校验。
 - [x] Agent 关键路径具备结构化 telemetry。
 - [x] 所有非 experimental chat provider 接入 contract test。
-- [ ] 存在可重复运行的性能基准与基线数据。
+- [ ] 存在可重复运行的性能基准与基线数据。（harness 已完成，核心场景
+      与基线记录在批次 S 后补充）
 
 ## 已归档任务
 
