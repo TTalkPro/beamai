@@ -216,24 +216,33 @@ application modules 一致。Harness 覆盖 11 个内置 chat provider。
 
 ### 批次 O：内置 Provider 接入
 
-- [ ] O1 OpenAI Chat Completions。
-- [ ] O2 OpenAI Responses。
-- [ ] O3 Anthropic。
-- [ ] O4 DeepSeek。
-- [ ] O5 Zhipu。
-- [ ] O6 DashScope。
-- [ ] O7 Ollama。
-- [ ] O8 Moonshot。
-- [ ] O9 OpenRouter。
-- [ ] O10 SiliconFlow。
-- [ ] O11 xAI。
+- [x] O1 OpenAI Chat Completions。
+- [x] O2 OpenAI Responses。
+- [x] O3 Anthropic。
+- [x] O4 DeepSeek。
+- [x] O5 Zhipu。
+- [x] O6 DashScope。
+- [x] O7 Ollama。
+- [x] O8 Moonshot。
+- [x] O9 OpenRouter。
+- [x] O10 SiliconFlow。
+- [x] O11 xAI。
+
+批次 O 本地验证：新增
+`beamai_llm_contract_registration_tests`，以
+`beamai_chat_model:chat_provider_modules/0` 作为内置非 experimental chat
+provider 的 source of truth，并断言该清单与
+`beamai_llm_contract:providers/0` 完全一致。Provider 差异由 harness 的
+`style/1`、`config/1` 和 Ollama 专用分支显式建模。`dialyzer` 0 warning，
+`xref` 0 warning，`eunit` 844 tests / 0 failures，application modules
+一致。注册检查提交：`4011efb`。
 
 ### Phase 3 验收
 
-- [ ] P3-V1 所有非 experimental chat provider 接入 contract test。
-- [ ] P3-V2 provider 间公共行为差异有显式配置或文档。
-- [ ] P3-V3 新增 provider 缺少 contract test 时 CI 可拦截。
-- [ ] P3-V4 全部测试离线可跑。
+- [x] P3-V1 所有非 experimental chat provider 接入 contract test。
+- [x] P3-V2 provider 间公共行为差异有显式配置或文档。
+- [x] P3-V3 新增 provider 缺少 contract test 时 CI 可拦截。
+- [x] P3-V4 全部测试离线可跑。
 
 ## Phase 4：Agent event model
 

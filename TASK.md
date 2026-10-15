@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 / Phase 2 实施完成；Phase 3 批次 N 实施完成（远端 CI 待确认）  
+> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 实施完成（远端 CI 待确认）  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -57,7 +57,7 @@ HTTP Pool 关键路径。
 `rebar3 xref` 0 warning，`rebar3 eunit` 817 tests / 0 failures。  
 HTTP Pool 变更提交：`04ef802`。
 
-### Phase 3：Provider contract test — 批次 N 实施完成
+### Phase 3：Provider contract test — 实施完成
 
 目标：建立统一离线 contract harness，先约束 Provider 请求、tool、SSE、
 finish reason、usage、错误和 multimodal 行为。
@@ -67,20 +67,20 @@ finish reason、usage、错误和 multimodal 行为。
       finish reason 归一化、usage 归一化、错误/Retry-After 和 multimodal content。
 - [x] 修复 SSE parser 丢弃不完整 data 行的问题。
 - [x] 修复 Ollama OpenAI 兼容流末尾独立 usage chunk 被忽略的问题。
+- [x] 将全部 11 个内置非 experimental chat provider 显式接入 harness。
+- [x] 增加 provider 注册清单一致性检查，新增 provider 未接入 contract
+      harness 时普通 eunit CI 会失败。
 
 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
-`rebar3 xref` 0 warning，`rebar3 eunit` 843 tests / 0 failures。  
-Contract harness 提交：`9ee3799`。
+`rebar3 xref` 0 warning，`rebar3 eunit` 844 tests / 0 failures；全部测试
+离线可跑。  
+Contract harness 提交：`9ee3799`；注册检查提交：`4011efb`。
 
 ## 后续阶段
 
-1. **Phase 2：可观测性**  
-   增加 telemetry dispatch、默认 logger backend，以及 LLM / Tool / Agent / HTTP Pool 关键事件。
-2. **Phase 3：Provider contract test 批次 O**  
-   将各内置 Provider 明确接入 harness；后续补充差异配置和 CI 注册校验。
-3. **Phase 4：Agent event model**  
+1. **Phase 4：Agent event model**  
    建立统一 Agent 事件模型，让 UI stream、telemetry、审计日志共享同一时序来源。
-4. **Phase 5：性能基准**  
+2. **Phase 5：性能基准**  
    用可重复 benchmark 覆盖 filter、tool dispatch、memory、stream 和 HTTP pool，再决定是否做性能重构。
 
 ## 全局验收
@@ -93,7 +93,7 @@ Contract harness 提交：`9ee3799`。
 - [ ] 根项目无未用依赖。
 - [x] TLS 默认严格校验。
 - [x] Agent 关键路径具备结构化 telemetry。
-- [ ] 所有非 experimental chat provider 接入 contract test。
+- [x] 所有非 experimental chat provider 接入 contract test。
 - [ ] 存在可重复运行的性能基准与基线数据。
 
 ## 已归档任务
