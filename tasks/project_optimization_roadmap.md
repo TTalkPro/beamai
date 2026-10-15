@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 实施完成；Phase 2 批次 I / J 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -135,12 +135,15 @@ Tool 安全变更提交：`4b5a632`。
 
 ### 批次 J：LLM 埋点
 
-- [ ] J1 `llm_request_started`。
-- [ ] J2 `llm_request_finished`。
-- [ ] J3 `llm_retry`。
-- [ ] J4 `llm_stream_started`。
-- [ ] J5 `llm_stream_finished`。
-- [ ] J6 统一记录 latency、status、usage、finish reason、error class。
+- [x] J1 `llm_request_started`。
+- [x] J2 `llm_request_finished`。
+- [x] J3 `llm_retry`。
+- [x] J4 `llm_stream_started`。
+- [x] J5 `llm_stream_finished`。
+- [x] J6 统一记录 latency、status、usage、finish reason、error class。
+
+批次 J 本地验证：`beamai_chat_model_telemetry_tests` 4 tests / 0 failures，
+`dialyzer` 0 warning，`xref` 0 warning，application modules 一致。
 
 ### 批次 K：Tool 埋点
 

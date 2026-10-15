@@ -95,8 +95,22 @@ chat(Config, Messages) ->
 chat(Config, Messages, Opts) ->
     Module = provider_module(maps:get(provider, Config)),
     Request = build_request(Messages, Opts),
-    RetryOpts = beamai_llm_retry:opts(Config, Opts),
-    beamai_llm_retry:run(fun() -> Module:chat(Config, Request) end, RetryOpts).
+    RequestId = beamai_id:gen_id(<<"req">>),
+    BaseMeta = request_metadata(Config, Request),
+    RetryOpts = retry_opts_with_telemetry(Config, Opts, RequestId, BaseMeta),
+    StartedAt = erlang:monotonic_time(millisecond),
+    beamai_telemetry:dispatch([beamai, llm, request, started],
+                              request_data(Request), BaseMeta#{request_id => RequestId}),
+    case beamai_llm_retry:run(fun() -> Module:chat(Config, Request) end, RetryOpts) of
+        {ok, Response} = Result ->
+            dispatch_llm_finished(StartedAt, ok, response_data(Response),
+                                  BaseMeta#{request_id => RequestId}),
+            Result;
+        {error, Reason} = Result ->
+            dispatch_llm_finished(StartedAt, error, error_data(Reason, Config),
+                                  BaseMeta#{request_id => RequestId}),
+            Result
+    end.
 
 %% @doc 组装 ChatRequest：消息 + **本次调用参数**
 %%
@@ -118,8 +132,22 @@ stream_chat(Config, Messages, Callback) ->
 stream_chat(Config, Messages, Callback, Opts) ->
     Module = provider_module(maps:get(provider, Config)),
     Request = build_request(Messages, Opts#{stream => true}),
+    RequestId = beamai_id:gen_id(<<"req">>),
+    Meta = (request_metadata(Config, Request))#{request_id => RequestId},
+    StartedAt = erlang:monotonic_time(millisecond),
+    beamai_telemetry:dispatch([beamai, llm, stream, started],
+                              request_data(Request), Meta),
     WrappedCallback = wrap_stream_callback(Callback, Opts),
-    Module:stream_chat(Config, Request, WrappedCallback).
+    case Module:stream_chat(Config, Request, WrappedCallback) of
+        {ok, Response} = Result ->
+            dispatch_llm_finished(StartedAt, ok, response_data(Response), Meta,
+                                  [beamai, llm, stream, finished]),
+            Result;
+        {error, Reason} = Result ->
+            dispatch_llm_finished(StartedAt, error, error_data(Reason, Config), Meta,
+                                  [beamai, llm, stream, finished]),
+            Result
+    end.
 
 %%====================================================================
 %% Internal - Provider Routing
@@ -165,6 +193,90 @@ wrap_stream_callback(Callback, Opts) ->
         invoke_new_token_callback(Event, OnNewToken, Meta),
         Callback(Event)
     end.
+
+%% @private 在保留用户 on_retry 的同时发布一次真实重试事件
+-spec retry_opts_with_telemetry(map(), map(), binary(), map()) ->
+    beamai_llm_retry:retry_opts().
+retry_opts_with_telemetry(Config, Opts, RequestId, Meta) ->
+    RetryOpts = beamai_llm_retry:opts(Config, Opts),
+    UserCallback = maps:get(on_retry, RetryOpts, undefined),
+    RetryOpts#{on_retry =>
+        fun(State) ->
+            Error = beamai_llm_error:from_reason(maps:get(error, State)),
+            beamai_telemetry:dispatch(
+              [beamai, llm, retry],
+              #{attempt => maps:get(attempt, State),
+                max_retries => maps:get(max_retries, State),
+                delay_ms => maps:get(delay, State),
+                error_type => beamai_llm_error:type(Error),
+                retryable => beamai_llm_error:retryable(Error)},
+              Meta#{request_id => RequestId}),
+            invoke_user_retry(UserCallback, State)
+        end}.
+
+%% @private 用户重试回调保持原有语义，且其 crash 不影响重试路径
+-spec invoke_user_retry(undefined | fun((map()) -> term()), map()) -> ok.
+invoke_user_retry(undefined, _State) -> ok;
+invoke_user_retry(Callback, State) when is_function(Callback, 1) ->
+    try Callback(State)
+    catch _:_ -> ok
+    end;
+invoke_user_retry(_, _) -> ok.
+
+%% @private 元数据只包含路由和请求形状，不包含消息内容
+-spec request_metadata(map(), beamai_chat_request:t()) -> map().
+request_metadata(Config, Request) ->
+    #{
+        provider => maps:get(provider, Config),
+        model => safe_model(maps:get(model, Config, <<>>)),
+        tools_count => length(beamai_chat_request:tools(Request)),
+        stream => beamai_chat_request:is_stream(Request)
+    }.
+
+-spec request_data(beamai_chat_request:t()) -> map().
+request_data(Request) ->
+    #{message_count => length(beamai_chat_request:messages(Request))}.
+
+-spec response_data(map()) -> map().
+response_data(Response) ->
+    #{usage => beamai_chat_response:usage(Response),
+      finish_reason => beamai_chat_response:finish_reason(Response)}.
+
+-spec error_data(term(), map()) -> map().
+error_data(Reason, Config) ->
+    Error = beamai_llm_error:from_reason(
+              Reason, safe_provider(maps:get(provider, Config))),
+    #{error_type => beamai_llm_error:type(Error),
+      http_status => beamai_llm_error:status(Error),
+      retryable => beamai_llm_error:retryable(Error)}.
+
+-spec dispatch_llm_finished(integer(), ok | error, map(), map()) -> ok.
+dispatch_llm_finished(StartedAt, Status, Data, Meta) ->
+    dispatch_llm_finished(StartedAt, Status, Data, Meta,
+                          [beamai, llm, request, finished]).
+
+-spec dispatch_llm_finished(integer(), ok | error, map(), map(),
+                            [atom(), ...]) -> ok.
+dispatch_llm_finished(StartedAt, Status, Data, Meta, Name) ->
+    Level = case Status of
+        ok -> info;
+        error -> warning
+    end,
+    beamai_telemetry:dispatch(
+      Level, Name,
+      Data#{status => Status,
+            latency_ms => erlang:monotonic_time(millisecond) - StartedAt},
+      Meta).
+
+-spec safe_model(term()) -> binary().
+safe_model(Model) when is_binary(Model) -> Model;
+safe_model(Model) when is_atom(Model) -> atom_to_binary(Model, utf8);
+safe_model(Model) when is_list(Model) -> iolist_to_binary(Model);
+safe_model(_) -> <<>>.
+
+-spec safe_provider(term()) -> atom() | undefined.
+safe_provider(Provider) when is_atom(Provider) -> Provider;
+safe_provider(_) -> undefined.
 
 invoke_new_token_callback(_Event, undefined, _Meta) -> ok;
 invoke_new_token_callback(Event, Callback, Meta) when is_function(Callback) ->
