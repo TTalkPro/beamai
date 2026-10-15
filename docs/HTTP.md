@@ -24,6 +24,7 @@ BeamAI 的 Gun 后端使用三个按用途划分的连接池实例（均为 `bea
 | `connect_timeout` | 30000 | 建连超时（ms），对应 `gun:open` 的同名选项 |
 | `idle_timeout` | 60000 | 空闲连接回收阈值（ms），清理定时器每 30 秒扫一次 |
 | `protocols` | `[http]` | 传给 `gun:open` 的协议列表，见下方 HTTP/2 注意事项 |
+| `tls_insecure` | `false` | 仅受控开发/测试可显式设为 `true`；生产环境禁止 |
 
 注意：拆池后每主机的**总**连接上限是三池之和（默认 3×10），高于旧版单池的 10——这是消除跨类争用的设计意图。
 
@@ -79,6 +80,22 @@ BeamAI 的 Gun 后端使用三个按用途划分的连接池实例（均为 `bea
 ```
 
 非法协议名（`http`/`http2` 之外）在池启动时即报 `{invalid_protocol, Name}`。
+
+## TLS 安全默认值
+
+HTTPS 默认执行 peer verification：加载系统 CA，校验证书链和主机名。
+系统 CA 加载失败时建连返回 `{error, {tls_config_failed, cacerts_unavailable}}`；
+框架不会静默降级为 `verify_none`。
+
+只有受控开发/测试环境可以在某个池显式关闭校验：
+
+```erlang
+{http_pools, #{
+    http_pool_short => #{tls_insecure => true}   %% 会输出安全 warning
+}}.
+```
+
+非法 `tls_insecure` 值在池启动时报 `{invalid_tls_insecure, Value}`。
 
 ## 覆盖默认路由（高级）
 

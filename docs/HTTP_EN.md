@@ -24,6 +24,7 @@ All three pools ship with identical defaults, equal to the pre-split single pool
 | `connect_timeout` | 30000 | Connect timeout (ms), maps to `gun:open`'s option of the same name |
 | `idle_timeout` | 60000 | Idle-connection eviction threshold (ms); the cleanup timer sweeps every 30 s |
 | `protocols` | `[http]` | Protocol list passed to `gun:open` — see the HTTP/2 caveat below |
+| `tls_insecure` | `false` | May be explicitly set to `true` only in controlled development/testing; forbidden in production |
 
 Note: after the split, the **total** per-host cap is the sum across pools (3×10 by default), higher than the old single pool's 10 — this is the intended effect of eliminating cross-class contention.
 
@@ -79,6 +80,25 @@ For HTTP/2-capable providers (OpenAI, Anthropic, etc. — all HTTPS) you can opt
 ```
 
 Invalid protocol names (anything other than `http`/`http2`) fail at pool startup with `{invalid_protocol, Name}`.
+
+## TLS Secure Defaults
+
+HTTPS performs peer verification by default: system CAs are loaded and both the
+certificate chain and hostname are checked. If system CAs cannot be loaded,
+connection creation returns `{error, {tls_config_failed, cacerts_unavailable}}`;
+the framework does not silently fall back to `verify_none`.
+
+Only a controlled development/test environment may disable verification for one
+pool explicitly:
+
+```erlang
+{http_pools, #{
+    http_pool_short => #{tls_insecure => true}   %% emits a security warning
+}}.
+```
+
+An invalid `tls_insecure` value fails pool startup with
+`{invalid_tls_insecure, Value}`.
 
 ## Overriding the Default Routing (Advanced)
 

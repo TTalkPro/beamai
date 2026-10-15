@@ -63,7 +63,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -ifdef(TEST).
--export([merge_config/1, validate_protocols/1]).
+-export([merge_config/1, validate_protocols/1, validate_tls_insecure/1,
+         get_tls_opts/1]).
 -endif.
 
 %%====================================================================
@@ -90,7 +91,8 @@
     connect_timeout => pos_integer(),      %% ms，对应 gun:open 的 connect_timeout
     connection_timeout => pos_integer(),   %% 已废弃：connect_timeout 的旧键名，仍兼容
     idle_timeout => pos_integer(),
-    protocols => [http | http2]            %% 传给 gun:open 的 protocols
+    protocols => [http | http2],           %% 传给 gun:open 的 protocols
+    tls_insecure => boolean()              %% 仅显式开启，用于受控开发/测试
 }.
 
 -export_type([pool_name/0, pool_config/0]).
@@ -159,6 +161,7 @@ init([PoolName, Config]) ->
 
     %% 配置错误在启动时报出，而不是等到第一次建连
     ok = validate_protocols(maps:get(protocols, FullConfig)),
+    ok = validate_tls_insecure(maps:get(tls_insecure, FullConfig)),
 
     %% 启动定时清理
     erlang:send_after(?CLEANUP_INTERVAL, self(), cleanup_idle),
@@ -246,7 +249,9 @@ merge_config(Config) ->
         %% Gun 2.1 的 TCP 连接路径做 [Protocol] = maps:get(protocols, Opts, [http]) 单元素匹配，
         %% 传 [http2, http] 会 {badmatch, [http2, http]} 崩掉所有 http:// 连接，
         %% 故默认 [http]（HTTP/1.1）；需要 HTTP/2 的部署显式配置 protocols => [http2, http]。
-        protocols => [http]
+        protocols => [http],
+        %% 生产默认失败关闭；tls_insecure 只能显式开启。
+        tls_insecure => false
     },
     normalize_legacy_keys(maps:merge(Defaults, Config)).
 
@@ -266,6 +271,14 @@ validate_protocols([_ | _] = Protocols) ->
     ok;
 validate_protocols(Other) ->
     error({invalid_protocols, Other}).
+
+%% @private 校验 TLS insecure 开关
+validate_tls_insecure(true) ->
+    ok;
+validate_tls_insecure(false) ->
+    ok;
+validate_tls_insecure(Other) ->
+    error({invalid_tls_insecure, Other}).
 
 %% @private 获取连接
 do_get_connection(Url, _Opts, #state{pools = Pools, conn_info = ConnInfo,
@@ -345,16 +358,24 @@ get_idle_from_list([Conn | Rest], InUse) ->
 
 %% @private 创建新连接
 create_new_connection(Host, Port, Transport, HostKey,
-                      #state{pools = _Pools, conn_info = ConnInfo,
-                             in_use = InUse, config = Config} = State) ->
+                      #state{config = Config} = State) ->
     ConnTimeout = maps:get(connect_timeout, Config),
-    GunOpts = #{
-        connect_timeout => ConnTimeout,
-        transport => Transport,
-        protocols => maps:get(protocols, Config),
-        tls_opts => get_tls_opts()
-    },
+    case get_tls_opts(Config) of
+        {ok, TlsOpts} ->
+            GunOpts = #{
+                connect_timeout => ConnTimeout,
+                transport => Transport,
+                protocols => maps:get(protocols, Config),
+                tls_opts => TlsOpts
+            },
+            gun_open_and_await(Host, Port, GunOpts, ConnTimeout, HostKey, State);
+        {error, Reason} ->
+            {error, {tls_config_failed, Reason}}
+    end.
 
+%% @private 打开 Gun 连接并等待就绪
+gun_open_and_await(Host, Port, GunOpts, ConnTimeout, HostKey,
+                   #state{conn_info = ConnInfo, in_use = InUse} = State) ->
     case gun:open(Host, Port, GunOpts) of
         {ok, ConnPid} ->
             %% 监控连接进程
@@ -501,22 +522,38 @@ to_charlist(V) when is_list(V) -> V;
 to_charlist(V) when is_binary(V) -> binary_to_list(V).
 
 %% @private 获取 TLS 配置选项
-%% 使用系统 CA 证书进行 TLS 验证（OTP 25+）
-get_tls_opts() ->
+%% 生产默认使用系统 CA 证书做 peer verification；CA 加载失败时返回错误，
+%% 不再静默降级。tls_insecure 必须在池配置中显式开启。
+-spec get_tls_opts(map()) ->
+    {ok, [tuple()]} | {error, cacerts_unavailable}.
+get_tls_opts(#{tls_insecure := true}) ->
+    logger:warning(
+        "beamai_http_pool: TLS peer verification disabled by explicit "
+        "tls_insecure=true; use only in controlled development/testing"),
+    {ok, [{verify, verify_none}]};
+get_tls_opts(#{tls_insecure := false}) ->
+    secure_tls_opts();
+get_tls_opts(_) ->
+    {error, cacerts_unavailable}.
+
+%% @private 生成默认的 TLS peer verification 选项
+secure_tls_opts() ->
     try
         %% OTP 25+ 支持 public_key:cacerts_get()
         CACerts = public_key:cacerts_get(),
-        [
-            {verify, verify_peer},
-            {cacerts, CACerts},
-            {depth, 3},
-            {customize_hostname_check, [
-                {match_fun, public_key:pkix_verify_hostname_match_fun(https)}
-            ]}
-        ]
+        case is_list(CACerts) andalso CACerts =/= [] of
+            true ->
+                {ok, [
+                    {verify, verify_peer},
+                    {cacerts, CACerts},
+                    {depth, 3},
+                    {customize_hostname_check, [
+                        {match_fun, public_key:pkix_verify_hostname_match_fun(https)}
+                    ]}
+                ]};
+            false ->
+                {error, cacerts_unavailable}
+        end
     catch
-        _:_ ->
-            %% 如果获取系统证书失败，使用 verify_none（仅用于开发/测试）
-            logger:warning("Failed to get system CA certs, using verify_none"),
-            [{verify, verify_none}]
+        _:_ -> {error, cacerts_unavailable}
     end.

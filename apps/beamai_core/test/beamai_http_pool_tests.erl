@@ -31,6 +31,7 @@ merge_config_test_() ->
           ?assertEqual(30000, maps:get(connect_timeout, Config)),
           ?assertEqual(60000, maps:get(idle_timeout, Config)),
           ?assertEqual(10, maps:get(max_connections_per_host, Config)),
+          ?assertEqual(false, maps:get(tls_insecure, Config)),
           ?assertNot(maps:is_key(connection_timeout, Config))
       end},
 
@@ -51,8 +52,10 @@ merge_config_test_() ->
      {"传入配置覆盖模块默认值",
       fun() ->
           Config = beamai_http_pool:merge_config(#{protocols => [http2, http],
-                                                   max_connections_per_host => 50}),
+                                                   max_connections_per_host => 50,
+                                                   tls_insecure => true}),
           ?assertEqual([http2, http], maps:get(protocols, Config)),
+          ?assertEqual(true, maps:get(tls_insecure, Config)),
           ?assertEqual(50, maps:get(max_connections_per_host, Config))
       end},
 
@@ -66,8 +69,61 @@ merge_config_test_() ->
                        beamai_http_pool:validate_protocols(http)),
           ?assertEqual(ok, beamai_http_pool:validate_protocols([http])),
           ?assertEqual(ok, beamai_http_pool:validate_protocols([http2, http]))
+      end}
+    ].
+
+tls_config_test_() ->
+    [
+     {"默认 TLS 配置为 peer verification",
+      fun() ->
+          meck:new(public_key, [no_link, non_strict, passthrough]),
+          meck:expect(public_key, cacerts_get,
+                      fun() -> [<<"TEST-CA">>] end),
+          try
+              {ok, Opts} = beamai_http_pool:get_tls_opts(
+                             beamai_http_pool:merge_config(#{})),
+              ?assertEqual(verify_peer, proplists:get_value(verify, Opts)),
+              ?assertEqual([<<"TEST-CA">>], proplists:get_value(cacerts, Opts))
+          after
+              meck:unload(public_key)
+          end
       end},
 
+     {"显式 tls_insecure=true 才允许 verify_none",
+      fun() ->
+          {ok, Opts} = beamai_http_pool:get_tls_opts(
+                         beamai_http_pool:merge_config(#{tls_insecure => true})),
+          ?assertEqual([{verify, verify_none}], Opts)
+      end},
+
+     {"系统 CA 加载失败时失败关闭，不再静默降级",
+      fun() ->
+          meck:new(public_key, [no_link, non_strict, passthrough]),
+          meck:expect(public_key, cacerts_get,
+                      fun() -> {error, ca_store_unavailable} end),
+          try
+              ?assertEqual({error, cacerts_unavailable},
+                           beamai_http_pool:get_tls_opts(
+                             beamai_http_pool:merge_config(#{})))
+          after
+              meck:unload(public_key)
+          end
+      end},
+
+     {"tls_insecure 非布尔值在池启动前报错",
+      fun() ->
+          Result = try beamai_http_pool:validate_tls_insecure(optional)
+                   catch error:{invalid_tls_insecure, optional} ->
+                       invalid_tls_insecure
+                   end,
+          ?assertEqual(invalid_tls_insecure, Result),
+          ?assertEqual(ok, beamai_http_pool:validate_tls_insecure(true)),
+          ?assertEqual(ok, beamai_http_pool:validate_tls_insecure(false))
+      end}
+    ].
+
+stats_test_() ->
+    [
      {"stats 回显池名与生效配置",
       fun() ->
           {ok, Pid} = gen_server:start(beamai_http_pool,
@@ -121,7 +177,8 @@ resolve_pool_configs_test_() ->
            Expected = #{max_connections_per_host => 10,
                         connect_timeout => 30000,
                         idle_timeout => 60000,
-                        protocols => [http]},
+                        protocols => [http],
+                        tls_insecure => false},
            maps:foreach(fun(_Name, Cfg) -> ?assertEqual(Expected, Cfg) end, Pools)
        end},
 

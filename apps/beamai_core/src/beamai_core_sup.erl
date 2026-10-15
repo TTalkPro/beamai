@@ -165,5 +165,6 @@ default_pool_config(_PoolName) ->
         max_connections_per_host => 10,
         connect_timeout => 30000,
         idle_timeout => 60000,
-        protocols => [http]
+        protocols => [http],
+        tls_insecure => false
     }.
