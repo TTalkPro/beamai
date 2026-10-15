@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 / Phase 2 实施完成；Phase 3 批次 N 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -194,15 +194,25 @@ application modules 一致。
 
 ### 批次 N：公共 contract harness
 
-- [ ] N1 设计 provider 差异配置格式。
-- [ ] N2 建立请求体构造公共断言。
-- [ ] N3 建立 tool schema / tool call 转换公共断言。
-- [ ] N4 建立 SSE 分片重组公共断言。
-- [ ] N5 建立 finish reason 归一化断言。
-- [ ] N6 建立 usage 归一化断言。
-- [ ] N7 建立错误结构与 retryable 断言。
-- [ ] N8 建立 Retry-After 与 rate limit headers 断言。
-- [ ] N9 建立 multimodal content 断言。
+- [x] N1 设计 provider 差异配置格式。
+- [x] N2 建立请求体构造公共断言。
+- [x] N3 建立 tool schema / tool call 转换公共断言。
+- [x] N4 建立 SSE 分片重组公共断言。
+- [x] N5 建立 finish reason 归一化断言。
+- [x] N6 建立 usage 归一化断言。
+- [x] N7 建立错误结构与 retryable 断言。
+- [x] N8 建立 Retry-After 与 rate limit headers 断言。
+- [x] N9 建立 multimodal content 断言。
+
+批次 N 本地验证：`beamai_llm_contract_tests` 13 tests / 0 failures，
+`dialyzer` 0 warning，`xref` 0 warning，`eunit` 843 tests / 0 failures，
+application modules 一致。Harness 覆盖 11 个内置 chat provider。
+
+批次 N 发现并修复：
+
+- `beamai_llm_http_client:parse_sse/1` 在 HTTP chunk 切断 `data:` 行时会丢弃
+  未完成行，导致文本 / usage 丢失。
+- Ollama OpenAI 兼容流式累加器忽略末尾独立 usage chunk。
 
 ### 批次 O：内置 Provider 接入
 

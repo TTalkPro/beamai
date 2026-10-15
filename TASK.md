@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 实施完成；Phase 2 实施完成（远端 CI 待确认）  
+> 状态：Phase 0 / Phase 1 / Phase 2 实施完成；Phase 3 批次 N 实施完成（远端 CI 待确认）  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -57,12 +57,27 @@ HTTP Pool 关键路径。
 `rebar3 xref` 0 warning，`rebar3 eunit` 817 tests / 0 failures。  
 HTTP Pool 变更提交：`04ef802`。
 
+### Phase 3：Provider contract test — 批次 N 实施完成
+
+目标：建立统一离线 contract harness，先约束 Provider 请求、tool、SSE、
+finish reason、usage、错误和 multimodal 行为。
+
+- [x] 建立离线 Provider contract harness，覆盖全部 11 个内置 chat provider。
+- [x] 覆盖请求体构造、tool 定义、tool call 转换、SSE 分片重组、
+      finish reason 归一化、usage 归一化、错误/Retry-After 和 multimodal content。
+- [x] 修复 SSE parser 丢弃不完整 data 行的问题。
+- [x] 修复 Ollama OpenAI 兼容流末尾独立 usage chunk 被忽略的问题。
+
+本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
+`rebar3 xref` 0 warning，`rebar3 eunit` 843 tests / 0 failures。  
+Contract harness 提交：`9ee3799`。
+
 ## 后续阶段
 
 1. **Phase 2：可观测性**  
    增加 telemetry dispatch、默认 logger backend，以及 LLM / Tool / Agent / HTTP Pool 关键事件。
-2. **Phase 3：Provider contract test**  
-   用统一离线 contract harness 保证多 Provider 的请求、tool call、SSE、usage 和错误行为一致。
+2. **Phase 3：Provider contract test 批次 O**  
+   将各内置 Provider 明确接入 harness；后续补充差异配置和 CI 注册校验。
 3. **Phase 4：Agent event model**  
    建立统一 Agent 事件模型，让 UI stream、telemetry、审计日志共享同一时序来源。
 4. **Phase 5：性能基准**  
