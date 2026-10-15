@@ -1,7 +1,7 @@
 # TASK: BeamAI 项目优化路线图
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](../designs/project_optimization_roadmap.md)  
-> 状态：Phase 0 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
+> 状态：Phase 0 / Phase 1 实施完成，等待远端 CI 确认 OTP 27 / OTP 28 矩阵  
 > 原则：先建立质量门槛和安全默认值，再做可观测性与性能优化。所有阶段保持公共 API 兼容。
 
 ## 当前基线
@@ -86,34 +86,38 @@
 
 ### 批次 G：TLS 默认值
 
-- [ ] G1 修改 `beamai_http_pool` TLS 配置入口，接收显式配置。
-- [ ] G2 默认使用 `verify_peer` 和系统 CA。
-- [ ] G3 系统 CA 加载失败时返回错误，不再静默 fallback 到 `verify_none`。
-- [ ] G4 增加显式 `tls_insecure => true` 支持。
-- [ ] G5 使用 insecure 模式时输出 warning。
-- [ ] G6 增加测试：
-  - [ ] secure 默认配置。
-  - [ ] 显式 insecure 配置。
-  - [ ] CA 加载失败。
-  - [ ] pool config 传播。
+- [x] G1 修改 `beamai_http_pool` TLS 配置入口，接收显式配置。
+- [x] G2 默认使用 `verify_peer` 和系统 CA。
+- [x] G3 系统 CA 加载失败时返回错误，不再静默 fallback 到 `verify_none`。
+- [x] G4 增加显式 `tls_insecure => true` 支持。
+- [x] G5 使用 insecure 模式时输出 warning。
+- [x] G6 增加测试：
+  - [x] secure 默认配置。
+  - [x] 显式 insecure 配置。
+  - [x] CA 加载失败。
+  - [x] pool config 传播。
 
 ### 批次 H：Tool 安全扩展点
 
-- [ ] H1 梳理现有 tool schema 校验入口和默认行为。
-- [ ] H2 提供 tool 参数 schema 强校验配置。
-- [ ] H3 增加 tool result size limit 约定。
-- [ ] H4 增加敏感结果 redaction 测试。
-- [ ] H5 在 tool metadata 中预留 permission 字段约定：
+- [x] H1 梳理现有 tool schema 校验入口和默认行为。
+- [x] H2 提供 tool 参数 schema 强校验配置。
+- [x] H3 增加 tool result size limit 约定。
+- [x] H4 增加敏感结果 redaction 测试。
+- [x] H5 在 tool metadata 中预留 permission 字段约定：
       filesystem / network / process / env。
-- [ ] H6 输出 tool 安全配置文档。
+- [x] H6 输出 tool 安全配置文档。
 
 ### Phase 1 验收
 
-- [ ] P1-V1 默认 TLS 配置不可能静默变成 `verify_none`。
-- [ ] P1-V2 显式 insecure 配置有 warning 和测试覆盖。
-- [ ] P1-V3 非法 tool 参数返回统一错误结构。
-- [ ] P1-V4 超大 tool result 有明确上限或文档化处理策略。
-- [ ] P1-V5 现有 eunit / dialyzer / xref 全绿。
+- [x] P1-V1 默认 TLS 配置不可能静默变成 `verify_none`。
+- [x] P1-V2 显式 insecure 配置有 warning 和测试覆盖。
+- [x] P1-V3 非法 tool 参数返回统一错误结构。
+- [x] P1-V4 超大 tool result 有明确上限或文档化处理策略。
+- [x] P1-V5 现有 eunit / dialyzer / xref 全绿。
+
+Phase 1 本地验证：`rebar3 xref` 0 warning，`rebar3 dialyzer` 0 warning，
+`rebar3 eunit` 796 tests / 0 failures。TLS 变更提交：`2e288ce`，
+Tool 安全变更提交：`4b5a632`。
 
 ## Phase 2：可观测性
 

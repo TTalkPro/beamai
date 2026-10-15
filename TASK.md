@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 实施完成，等待远端 CI 确认  
+> 状态：Phase 0 / Phase 1 实施完成，下一步进入 Phase 2 可观测性  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -28,14 +28,30 @@
 
 详细批次见 [`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md#phase-0工程止血)。
 
-### Phase 1：运行时安全
+### Phase 1：运行时安全 — 实施完成
 
 目标：移除危险默认值，增强 Tool 安全边界。
 
-- [ ] `beamai_http_pool` 默认强制 `verify_peer`。
-- [ ] 禁止系统 CA 加载失败时静默 fallback 到 `verify_none`。
-- [ ] 如需 insecure TLS，必须显式配置并输出 warning。
-- [ ] 补充 tool schema 校验、result size limit 和 permission metadata 设计。
+- [x] `beamai_http_pool` 默认强制 `verify_peer`。
+- [x] 禁止系统 CA 加载失败时静默 fallback 到 `verify_none`。
+- [x] 如需 insecure TLS，必须显式配置并输出 warning。
+- [x] 补充 tool schema 校验、result size limit 和 permission metadata 设计。
+
+本地验证：`rebar3 xref` 0 warning，`rebar3 dialyzer` 0 warning，
+`rebar3 eunit` 796 tests / 0 failures。
+
+### Phase 2：可观测性 — 待实施
+
+目标：建立轻量 telemetry dispatch 与默认日志后端，覆盖 LLM、Tool、Agent、
+HTTP Pool 关键路径。
+
+- [ ] 新增 telemetry dispatch 模块、公共 event map 和默认 logger backend。
+- [ ] 支持 handler 注入、crash 隔离、按级别开启 / 关闭。
+- [ ] 增加 LLM request / retry / stream 埋点。
+- [ ] 增加 Tool queue / start / finish / timeout / crash 埋点。
+- [ ] 增加 Agent run / turn / interrupt / resume / state 埋点。
+- [ ] 增加 HTTP Pool acquire / reuse / failure / timeout / reap 埋点。
+- [ ] 确保默认日志不输出 prompt、tool result 全文和 API key。
 
 ## 后续阶段
 
@@ -56,7 +72,7 @@
 - [ ] `rebar3 ct`：全部通过。
 - [ ] OTP 27 / OTP 28 CI 全绿。
 - [ ] 根项目无未用依赖。
-- [ ] TLS 默认严格校验。
+- [x] TLS 默认严格校验。
 - [ ] Agent 关键路径具备结构化 telemetry。
 - [ ] 所有非 experimental chat provider 接入 contract test。
 - [ ] 存在可重复运行的性能基准与基线数据。
