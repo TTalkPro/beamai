@@ -184,7 +184,7 @@ application modules 一致。
 
 ### Phase 2 验收
 
-- [ ] P2-V1 一次 Agent run 可通过事件还原完整时序。
+- [x] P2-V1 一次 Agent run 可通过事件还原完整时序。
 - [x] P2-V2 telemetry handler crash 不影响 Agent。
 - [x] P2-V3 默认日志不输出 prompt、tool result 全文和 API key。
 - [x] P2-V4 高频事件可关闭。
@@ -264,20 +264,29 @@ provider 的 source of truth，并断言该清单与
 
 ### 批次 Q：Agent runtime 接入
 
-- [ ] Q1 run started / finished。
-- [ ] Q2 turn started / finished。
-- [ ] Q3 chat started / finished。
-- [ ] Q4 tool queued / started / finished。
-- [ ] Q5 interrupt / approval / resume。
-- [ ] Q6 state changed。
-- [ ] Q7 error occurred。
+- [x] Q1 run started / finished。
+- [x] Q2 turn started / finished。
+- [x] Q3 chat started / finished。
+- [x] Q4 tool queued / started / finished。
+- [x] Q5 interrupt / approval / resume。
+- [x] Q6 state changed。
+- [x] Q7 error occurred。
+
+批次 Q 本地验证：Agent 配置新增 `event_consumers`。runtime 在 run、turn、
+chat、tool queue/start/finish、state change、interrupt/approval、resume 和
+error 边界发布统一事件；per-run sequence 由 `atomics` 计数器生成。事件负载
+不包含 prompt、tool arguments、tool result 全文或原始用户 resume payload。
+consumer crash 隔离已覆盖。
+
+`check_app_modules` 通过，`dialyzer` 0 warning，`xref` 0 warning，
+`eunit` 852 tests / 0 failures。Runtime 接入提交：`c8baa0d`。
 
 ### Phase 4 验收
 
-- [ ] P4-V1 同一次 run 的事件序列稳定。
-- [ ] P4-V2 UI stream 与 telemetry 可并行消费。
-- [ ] P4-V3 callback crash 不影响 Agent 主流程。
-- [ ] P4-V4 事件文档包含每个字段语义。
+- [x] P4-V1 同一次 run 的事件序列稳定。
+- [x] P4-V2 UI stream 与 telemetry 可并行消费。
+- [x] P4-V3 callback crash 不影响 Agent 主流程。
+- [x] P4-V4 事件文档包含每个字段语义。
 
 ## Phase 5：性能基准
 

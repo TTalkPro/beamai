@@ -2,7 +2,7 @@
 
 > 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
 > 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 实施完成；Phase 4 批次 P 实施完成（远端 CI 待确认）  
+> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 实施完成（远端 CI 待确认）  
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -76,7 +76,7 @@ finish reason、usage、错误和 multimodal 行为。
 离线可跑。  
 Contract harness 提交：`9ee3799`；注册检查提交：`4011efb`。
 
-### Phase 4：Agent event model — 批次 P 实施完成
+### Phase 4：Agent event model — 实施完成
 
 目标：建立统一 Agent 事件模型，让 UI stream、telemetry、审计日志共享同一
 时序来源；runtime 接入放在批次 Q。
@@ -94,11 +94,17 @@ Contract harness 提交：`9ee3799`；注册检查提交：`4011efb`。
 设计文档：[`designs/agent_event_model.md`](designs/agent_event_model.md)。  
 事件模型提交：`35a1adc`。
 
+批次 Q 已将统一事件接入 Agent runtime：run、turn、chat、tool、state、
+interrupt/approval、resume 和 error 边界均可通过 `event_consumers` 观测；
+per-run sequence 稳定，consumer crash 不影响主流程，敏感 payload 不进入事件。
+
+批次 Q 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
+`rebar3 xref` 0 warning，`rebar3 eunit` 852 tests / 0 failures。  
+Runtime 接入提交：`c8baa0d`。
+
 ## 后续阶段
 
-1. **Phase 4：Agent event model 批次 Q**  
-   建立统一 Agent 事件模型，让 UI stream、telemetry、审计日志共享同一时序来源。
-2. **Phase 5：性能基准**  
+1. **Phase 5：性能基准**  
    用可重复 benchmark 覆盖 filter、tool dispatch、memory、stream 和 HTTP pool，再决定是否做性能重构。
 
 ## 全局验收
