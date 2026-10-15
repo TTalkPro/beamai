@@ -124,11 +124,35 @@ get_connection(PoolName, Url) ->
 %% 池未启动时返回 {error, {pool_not_started, PoolName}}（不再 throw 跨进程边界）
 -spec get_connection(pool_name(), binary() | string(), map()) -> {ok, pid()} | {error, term()}.
 get_connection(PoolName, Url, Opts) ->
+    StartedAt = erlang:monotonic_time(millisecond),
     case whereis(PoolName) of
         undefined ->
             {error, {pool_not_started, PoolName}};
         _ ->
-            gen_server:call(PoolName, {get_connection, Url, Opts}, infinity)
+            case gen_server:call(PoolName, {get_connection, Url, Opts}, infinity) of
+                {ok, _ConnPid} = Ok ->
+                    beamai_telemetry:dispatch(
+                      debug, [beamai, http_pool, acquired],
+                      #{wait_time_ms => elapsed_ms(StartedAt)},
+                      pool_meta(PoolName)),
+                    Ok;
+                {error, Reason} = Error ->
+                    case Reason of
+                        pool_exhausted ->
+                            beamai_telemetry:dispatch(
+                              warning, [beamai, http_pool, wait_timeout],
+                              #{reason_class => pool_exhausted,
+                                wait_time_ms => elapsed_ms(StartedAt)},
+                              pool_meta(PoolName));
+                        _ ->
+                            beamai_telemetry:dispatch(
+                              warning, [beamai, http_pool, failed],
+                              #{reason_class => failure_class(Reason),
+                                wait_time_ms => elapsed_ms(StartedAt)},
+                              pool_meta(PoolName))
+                    end,
+                    Error
+            end
     end.
 
 %% @doc 归还连接到池
@@ -169,8 +193,13 @@ init([PoolName, Config]) ->
     {ok, #state{name = PoolName, config = FullConfig}}.
 
 handle_call({get_connection, Url, Opts}, _From, State) ->
+    CallStartedAt = erlang:monotonic_time(millisecond),
+    WasKnown = fun(Pid) -> maps:is_key(Pid, State#state.conn_info) end,
     case do_get_connection(Url, Opts, State) of
         {ok, ConnPid, NewState} ->
+            dispatch_pool(debug, State, [beamai, http_pool, reused],
+                          #{wait_time_ms => elapsed_ms(CallStartedAt)},
+                          WasKnown(ConnPid)),
             {reply, {ok, ConnPid}, NewState};
         {error, Reason} ->
             {reply, {error, Reason}, State}
@@ -201,6 +230,9 @@ handle_cast({return_connection, ConnPid}, State) ->
     {noreply, NewState};
 
 handle_cast({connection_failed, ConnPid}, State) ->
+    dispatch_pool(warning, State, [beamai, http_pool, failed],
+                  #{reason_class => connection_failed,
+                    connection_id => telemetry_id(ConnPid)}, known(ConnPid, State)),
     NewState = do_remove_connection(ConnPid, State),
     {noreply, NewState};
 
@@ -471,9 +503,41 @@ do_cleanup_idle(#state{pools = _Pools, conn_info = ConnInfo,
     end, [], ConnInfo),
 
     %% 移除过期连接
-    lists:foldl(fun(ConnPid, S) ->
+    CleanupStartedAt = erlang:monotonic_time(millisecond),
+    ReapedState = lists:foldl(fun(ConnPid, S) ->
         do_remove_connection(ConnPid, S)
-    end, State, ExpiredConns).
+    end, State, ExpiredConns),
+    dispatch_pool(info, ReapedState, [beamai, http_pool, idle_reaped],
+                  #{reaped_count => length(ExpiredConns),
+                    duration_ms => elapsed_ms(CleanupStartedAt)},
+                  length(ExpiredConns) > 0),
+    ReapedState.
+
+%% @private telemetry 辅助：默认 handler 只保留事件和关联 ID，不发布 URL
+elapsed_ms(StartedAt) ->
+    erlang:monotonic_time(millisecond) - StartedAt.
+
+dispatch_pool(Level, #state{name = PoolName}, Name, Data, Enabled) ->
+    case Enabled of
+        true -> beamai_telemetry:dispatch(Level, Name, Data, pool_meta(PoolName));
+        false -> ok
+    end.
+
+pool_meta(PoolName) ->
+    #{pool => PoolName}.
+
+known(ConnPid, #state{conn_info = ConnInfo}) ->
+    maps:is_key(ConnPid, ConnInfo).
+
+telemetry_id(Pid) ->
+    iolist_to_binary(io_lib:format("~0p", [Pid])).
+
+failure_class(pool_exhausted) -> pool_exhausted;
+failure_class({connection_failed, _}) -> connection_failed;
+failure_class({open_failed, _}) -> open_failed;
+failure_class({tls_config_failed, _}) -> tls_config_failed;
+failure_class({pool_not_started, _}) -> pool_not_started;
+failure_class(_) -> unknown.
 
 %% @private 关闭所有连接
 do_close_all(#state{conn_info = ConnInfo}) ->
