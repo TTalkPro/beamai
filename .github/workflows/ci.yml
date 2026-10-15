@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: OTP ${{ matrix.otp-version }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        otp-version: ["27.x", "28.x"]
+        rebar3-version: ["3.27.1"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp-version }}
+          rebar3-version: ${{ matrix.rebar3-version }}
+
+      - name: Check application module metadata
+        run: scripts/check_app_modules.escript
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Xref
+        run: rebar3 xref
+
+      - name: Dialyzer
+        run: rebar3 dialyzer
+
+      - name: EUnit
+        run: rebar3 eunit
+
+      - name: Common Test
+        run: rebar3 ct
+
+  examples:
+    name: Examples compile
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.x"
+          rebar3-version: "3.27.1"
+
+      - name: Compile BeamAI
+        run: rebar3 compile
+
+      - name: Compile examples
+        run: cd examples && ERL_LIBS=../_build/default/lib rebar3 compile

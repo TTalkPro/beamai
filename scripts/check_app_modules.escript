@@ -2,10 +2,7 @@
 %%! -nologo
 
 main([]) ->
-    Root = case init:get_plain_arguments() of
-               [] -> ".";
-               [Dir] -> Dir
-           end,
+    Root = ".",
     AppFiles = filelib:wildcard(filename:join(Root, "apps/*/src/*.app.src")),
     case check_apps(AppFiles) of
         ok ->
@@ -14,7 +11,7 @@ main([]) ->
             halt(1)
     end;
 main(_) ->
-    io:put_chars("usage: scripts/check_app_modules.escript [project-root]\n"),
+    io:put_chars("usage: scripts/check_app_modules.escript\n"),
     halt(2).
 
 check_apps(Files) ->
@@ -29,7 +26,7 @@ check_app(File) ->
     {application, App, Options} = lists:keyfind(application, 1, Terms),
     {modules, Declared} = lists:keyfind(modules, 1, Options),
     DeclaredSet = sets:from_list(Declared),
-    SrcDir = filename:join(filename:dirname(File), "..", "src"),
+    SrcDir = filename:join(filename:dirname(filename:dirname(File)), "src"),
     ActualSet = sets:from_list(sets:to_list(sets:from_list(source_modules(SrcDir)))),
     Missing = lists:sort(sets:to_list(sets:subtract(ActualSet, DeclaredSet))),
     Stale = lists:sort(sets:to_list(sets:subtract(DeclaredSet, ActualSet))),

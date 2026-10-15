@@ -1,0 +1,27 @@
+name: Live provider tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live:
+    name: Optional live integration
+    runs-on: ubuntu-24.04
+    env:
+      MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.x"
+          rebar3-version: "3.27.1"
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: HTTP pool live tests
+        run: rebar3 eunit --module=beamai_http_pool_live_test
+
+      - name: Tool calling manager live tests
+        run: rebar3 eunit --module=beamai_tcm_live_test
