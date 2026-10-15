@@ -248,12 +248,19 @@ provider 的 source of truth，并断言该清单与
 
 ### 批次 P：事件模型
 
-- [ ] P1 定义 event type。
-- [ ] P2 定义 event metadata 与公共字段。
-- [ ] P3 定义 event ordering 与 run id 关系。
-- [ ] P4 定义 stream consumer 接口。
-- [ ] P5 telemetry 消费同一事件模型。
-- [ ] P6 callback / filter 与 event model 的边界写入文档。
+- [x] P1 定义 event type。
+- [x] P2 定义 event metadata 与公共字段。
+- [x] P3 定义 event ordering 与 run id 关系。
+- [x] P4 定义 stream consumer 接口。
+- [x] P5 telemetry 消费同一事件模型。
+- [x] P6 callback / filter 与 event model 的边界写入文档。
+
+批次 P 本地验证：新增 `beamai_agent_event` 与离线单测，覆盖公共字段归一、
+`{run_id, sequence, timestamp}` 排序、telemetry 名称 / 级别 / metadata 适配
+和 consumer crash 隔离。设计见
+[`designs/agent_event_model.md`](../designs/agent_event_model.md)。
+`check_app_modules` 通过，`dialyzer` 0 warning，`xref` 0 warning，
+`eunit` 849 tests / 0 failures。事件模型提交：`35a1adc`。
 
 ### 批次 Q：Agent runtime 接入
 
