@@ -25,6 +25,9 @@
 %% Config API
 -export([create/2]).
 
+%% Provider Registry API
+-export([chat_provider_modules/0]).
+
 %% Chat API
 -export([chat/2, chat/3]).
 -export([stream_chat/3, stream_chat/4]).
@@ -71,6 +74,26 @@ create(Provider, Opts) ->
         '__llm_config__' => true
     },
     maps:merge(maps:merge(DefaultConfig, BaseConfig), Opts).
+
+%% @doc Return modules for built-in, non-experimental chat providers.
+%%
+%% The contract harness uses this registry as the source of truth: adding a
+%% provider to `provider_module/1' without adding it here (or without adding
+%% it to `beamai_llm_contract:providers/0') fails the contract tests.
+-spec chat_provider_modules() -> [module()].
+chat_provider_modules() ->
+    lists:usort(
+      [beamai_llm_provider_openai,
+       beamai_llm_provider_openai_responses,
+       beamai_llm_provider_anthropic,
+       beamai_llm_provider_ollama,
+       beamai_llm_provider_zhipu,
+       beamai_llm_provider_dashscope,
+       beamai_llm_provider_deepseek,
+       beamai_llm_provider_xai,
+       beamai_llm_provider_moonshot,
+       beamai_llm_provider_openrouter,
+       beamai_llm_provider_siliconflow]).
 
 %%====================================================================
 %% Chat API
