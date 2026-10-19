@@ -2,6 +2,21 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [Unreleased]
+
+### Changed
+
+- `beamai_llm_provider_deepseek` 按官方文档升级：
+  - 模型更名：`deepseek-chat` / `deepseek-reasoner` → `deepseek-flash`（默认）/ `deepseek-v4-pro`
+  - 思考模式改由 `thinking`（`#{type => enabled | disabled}`）与 `reasoning_effort`
+    （`none | low | high | max`，兼容 `minimal`/`medium`/`xhigh` 别名）控制，替代按模型名判断
+  - 思考模式下 `tool_choice` 的 `required` 与指定具体 tool 降级为 `auto`（API 返回 400）
+  - `frequency_penalty` / `presence_penalty` 官方已废弃，不再发送；新增 `user_id`
+  - `response_format` 归一化为 `text` / `json_object`，`json_schema` 被剔除
+  - 新增 `finish_reason` 取值 `insufficient_resource` / `aborted`
+  - usage.details 新增 `cached_tokens`（等价 `prompt_tokens_details.cached_tokens`）
+- FIM 补全（Beta）保留：`fim/2` 与 `stream_fim/3`，端点等价于官方要求的 beta base_url
+
 ## [2.0.0] - 2026-10-19
 
 ### Changed

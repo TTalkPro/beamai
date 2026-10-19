@@ -11,7 +11,7 @@
 | OpenAI | `beamai_llm_provider_openai` | OpenAI | GPT-4, GPT-3.5-turbo 等 |
 | OpenAI Responses | `beamai_llm_provider_openai_responses` | OpenAI Responses | `/v1/responses` 新接口：推理项回放、扁平工具、内置工具透传；兼容 LiteGate / OpenRouter 等 Responses 网关 |
 | Anthropic | `beamai_llm_provider_anthropic` | Anthropic | Claude 3, Claude 2 等 |
-| DeepSeek | `beamai_llm_provider_deepseek` | OpenAI 兼容 | deepseek-chat, deepseek-reasoner |
+| DeepSeek | `beamai_llm_provider_deepseek` | OpenAI 兼容 | deepseek-flash, deepseek-v4-pro |
 | Ollama | `beamai_llm_provider_ollama` | OpenAI 兼容 | 本地模型部署 |
 | 智谱 AI | `beamai_llm_provider_zhipu` | OpenAI 兼容 | GLM-4.7 等国产模型 |
 | 阿里云百炼 | `beamai_llm_provider_dashscope` | DashScope 原生 | 通义千问系列 (qwen-plus, qwen-max 等) |
@@ -205,13 +205,16 @@ Content = maps:get(content, Response).
 
 ### 使用 DeepSeek
 
-DeepSeek API 与 OpenAI API 兼容，支持 `deepseek-chat` 和 `deepseek-reasoner` 模型。
+DeepSeek API 与 OpenAI Chat Completions 兼容。当前模型为 `deepseek-flash`（V4.1-Flash）
+与 `deepseek-v4-pro`（V4-Pro），思考模式通过 `thinking` / `reasoning_effort` 控制。
 
 ```erlang
 %% 创建 DeepSeek 配置
 LLM = llm_client:create(deepseek, #{
-    model => <<"deepseek-chat">>,
-    api_key => list_to_binary(os:getenv("DEEPSEEK_API_KEY"))
+    model => <<"deepseek-flash">>,
+    api_key => list_to_binary(os:getenv("DEEPSEEK_API_KEY")),
+    thinking => #{type => enabled},
+    reasoning_effort => high
 }),
 
 %% 发送消息
@@ -226,22 +229,35 @@ Messages = [
 
 | 模型 | 说明 | 推荐场景 |
 |------|------|----------|
-| `deepseek-chat` | 通用对话模型（默认） | 日常对话、代码生成 |
-| `deepseek-reasoner` | 推理增强模型 | 复杂推理、数学问题 |
+| `deepseek-flash` | V4.1-Flash（默认）；思考与非思考模式，默认思考；支持图像理解 | 日常对话、代码生成、图文输入 |
+| `deepseek-v4-pro` | V4-Pro；仅思考模式；不支持图像理解 | 复杂推理、代码任务 |
+
+**思考模式：**
+
+| 选项 | 取值 | 说明 |
+|------|------|------|
+| `thinking` | `#{type => enabled \| disabled}`（也接受裸原子） | 思考模式开关 |
+| `reasoning_effort` | `none \| low \| high \| max` | 思考强度，默认 `high`；兼容别名 `minimal`→`low`、`medium`/`xhigh`→`high` |
+
+- 思维链内容通过 `beamai_chat_response:reasoning_content/1` 访问（同步与流式均支持）
+- 思考模式下 `temperature` 不生效、`top_p` 有效区间 0.95-1.0（由服务端规整）
+- 思考模式下 `tool_choice` 不支持 `required` 与指定具体 tool（API 返回 400），构建请求时降级为 `auto`；
+  需要强制调用请显式 `thinking => disabled`
 
 **特性：**
 - 完整支持工具调用（Function Calling），流式分片工具调用自动累加
-- 支持流式输出
-- OpenAI 兼容 API，响应格式与 OpenAI 一致
-- deepseek-reasoner 的思维链内容通过 `beamai_chat_response:reasoning_content/1` 访问（同步与流式均支持）
-- 支持 `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` 配置参数
-- deepseek-reasoner 自动剔除不支持的参数（temperature/top_p/penalty/logprobs），避免 400 错误
-- 上下文硬盘缓存统计：`usage.details` 中的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+- 支持流式输出与多模态输入（图片 `image_url` / 文件 `file`）
+- 支持 `stop` / `logprobs` / `top_logprobs` / `user_id` / `response_format`（`json_object`）配置
+- `frequency_penalty` / `presence_penalty` 官方已标注 deprecated，不再发送
+- `response_format` 不支持 `json_schema`（配置了会被剔除）
+- 上下文硬盘缓存统计：`usage.details` 中的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` /
+  `cached_tokens`（等价于 `prompt_tokens_details.cached_tokens`）
+- `finish_reason` 支持 `insufficient_system_resource` / `aborted`（归一化为 `insufficient_resource` / `aborted`）
 
-**DeepSeek 特有机制（beta）：**
+**DeepSeek 特有机制（Beta）：**
 
 ```erlang
-%% Chat Prefix Completion：末尾 assistant 消息标 prefix => true，
+%% 对话前缀续写：末尾 assistant 消息标 prefix => true，
 %% 强制模型从该内容续写（自动路由到 /beta 端点）
 Messages = [
     #{role => user, content => <<"写一段 Python 快排"/utf8>>},
@@ -249,7 +265,7 @@ Messages = [
 ],
 {ok, Resp} = llm_client:chat(LLM, Messages),
 
-%% FIM 填空补全：根据前缀 + 后缀补全中间内容（代码补全场景）
+%% FIM 填空补全：根据前缀 + 后缀补全中间内容（代码补全场景，仅非思考模式支持）
 {ok, Resp2} = beamai_llm_provider_deepseek:fim(Config, #{
     prompt => <<"def fib(n):">>,
     suffix => <<"    return fib(n-1) + fib(n-2)">>

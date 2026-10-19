@@ -1430,7 +1430,7 @@ Pass the provider atom to `beamai_chat_model:create/2`. Each adapter module impl
 | `anthropic` | `beamai_llm_provider_anthropic` | Anthropic | yes | yes | Caching, Web Search, citations |
 | `openai` | `beamai_llm_provider_openai` | OpenAI | yes | yes | Reference OpenAI client |
 | `openai_responses` | `beamai_llm_provider_openai_responses` | OpenAI Responses (`/v1/responses`) | yes | yes | OpenAI Responses API |
-| `deepseek` | `beamai_llm_provider_deepseek` | OpenAI-compatible | no | yes | DeepSeek chat + FIM variants |
+| `deepseek` | `beamai_llm_provider_deepseek` | OpenAI-compatible | yes | yes | Thinking mode (`thinking` + `reasoning_effort`), FIM completion (Beta) |
 | `zhipu` | `beamai_llm_provider_zhipu` | OpenAI-compatible | yes | yes | Zhipu AI GLM series (4.6+ exposes `reasoning_content`) |
 | `dashscope` | `beamai_llm_provider_dashscope` | DashScope native | yes | yes | Alibaba Cloud Qwen |
 | `ollama` | `beamai_llm_provider_ollama` | OpenAI-compatible | varies | yes | Local models |

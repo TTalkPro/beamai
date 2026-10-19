@@ -1888,7 +1888,7 @@ Provider 模块共享的工具函数（URL 构建、请求头、流式事件累�
 | `openai` | `beamai_llm_provider_openai` | OpenAI | Chat、streaming、tool calling |
 | `openai_responses` | `beamai_llm_provider_openai_responses` | OpenAI Responses（`/v1/responses`） | Chat、streaming、tool calling |
 | `anthropic` | `beamai_llm_provider_anthropic` | Anthropic | Chat、streaming、tool calling、Prompt 缓存、Web Search、引用 |
-| `deepseek` | `beamai_llm_provider_deepseek` | OpenAI 兼容 | Chat、streaming、tool calling、reasoner |
+| `deepseek` | `beamai_llm_provider_deepseek` | OpenAI 兼容 | Chat、streaming、tool calling、思考模式（`thinking` + `reasoning_effort`）、多模态、FIM 补全（Beta） |
 | `zhipu` | `beamai_llm_provider_zhipu` | OpenAI 兼容 | Chat、streaming、tool calling、async（GLM-4.6+ 推理内容） |
 | `dashscope` | `beamai_llm_provider_dashscope` | DashScope 原生 | Chat、streaming、tool calling、文本/多模态自动选 endpoint、web search |
 | `ollama` | `beamai_llm_provider_ollama` | OpenAI 兼容 | Chat、streaming（本地模型，无需 API Key） |
@@ -1899,7 +1899,12 @@ Provider 模块共享的工具函数（URL 构建、请求头、流式事件累�
 
 > 测试场景另提供 `beamai_llm_provider_mock`（provider 原子 `mock`），用于离线与单测，不建议用于生产路径。
 
-DeepSeek 额外说明：使用 OpenAI 兼容接口，支持 `deepseek-chat`（默认）与 `deepseek-reasoner`（增强推理）两个模型。
+DeepSeek 额外说明：使用 OpenAI 兼容接口，模型为 `deepseek-flash`（默认，思考与非思考模式，支持图像理解）与 `deepseek-v4-pro`（仅思考模式）。
+思考模式由 `thinking`（`#{type => enabled | disabled}`，也接受裸原子）与 `reasoning_effort`（`none | low | high | max`，兼容别名 `minimal`→`low`、`medium`/`xhigh`→`high`）控制；
+思考模式下 `tool_choice` 不支持 `required` 与指定具体 tool（API 返回 400），构建请求时降级为 `auto`。
+`frequency_penalty` / `presence_penalty` 官方已废弃，不再发送；`response_format` 仅支持 `json_object`（`json_schema` 会被剔除）。
+`finish_reason` 的 `insufficient_system_resource` / `aborted` 归一化为 `insufficient_resource` / `aborted`。
+Beta 能力：对话前缀续写（消息标 `prefix => true`）与 FIM 填空补全（`fim/2`、`stream_fim/3`）。
 
 DashScope 额外说明：根据模型类型自动选择 endpoint（文本生成走 `/services/aigc/text-generation/generation`，多模态走 `/services/aigc/multimodal-generation/generation`）。`enable_search => true` 启用 Web Search；流式请求头 `X-DashScope-SSE: enable`，参数 `parameters.incremental_output: true`。
 

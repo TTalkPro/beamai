@@ -102,6 +102,8 @@
     stop_sequence |      % 停止序列触发
     pause_turn |         % 长运行暂停（Anthropic）
     refusal |            % 内容策略拒绝（Anthropic）
+    insufficient_resource | % 推理资源不足被打断（DeepSeek）
+    aborted |            % 生成过程被中断（DeepSeek）
     error |              % 错误
     unknown.             % 未知
 

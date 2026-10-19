@@ -292,7 +292,7 @@ from_deepseek(Raw) ->
     {error, {invalid_response, Raw}}.
 
 %% @doc 从 DeepSeek FIM（填空补全）格式响应创建
-%% FIM 接口（/beta/completions）使用文本补全格式：
+%% FIM 接口（beta base_url 下的 /completions）使用文本补全格式：
 %% 补全文本在 choices[0].text，没有 message 包装。
 -spec from_deepseek_fim(map()) -> {ok, beamai_chat_response:response()} | {error, term()}.
 from_deepseek_fim(#{<<"choices">> := [Choice | _]} = Raw) ->
@@ -629,29 +629,46 @@ extract_openai_usage_details(Usage, _Raw) ->
 
 %% @private 解析 DeepSeek usage（OpenAI 格式 + 硬盘缓存统计）
 %% DeepSeek 上下文缓存自动启用，usage 顶层额外返回
-%% prompt_cache_hit_tokens / prompt_cache_miss_tokens，提取到 details。
+%% prompt_cache_hit_tokens / prompt_cache_miss_tokens，
+%% prompt_tokens_details.cached_tokens 是命中缓存的另一种表达，一并提取到 details。
 parse_usage_deepseek(Usage, Raw) ->
     Base = parse_usage_openai(Usage, Raw),
-    CacheFields = [
-        {<<"prompt_cache_hit_tokens">>, prompt_cache_hit_tokens},
-        {<<"prompt_cache_miss_tokens">>, prompt_cache_miss_tokens}
-    ],
-    Extra = lists:foldl(fun({JsonKey, AtomKey}, Acc) ->
-        case maps:get(JsonKey, Usage, undefined) of
-            undefined -> Acc;
-            Value -> Acc#{AtomKey => Value}
-        end
-    end, #{}, CacheFields),
+    Extra = parse_deepseek_cache_fields(Usage),
     case maps:size(Extra) of
         0 -> Base;
         _ -> Base#{details => maps:merge(maps:get(details, Base, #{}), Extra)}
     end.
 
+parse_deepseek_cache_fields(Usage) ->
+    CacheFields = [
+        {[<<"prompt_cache_hit_tokens">>], prompt_cache_hit_tokens},
+        {[<<"prompt_cache_miss_tokens">>], prompt_cache_miss_tokens},
+        {[<<"prompt_tokens_details">>, <<"cached_tokens">>], cached_tokens}
+    ],
+    lists:foldl(fun({JsonPath, AtomKey}, Acc) ->
+        case lookup_usage_field(Usage, JsonPath) of
+            undefined -> Acc;
+            Value -> Acc#{AtomKey => Value}
+        end
+    end, #{}, CacheFields).
+
+%% @private 按路径 [{Key}] / [Key1, Key2] 在 usage map 中取值
+lookup_usage_field(Usage, [Key, SubKey]) ->
+    case maps:get(Key, Usage, undefined) of
+        Sub when is_map(Sub) -> maps:get(SubKey, Sub, undefined);
+        _ -> undefined
+    end;
+lookup_usage_field(Usage, [Key]) ->
+    maps:get(Key, Usage, undefined).
+
 %% @private 标准化 OpenAI finish_reason
+%% insufficient_system_resource / aborted 为 DeepSeek 等扩展的取值。
 normalize_finish_reason_openai(<<"stop">>) -> complete;
 normalize_finish_reason_openai(<<"tool_calls">>) -> tool_use;
 normalize_finish_reason_openai(<<"length">>) -> length_limit;
 normalize_finish_reason_openai(<<"content_filter">>) -> content_filtered;
+normalize_finish_reason_openai(<<"insufficient_system_resource">>) -> insufficient_resource;
+normalize_finish_reason_openai(<<"aborted">>) -> aborted;
 normalize_finish_reason_openai(<<>>) -> unknown;
 normalize_finish_reason_openai(null) -> unknown;
 normalize_finish_reason_openai(_) -> unknown.

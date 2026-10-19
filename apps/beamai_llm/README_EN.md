@@ -11,7 +11,7 @@ Large Language Model (LLM) client layer with support for multiple LLM providers.
 | OpenAI | `beamai_llm_provider_openai` | OpenAI | GPT-4, GPT-3.5-turbo, etc. |
 | OpenAI Responses | `beamai_llm_provider_openai_responses` | OpenAI Responses | `/v1/responses`: reasoning item replay, flat tools, built-in tool pass-through; works with Responses gateways (LiteGate, OpenRouter) |
 | Anthropic | `beamai_llm_provider_anthropic` | Anthropic | Claude 3, Claude 2, etc. |
-| DeepSeek | `beamai_llm_provider_deepseek` | OpenAI Compatible | deepseek-chat, deepseek-reasoner |
+| DeepSeek | `beamai_llm_provider_deepseek` | OpenAI Compatible | deepseek-flash, deepseek-v4-pro |
 | Ollama | `beamai_llm_provider_ollama` | OpenAI Compatible | Local model deployment |
 | Zhipu AI | `beamai_llm_provider_zhipu` | OpenAI Compatible | GLM-4.7 and other Chinese models |
 | Alibaba Cloud DashScope | `beamai_llm_provider_dashscope` | DashScope Native | Qwen series (qwen-plus, qwen-max, etc.) |
@@ -161,18 +161,22 @@ Content = maps:get(content, Response).
 
 ### Using DeepSeek
 
-DeepSeek API is compatible with OpenAI API, supporting `deepseek-chat` and `deepseek-reasoner` models.
+DeepSeek is OpenAI Chat Completions compatible. Current models are `deepseek-flash`
+(V4.1-Flash) and `deepseek-v4-pro` (V4-Pro); thinking mode is controlled by `thinking`
+and `reasoning_effort`.
 
 ```erlang
 %% Create DeepSeek configuration
 LLM = llm_client:create(deepseek, #{
-    model => <<"deepseek-chat">>,
-    api_key => list_to_binary(os:getenv("DEEPSEEK_API_KEY"))
+    model => <<"deepseek-flash">>,
+    api_key => list_to_binary(os:getenv("DEEPSEEK_API_KEY")),
+    thinking => #{type => enabled},
+    reasoning_effort => high
 }),
 
 %% Send message
 Messages = [
-    #{role => user, content => <<"你好！"/utf8>>}
+    #{role => user, content => <<"Hello!">>}
 ],
 
 {ok, Response} = llm_client:chat(LLM, Messages).
@@ -182,22 +186,36 @@ Messages = [
 
 | Model | Description | Recommended Use Cases |
 |-------|-------------|----------------------|
-| `deepseek-chat` | General conversation model (default) | Daily conversations, code generation |
-| `deepseek-reasoner` | Reasoning-enhanced model | Complex reasoning, math problems |
+| `deepseek-flash` | V4.1-Flash (default); thinking and non-thinking modes, thinking by default; supports image input | Daily conversations, code generation, multimodal input |
+| `deepseek-v4-pro` | V4-Pro; thinking mode only; no image input | Complex reasoning, code tasks |
+
+**Thinking Mode:**
+
+| Option | Values | Description |
+|--------|--------|-------------|
+| `thinking` | `#{type => enabled \| disabled}` (bare atom also accepted) | Thinking mode switch |
+| `reasoning_effort` | `none \| low \| high \| max` | Reasoning effort, defaults to `high`; aliases: `minimal`->`low`, `medium`/`xhigh`->`high` |
+
+- Chain-of-thought is exposed via `beamai_chat_response:reasoning_content/1` (both sync and streaming)
+- In thinking mode `temperature` has no effect and `top_p` is clamped to 0.95-1.0 (server-side)
+- In thinking mode `tool_choice` does not support `required` or a named tool (API returns 400);
+  the provider downgrades both to `auto`. Use an explicit `thinking => disabled` to force tool calls.
 
 **Features:**
 - Full support for tool calling (Function Calling), with automatic accumulation of streamed tool-call fragments
-- Streaming output support
-- OpenAI compatible API, response format consistent with OpenAI
-- Chain-of-thought from deepseek-reasoner is exposed via `beamai_chat_response:reasoning_content/1` (both sync and streaming)
-- Supports `frequency_penalty` / `presence_penalty` / `stop` / `logprobs` / `top_logprobs` / `response_format` config options
-- deepseek-reasoner automatically strips unsupported params (temperature/top_p/penalty/logprobs) to avoid 400 errors
-- Context disk-cache stats exposed in `usage.details` (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`)
+- Streaming output and multimodal input (image `image_url` / `file`)
+- Supports `stop` / `logprobs` / `top_logprobs` / `user_id` / `response_format` (`json_object`)
+- `frequency_penalty` / `presence_penalty` are deprecated upstream and are never sent
+- `response_format` does not support `json_schema` (dropped if configured)
+- Context disk-cache stats exposed in `usage.details` (`prompt_cache_hit_tokens` /
+  `prompt_cache_miss_tokens` / `cached_tokens`, the latter equals `prompt_tokens_details.cached_tokens`)
+- `finish_reason` supports `insufficient_system_resource` / `aborted`
+  (normalized to `insufficient_resource` / `aborted`)
 
-**DeepSeek-specific mechanisms (beta):**
+**DeepSeek-specific mechanisms (Beta):**
 
 ```erlang
-%% Chat Prefix Completion: mark the trailing assistant message with prefix => true
+%% Chat prefix completion: mark the trailing assistant message with prefix => true
 %% to force the model to continue from it (auto-routed to the /beta endpoint)
 Messages = [
     #{role => user, content => <<"Write a Python quicksort">>},
@@ -206,6 +224,7 @@ Messages = [
 {ok, Resp} = llm_client:chat(LLM, Messages),
 
 %% FIM (Fill-In-the-Middle) completion: complete code between a prefix and suffix
+%% (non-thinking mode only)
 {ok, Resp2} = beamai_llm_provider_deepseek:fim(Config, #{
     prompt => <<"def fib(n):">>,
     suffix => <<"    return fib(n-1) + fib(n-2)">>
