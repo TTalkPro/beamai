@@ -1143,9 +1143,9 @@ A merge into `main` requires *all* of the following:
    - They align with how `gen_server` registration and `whereis/1` work.
    - They match the existing `pool => atom()` opt type in `beamai_http_behaviour:opts()` (line 41).
    - They're easier to type in `sys.config` and pattern-match in tests.
-   
+
    But all other long-lived names in the project use atoms too (`beamai_core_sup`, `beamai_llm_error`). Atoms win.
-   
+
    *Decision: atom. Resolve at plan approval.*
 
 2. **Should providers expose pool selection as a config, or hardcode in this refactor?**

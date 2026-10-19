@@ -69,8 +69,8 @@ Design rationale: [design/chat_client_memory_filter_redesign.md](../design/chat_
 | Passed to pipeline each round | locally accumulated **full** messages | only the **new delta** |
 | Who accumulates full history | a local variable in the tool loop | the ChatMemory store |
 | Uses conversation_id | no | yes (ephemeral id generated if absent, cleared at end) |
-| Context continuous within tool loop | ✅ | ✅ |
-| Memory across invokes | ❌ (stateless single-shot) | ✅ (persisted by conversation_id) |
+| Context continuous within tool loop |  |  |
+| Memory across invokes |  (stateless single-shot) |  (persisted by conversation_id) |
 | Who records the assistant message | local concatenation | the Memory Filter's around_chat stores into the store (after) |
 
 > **Why full mode exists**: a tool-calling loop is inherently multi-round (LLM → tool →

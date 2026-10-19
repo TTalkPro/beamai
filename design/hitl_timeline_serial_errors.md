@@ -1,6 +1,6 @@
 # HITL / Timeline / 串行标注 / 错误分层：beamai 落地设计
 
-> **状态：✅ 已实施（2026-07-11）。** 全套 `rebar3 eunit` 347 tests / 0 failures、
+> **状态： 已实施（2026-07-11）。** 全套 `rebar3 eunit` 347 tests / 0 failures、
 > `rebar3 dialyzer` EXIT=0。实施与本文一致；逐批次记录与踩坑见 `TASK.md` 完成情况段。
 > 来源：对照 clj-agent `docs/agent-loop-concurrency-design.md`（§9–§13）与
 > `docs/hitl-timeline-design.md`，把单 Agent 的 HITL/Timeline/错误分层/串行标注

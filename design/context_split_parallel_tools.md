@@ -1,6 +1,6 @@
 # Context 拆分设计：运行环境与用户状态分离，并行工具 writes 归并
 
-> **状态：✅ 已实施（2026-07-11）。** 全套 `rebar3 eunit` 314 tests / 0 failures、
+> **状态： 已实施（2026-07-11）。** 全套 `rebar3 eunit` 314 tests / 0 failures、
 > `rebar3 dialyzer` 零警告。实施与逐模块计划（§6）一致；一处踩坑记录见文末 §9。
 > 来源：对照 clj-agent `docs/agent-loop-concurrency-design.md`（Tool 阶段
 > MapReduce 设计定稿）对 beamai 的 rethink。

@@ -1,6 +1,6 @@
 {application, beamai_agent, [
     {description, "SimpleAgent - ReAct agent framework"},
-    {vsn, "1.0.0"},
+    {vsn, "2.0.0"},
     {registered, [beamai_agent_sup]},
     {mod, {beamai_agent_app, []}},
     {applications, [kernel, stdlib, beamai_core, beamai_llm]},

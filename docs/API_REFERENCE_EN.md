@@ -787,8 +787,9 @@ The unified response shape across all providers. Construct from a raw map with `
     metadata := map()
 }.
 
--type provider() :: openai | anthropic | deepseek | zhipu
-                  | ollama | dashscope | unknown.
+-type provider() :: openai | openai_responses | anthropic | deepseek | zhipu
+                  | ollama | dashscope | xai | moonshot | openrouter | siliconflow
+                  | unknown.
 
 -type content_block() ::
     #{type := text,         text := binary()}
@@ -1043,8 +1044,9 @@ The most-used public API. Construct a `config()` with `create/2`, then call `cha
 #### Types
 
 ```erlang
--type provider() :: openai | anthropic | ollama | zhipu
-                  | dashscope | deepseek | mock
+-type provider() :: openai | openai_responses | anthropic | ollama | zhipu
+                  | dashscope | deepseek | xai | moonshot | kimi | openrouter
+                  | siliconflow | mock
                   | {custom, module()}.
 
 -type config() :: #{
@@ -1427,10 +1429,15 @@ Pass the provider atom to `beamai_chat_model:create/2`. Each adapter module impl
 |----------|--------|----------|------------|-----------|-------|
 | `anthropic` | `beamai_llm_provider_anthropic` | Anthropic | yes | yes | Caching, Web Search, citations |
 | `openai` | `beamai_llm_provider_openai` | OpenAI | yes | yes | Reference OpenAI client |
+| `openai_responses` | `beamai_llm_provider_openai_responses` | OpenAI Responses (`/v1/responses`) | yes | yes | OpenAI Responses API |
 | `deepseek` | `beamai_llm_provider_deepseek` | OpenAI-compatible | no | yes | DeepSeek chat + FIM variants |
 | `zhipu` | `beamai_llm_provider_zhipu` | OpenAI-compatible | yes | yes | Zhipu AI GLM series (4.6+ exposes `reasoning_content`) |
 | `dashscope` | `beamai_llm_provider_dashscope` | DashScope native | yes | yes | Alibaba Cloud Qwen |
 | `ollama` | `beamai_llm_provider_ollama` | OpenAI-compatible | varies | yes | Local models |
+| `xai` | `beamai_llm_provider_xai` | OpenAI-compatible | yes | yes | Grok series (strips unsupported sampling params) |
+| `moonshot` / `kimi` | `beamai_llm_provider_moonshot` | OpenAI-compatible | yes | yes | Kimi series (`kimi` is an alias; CN & global sites) |
+| `openrouter` | `beamai_llm_provider_openrouter` | OpenAI-compatible | yes | yes | Multi-vendor gateway (model fallback, provider routing) |
+| `siliconflow` | `beamai_llm_provider_siliconflow` | OpenAI-compatible | yes | yes | Hosted models (`enable_thinking`) |
 
 A `mock` provider also exists (`beamai_llm_provider_mock`) for tests. It implements `beamai_chat_behaviour` and returns canned responses, useful for unit tests of agent and tool-loop code without hitting a real API.
 
@@ -2020,8 +2027,9 @@ Every LLM provider module implements this. The `stream_chat` callback is optiona
 ```
 
 ```erlang
--type provider() :: openai | anthropic | ollama | zhipu
-                  | dashscope | deepseek | mock
+-type provider() :: openai | openai_responses | anthropic | ollama | zhipu
+                  | dashscope | deepseek | xai | moonshot | kimi | openrouter
+                  | siliconflow | mock
                   | {custom, module()}.
 
 -type config() :: #{

@@ -41,8 +41,8 @@
   - 可插拔存储后端（ETS / DETS 持久化 / 自定义 behaviour）；滑动窗口由 Agent 侧的 memory provider 提供
   - 详见 [docs/MEMORY.md](docs/MEMORY.md)
 
-- **统一 LLM 客户端**: 6 家 Provider 统一同步/流式
-  - OpenAI、Anthropic、DeepSeek、Zhipu、DashScope、Ollama
+- **统一 LLM 客户端**: 11 家 Provider 统一同步/流式
+  - OpenAI、OpenAI Responses、Anthropic、DeepSeek、Zhipu、DashScope、Ollama、xAI、Moonshot/Kimi、OpenRouter、SiliconFlow
   - 多模态输入、Anthropic 缓存/Web Search/引用、速率限制头、Retry-After 重试、统一错误结构
 
 - **Output Parser**: 结构化输出
@@ -306,6 +306,7 @@ HTTP 全线走 Gun 后端（`beamai_http_gun`）：支持 HTTP/2、内置三个�
 
 ### 核心文档
 
+- **[CHANGELOG.md](CHANGELOG.md)** - 变更日志
 - **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - API 参考文档
 - **[docs/FILTER.md](docs/FILTER.md)** - Filter 洋葱系统文档
 - **[docs/MEMORY.md](docs/MEMORY.md)** - 会话记忆（Memory Filter）文档
@@ -319,7 +320,7 @@ HTTP 全线走 Gun 后端（`beamai_http_gun`）：支持 HTTP/2、内置三个�
 |------|------|------|
 | **beamai_core** | 核心框架：ChatClient、Context、Filter、Tool、HTTP、Behaviours | [README](apps/beamai_core/README.md) |
 | **beamai_agent** | SimpleAgent：ReAct Agent 框架（多轮对话、回调、中断/恢复） | [README](apps/beamai_agent/README.md) |
-| **beamai_llm** | LLM 客户端：6 家 Provider 统一同步/流式；多模态输入、Anthropic 缓存/Web Search/引用、速率限制头、Retry-After 重试、统一错误结构 | [README](apps/beamai_llm/README.md) |
+| **beamai_llm** | LLM 客户端：11 家 Provider 统一同步/流式；多模态输入、Anthropic 缓存/Web Search/引用、速率限制头、Retry-After 重试、统一错误结构 | [README](apps/beamai_llm/README.md) |
 
 ## 运行示例
 
@@ -336,9 +337,9 @@ rebar3 shell
 | 指标 | 数量 |
 |------|------|
 | **OTP 应用** | 3 个（beamai_core、beamai_agent、beamai_llm） |
-| **源代码模块** | ~73 个 |
-| **测试文件** | ~38 个 |
-| **单元测试** | ~380 个 |
+| **源代码模块** | 117 个 |
+| **测试文件** | 66 个 |
+| **单元测试** | ~714 个 |
 
 ### 测试运行
 

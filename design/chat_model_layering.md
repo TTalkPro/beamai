@@ -1,6 +1,6 @@
 # ChatModel 分层：ChatRequest/ChatResponse + provider 只声明底层信息
 
-> **状态：✅ Stage 1、Stage 2 已实施（2026-08-25）。** `rebar3 eunit` 706 tests / 0 failures、
+> **状态： Stage 1、Stage 2 已实施（2026-08-25）。** `rebar3 eunit` 706 tests / 0 failures、
 > `rebar3 dialyzer` EXIT=0；MiniMax-M2 live（含 `beamai_tcm_live_test` / `beamai_http_pool_live_test`）全过。
 > 参照 `~/workspace/spring-ai`：`chat/prompt/Prompt.java`、`chat/model/{ChatModel,ChatResponse}.java`
 > 与各 `XxxChatModel` / `XxxApi` 的分工。
@@ -13,10 +13,10 @@
 
 | Spring | 职责 | beamai（改造前） |
 |---|---|---|
-| `Prompt` | messages + ChatOptions | ❌ 没有类型，`(Messages, Opts)` 两个裸参数，provider 各自 `maps:get` |
-| `ChatResponse` | 归一化响应 | ✅ 有（`beamai_llm_response`），但名字不成套 |
+| `Prompt` | messages + ChatOptions |  没有类型，`(Messages, Opts)` 两个裸参数，provider 各自 `maps:get` |
+| `ChatResponse` | 归一化响应 |  有（`beamai_llm_response`），但名字不成套 |
 | `XxxChatModel` | 重试、observation、调用编排 | 部分：`beamai_chat_model` 只做路由 + 重试 |
-| `XxxApi` | endpoint / headers / DTO | ⚠️ provider 混装了"底层信息"与"怎么发"（超时、连接池、rate-limit 各写一遍） |
+| `XxxApi` | endpoint / headers / DTO |  provider 混装了"底层信息"与"怎么发"（超时、连接池、rate-limit 各写一遍） |
 
 「本次调用参数」与「连接凭证」混在同一个 Config 里，是最大的一处结构缺陷。
 

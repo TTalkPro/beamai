@@ -28,6 +28,7 @@ BeamAI 框架的核心模块，提供 ChatClient 架构、Filter/会话记忆、
 
 - **beamai_chat_memory** - ChatMemory 存储行为接口 + 调度 API（句柄 `{Module, Ref}`）
 - **beamai_chat_memory_ets** - 默认 ETS 会话存储实现
+- **beamai_chat_memory_dets** - DETS 持久化会话存储实现
 - **beamai_memory_filter** - Memory Filter（ChatClient 级：around_chat 前置存 delta+展开历史、后置存回复）
 - **beamai_memory_provider** - Agent 记忆策略行为（history/append/prepare/clear）
 - **beamai_memory_provider_default** - 默认策略实现（包存储后端；`new/2` 带可选滑动窗口）
@@ -38,6 +39,22 @@ LLM 响应的统一抽象层：
 
 - **beamai_chat_request** - ChatRequest：一次调用的输入（messages + 本次调用参数），对标 Spring AI 的 Prompt
 - **beamai_chat_response** - LLM 统一响应访问器，抽象不同 Provider 的响应差异
+- **beamai_message** - 消息结构（role/content/content_blocks）与 provider 原生格式互转
+
+### Filter 子系统
+
+- **beamai_filter** - Filter 钩子类型定义（around_turn/around_step/around_chat/around_tool + token_transform）
+- **beamai_filter_chain** - Filter 链组合与执行
+- **beamai_filters** - 内置 Filter 组合
+
+### 平台子系统
+
+- **beamai_telemetry** - Telemetry 事件分发与默认日志后端
+- **beamai_token_stream** - 流式 token 流变换（token_transform）
+- **beamai_json_schema** - JSON Schema 校验（工具参数等）
+- **beamai_tool_error** - 工具调用统一错误结构
+- **beamai_tool_search** - 工具搜索（配合工具索引）
+- **beamai_tool_index** / **beamai_tool_index_keyword** / **beamai_tool_index_regex** - 工具索引（关键词 / 正则实现）
 
 ### HTTP 子系统
 

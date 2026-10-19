@@ -26,6 +26,7 @@ History storage and injection, decoupled from the ChatClient and keyed by `conve
 
 - **beamai_chat_memory** - ChatMemory storage behaviour + dispatch API (handle `{Module, Ref}`)
 - **beamai_chat_memory_ets** - Default ETS conversation store
+- **beamai_chat_memory_dets** - DETS-backed persistent conversation store
 - **beamai_memory_filter** - Memory Filter (ChatClient-level: around_chat stores delta + expands history before the call, stores reply after)
 - **beamai_memory_provider** - Agent memory policy behaviour (history/append/prepare/clear)
 - **beamai_memory_provider_default** - Default policy implementation (wraps a store; `new/2` adds an optional sliding window)
@@ -35,6 +36,23 @@ History storage and injection, decoupled from the ChatClient and keyed by `conve
 Unified abstraction layer for LLM responses:
 
 - **beamai_chat_response** - Unified LLM response accessors (content, tool_calls, usage, etc.)
+- **beamai_chat_request** - A single invocation input (messages + per-call options), mirroring Spring AI's Prompt
+- **beamai_message** - Message structure (role/content/content_blocks) with provider-native format conversion
+
+### Filter Subsystem
+
+- **beamai_filter** - Filter hook types (around_turn/around_step/around_chat/around_tool + token_transform)
+- **beamai_filter_chain** - Filter chain composition and execution
+- **beamai_filters** - Built-in filter combinations
+
+### Platform Subsystem
+
+- **beamai_telemetry** - Telemetry event dispatch and default logger backend
+- **beamai_token_stream** - Streaming token stream transformation (token_transform)
+- **beamai_json_schema** - JSON Schema validation (tool parameters, etc.)
+- **beamai_tool_error** - Unified tool-call error structure
+- **beamai_tool_search** - Tool search (works with the tool index)
+- **beamai_tool_index** / **beamai_tool_index_keyword** / **beamai_tool_index_regex** - Tool index (keyword / regex implementations)
 
 ### HTTP Subsystem
 

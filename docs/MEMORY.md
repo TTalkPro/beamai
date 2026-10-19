@@ -67,8 +67,8 @@ beamai_core 把「对话历史的存储与注入」从 ChatClient 中彻底剥�
 | 每轮传给 pipeline | 本地累积的**全量**消息 | 只传**新 delta** |
 | 谁攒完整历史 | 工具循环里的本地变量 | ChatMemory store |
 | 是否用 conversation_id | 否 | 是（context 无则生成临时 id，结束清理） |
-| 工具循环内上下文连续 | ✅ | ✅ |
-| 跨 invoke 记忆 | ❌（单次无状态） | ✅（按 conversation_id 持久） |
+| 工具循环内上下文连续 |  |  |
+| 跨 invoke 记忆 | （单次无状态） | （按 conversation_id 持久） |
 | assistant 消息谁记录 | 本地拼接 | Memory Filter 的 around_chat 后置存入 store |
 
 > **full 模式存在的意义**：工具调用循环天生多轮（LLM→工具→再 LLM）。无 store 时，

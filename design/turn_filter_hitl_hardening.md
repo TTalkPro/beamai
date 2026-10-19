@@ -1,6 +1,6 @@
 # Turn 级 filter 链 + HITL 加固：beamai 落地设计
 
-> **状态：✅ 已实施（2026-07-11）。** 全套 `rebar3 eunit` 363 tests / 0 failures、
+> **状态： 已实施（2026-07-11）。** 全套 `rebar3 eunit` 363 tests / 0 failures、
 > `rebar3 dialyzer` EXIT=0。实施与本文一致，逐批次与踩坑见 `TASK.md` 完成情况段。
 > 来源：对照 clj-agent `docs/filter-chain-design.md`（filter 三链 :tool/:chat/:turn）、
 > `docs/hitl-timeline-design.md`（heal-dangling / resume×turn 链）、

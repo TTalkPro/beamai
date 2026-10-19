@@ -1,6 +1,6 @@
 # ToolCallingManager 设计：统一工具执行管理（beamai/Erlang 移植）
 
-> **状态：✅ ToolCallingManager 部分已实施（落地形态与本文有分叉）；🚧 Tool Backend 部分未实施。**
+> **状态： ToolCallingManager 部分已实施（落地形态与本文有分叉）； Tool Backend 部分未实施。**
 > 当前行为以 `apps/beamai_agent/src/beamai_tool_calling_manager.erl` 及其实现模块为准；
 > 本文保留为设计决策的历史记录。
 >
@@ -462,14 +462,14 @@ resolve_backend(Backend, Context) ->
 
 | tool_spec 字段 | `local` | `http` | `mcp` | 说明 |
 |---|---|---|---|---|
-| `handler` | ✅ 必填 | ❌ 禁止 | ❌ 禁止 | local 执行本地函数；remote 无 handler |
-| `sensitive` | ✅ | ✅ | ✅ | gate 审批语义不变 |
-| `serial` | ✅ | ✅ | ✅ | 批内退化按序语义不变 |
-| `return_direct` | ✅ | ✅ | ✅ | 结果即最终答案语义不变 |
-| `retry` | ✅ | ✅ | ✅ | invoke_with_retry 对 transient 类仍生效（HTTP 超时、MCP 网络错误） |
-| `tag` | ✅ | ✅ | ✅ | tag 过滤语义不变 |
-| `timeout` | ✅ | ✅ | ✅ | 超时语义不变（backend handler 须尊重） |
-| `parameters` | ✅ | ✅ | ✅ | schema 生成不变（backend 不影响对外 schema） |
+| `handler` |  必填 |  禁止 |  禁止 | local 执行本地函数；remote 无 handler |
+| `sensitive` |  |  |  | gate 审批语义不变 |
+| `serial` |  |  |  | 批内退化按序语义不变 |
+| `return_direct` |  |  |  | 结果即最终答案语义不变 |
+| `retry` |  |  |  | invoke_with_retry 对 transient 类仍生效（HTTP 超时、MCP 网络错误） |
+| `tag` |  |  |  | tag 过滤语义不变 |
+| `timeout` |  |  |  | 超时语义不变（backend handler 须尊重） |
+| `parameters` |  |  |  | schema 生成不变（backend 不影响对外 schema） |
 
 ### 5.7 关于 inline / delegate 工具的边界
 
@@ -494,9 +494,9 @@ beamai 的 delegate 工具（`beamai_agent_delegate:tool/1`）是**进程内** m
 ToolSearch 索引的是 tool **specs/schemas**（`beamai_tool:to_tool_spec/1`），而 `backend`
 存在 tool_spec map 上。所以：
 
-- ✅ **索引正常工作**：HTTP/MCP 工具的 schema 在 index 里和 local 工具无差别
+-  **索引正常工作**：HTTP/MCP 工具的 schema 在 index 里和 local 工具无差别
   （`to_tool_spec/1` 不输出 backend 字段）
-- ✅ **执行正确**：搜索发现的工具下一轮进入 `tools` 列表后，执行时仍按 tool_spec 的
+-  **执行正确**：搜索发现的工具下一轮进入 `tools` 列表后，执行时仍按 tool_spec 的
   `backend` 字段分派
 
 ---

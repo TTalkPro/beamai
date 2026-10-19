@@ -134,7 +134,7 @@ Tools can be tagged for categorization and discovery:
 
 ## Phases
 
-- **Phase 1**: ChatClient + Tool + Service (current implementation) ✅
+- **Phase 1**: ChatClient + Tool + Service (current implementation)
 - **Phase 2**: Process Framework (Step/Event orchestration)
 - **Phase 3**: Agent (ChatClient + Prompt + Memory)
 - **Phase 4**: Memory (Semantic Memory as Service)

@@ -1,6 +1,6 @@
 {application, beamai_examples, [
     {description, "BeamAI Core Examples"},
-    {vsn, "0.1.0"},
+    {vsn, "2.0.0"},
     {registered, []},
     {applications, [
         kernel,

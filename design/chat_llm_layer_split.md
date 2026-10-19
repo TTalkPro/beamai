@@ -1,11 +1,11 @@
 # chat / llm 分层：把重试从 chat 链下沉到 provider 层
 
-> **⚠️ 状态：已被 `design/retry_back_to_chat_model.md` 推翻（2026-08-25 同日）。**
+> ** 状态：已被 `design/retry_back_to_chat_model.md` 推翻（2026-08-25 同日）。**
 > 分析（重试不该和记忆/记账挤在 chat 链上）成立，但结论走过了一步：重试本来就在
 > `beamai_chat_model` 内部、位于整个 filter 栈之下，那个位置已经满足要求。`around_llm`
 > 已删除，重试已下沉回 provider。以下内容仅作当时的推导记录。
 >
-> **原状态：✅ 已实施（2026-08-25）。** 全套 `rebar3 eunit` 685 tests / 0 failures、
+> **原状态： 已实施（2026-08-25）。** 全套 `rebar3 eunit` 685 tests / 0 failures、
 > `rebar3 dialyzer` EXIT=0（零警告）。
 > 起因：对照「外层 advisor → 循环 advisor → 内层 advisor → provider 中间件」这套
 > 四层 advisor 模型（Spring AI / clj-agent 的层次）逐层核对 beamai 的 filter 体系。
@@ -18,10 +18,10 @@
 
 | 四层模型 | beamai 拆分前 | 结论 |
 |---|---|---|
-| 外层 advisor（每对话一次） | `around_turn`（`beamai_agent:run_turn_chain/3`） | ✅ |
-| 循环 advisor | `beamai_agent_tool_loop`（内置，不在链上） | ⚠️ 有行为、不可插拔（本次不动） |
-| 内层 advisor（每轮复入一次） | **无独立钩子** | ❌ 缺口 |
-| provider 中间件（每次 LLM 调用一次） | `around_chat`（其 terminal 就是 `Module:chat/3`） | ✅ |
+| 外层 advisor（每对话一次） | `around_turn`（`beamai_agent:run_turn_chain/3`） |  |
+| 循环 advisor | `beamai_agent_tool_loop`（内置，不在链上） |  有行为、不可插拔（本次不动） |
+| 内层 advisor（每轮复入一次） | **无独立钩子** |  缺口 |
+| provider 中间件（每次 LLM 调用一次） | `around_chat`（其 terminal 就是 `Module:chat/3`） |  |
 
 **缺的是第 3 层，不是第 4 层**：`around_chat` 的洋葱最内层字面上就是 provider 调用，
 它占的是最底下那格；「每轮恰好一次」这一格是空的，两层塌成了一层。

@@ -1,8 +1,8 @@
 # TASK: BeamAI 项目优化路线图
 
-> 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)  
-> 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)  
-> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 / Phase 5 实施完成（远端 CI 待确认）  
+> 设计文档：[`designs/project_optimization_roadmap.md`](designs/project_optimization_roadmap.md)
+> 执行清单：[`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md)
+> 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 / Phase 5 实施完成（远端 CI 待确认）
 > 创建日期：2026-10-15
 
 ## 当前目标
@@ -23,7 +23,7 @@
 - [x] 增加 examples 独立编译 job。
 - [x] 修正 ex_doc `source_url` 和 app links 元数据。
 
-本地验证：`xref` 0 warning，`dialyzer` 0 warning，`eunit` 780 tests / 0 failures，`ct` 通过，examples 编译通过。  
+本地验证：`xref` 0 warning，`dialyzer` 0 warning，`eunit` 780 tests / 0 failures，`ct` 通过，examples 编译通过。
 剩余确认项：推送后由 GitHub Actions 验证 OTP 27 / OTP 28 矩阵。
 
 详细批次见 [`tasks/project_optimization_roadmap.md`](tasks/project_optimization_roadmap.md#phase-0工程止血)。
@@ -54,7 +54,7 @@ HTTP Pool 关键路径。
 - [x] 确保默认日志不输出 prompt、tool result 全文和 API key。
 
 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
-`rebar3 xref` 0 warning，`rebar3 eunit` 817 tests / 0 failures。  
+`rebar3 xref` 0 warning，`rebar3 eunit` 817 tests / 0 failures。
 HTTP Pool 变更提交：`04ef802`。
 
 ### Phase 3：Provider contract test — 实施完成
@@ -73,7 +73,7 @@ finish reason、usage、错误和 multimodal 行为。
 
 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
 `rebar3 xref` 0 warning，`rebar3 eunit` 844 tests / 0 failures；全部测试
-离线可跑。  
+离线可跑。
 Contract harness 提交：`9ee3799`；注册检查提交：`4011efb`。
 
 ### Phase 4：Agent event model — 实施完成
@@ -90,8 +90,8 @@ Contract harness 提交：`9ee3799`；注册检查提交：`4011efb`。
 - [x] 明确 callback / filter 是业务扩展点，event model 只做观测。
 
 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
-`rebar3 xref` 0 warning，`rebar3 eunit` 849 tests / 0 failures。  
-设计文档：[`designs/agent_event_model.md`](designs/agent_event_model.md)。  
+`rebar3 xref` 0 warning，`rebar3 eunit` 849 tests / 0 failures。
+设计文档：[`designs/agent_event_model.md`](designs/agent_event_model.md)。
 事件模型提交：`35a1adc`。
 
 批次 Q 已将统一事件接入 Agent runtime：run、turn、chat、tool、state、
@@ -99,7 +99,7 @@ interrupt/approval、resume 和 error 边界均可通过 `event_consumers` 观�
 per-run sequence 稳定，consumer crash 不影响主流程，敏感 payload 不进入事件。
 
 批次 Q 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
-`rebar3 xref` 0 warning，`rebar3 eunit` 852 tests / 0 failures。  
+`rebar3 xref` 0 warning，`rebar3 eunit` 852 tests / 0 failures。
 Runtime 接入提交：`c8baa0d`。
 
 ### Phase 5：性能基准 — 实施完成
@@ -116,8 +116,8 @@ Runtime 接入提交：`c8baa0d`。
 - [x] 当前离线场景先覆盖 `noop` 冒烟路径，不访问外部网络。
 
 批次 R 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
-`rebar3 xref` 0 warning，`rebar3 eunit` 855 tests / 0 failures。  
-设计文档：[`designs/performance_benchmark_harness.md`](designs/performance_benchmark_harness.md)。  
+`rebar3 xref` 0 warning，`rebar3 eunit` 855 tests / 0 failures。
+设计文档：[`designs/performance_benchmark_harness.md`](designs/performance_benchmark_harness.md)。
 Harness 提交：`65493aa`。
 
 批次 S 已接入核心场景：filter chain、tool dispatch、concurrent/sequential
@@ -126,13 +126,13 @@ OpenAI provider encode/decode。`run/0` 现在输出统一汇总表，单场景�
 支持自定义 iterations / warmup。
 
 批次 S 本地验证：application modules 一致，`rebar3 dialyzer` 0 warning，
-`rebar3 xref` 0 warning，`rebar3 eunit` 857 tests / 0 failures。  
-基线数据：[`benchmarks/BASELINE.md`](benchmarks/BASELINE.md)。  
+`rebar3 xref` 0 warning，`rebar3 eunit` 857 tests / 0 failures。
+基线数据：[`benchmarks/BASELINE.md`](benchmarks/BASELINE.md)。
 核心场景提交：`42d8bd8`。
 
 ## 后续阶段
 
-1. **性能回归跟进**  
+1. **性能回归跟进**
    影响热点路径的后续 PR 运行受影响 benchmark 场景，并对比
    [`benchmarks/BASELINE.md`](benchmarks/BASELINE.md)。
 

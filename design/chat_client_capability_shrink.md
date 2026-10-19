@@ -1,6 +1,6 @@
 # ChatClient 能力收缩：对齐 Spring AI 的工具体系分工
 
-> **状态：✅ 已实施（2026-08-25）。** `rebar3 eunit` 716 tests / 0 failures、`rebar3 dialyzer`
+> **状态： 已实施（2026-08-25）。** `rebar3 eunit` 716 tests / 0 failures、`rebar3 dialyzer`
 > EXIT=0；beamai_extra 587 tests 全过。
 > 依据：本地 spring-ai 的 `ChatClient.java` 与官方
 > [Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html)。

@@ -41,8 +41,8 @@ Advanced features built on top of the core library:
   - Pluggable storage backends (ETS / DETS persistence / custom behaviour); the sliding window is provided by the Agent-side memory provider
   - See [docs/MEMORY_EN.md](docs/MEMORY_EN.md)
 
-- **Unified LLM Client**: 6 providers with unified sync/streaming
-  - OpenAI, Anthropic, DeepSeek, Zhipu, DashScope, Ollama
+- **Unified LLM Client**: 11 providers with unified sync/streaming
+  - OpenAI, OpenAI Responses, Anthropic, DeepSeek, Zhipu, DashScope, Ollama, xAI, Moonshot/Kimi, OpenRouter, SiliconFlow
   - Multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure
 
 - **Output Parser**: Structured output
@@ -278,10 +278,15 @@ LLM = beamai_chat_model:create(zhipu, #{
 |----------|--------|----------|-------------|
 | `anthropic` | beamai_llm_provider_anthropic | Anthropic | Anthropic Claude API |
 | `openai` | beamai_llm_provider_openai | OpenAI | OpenAI API |
+| `openai_responses` | beamai_llm_provider_openai_responses | OpenAI Responses | OpenAI Responses API (`/v1/responses`) |
 | `deepseek` | beamai_llm_provider_deepseek | OpenAI compatible | DeepSeek API |
 | `zhipu` | beamai_llm_provider_zhipu | OpenAI compatible | Zhipu AI (GLM series) |
 | `dashscope` | beamai_llm_provider_dashscope | DashScope native | Alibaba Cloud DashScope (Qwen series) |
 | `ollama` | beamai_llm_provider_ollama | OpenAI compatible | Ollama local models |
+| `xai` | beamai_llm_provider_xai | OpenAI compatible | xAI (Grok series) |
+| `moonshot` / `kimi` | beamai_llm_provider_moonshot | OpenAI compatible | Moonshot (Kimi series; `kimi` is an alias) |
+| `openrouter` | beamai_llm_provider_openrouter | OpenAI compatible | OpenRouter gateway |
+| `siliconflow` | beamai_llm_provider_siliconflow | OpenAI compatible | SiliconFlow hosted models |
 
 ### HTTP Backend Configuration
 
@@ -311,6 +316,7 @@ built-in implementation and needs no configuration.
 
 ### Core Documentation
 
+- **[CHANGELOG.md](CHANGELOG.md)** - Changelog
 - **[docs/API_REFERENCE_EN.md](docs/API_REFERENCE_EN.md)** - API Reference
 - **[docs/FILTER_EN.md](docs/FILTER_EN.md)** - Filter System Documentation
 - **[docs/MEMORY_EN.md](docs/MEMORY_EN.md)** - Conversation Memory (Memory Filter) documentation
@@ -324,7 +330,7 @@ built-in implementation and needs no configuration.
 |--------|-------------|---------------|
 | **beamai_core** | Core framework: ChatClient, Context, Filter, Tool, HTTP, Behaviours | [README](apps/beamai_core/README_EN.md) |
 | **beamai_agent** | SimpleAgent: ReAct Agent framework (multi-turn, callbacks, interrupt/resume) | [README](apps/beamai_agent/README.md) (zh) |
-| **beamai_llm** | LLM client: 6 providers with unified sync/streaming; multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure | [README](apps/beamai_llm/README_EN.md) |
+| **beamai_llm** | LLM client: 11 providers with unified sync/streaming; multimodal input, Anthropic caching/Web Search/citations, rate-limit headers, Retry-After retries, unified error structure | [README](apps/beamai_llm/README_EN.md) |
 
 ## Running Examples
 
@@ -341,9 +347,9 @@ rebar3 shell
 | Metric | Count |
 |--------|-------|
 | **OTP Applications** | 3 (beamai_core, beamai_agent, beamai_llm) |
-| **Source Modules** | ~73 |
-| **Test Files** | ~38 |
-| **Unit Tests** | ~380 |
+| **Source Modules** | 117 |
+| **Test Files** | 66 |
+| **Unit Tests** | ~714 |
 
 ### Running Tests
 

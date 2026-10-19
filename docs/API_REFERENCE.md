@@ -1007,7 +1007,7 @@ ChatRequest 的 options——provider 只看得到与请求本身有关的参数
 
 ### LLM 响应：beamai_chat_response
 
-LLM 统一响应结构。所有 Provider（OpenAI / Anthropic / DeepSeek / Zhipu / DashScope / Ollama）都通过适配层归一化为这套结构，Agent 与上层只面向它编程。
+LLM 统一响应结构。所有 Provider（OpenAI / OpenAI Responses / Anthropic / DeepSeek / Zhipu / DashScope / Ollama / xAI / Moonshot / OpenRouter / SiliconFlow）都通过适配层归一化为这套结构，Agent 与上层只面向它编程。
 
 ```erlang
 %% 从字段 map 构造标准 response() 结构
@@ -1097,7 +1097,8 @@ LLM 统一响应结构。所有 Provider（OpenAI / Anthropic / DeepSeek / Zhipu
     metadata := map()
 }.
 
--type provider() :: openai | anthropic | deepseek | zhipu | ollama | dashscope | unknown.
+-type provider() :: openai | openai_responses | anthropic | deepseek | zhipu | ollama |
+                    dashscope | xai | moonshot | openrouter | siliconflow | unknown.
 
 %% 内容块四种类型
 -type content_block() ::
@@ -1437,7 +1438,7 @@ JSON-RPC 2.0 编解码与标准错误构造。
 
 ## beamai_llm - LLM 客户端
 
-`beamai_llm` 提供统一的 LLM Chat Completion 客户端，支持 OpenAI / Anthropic / DeepSeek / Zhipu / DashScope / Ollama 六家 Provider，结构化错误、Output Parser、Provider 适配器。
+`beamai_llm` 提供统一的 LLM Chat Completion 客户端，支持 OpenAI / OpenAI Responses / Anthropic / DeepSeek / Zhipu / DashScope / Ollama / xAI / Moonshot / OpenRouter / SiliconFlow 十一家 Provider（`kimi` 为 `moonshot` 的别名），结构化错误、Output Parser、Provider 适配器。
 
 ### Chat Model：beamai_chat_model
 
@@ -1465,8 +1466,9 @@ Chat Completion 服务的统一入口。**这是最常用的 API**。
 类型：
 
 ```erlang
--type provider() :: openai | anthropic | ollama | zhipu | dashscope |
-                    deepseek | mock | {custom, module()}.
+-type provider() :: openai | openai_responses | anthropic | ollama | zhipu | dashscope |
+                    deepseek | xai | moonshot | kimi | openrouter | siliconflow |
+                    mock | {custom, module()}.
 
 -type config() :: #{
     provider := provider(),
@@ -1884,11 +1886,16 @@ Provider 模块共享的工具函数（URL 构建、请求头、流式事件累�
 | Provider | 模块 | API 模式 | 特性 |
 |----------|------|----------|------|
 | `openai` | `beamai_llm_provider_openai` | OpenAI | Chat、streaming、tool calling |
+| `openai_responses` | `beamai_llm_provider_openai_responses` | OpenAI Responses（`/v1/responses`） | Chat、streaming、tool calling |
 | `anthropic` | `beamai_llm_provider_anthropic` | Anthropic | Chat、streaming、tool calling、Prompt 缓存、Web Search、引用 |
 | `deepseek` | `beamai_llm_provider_deepseek` | OpenAI 兼容 | Chat、streaming、tool calling、reasoner |
 | `zhipu` | `beamai_llm_provider_zhipu` | OpenAI 兼容 | Chat、streaming、tool calling、async（GLM-4.6+ 推理内容） |
 | `dashscope` | `beamai_llm_provider_dashscope` | DashScope 原生 | Chat、streaming、tool calling、文本/多模态自动选 endpoint、web search |
 | `ollama` | `beamai_llm_provider_ollama` | OpenAI 兼容 | Chat、streaming（本地模型，无需 API Key） |
+| `xai` | `beamai_llm_provider_xai` | OpenAI 兼容 | Grok 系列（自动剔除不支持的采样参数） |
+| `moonshot` / `kimi` | `beamai_llm_provider_moonshot` | OpenAI 兼容 | Kimi 系列（thinking、国内站与国际站；`kimi` 为别名） |
+| `openrouter` | `beamai_llm_provider_openrouter` | OpenAI 兼容 | 多厂商网关（模型回退、供应商路由、成本统计） |
+| `siliconflow` | `beamai_llm_provider_siliconflow` | OpenAI 兼容 | 硅基流动托管模型（`enable_thinking`） |
 
 > 测试场景另提供 `beamai_llm_provider_mock`（provider 原子 `mock`），用于离线与单测，不建议用于生产路径。
 
@@ -2565,8 +2572,9 @@ Chat Completion 行为接口，Provider 模块均实现此 behaviour。
 类型：
 
 ```erlang
--type provider() :: openai | anthropic | ollama | zhipu | dashscope |
-                    deepseek | mock | {custom, module()}.
+-type provider() :: openai | openai_responses | anthropic | ollama | zhipu | dashscope |
+                    deepseek | xai | moonshot | kimi | openrouter | siliconflow |
+                    mock | {custom, module()}.
 
 -type config() :: #{
     provider := provider(),

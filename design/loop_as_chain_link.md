@@ -1,6 +1,6 @@
 # 循环 advisor：把 tool_loop 变成 turn 链上的一环
 
-> **状态：✅ 已实施（2026-08-25）。** 全套 `rebar3 eunit` 692 tests / 0 failures、
+> **状态： 已实施（2026-08-25）。** 全套 `rebar3 eunit` 692 tests / 0 failures、
 > `rebar3 dialyzer` EXIT=0（零警告）。
 > 承接 `design/chat_llm_layer_split.md`（那次补的是第 4 层 provider 中间件 `around_llm`）。
 > 目标是四层 advisor 模型里剩下的第 2 层：**循环 advisor**。
@@ -12,10 +12,10 @@
 拆完 chat/llm 之后，四层模型只剩循环层还是「有行为、不在链上」：
 
 ```
-外层 advisor      around_turn            ✅
-循环 advisor      beamai_agent_tool_loop ⚠️ 内置的 while，不是链上一环
-内层 advisor      around_chat            ✅（但只包 LLM 调用，不包该轮工具执行）
-provider 中间件   around_llm             ✅
+外层 advisor      around_turn
+循环 advisor      beamai_agent_tool_loop  内置的 while，不是链上一环
+内层 advisor      around_chat            （但只包 LLM 调用，不包该轮工具执行）
+provider 中间件   around_llm
 ```
 
 两个具体后果：

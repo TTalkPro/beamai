@@ -1,6 +1,6 @@
 # 重试回到 chat_model，删掉 around_llm
 
-> **状态：✅ 已实施（2026-08-25）。** `rebar3 eunit` 694 tests / 0 failures、`rebar3 dialyzer` EXIT=0。
+> **状态： 已实施（2026-08-25）。** `rebar3 eunit` 694 tests / 0 failures、`rebar3 dialyzer` EXIT=0。
 > **本文推翻 `design/chat_llm_layer_split.md`** 的结论（那次把重试抽成 llm 链上的 filter）。
 
 ---
