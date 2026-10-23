@@ -414,6 +414,12 @@ ChatClient 是基础设施层，负责工具注册、LLM 服务配置、Filter �
 %% 把工具执行结果编码为 LLM 可读的二进制
 -spec encode_result(term()) -> binary().
 
+%% 提取 tool message 的 content：{parts, Parts} 保留部件列表，否则编码为文本
+-spec result_content(term()) -> binary() | [map()].
+
+%% 提取多模态工具结果的文本视图（持久化 / 直返 / 进度回调使用）
+-spec result_text(binary() | [map()] | term()) -> binary().
+
 %% 从模块自动加载工具列表（模块须实现 beamai_tool_behaviour）
 -spec from_module(module()) -> {ok, [tool_spec()]} | {error, term()}.
 ```

@@ -151,7 +151,7 @@ run_one_tool(ChatClient, TC, Context, BatchId) ->
                               Meta),
     {Result, Writes, ErrInfo} = case beamai_tool_executor:invoke(ChatClient, Name, Args, Context) of
         {ok, Value, W} ->
-            {beamai_tool:encode_result(Value), W, undefined};
+            {beamai_tool:result_content(Value), W, undefined};
         {error, Reason} ->
             %% 失败：分类为 semantic|transient|environment，供屏障处分层路由
             {beamai_tool:encode_result(tool_error(Reason)), #{},
@@ -162,8 +162,12 @@ run_one_tool(ChatClient, TC, Context, BatchId) ->
     %% （message_adapter 白名单构建 wire 消息，writes 天然剥落）。event-sourcing 伏笔
     %% + 审计。失败工具 Writes=#{} → 无 writes 键（历史自然缺席，与事务性同真同假）。
     Msg = with_writes(#{role => tool, tool_call_id => Id, content => Result}, Writes),
-    CallRecord0 = #{name => Name, args => Args, result => Result, tool_call_id => Id},
-    dispatch_tool_finished(StartedAt, Result, ErrInfo, Meta),
+    %% 进度回调 / 事件记录只带文本视图：多模态里的图片是给模型当前一步看的，
+    %% 不该让宿主事件流和 telemetry 再复制一份 base64。
+    TextResult = beamai_tool:result_text(Result),
+    CallRecord0 = #{name => Name, args => Args,
+                    result => TextResult, tool_call_id => Id},
+    dispatch_tool_finished(StartedAt, TextResult, ErrInfo, Meta),
     {Msg, with_error(CallRecord0, ErrInfo), Writes}.
 
 %% @private 成功无 error 字段；失败带 #{class, message}（屏障处按 class 路由）

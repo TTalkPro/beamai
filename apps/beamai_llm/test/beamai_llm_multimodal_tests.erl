@@ -142,3 +142,50 @@ mixed_parts_order_preserved_test() ->
     Parts = maps:get(<<"content">>, Msg),
     Types = [maps:get(<<"type">>, P) || P <- Parts],
     ?assertEqual([<<"text">>, <<"image_url">>, <<"text">>], Types).
+
+%%====================================================================
+%% 工具结果内容部件
+%%====================================================================
+
+tool_parts_anthropic_test() ->
+    Parts = [
+        #{type => text, text => <<"screenshot attached">>},
+        #{type => image,
+          source => #{type => base64, media_type => <<"image/jpeg">>, data => <<"BBBB">>}}
+    ],
+    [Msg] = beamai_llm_message_adapter:to_anthropic(
+              [#{role => tool, tool_call_id => <<"call_1">>, content => Parts}]),
+    [ToolResult] = maps:get(<<"content">>, Msg),
+    ?assertEqual(<<"call_1">>, maps:get(<<"tool_use_id">>, ToolResult)),
+    [TextBlock, ImageBlock] = maps:get(<<"content">>, ToolResult),
+    ?assertEqual(<<"text">>, maps:get(<<"type">>, TextBlock)),
+    ?assertEqual(<<"image">>, maps:get(<<"type">>, ImageBlock)).
+
+tool_parts_openai_chat_splits_media_test() ->
+    Parts = [
+        #{type => text, text => <<"screenshot attached">>},
+        #{type => image,
+          source => #{type => base64, media_type => <<"image/jpeg">>, data => <<"BBBB">>}}
+    ],
+    Msgs = beamai_llm_message_adapter:to_openai(
+             [#{role => tool, tool_call_id => <<"call_1">>, content => Parts}]),
+    [ToolMsg, UserMsg] = Msgs,
+    ?assertEqual(<<"tool">>, maps:get(<<"role">>, ToolMsg)),
+    ?assertEqual(<<"screenshot attached">>, maps:get(<<"content">>, ToolMsg)),
+    ?assertEqual(<<"user">>, maps:get(<<"role">>, UserMsg)),
+    [ImagePart] = maps:get(<<"content">>, UserMsg),
+    ?assertEqual(<<"image_url">>, maps:get(<<"type">>, ImagePart)).
+
+tool_parts_openai_responses_splits_media_test() ->
+    Parts = [
+        #{type => text, text => <<"screenshot attached">>},
+        #{type => image,
+          source => #{type => base64, media_type => <<"image/jpeg">>, data => <<"BBBB">>}}
+    ],
+    {_, Items} = beamai_llm_message_adapter:to_openai_responses(
+                   [#{role => tool, tool_call_id => <<"call_1">>, content => Parts}]),
+    [Output, UserMsg] = Items,
+    ?assertEqual(<<"function_call_output">>, maps:get(<<"type">>, Output)),
+    ?assertEqual(<<"screenshot attached">>, maps:get(<<"output">>, Output)),
+    [ImagePart] = maps:get(<<"content">>, UserMsg),
+    ?assertEqual(<<"input_image">>, maps:get(<<"type">>, ImagePart)).

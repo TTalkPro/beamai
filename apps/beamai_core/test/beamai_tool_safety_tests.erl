@@ -124,6 +124,33 @@ redact_result_test() ->
                    <<"sk-abc password=hello">>, Rules),
     ?assertEqual(<<"[REDACTED] password=***">>, Text).
 
+multimodal_result_content_test() ->
+    Parts = [#{type => text, text => <<"screenshot attached">>},
+             #{type => image,
+               source => #{type => base64, media_type => <<"image/jpeg">>,
+                           data => <<"AAAA">>}}],
+    ?assertEqual(Parts, beamai_tool:result_content({parts, Parts})),
+    ?assertEqual(<<"screenshot attached">>, beamai_tool:result_text({parts, Parts})).
+
+multimodal_redaction_keeps_media_test() ->
+    Parts = [#{type => text, text => <<"token sk-secret">>},
+             #{type => image,
+               source => #{type => base64, media_type => <<"image/jpeg">>,
+                           data => <<"AAAA">>}}],
+    {ok, {parts, [TextPart, ImagePart]}} =
+        beamai_tool:redact_result({parts, Parts}, [{<<"sk-[A-Za-z0-9]+">>, <<"[REDACTED]">>}]),
+    ?assertEqual(<<"token [REDACTED]">>, maps:get(text, TextPart)),
+    ?assertEqual(Parts, [TextPart#{text => <<"token sk-secret">>}, ImagePart]).
+
+multimodal_size_counts_media_test() ->
+    Parts = [#{type => text, text => <<"ok">>},
+             #{type => image,
+               source => #{type => base64, media_type => <<"image/jpeg">>,
+                           data => <<"AAAA">>}}],
+    Size = byte_size(iolist_to_binary(
+                       [beamai_utils:encode_json(P) || P <- Parts])),
+    ?assertEqual(ok, beamai_tool:result_size({parts, Parts}, Size)).
+
 strict_tool(Handler) ->
     (safe_tool())#{handler => Handler}.
 

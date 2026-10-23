@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
+## [2.0.2] - 2026-10-23
+
+### Added
+
+- 工具 handler 可返回 `{parts, Parts}` 传递多模态结果：Anthropic 在 `tool_result.content` 中发送 text/image 块；OpenAI Chat 与 Responses 只在 tool 输出中保留文本，并把图片作为紧随其后的 user 输入发送。图片默认只在当前回合有效，持久化历史、直返答案与工具进度回调只保留文本视图。
+
 ## [2.0.1] - 2026-10-23
 
 ### Fixed

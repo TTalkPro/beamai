@@ -301,6 +301,13 @@ AI's split between `ChatClient`, `ToolCallbackResolver`/`ToolDefinition`/`ToolMe
 -spec parse_tool_call(map()) -> {binary(), binary(), map()}.
 -spec encode_result(term()) -> binary().
 
+%% Extract tool-message content: preserve {parts, Parts}; otherwise encode text.
+-spec result_content(term()) -> binary() | [map()].
+
+%% Extract the text view of a multimodal tool result (used for persistence,
+%% return-direct answers, and progress callbacks).
+-spec result_text(binary() | [map()] | term()) -> binary().
+
 -spec from_module(module()) -> {ok, [tool_spec()]} | {error, term()}.
 ```
 

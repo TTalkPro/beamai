@@ -544,7 +544,8 @@ finish_direct(Opts, Messages, ToolResults, Ctx, ToolCallsMade) ->
 %% @private 由工具结果合成最终响应（多工具按原始序换行拼接）
 direct_response(ToolResults) ->
     Content = iolist_to_binary(
-        lists:join(<<"\n">>, [C || #{content := C} <- ToolResults])),
+        lists:join(<<"\n">>, [beamai_tool:result_text(C) ||
+                              #{content := C} <- ToolResults])),
     beamai_chat_response:new(#{
         content => Content,
         finish_reason => complete,
@@ -575,7 +576,16 @@ env_failed(_) -> false.
 persist(#{memory := undefined}, _Msgs) -> ok;
 persist(_Opts, []) -> ok;
 persist(#{memory := Provider, conversation_id := ConvId}, Msgs) ->
-    beamai_memory_provider:append(Provider, ConvId, Msgs).
+    beamai_memory_provider:append(Provider, ConvId, [text_only(Msg) || Msg <- Msgs]).
+
+%% @private 持久化前剥离工具结果的临时内容部件
+%%
+%% 图片 / 音频等部件只用于当前回合的 provider 请求（tool result 的即时反馈）。
+%% 跨轮历史只保留 text 部件，避免截图把 memory 和下一次历史回放撑爆。
+text_only(#{role := tool, content := Content} = Msg) ->
+    Msg#{content => beamai_tool:result_text(Content)};
+text_only(Msg) ->
+    Msg.
 
 %% @private state 槽在屏障处折叠完 writes 后**确实变了**才通知宿主
 %%

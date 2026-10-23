@@ -90,7 +90,19 @@ from_provider(Messages, _) -> from_openai(Messages).
 %% @doc 转换为 OpenAI 消息格式
 -spec to_openai([message()]) -> [map()].
 to_openai(Messages) ->
-    [to_openai_message(M) || M <- Messages].
+    %% 工具结果里的多模态部件必须展开成多条消息：tool 消息只带文本，
+    %% 图片等媒体部件按通行做法紧跟一条 user 消息。
+    lists:append([to_openai_messages(M) || M <- Messages]).
+
+to_openai_messages(#{role := tool, content := Parts} = Msg) when is_list(Parts) ->
+    {TextParts, MediaParts} = lists:partition(fun is_text_part/1, Parts),
+    ToolMsg = to_openai_message(Msg#{content => tool_text_content(TextParts)}),
+    case MediaParts of
+        [] -> [ToolMsg];
+        _ -> [ToolMsg, user_message_openai(MediaParts)]
+    end;
+to_openai_messages(Msg) ->
+    [to_openai_message(Msg)].
 
 to_openai_message(#{role := Role, content := Content} = Msg) ->
     Base = #{<<"role">> => to_binary_role(Role), <<"content">> => format_content_openai(Content)},
@@ -191,6 +203,16 @@ format_part_openai(#{<<"type">> := _} = Already) ->
 format_part_openai(_) ->
     #{<<"type">> => <<"text">>, <<"text">> => <<>>}.
 
+is_text_part(#{type := text}) -> true;
+is_text_part(_) -> false.
+
+tool_text_content(TextParts) ->
+    Texts = [Text || #{text := Text} <- TextParts, is_binary(Text)],
+    iolist_to_binary(lists:join(<<"\n">>, Texts)).
+
+user_message_openai(Parts) ->
+    #{<<"role">> => <<"user">>, <<"content">> => format_content_openai(Parts)}.
+
 %% @private 取音频格式：部件显式声明优先，否则由 MIME 类型推断
 audio_format_of(Part, Src) ->
     case maps:get(format, Part, undefined) of
@@ -249,13 +271,25 @@ to_anthropic(Messages) ->
     [to_anthropic_message(M) || M <- Messages].
 
 to_anthropic_message(#{role := tool, content := Content, tool_call_id := Id}) ->
-    %% Anthropic 工具结果格式
+    %% Anthropic 的 tool_result.content 接受 text/image 块列表；
+    %% 统一消息里的部件列表可以原语义透传。
+    ToolResultContent = case Content of
+        Parts when is_list(Parts) ->
+            lists:filtermap(fun(P) ->
+                case format_part_anthropic(P) of
+                    skip -> false;
+                    Block -> {true, Block}
+                end
+            end, Parts);
+        Other ->
+            Other
+    end,
     #{
         <<"role">> => <<"user">>,
         <<"content">> => [#{
             <<"type">> => <<"tool_result">>,
             <<"tool_use_id">> => Id,
-            <<"content">> => Content
+            <<"content">> => ToolResultContent
         }]
     };
 to_anthropic_message(#{role := assistant, tool_calls := Calls} = Msg) when is_list(Calls), Calls =/= [] ->
@@ -543,7 +577,7 @@ to_openai_responses(Messages) ->
 %% @private 单条消息 → 零或多个输入项
 to_responses_items(#{role := Role} = Msg) ->
     case to_binary_role(Role) of
-        <<"tool">> -> [function_call_output_item(Msg)];
+        <<"tool">> -> tool_responses_items(Msg);
         <<"assistant">> -> assistant_items(Msg);
         _ -> [user_message_item(Msg)]
     end.
@@ -598,6 +632,17 @@ function_call_output_item(#{tool_call_id := Id} = Msg) ->
       <<"output">> => text_of_content(maps:get(content, Msg, null))};
 function_call_output_item(Msg) ->
     function_call_output_item(Msg#{tool_call_id => <<>>}).
+
+%% @private 工具结果展开：function_call_output 只带文本；媒体部件另起 user 消息
+tool_responses_items(#{content := Parts} = Msg) when is_list(Parts) ->
+    {TextParts, MediaParts} = lists:partition(fun is_text_part/1, Parts),
+    Output = function_call_output_item(Msg#{content => tool_text_content(TextParts)}),
+    case MediaParts of
+        [] -> [Output];
+        _ -> [Output, user_message_item(#{content => MediaParts})]
+    end;
+tool_responses_items(Msg) ->
+    [function_call_output_item(Msg)].
 
 %% @private 用户输入内容：纯文本原样；多模态部件逐个转换
 responses_input_content(Content) when is_binary(Content) -> Content;

@@ -38,7 +38,7 @@
 -export([is_return_direct/1]).
 
 %% API - 工具调用协议
--export([parse_tool_call/1, encode_result/1]).
+-export([parse_tool_call/1, encode_result/1, result_content/1, result_text/1]).
 -export([redact_result/2, result_size/2]).
 
 %% API - 从模块加载
@@ -46,7 +46,8 @@
 
 %% Types
 -export_type([tool_spec/0, handler/0, tool_result/0,
-              args/0, parameters_schema/0, param_spec/0]).
+              args/0, parameters_schema/0, param_spec/0, content_part/0,
+              result_content/0]).
 
 -type tool_spec() :: #{
     name := binary(),
@@ -106,6 +107,12 @@
     {ok, term()}
     | {ok, term(), beamai_context:writes()}
     | {error, term()}.
+
+%% 多模态工具结果部件。`{parts, Parts}` 是 handler 返回值的显式标记：
+%% 当前回合发给模型时保留图片等内容部件；持久化 / 直返 / 进度回调用
+%% result_text/1 只提取文本，避免截图这类单步有效的负载进入历史。
+-type content_part() :: #{type := atom() | binary(), _ => _}.
+-type result_content() :: binary() | [content_part()].
 
 -type args() :: map().
 
@@ -336,11 +343,28 @@ parse_tool_call(TC) ->
 
 %% @doc 对结果文本应用 redaction 规则
 -spec redact_result(term(), [{binary() | string(), binary()}]) ->
-    {ok, binary()} | {error, {invalid_redaction_pattern, term()}}.
+    {ok, binary() | {parts, [content_part()]}} |
+    {error, {invalid_redaction_pattern, term()}}.
 redact_result(Value, []) ->
-    {ok, encode_result(Value)};
+    {ok, result_content(Value)};
 redact_result(Value, Rules) when is_list(Rules) ->
-    apply_redaction(encode_result(Value), Rules).
+    case result_content(Value) of
+        Parts when is_list(Parts) ->
+            {ok, {parts, redact_parts(Parts, Rules)}};
+        Content when is_binary(Content) ->
+            apply_redaction(Content, Rules)
+    end.
+
+redact_parts(Parts, Rules) ->
+    [case Part of
+         #{type := text, text := Text} = P ->
+             case apply_redaction(Text, Rules) of
+                 {ok, Redacted} -> P#{text => Redacted};
+                 {error, _} = Error -> exit(Error)
+             end;
+         Other ->
+             Other
+     end || Part <- Parts].
 
 %% @doc 将工具执行结果编码为 LLM 可读的二进制
 -spec encode_result(term()) -> binary().
@@ -360,18 +384,51 @@ encode_result(Value) when is_atom(Value) ->
 encode_result(Value) ->
     iolist_to_binary(io_lib:format("~p", [Value])).
 
+%% @doc 提取将要放进 tool 消息 content 的负载
+%%
+%% handler 返回 `{parts, Parts}` 且 Parts 是非空部件列表时保留结构；
+%% 其它返回值保持 encode_result/1 的文本契约。
+-spec result_content(term()) -> result_content().
+result_content({parts, Parts}) when is_list(Parts), Parts =/= [] ->
+    Parts;
+result_content(Value) ->
+    encode_result(Value).
+
+%% @doc 提取工具结果的人类可读文本（多模态结果只取 text 部件）
+%%
+%% 用于持久化、return_direct 合成答案和进度回调：截图只在当前这一次
+%% LLM 调用有效，不应作为长期历史或事件负载反复复制。
+-spec result_text(result_content() | term()) -> binary().
+result_text({parts, Parts}) when is_list(Parts) ->
+    texts_of_parts(Parts);
+result_text(Parts) when is_list(Parts) ->
+    texts_of_parts(Parts);
+result_text(Content) when is_binary(Content) ->
+    Content;
+result_text(Value) ->
+    encode_result(Value).
+
+texts_of_parts(Parts) ->
+    Texts = [Text || #{type := text, text := Text} <- Parts, is_binary(Text)],
+    iolist_to_binary(lists:join(<<"\n">>, Texts)).
+
 %% @doc 检查编码后的结果大小是否超过上限
 -spec result_size(term(), pos_integer() | undefined) ->
     ok | {error, tool_result_too_large, non_neg_integer(), pos_integer()}.
 result_size(Value, undefined) ->
-    _ = encode_result(Value),
+    _ = result_content(Value),
     ok;
 result_size(Value, MaxBytes) when is_integer(MaxBytes), MaxBytes > 0 ->
-    Encoded = encode_result(Value),
+    Encoded = encoded_result_size(result_content(Value)),
     case byte_size(Encoded) of
         Size when Size =< MaxBytes -> ok;
         Size -> {error, tool_result_too_large, Size, MaxBytes}
     end.
+
+encoded_result_size(Content) when is_binary(Content) ->
+    Content;
+encoded_result_size(Parts) when is_list(Parts) ->
+    iolist_to_binary([encode_result(Part) || Part <- Parts]).
 
 %%====================================================================
 %% API - 从模块加载
