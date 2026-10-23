@@ -259,11 +259,12 @@ to_anthropic_message(#{role := tool, content := Content, tool_call_id := Id}) ->
         }]
     };
 to_anthropic_message(#{role := assistant, tool_calls := Calls} = Msg) when is_list(Calls), Calls =/= [] ->
-    %% 包含工具调用的助手消息（可能也有 thinking blocks）
+    %% 包含工具调用的助手消息（可能也有 thinking blocks 和文本）
     ThinkingBlocks = format_thinking_blocks(Msg),
+    TextBlocks = text_blocks_anthropic(maps:get(content, Msg, null)),
     #{
         <<"role">> => <<"assistant">>,
-        <<"content">> => ThinkingBlocks ++ [format_tool_use_anthropic(C) || C <- Calls]
+        <<"content">> => ThinkingBlocks ++ TextBlocks ++ [format_tool_use_anthropic(C) || C <- Calls]
     };
 to_anthropic_message(#{role := Role, content := Content} = Msg) ->
     case maps:get(content_blocks, Msg, []) of
@@ -295,6 +296,12 @@ format_content_anthropic(Parts) when is_list(Parts) ->
         end
     end, Parts);
 format_content_anthropic(Other) -> Other.
+
+%% @private 把助手文本转为 Anthropic text 块（tool_calls 消息只携带非空文本）
+text_blocks_anthropic(Content) when is_binary(Content), Content =/= <<>> ->
+    [#{<<"type">> => <<"text">>, <<"text">> => Content}];
+text_blocks_anthropic(_) ->
+    [].
 
 %% @private 转换单个多模态部件为 Anthropic 格式
 format_part_anthropic(#{type := text, text := T} = Part) ->

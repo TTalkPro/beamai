@@ -303,11 +303,12 @@ sync_via_chat_model() ->
     {ok, Resp} = beamai_chat_model:chat(cfg(), ?MESSAGES, #{max_retries => 0}),
     ?assertEqual(openai_responses, beamai_chat_response:provider(Resp)),
     ?assertEqual(<<"查一下"/utf8>>, beamai_chat_response:content(Resp)),
-    %% from_response 保留 reasoning 块，回放时适配器能拼回 reasoning 项
+    %% from_response 保留 reasoning 块与文本，回放时适配器能拼回 reasoning/message 项
     Msg = beamai_message:from_response(Resp),
     ?assertMatch([#{type := reasoning, id := <<"rs_1">>} | _], beamai_message:content_blocks(Msg)),
     {_, Items} = beamai_llm_message_adapter:to_openai_responses([Msg]),
-    ?assertEqual([<<"reasoning">>, <<"function_call">>], [maps:get(<<"type">>, I) || I <- Items]).
+    ?assertEqual([<<"reasoning">>, <<"message">>, <<"function_call">>],
+                 [maps:get(<<"type">>, I) || I <- Items]).
 
 drain(Acc) ->
     receive {tok, T} -> drain([T | Acc]) after 0 -> lists:reverse(Acc) end.

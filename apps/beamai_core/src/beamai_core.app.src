@@ -1,6 +1,6 @@
 {application, beamai_core, [
     {description, "BeamAI Core - ChatClient 框架"},
-    {vsn, "2.0.0"},
+    {vsn, "2.0.1"},
     {registered, [beamai_core_sup,
                   http_pool_short,
                   http_pool_stream,

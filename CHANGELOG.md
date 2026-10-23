@@ -2,7 +2,11 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式。
 
-## [Unreleased]
+## [2.0.1] - 2026-10-23
+
+### Fixed
+
+- 同一 assistant 回合同时包含文本与 tool calls 时，会话历史不再丢弃文本；Anthropic 历史回放会在 `tool_use` 前插入对应的 `text` 块，避免刷新后的线程重绘和下一轮模型上下文缺少该段内容。
 
 ### Changed
 

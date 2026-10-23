@@ -22,7 +22,7 @@
 
 %% === 构建器（Builder）===
 -export([system/1, user/1, assistant/1]).
--export([tool_calls/1, tool_result/3]).
+-export([tool_calls/1, tool_calls/2, tool_result/3]).
 -export([with_content_blocks/2]).
 -export([from_response/1]).
 
@@ -86,7 +86,12 @@ assistant(Content) ->
 %% @doc 构建 assistant tool_calls 消息
 -spec tool_calls([tool_call()]) -> message().
 tool_calls(TCs) ->
-    #{role => assistant, content => null, tool_calls => TCs}.
+    tool_calls(null, TCs).
+
+%% @doc 构建带文本内容的 assistant tool_calls 消息
+-spec tool_calls(binary() | null, [tool_call()]) -> message().
+tool_calls(Content, TCs) ->
+    #{role => assistant, content => Content, tool_calls => TCs}.
 
 %% @doc 构建 tool result 消息
 -spec tool_result(binary(), binary(), term()) -> message().
@@ -116,11 +121,12 @@ from_response(Response) ->
             with_content_blocks(Base, beamai_chat_response:content_blocks(Response))
     end.
 
-%% @private 根据响应构建基础 assistant 消息（tool_calls 优先，否则取 content）
+%% @private 根据响应构建基础 assistant 消息（tool_calls 与 content 可并存）
 base_from_response(Response) ->
     case beamai_chat_response:has_tool_calls(Response) of
         true ->
-            tool_calls(beamai_chat_response:tool_calls(Response));
+            tool_calls(beamai_chat_response:content(Response),
+                       beamai_chat_response:tool_calls(Response));
         false ->
             case beamai_chat_response:content(Response) of
                 null -> undefined;

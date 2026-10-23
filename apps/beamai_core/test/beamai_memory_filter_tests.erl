@@ -86,6 +86,14 @@ response_to_message_carries_thinking_with_tool_calls_test() ->
     ?assertEqual([TC], beamai_message:get_tool_calls(Msg)),
     ?assertEqual([Think], beamai_message:content_blocks(Msg)).
 
+%% 同一回合可以先输出文本再调用工具；历史必须同时保留两者。
+response_to_message_keeps_text_with_tool_calls_test() ->
+    TC = #{id => <<"t1">>, name => <<"foo">>, arguments => #{}},
+    Resp = beamai_chat_response:new(#{content => <<"I found it.">>,
+                                      tool_calls => [TC]}),
+    ?assertEqual(#{role => assistant, content => <<"I found it.">>, tool_calls => [TC]},
+                 beamai_message:from_response(Resp)).
+
 %% 纯文本最终回合：同样保留 content_blocks（thinking + text）。
 response_to_message_carries_thinking_with_text_test() ->
     Think = #{type => thinking, thinking => <<"r">>, signature => <<"s">>},
